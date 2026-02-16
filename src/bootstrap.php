@@ -9,7 +9,9 @@ use App\Controllers\DailyCallMonitoringController;
 use App\Controllers\HealthController;
 use App\Controllers\AuthController;
 use App\Controllers\ProductController;
+use App\Controllers\PurchaseOrderController;
 use App\Controllers\SalesController;
+use App\Controllers\StockMovementController;
 use App\Http\Router;
 use App\Support\Env;
 
@@ -24,7 +26,9 @@ require __DIR__ . '/Repositories/CollectionRepository.php';
 require __DIR__ . '/Repositories/DailyCallMonitoringRepository.php';
 require __DIR__ . '/Repositories/AuthRepository.php';
 require __DIR__ . '/Repositories/ProductRepository.php';
+require __DIR__ . '/Repositories/PurchaseOrderRepository.php';
 require __DIR__ . '/Repositories/SalesRepository.php';
+require __DIR__ . '/Repositories/StockMovementRepository.php';
 require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Controllers/HealthController.php';
 require __DIR__ . '/Controllers/CustomerController.php';
@@ -32,7 +36,9 @@ require __DIR__ . '/Controllers/CollectionController.php';
 require __DIR__ . '/Controllers/DailyCallMonitoringController.php';
 require __DIR__ . '/Controllers/AuthController.php';
 require __DIR__ . '/Controllers/ProductController.php';
+require __DIR__ . '/Controllers/PurchaseOrderController.php';
 require __DIR__ . '/Controllers/SalesController.php';
+require __DIR__ . '/Controllers/StockMovementController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
 date_default_timezone_set((string) Env::get('APP_TIMEZONE', 'UTC'));
@@ -92,7 +98,9 @@ function app_router(): Router
         new App\Security\TokenService($config->authSecret, $config->authTokenTtlSeconds)
     );
     $productController = new ProductController(new App\Repositories\ProductRepository($db));
+    $purchaseOrderController = new PurchaseOrderController(new App\Repositories\PurchaseOrderRepository($db));
     $salesController = new SalesController(new App\Repositories\SalesRepository($db));
+    $stockMovementController = new StockMovementController(new App\Repositories\StockMovementRepository($db));
 
     $router = new Router();
     $router->get('/api/v1/health', [$healthController, 'index']);
@@ -120,6 +128,20 @@ function app_router(): Router
     $router->patch('/api/v1/products/{productSession}', [$productController, 'update']);
     $router->post('/api/v1/products/bulk-update', [$productController, 'bulkUpdate']);
     $router->delete('/api/v1/products/{productSession}', [$productController, 'delete']);
+    $router->get('/api/v1/purchase-orders', [$purchaseOrderController, 'list']);
+    $router->get('/api/v1/purchase-orders/suppliers', [$purchaseOrderController, 'suppliers']);
+    $router->get('/api/v1/purchase-orders/{purchaseRefno}', [$purchaseOrderController, 'show']);
+    $router->post('/api/v1/purchase-orders', [$purchaseOrderController, 'create']);
+    $router->patch('/api/v1/purchase-orders/{purchaseRefno}', [$purchaseOrderController, 'update']);
+    $router->delete('/api/v1/purchase-orders/{purchaseRefno}', [$purchaseOrderController, 'delete']);
+    $router->post('/api/v1/purchase-orders/{purchaseRefno}/items', [$purchaseOrderController, 'addItem']);
+    $router->patch('/api/v1/purchase-order-items/{itemId}', [$purchaseOrderController, 'updateItem']);
+    $router->delete('/api/v1/purchase-order-items/{itemId}', [$purchaseOrderController, 'deleteItem']);
+    $router->get('/api/v1/stock-movements', [$stockMovementController, 'list']);
+    $router->get('/api/v1/stock-movements/{logId}', [$stockMovementController, 'show']);
+    $router->post('/api/v1/stock-movements', [$stockMovementController, 'create']);
+    $router->patch('/api/v1/stock-movements/{logId}', [$stockMovementController, 'update']);
+    $router->delete('/api/v1/stock-movements/{logId}', [$stockMovementController, 'delete']);
     $router->post('/api/v1/auth/login', [$authController, 'login']);
     $router->get('/api/v1/auth/me', [$authController, 'me']);
     $router->post('/api/v1/auth/logout', [$authController, 'logout']);

@@ -46,6 +46,20 @@ If you use the combined launcher, API URL/port come from:
 - `PATCH /products/{productSession}`
 - `POST /products/bulk-update`
 - `DELETE /products/{productSession}?main_id={mainId}`
+- `GET /purchase-orders?main_id={mainId}&month=1-12&year=YYYY&status=all|pending|posted|partial delivery|cancelled&search=&page=1&per_page=100`
+- `GET /purchase-orders/suppliers?main_id={mainId}`
+- `GET /purchase-orders/{purchaseRefno}?main_id={mainId}`
+- `POST /purchase-orders`
+- `PATCH /purchase-orders/{purchaseRefno}`
+- `DELETE /purchase-orders/{purchaseRefno}?main_id={mainId}`
+- `POST /purchase-orders/{purchaseRefno}/items`
+- `PATCH /purchase-order-items/{itemId}`
+- `DELETE /purchase-order-items/{itemId}?main_id={mainId}`
+- `GET /stock-movements?main_id={mainId}&item_id={productSession}&warehouse_id=WH1|All&transaction_type=&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&search=&page=1&per_page=200`
+- `GET /stock-movements/{logId}?main_id={mainId}`
+- `POST /stock-movements`
+- `PATCH /stock-movements/{logId}`
+- `DELETE /stock-movements/{logId}?main_id={mainId}`
 - `POST /auth/login`
 - `GET /auth/me` (Authorization: Bearer token)
 - `POST /auth/logout` (Authorization: Bearer token)
