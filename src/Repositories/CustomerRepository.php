@@ -68,7 +68,10 @@ SQL;
     public function getPurchaseHistory(string $sessionId, ?string $dateFrom, ?string $dateTo): array
     {
         $filters = '';
-        $params = ['customer_id' => $sessionId];
+        $params = [
+            'customer_id_invoice' => $sessionId,
+            'customer_id_or' => $sessionId,
+        ];
 
         if ($dateFrom !== null && $dateFrom !== '') {
             $filters .= ' AND src.ldate >= :date_from';
@@ -106,7 +109,7 @@ FROM (
         item.lprice
     FROM tblinvoice_list inv
     INNER JOIN tblinvoice_itemrec item ON item.linvoice_refno = inv.lrefno
-    WHERE inv.lcustomerid = :customer_id
+    WHERE inv.lcustomerid = :customer_id_invoice
       AND COALESCE(inv.lcancel_invoice, 0) = 0
 
     UNION ALL
@@ -124,7 +127,7 @@ FROM (
         dri.lprice
     FROM tbldelivery_receipt dr
     INNER JOIN tbldelivery_receipt_items dri ON dri.lor_refno = dr.lrefno
-    WHERE dr.lcustomerid = :customer_id
+    WHERE dr.lcustomerid = :customer_id_or
       AND COALESCE(dr.lcancel, 0) = 0
 ) src
 LEFT JOIN (
@@ -165,4 +168,3 @@ SQL;
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 }
-

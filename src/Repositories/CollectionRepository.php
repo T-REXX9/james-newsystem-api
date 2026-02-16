@@ -24,12 +24,13 @@ final class CollectionRepository
         $sql = <<<SQL
 SELECT
     col.*,
-    (
-        SELECT SUM(ci.lamt)
-        FROM tblcollection_item ci
-        WHERE ci.lrefno = col.lrefno
-    ) AS total_amt
+    COALESCE(ci.total_amt, 0) AS total_amt
 FROM tblcollection col
+LEFT JOIN (
+    SELECT lrefno, SUM(lamt) AS total_amt
+    FROM tblcollection_item
+    GROUP BY lrefno
+) ci ON ci.lrefno = col.lrefno
 WHERE col.lmain_id = :main_id
 SQL;
         $params = ['main_id' => $mainId];
@@ -107,12 +108,13 @@ SQL;
         $sql = <<<SQL
 SELECT
     col.*,
-    (
-        SELECT SUM(ci.lamt)
-        FROM tblcollection_item ci
-        WHERE ci.lrefno = col.lrefno
-    ) AS total_amt
+    COALESCE(ci.total_amt, 0) AS total_amt
 FROM tblcollection col
+LEFT JOIN (
+    SELECT lrefno, SUM(lamt) AS total_amt
+    FROM tblcollection_item
+    GROUP BY lrefno
+) ci ON ci.lrefno = col.lrefno
 WHERE col.lrefno = :refno
 LIMIT 1
 SQL;
@@ -138,17 +140,20 @@ SELECT
     inv.lrefno,
     inv.linvoice_no,
     inv.lvat_percent,
-    COALESCE((
-        SELECT SUM(it.lprice * it.lqty)
-        FROM tblinvoice_itemrec it
-        WHERE it.linvoice_refno = inv.lrefno
-    ), 0) AS totalAmount,
-    COALESCE((
-        SELECT SUM(ct.lpaid_amt)
-        FROM tblcollection_item_transactions ct
-        WHERE ct.ltransaction_refno = inv.lrefno
-    ), 0) AS totalPaid
+    COALESCE(iit.total_amount, 0) AS totalAmount,
+    COALESCE(pay.total_paid, 0) AS totalPaid
 FROM tblinvoice_list inv
+LEFT JOIN (
+    SELECT it.linvoice_refno, SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0)) AS total_amount
+    FROM tblinvoice_itemrec it
+    GROUP BY it.linvoice_refno
+) iit ON iit.linvoice_refno = inv.lrefno
+LEFT JOIN (
+    SELECT ct.ltransaction_refno, SUM(COALESCE(ct.lpaid_amt, 0)) AS total_paid
+    FROM tblcollection_item_transactions ct
+    WHERE ct.ltransaction_type = 'Invoice'
+    GROUP BY ct.ltransaction_refno
+) pay ON pay.ltransaction_refno = inv.lrefno
 WHERE inv.lmain_id = :main_id
   AND inv.lcustomerid = :customer_id
   AND (inv.ldcr_refno = '' OR inv.ldcr_refno IS NULL)
@@ -159,17 +164,20 @@ SQL;
 SELECT
     dr.lrefno,
     dr.linvoice_no,
-    COALESCE((
-        SELECT SUM(it.lprice * it.lqty)
-        FROM tbldelivery_receipt_items it
-        WHERE it.lor_refno = dr.lrefno
-    ), 0) AS totalAmount,
-    COALESCE((
-        SELECT SUM(ct.lpaid_amt)
-        FROM tblcollection_item_transactions ct
-        WHERE ct.ltransaction_refno = dr.lrefno
-    ), 0) AS totalPaid
+    COALESCE(dit.total_amount, 0) AS totalAmount,
+    COALESCE(pay.total_paid, 0) AS totalPaid
 FROM tbldelivery_receipt dr
+LEFT JOIN (
+    SELECT it.lor_refno, SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0)) AS total_amount
+    FROM tbldelivery_receipt_items it
+    GROUP BY it.lor_refno
+) dit ON dit.lor_refno = dr.lrefno
+LEFT JOIN (
+    SELECT ct.ltransaction_refno, SUM(COALESCE(ct.lpaid_amt, 0)) AS total_paid
+    FROM tblcollection_item_transactions ct
+    WHERE ct.ltransaction_type = 'OrderSlip'
+    GROUP BY ct.ltransaction_refno
+) pay ON pay.ltransaction_refno = dr.lrefno
 WHERE dr.lmain_id = :main_id
   AND dr.lcustomerid = :customer_id
   AND (dr.ldcr_refno = '' OR dr.ldcr_refno IS NULL)
@@ -732,9 +740,10 @@ SQL;
         $sql = <<<SQL
 SELECT
     tal.*,
-    (SELECT lfname FROM tblaccount WHERE lid = tal.lstaff_id LIMIT 1) AS staff_fName,
-    (SELECT llname FROM tblaccount WHERE lid = tal.lstaff_id LIMIT 1) AS staff_lName
+    acc.lfname AS staff_fName,
+    acc.llname AS staff_lName
 FROM tblapprove_logs tal
+LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(tal.lstaff_id AS CHAR)
 WHERE tal.lsales_refno = :refno
 ORDER BY tal.lid ASC
 SQL;
