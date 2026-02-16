@@ -10,6 +10,8 @@ final class Config
         public readonly string $appEnv,
         public readonly bool $appDebug,
         public readonly string $allowedOrigin,
+        public readonly string $authSecret,
+        public readonly int $authTokenTtlSeconds,
         public readonly string $dbHost,
         public readonly int $dbPort,
         public readonly string $dbName,
@@ -18,4 +20,3 @@ final class Config
     ) {
     }
 }
-

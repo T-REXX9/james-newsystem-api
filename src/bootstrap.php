@@ -7,6 +7,7 @@ use App\Controllers\CollectionController;
 use App\Controllers\CustomerController;
 use App\Controllers\DailyCallMonitoringController;
 use App\Controllers\HealthController;
+use App\Controllers\AuthController;
 use App\Controllers\SalesController;
 use App\Http\Router;
 use App\Support\Env;
@@ -20,11 +21,14 @@ require __DIR__ . '/Http/Router.php';
 require __DIR__ . '/Repositories/CustomerRepository.php';
 require __DIR__ . '/Repositories/CollectionRepository.php';
 require __DIR__ . '/Repositories/DailyCallMonitoringRepository.php';
+require __DIR__ . '/Repositories/AuthRepository.php';
 require __DIR__ . '/Repositories/SalesRepository.php';
+require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Controllers/HealthController.php';
 require __DIR__ . '/Controllers/CustomerController.php';
 require __DIR__ . '/Controllers/CollectionController.php';
 require __DIR__ . '/Controllers/DailyCallMonitoringController.php';
+require __DIR__ . '/Controllers/AuthController.php';
 require __DIR__ . '/Controllers/SalesController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
@@ -54,6 +58,8 @@ function app_config(): Config
         (string) Env::get('APP_ENV', 'production'),
         filter_var(Env::get('APP_DEBUG', false), FILTER_VALIDATE_BOOL),
         (string) Env::get('APP_ALLOWED_ORIGIN', '*'),
+        (string) Env::get('AUTH_SECRET', (string) Env::get('APP_KEY', 'change-me-in-env')),
+        (int) Env::get('AUTH_TOKEN_TTL_SECONDS', 28800),
         (string) Env::get('DB_HOST', '127.0.0.1'),
         (int) Env::get('DB_PORT', 3306),
         (string) Env::get('DB_NAME', ''),
@@ -78,6 +84,10 @@ function app_router(): Router
     $customerController = new CustomerController(new App\Repositories\CustomerRepository($db));
     $collectionController = new CollectionController(new App\Repositories\CollectionRepository($db));
     $dailyCallMonitoringController = new DailyCallMonitoringController(new App\Repositories\DailyCallMonitoringRepository($db));
+    $authController = new AuthController(
+        new App\Repositories\AuthRepository($db),
+        new App\Security\TokenService($config->authSecret, $config->authTokenTtlSeconds)
+    );
     $salesController = new SalesController(new App\Repositories\SalesRepository($db));
 
     $router = new Router();
@@ -100,6 +110,9 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/purchase-history', [$dailyCallMonitoringController, 'customerPurchaseHistory']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-reports', [$dailyCallMonitoringController, 'customerSalesReports']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/incident-reports', [$dailyCallMonitoringController, 'customerIncidentReports']);
+    $router->post('/api/v1/auth/login', [$authController, 'login']);
+    $router->get('/api/v1/auth/me', [$authController, 'me']);
+    $router->post('/api/v1/auth/logout', [$authController, 'logout']);
     $router->get('/api/v1/sales/flow/inquiry/{inquiryRefno}', [$salesController, 'flowByInquiry']);
     $router->get('/api/v1/sales/flow/so/{soRefno}', [$salesController, 'flowBySalesOrder']);
 

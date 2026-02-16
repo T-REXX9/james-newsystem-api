@@ -11,10 +11,14 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
    - `cp .env.example .env`
 2. Update DB values in `.env` if needed.
 3. Run local server:
-   - `php -S 127.0.0.1:8080 -t public`
+   - `php -S 127.0.0.1:8081 -t public`
+
+If you use the combined launcher, API URL/port come from:
+- `/Volumes/ORICO/james-system/.env.shared`
+- Start command: `/Volumes/ORICO/james-system/start-dev.sh`
 
 ## Base URL
-- `http://127.0.0.1:8080/api/v1`
+- `http://127.0.0.1:8081/api/v1`
 
 ## Endpoints
 - `GET /health`
@@ -36,6 +40,9 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
 - `GET /daily-call-monitoring/customers/{contactId}/purchase-history?main_id={mainId}`
 - `GET /daily-call-monitoring/customers/{contactId}/sales-reports?main_id={mainId}`
 - `GET /daily-call-monitoring/customers/{contactId}/incident-reports?main_id={mainId}`
+- `POST /auth/login`
+- `GET /auth/me` (Authorization: Bearer token)
+- `POST /auth/logout` (Authorization: Bearer token)
 - `GET /sales/flow/inquiry/{inquiryRefno}`
 - `GET /sales/flow/so/{soRefno}`
 
