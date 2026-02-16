@@ -14,6 +14,7 @@ use App\Controllers\PurchaseOrderController;
 use App\Controllers\ReceivingStockController;
 use App\Controllers\SalesController;
 use App\Controllers\SalesInquiryController;
+use App\Controllers\SalesOrderController;
 use App\Controllers\StockMovementController;
 use App\Http\Router;
 use App\Support\Env;
@@ -34,6 +35,7 @@ require __DIR__ . '/Repositories/PurchaseOrderRepository.php';
 require __DIR__ . '/Repositories/ReceivingStockRepository.php';
 require __DIR__ . '/Repositories/SalesRepository.php';
 require __DIR__ . '/Repositories/SalesInquiryRepository.php';
+require __DIR__ . '/Repositories/SalesOrderRepository.php';
 require __DIR__ . '/Repositories/StockMovementRepository.php';
 require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Controllers/HealthController.php';
@@ -47,6 +49,7 @@ require __DIR__ . '/Controllers/PurchaseOrderController.php';
 require __DIR__ . '/Controllers/ReceivingStockController.php';
 require __DIR__ . '/Controllers/SalesController.php';
 require __DIR__ . '/Controllers/SalesInquiryController.php';
+require __DIR__ . '/Controllers/SalesOrderController.php';
 require __DIR__ . '/Controllers/StockMovementController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
@@ -112,6 +115,7 @@ function app_router(): Router
     $receivingStockController = new ReceivingStockController(new App\Repositories\ReceivingStockRepository($db));
     $salesController = new SalesController(new App\Repositories\SalesRepository($db));
     $salesInquiryController = new SalesInquiryController(new App\Repositories\SalesInquiryRepository($db));
+    $salesOrderController = new SalesOrderController(new App\Repositories\SalesOrderRepository($db));
     $stockMovementController = new StockMovementController(new App\Repositories\StockMovementRepository($db));
 
     $router = new Router();
@@ -187,6 +191,15 @@ function app_router(): Router
     $router->post('/api/v1/sales-inquiries/{inquiryRefno}/items', [$salesInquiryController, 'addItem']);
     $router->patch('/api/v1/sales-inquiry-items/{itemId}', [$salesInquiryController, 'updateItem']);
     $router->delete('/api/v1/sales-inquiry-items/{itemId}', [$salesInquiryController, 'deleteItem']);
+    $router->get('/api/v1/sales-orders', [$salesOrderController, 'list']);
+    $router->get('/api/v1/sales-orders/{salesRefno}', [$salesOrderController, 'show']);
+    $router->post('/api/v1/sales-orders', [$salesOrderController, 'create']);
+    $router->patch('/api/v1/sales-orders/{salesRefno}', [$salesOrderController, 'update']);
+    $router->delete('/api/v1/sales-orders/{salesRefno}', [$salesOrderController, 'delete']);
+    $router->post('/api/v1/sales-orders/{salesRefno}/items', [$salesOrderController, 'addItem']);
+    $router->patch('/api/v1/sales-order-items/{itemId}', [$salesOrderController, 'updateItem']);
+    $router->delete('/api/v1/sales-order-items/{itemId}', [$salesOrderController, 'deleteItem']);
+    $router->post('/api/v1/sales-orders/{salesRefno}/actions/{action}', [$salesOrderController, 'action']);
 
     return $router;
 }
