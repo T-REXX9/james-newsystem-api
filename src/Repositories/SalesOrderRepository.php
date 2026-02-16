@@ -27,7 +27,8 @@ final class SalesOrderRepository
         string $status = 'all',
         string $search = '',
         int $page = 1,
-        int $perPage = 100
+        int $perPage = 100,
+        int $viewerUserId = 0
     ): array {
         if ($month === null || $year === null) {
             $period = $this->resolveLatestPeriod($mainId);
@@ -155,11 +156,13 @@ SQL;
         )));
 
         $aggregateByRef = $this->fetchListAggregatesByRefnos($refnos);
+        $viewerIsApprover = $viewerUserId > 0 ? $this->isApprover($viewerUserId) : false;
         foreach ($items as &$row) {
             $ref = (string) ($row['sales_refno'] ?? '');
             $agg = $aggregateByRef[$ref] ?? ['item_count' => 0, 'grand_total' => 0.0];
             $row['item_count'] = (int) ($agg['item_count'] ?? 0);
             $row['grand_total'] = (float) ($agg['grand_total'] ?? 0);
+            $row['viewer_is_approver'] = $viewerIsApprover;
         }
         unset($row);
 
@@ -267,7 +270,7 @@ SQL;
     /**
      * @return array<string, mixed>|null
      */
-    public function getSalesOrder(int $mainId, string $salesRefno): ?array
+    public function getSalesOrder(int $mainId, string $salesRefno, int $viewerUserId = 0): ?array
     {
         $orderSql = <<<SQL
 SELECT
@@ -321,6 +324,7 @@ SQL;
         }
 
         $items = $this->listItems($salesRefno);
+        $order['viewer_is_approver'] = $viewerUserId > 0 ? $this->isApprover($viewerUserId) : false;
         $summary = [
             'item_count' => count($items),
             'total_qty' => 0,
@@ -647,7 +651,8 @@ SQL;
      */
     public function applyAction(int $mainId, string $salesRefno, string $action, array $payload = []): ?array
     {
-        $existing = $this->getSalesOrder($mainId, $salesRefno);
+        $viewerUserId = max(0, (int) ($payload['user_id'] ?? 0));
+        $existing = $this->getSalesOrder($mainId, $salesRefno, $viewerUserId);
         if ($existing === null) {
             return null;
         }
@@ -661,11 +666,12 @@ SQL;
 
         if ($normalizedAction === 'submit' || $normalizedAction === 'submitsales') {
             $set[] = "lsubmitstat = 'Submitted'";
-            $set[] = "ltransaction_status = 'Submitted'";
             $set[] = 'lcancel = 0';
         } elseif ($normalizedAction === 'approve' || $normalizedAction === 'approvesales') {
+            if (!$this->isApprover($viewerUserId)) {
+                throw new RuntimeException('Only approver accounts can approve sales orders');
+            }
             $set[] = "lsubmitstat = 'Approved'";
-            $set[] = "ltransaction_status = 'Approved'";
             $set[] = 'lcancel = 0';
         } elseif ($normalizedAction === 'unpost') {
             $set[] = "lsubmitstat = 'Pending'";
@@ -693,7 +699,227 @@ SQL;
             $stmt->execute($params);
         }
 
-        return $this->getSalesOrder($mainId, $salesRefno);
+        return $this->getSalesOrder($mainId, $salesRefno, $viewerUserId);
+    }
+
+    /**
+     * Convert a sales order to either an order slip or invoice.
+     * Mirrors old-system import flow by:
+     * - reusing existing linked documents when present
+     * - creating target document from SO header/items when absent
+     * - updating SO linkage fields and posted status
+     *
+     * @return array<string, mixed>
+     */
+    public function convertToDocument(
+        int $mainId,
+        int $userId,
+        string $salesRefno,
+        string $documentType,
+        array $payload = []
+    ): array {
+        $sales = $this->getSalesOrder($mainId, $salesRefno);
+        if ($sales === null) {
+            throw new RuntimeException('Sales order not found');
+        }
+
+        $order = $sales['order'] ?? [];
+        $items = is_array($sales['items'] ?? null) ? $sales['items'] : [];
+        $status = strtolower(trim((string) ($order['status'] ?? '')));
+        if (!in_array($status, ['approved', 'posted'], true)) {
+            throw new RuntimeException('Sales order must be approved before conversion');
+        }
+        if ((int) ($order['is_cancelled'] ?? 0) > 0) {
+            throw new RuntimeException('Cancelled sales orders cannot be converted');
+        }
+
+        $normalizedType = strtolower(trim($documentType));
+        if (in_array($normalizedType, ['orderslip', 'order-slip', 'order_slip', 'converttoor'], true)) {
+            return $this->convertToOrderSlip($mainId, $userId, $salesRefno, $order, $items);
+        }
+        if (in_array($normalizedType, ['invoice', 'converttoinclusive', 'converttoexclusive'], true)) {
+            return $this->convertToInvoice($mainId, $userId, $salesRefno, $order, $items, $payload);
+        }
+
+        throw new RuntimeException('Unsupported documentType: ' . $documentType);
+    }
+
+    /**
+     * @param array<string, mixed> $order
+     * @param array<int, array<string, mixed>> $items
+     * @return array<string, mixed>
+     */
+    private function convertToOrderSlip(
+        int $mainId,
+        int $userId,
+        string $salesRefno,
+        array $order,
+        array $items
+    ): array {
+        $orderSlipRepo = new OrderSlipRepository($this->db);
+        $existingRef = trim((string) ($order['order_slip_refno'] ?? ''));
+        if ($existingRef !== '') {
+            $existing = $orderSlipRepo->getOrderSlip($mainId, $existingRef);
+            if ($existing !== null) {
+                return [
+                    'type' => 'orderslip',
+                    'created' => false,
+                    'document' => $existing,
+                ];
+            }
+        }
+
+        $createPayload = [
+            'main_id' => $mainId,
+            'user_id' => $userId,
+            'order_id' => $salesRefno,
+            'sales_no' => (string) ($order['sales_no'] ?? ''),
+            'contact_id' => (string) ($order['contact_id'] ?? ''),
+            'sales_date' => (string) ($order['sales_date'] ?? date('Y-m-d')),
+            'sales_person' => (string) ($order['sales_person'] ?? ''),
+            'sales_person_id' => (string) ($order['sales_person_id'] ?? ''),
+            'delivery_address' => (string) ($order['delivery_address'] ?? ''),
+            'reference_no' => (string) ($order['reference_no'] ?? ''),
+            'customer_reference' => (string) ($order['customer_reference'] ?? ''),
+            'price_group' => (string) ($order['price_group'] ?? ''),
+            'credit_limit' => (float) ($order['credit_limit'] ?? 0),
+            'terms' => (string) ($order['terms'] ?? ''),
+            'promise_to_pay' => (string) ($order['promise_to_pay'] ?? ''),
+            'po_number' => (string) ($order['po_number'] ?? ''),
+            'remarks' => (string) ($order['remarks'] ?? ''),
+            'status' => 'Posted',
+            'items' => array_map(
+                static fn(array $item): array => [
+                    'item_id' => (string) ($item['item_refno'] ?? $item['item_id'] ?? ''),
+                    'part_no' => (string) ($item['part_no'] ?? ''),
+                    'item_code' => (string) ($item['item_code'] ?? ''),
+                    'description' => (string) ($item['description'] ?? ''),
+                    'location' => (string) ($item['location'] ?? ''),
+                    'qty' => (int) ($item['qty'] ?? 0),
+                    'unit_price' => (float) ($item['unit_price'] ?? 0),
+                    'remark' => (string) ($item['remark'] ?? 'OnStock'),
+                ],
+                $items
+            ),
+        ];
+
+        $created = $orderSlipRepo->createOrderSlip($mainId, $userId, $createPayload);
+        $doc = $created['order_slip'] ?? [];
+        $docRef = (string) ($doc['order_slip_refno'] ?? '');
+        $docNo = (string) ($doc['slip_no'] ?? '');
+
+        $update = $this->db->pdo()->prepare(
+            'UPDATE tbltransaction
+             SET ldr_refno = :doc_ref,
+                 ldr_no = :doc_no,
+                 lsubmitstat = "Posted",
+                 ltransaction_status = "Posted",
+                 limported = 1
+             WHERE lmain_id = :main_id
+               AND lrefno = :sales_refno'
+        );
+        $update->execute([
+            'doc_ref' => $docRef,
+            'doc_no' => $docNo,
+            'main_id' => (string) $mainId,
+            'sales_refno' => $salesRefno,
+        ]);
+
+        return [
+            'type' => 'orderslip',
+            'created' => true,
+            'document' => $created,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $order
+     * @param array<int, array<string, mixed>> $items
+     * @return array<string, mixed>
+     */
+    private function convertToInvoice(
+        int $mainId,
+        int $userId,
+        string $salesRefno,
+        array $order,
+        array $items,
+        array $payload = []
+    ): array {
+        $invoiceRepo = new InvoiceRepository($this->db);
+        $existingRef = trim((string) ($order['invoice_refno'] ?? ''));
+        if ($existingRef !== '') {
+            $existing = $invoiceRepo->getInvoice($mainId, $existingRef);
+            if ($existing !== null) {
+                return [
+                    'type' => 'invoice',
+                    'created' => false,
+                    'document' => $existing,
+                ];
+            }
+        }
+
+        $createPayload = [
+            'main_id' => $mainId,
+            'user_id' => $userId,
+            'order_id' => $salesRefno,
+            'sales_no' => (string) ($order['sales_no'] ?? ''),
+            'contact_id' => (string) ($order['contact_id'] ?? ''),
+            'sales_date' => (string) ($order['sales_date'] ?? date('Y-m-d')),
+            'sales_person' => (string) ($order['sales_person'] ?? ''),
+            'sales_person_id' => (string) ($order['sales_person_id'] ?? ''),
+            'delivery_address' => (string) ($order['delivery_address'] ?? ''),
+            'reference_no' => (string) ($order['reference_no'] ?? ''),
+            'customer_reference' => (string) ($order['customer_reference'] ?? ''),
+            'price_group' => (string) ($order['price_group'] ?? ''),
+            'credit_limit' => (float) ($order['credit_limit'] ?? 0),
+            'terms' => (string) ($order['terms'] ?? ''),
+            'promise_to_pay' => (string) ($order['promise_to_pay'] ?? ''),
+            'po_number' => (string) ($order['po_number'] ?? ''),
+            'remarks' => (string) ($order['remarks'] ?? ''),
+            'status' => 'Posted',
+            'tax_type' => (string) ($payload['tax_type'] ?? ''),
+            'items' => array_map(
+                static fn(array $item): array => [
+                    'item_id' => (string) ($item['item_refno'] ?? $item['item_id'] ?? ''),
+                    'part_no' => (string) ($item['part_no'] ?? ''),
+                    'item_code' => (string) ($item['item_code'] ?? ''),
+                    'description' => (string) ($item['description'] ?? ''),
+                    'location' => (string) ($item['location'] ?? ''),
+                    'qty' => (int) ($item['qty'] ?? 0),
+                    'unit_price' => (float) ($item['unit_price'] ?? 0),
+                    'remark' => (string) ($item['remark'] ?? 'OnStock'),
+                ],
+                $items
+            ),
+        ];
+
+        $created = $invoiceRepo->createInvoice($mainId, $userId, $createPayload);
+        $doc = $created['invoice'] ?? [];
+        $docRef = (string) ($doc['invoice_refno'] ?? '');
+        $docNo = (string) ($doc['invoice_no'] ?? '');
+
+        $update = $this->db->pdo()->prepare(
+            'UPDATE tbltransaction
+             SET invoice_refno = :doc_ref,
+                 invoice_no = :doc_no,
+                 lsubmitstat = "Posted",
+                 ltransaction_status = "Posted",
+                 limported = 1
+             WHERE lmain_id = :main_id
+               AND lrefno = :sales_refno'
+        );
+        $update->execute([
+            'doc_ref' => $docRef,
+            'doc_no' => $docNo,
+            'main_id' => (string) $mainId,
+            'sales_refno' => $salesRefno,
+        ]);
+
+        return [
+            'type' => 'invoice',
+            'created' => true,
+            'document' => $created,
+        ];
     }
 
     private function syncInquiryOnSalesCancel(string $salesRefno): void
@@ -1052,6 +1278,22 @@ SQL;
     {
         $candidate = trim((string) ($value ?? ''));
         return $candidate === '' ? $fallback : $candidate;
+    }
+
+    private function isApprover(int $userId): bool
+    {
+        if ($userId <= 0) {
+            return false;
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT 1
+             FROM tblapprover
+             WHERE lstaff_id = :user_id
+             LIMIT 1'
+        );
+        $stmt->execute(['user_id' => (string) $userId]);
+        return $stmt->fetchColumn() !== false;
     }
 
     /**

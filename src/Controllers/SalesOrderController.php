@@ -43,8 +43,9 @@ final class SalesOrderController
         $search = trim((string) ($query['search'] ?? ''));
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, (int) ($query['per_page'] ?? 100));
+        $viewerUserId = max(0, (int) ($query['viewer_user_id'] ?? 0));
 
-        return $this->repo->listSalesOrders($mainId, $month, $year, $status, $search, $page, $perPage);
+        return $this->repo->listSalesOrders($mainId, $month, $year, $status, $search, $page, $perPage, $viewerUserId);
     }
 
     public function show(array $params = [], array $query = [], array $body = []): array
@@ -59,7 +60,8 @@ final class SalesOrderController
             throw new HttpException(422, 'salesRefno is required');
         }
 
-        $record = $this->repo->getSalesOrder($mainId, $salesRefno);
+        $viewerUserId = max(0, (int) ($query['viewer_user_id'] ?? 0));
+        $record = $this->repo->getSalesOrder($mainId, $salesRefno, $viewerUserId);
         if ($record === null) {
             throw new HttpException(404, 'Sales order not found');
         }
@@ -224,5 +226,30 @@ final class SalesOrderController
         }
 
         return $record;
+    }
+
+    public function convertDocument(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $userId = (int) ($body['user_id'] ?? 0);
+        if ($mainId <= 0 || $userId <= 0) {
+            throw new HttpException(422, 'main_id and user_id are required');
+        }
+
+        $salesRefno = trim((string) ($params['salesRefno'] ?? ''));
+        if ($salesRefno === '') {
+            throw new HttpException(422, 'salesRefno is required');
+        }
+
+        $documentType = trim((string) ($params['documentType'] ?? ''));
+        if ($documentType === '') {
+            throw new HttpException(422, 'documentType is required');
+        }
+
+        try {
+            return $this->repo->convertToDocument($mainId, $userId, $salesRefno, $documentType, $body);
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
     }
 }

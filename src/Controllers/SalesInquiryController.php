@@ -179,4 +179,33 @@ final class SalesInquiryController
             'item_id' => $itemId,
         ];
     }
+
+    public function action(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $userId = (int) ($body['user_id'] ?? 0);
+        if ($mainId <= 0 || $userId <= 0) {
+            throw new HttpException(422, 'main_id and user_id are required');
+        }
+
+        $inquiryRefno = trim((string) ($params['inquiryRefno'] ?? ''));
+        if ($inquiryRefno === '') {
+            throw new HttpException(422, 'inquiryRefno is required');
+        }
+
+        $action = trim((string) ($params['action'] ?? ''));
+        if ($action === '') {
+            throw new HttpException(422, 'action is required');
+        }
+
+        try {
+            if (in_array(strtolower($action), ['convert', 'convert-to-order', 'convertsales'], true)) {
+                return $this->repo->convertToSalesOrder($mainId, $userId, $inquiryRefno);
+            }
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
+
+        throw new HttpException(422, 'Unsupported action: ' . $action);
+    }
 }

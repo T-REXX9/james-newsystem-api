@@ -526,6 +526,193 @@ SQL;
     }
 
     /**
+     * Convert an approved inquiry into a sales order using old-system flow semantics:
+     * - reuses an existing linked sales order if found
+     * - otherwise creates a new sales order with status Submitted
+     * - copies inquiry items to sales order items
+     * - stores linkage back to inquiry (lso_refno/lso_no)
+     *
+     * @return array<string, mixed>
+     */
+    public function convertToSalesOrder(int $mainId, int $userId, string $inquiryRefno): array
+    {
+        $inquiry = $this->getInquiry($mainId, $inquiryRefno);
+        if ($inquiry === null) {
+            throw new RuntimeException('Sales inquiry not found');
+        }
+
+        $status = strtolower(trim((string) ($inquiry['status'] ?? '')));
+        if ($status !== 'submitted') {
+            throw new RuntimeException('Inquiry must be finalized/submitted before conversion');
+        }
+
+        $existingLinkedRef = $this->findLinkedSalesRefno($mainId, $inquiryRefno);
+        if ($existingLinkedRef !== '') {
+            $salesRepo = new SalesOrderRepository($this->db);
+            $existing = $salesRepo->getSalesOrder($mainId, $existingLinkedRef);
+            if ($existing !== null) {
+                return $existing;
+            }
+        }
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $salesRefno = date('YmdHis') . random_int(10000, 99999);
+            $salesNo = $this->generateSalesNumber($pdo);
+            $salesDate = $this->normalizeDate((string) ($inquiry['sales_date'] ?? date('Y-m-d')));
+            $salesTime = $this->normalizeTime((string) ($inquiry['sales_time'] ?? date('H:i:s')));
+
+            $insert = $pdo->prepare(
+                'INSERT INTO tbltransaction
+                (lsaleno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lcompany, lsales_address, lmy_refno, lyour_refno, lprice_group, lcredit_limit, lterms, lterm_condition, lpromissory_note, lpo_no, lnote, lsales_person, lsales_person_id, lsubmitstat, ltransaction_status, lcancel, linquiry_refno, linquiry_no, IsInquiry, lurgency, lurgency_date, lcity)
+                VALUES
+                (:lsaleno, :ldate, :ltime, :lcustomerid, :lmain_id, :luser, :lrefno, :lcompany, :lsales_address, :lmy_refno, :lyour_refno, :lprice_group, :lcredit_limit, :lterms, :lterm_condition, :lpromissory_note, :lpo_no, :lnote, :lsales_person, :lsales_person_id, :lsubmitstat, :ltransaction_status, 0, :linquiry_refno, :linquiry_no, 0, :lurgency, :lurgency_date, :lcity)'
+            );
+            $insert->execute([
+                'lsaleno' => $salesNo,
+                'ldate' => $salesDate,
+                'ltime' => $salesTime,
+                'lcustomerid' => (string) ($inquiry['contact_id'] ?? ''),
+                'lmain_id' => (string) $mainId,
+                'luser' => (string) $userId,
+                'lrefno' => $salesRefno,
+                'lcompany' => (string) ($inquiry['customer_company'] ?? ''),
+                'lsales_address' => (string) ($inquiry['delivery_address'] ?? ''),
+                'lmy_refno' => (string) ($inquiry['reference_no'] ?? ''),
+                'lyour_refno' => (string) ($inquiry['customer_reference'] ?? ''),
+                'lprice_group' => (string) ($inquiry['price_group'] ?? ''),
+                'lcredit_limit' => (float) ($inquiry['credit_limit'] ?? 0),
+                'lterms' => (string) ($inquiry['terms'] ?? ''),
+                'lterm_condition' => (string) ($inquiry['terms'] ?? ''),
+                'lpromissory_note' => (string) ($inquiry['promise_to_pay'] ?? ''),
+                'lpo_no' => (string) ($inquiry['po_number'] ?? ''),
+                'lnote' => (string) ($inquiry['remarks'] ?? ''),
+                'lsales_person' => (string) ($inquiry['sales_person'] ?? ''),
+                'lsales_person_id' => (string) ($inquiry['sales_person_id'] ?? ''),
+                'lsubmitstat' => 'Submitted',
+                'ltransaction_status' => 'Unposted',
+                'linquiry_refno' => $inquiryRefno,
+                'linquiry_no' => (string) ($inquiry['inquiry_no'] ?? ''),
+                'lurgency' => (string) ($inquiry['urgency'] ?? ''),
+                'lurgency_date' => $this->normalizeNullableDate((string) ($inquiry['urgency_date'] ?? '')),
+                'lcity' => (string) ($inquiry['city'] ?? ''),
+            ]);
+
+            $items = is_array($inquiry['items'] ?? null) ? $inquiry['items'] : [];
+            $insertItem = $pdo->prepare(
+                'INSERT INTO tbltransaction_item
+                (lrefno, ltype, litemid, lname, ldesc, lprice, lqty, luser, linv_refno, litem_refno, litemcode, lpartno, lbrand, llocation, lremark, ltransaction_date, lcancel)
+                VALUES
+                (:lrefno, :ltype, :litemid, :lname, :ldesc, :lprice, :lqty, :luser, :linv_refno, :litem_refno, :litemcode, :lpartno, :lbrand, :llocation, :lremark, :ltransaction_date, 0)'
+            );
+            foreach ($items as $item) {
+                if (!is_array($item)) {
+                    continue;
+                }
+                $itemRef = (string) ($item['item_refno'] ?? $item['item_id'] ?? '');
+                $insertItem->execute([
+                    'lrefno' => $salesRefno,
+                    'ltype' => 'Sales Order',
+                    'litemid' => (string) ($item['item_id'] ?? $itemRef),
+                    'lname' => (string) ($item['description'] ?? ''),
+                    'ldesc' => (string) ($item['description'] ?? ''),
+                    'lprice' => (float) ($item['unit_price'] ?? 0),
+                    'lqty' => max(0, (int) ($item['qty'] ?? 0)),
+                    'luser' => (string) $userId,
+                    'linv_refno' => $itemRef,
+                    'litem_refno' => $itemRef,
+                    'litemcode' => (string) ($item['item_code'] ?? ''),
+                    'lpartno' => (string) ($item['part_no'] ?? ''),
+                    'lbrand' => (string) ($item['brand'] ?? ''),
+                    'llocation' => (string) ($item['location'] ?? ''),
+                    'lremark' => (string) ($item['remark'] ?? 'OnStock'),
+                    'ltransaction_date' => $salesDate,
+                ]);
+            }
+
+            $updateInquiry = $pdo->prepare(
+                'UPDATE tblinquiry
+                 SET lso_refno = :lso_refno,
+                     lso_no = :lso_no
+                 WHERE lmain_id = :main_id
+                   AND lrefno = :inquiry_refno'
+            );
+            $updateInquiry->execute([
+                'lso_refno' => $salesRefno,
+                'lso_no' => $salesNo,
+                'main_id' => (string) $mainId,
+                'inquiry_refno' => $inquiryRefno,
+            ]);
+
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+
+        $salesRepo = new SalesOrderRepository($this->db);
+        $converted = $salesRepo->getSalesOrder($mainId, $salesRefno);
+        if ($converted === null) {
+            throw new RuntimeException('Failed to load converted sales order');
+        }
+        return $converted;
+    }
+
+    private function findLinkedSalesRefno(int $mainId, string $inquiryRefno): string
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT lrefno
+             FROM tbltransaction
+             WHERE lmain_id = :main_id
+               AND linquiry_refno = :inquiry_refno
+               AND COALESCE(lcancel, 0) = 0
+             ORDER BY lid DESC
+             LIMIT 1'
+        );
+        $stmt->execute([
+            'main_id' => (string) $mainId,
+            'inquiry_refno' => $inquiryRefno,
+        ]);
+        return (string) ($stmt->fetchColumn() ?: '');
+    }
+
+    private function generateSalesNumber(PDO $pdo): string
+    {
+        $stmt = $pdo->prepare(
+            'SELECT COALESCE(MAX(lmax_no), 0) AS max_no
+             FROM tblnumber_generator
+             WHERE ltransaction_type = :type'
+        );
+        $stmt->execute(['type' => 'Sales Order']);
+        $next = (int) ($stmt->fetchColumn() ?: 0) + 1;
+
+        $insert = $pdo->prepare(
+            'INSERT INTO tblnumber_generator (ltransaction_type, lmax_no)
+             VALUES (:type, :max_no)'
+        );
+        $insert->execute([
+            'type' => 'Sales Order',
+            'max_no' => $next,
+        ]);
+
+        $prefixStmt = $pdo->query(
+            "SELECT lsaleno
+             FROM tbltransaction
+             WHERE COALESCE(lsaleno, '') <> ''
+             ORDER BY lid DESC
+             LIMIT 1"
+        );
+        $latest = (string) ($prefixStmt->fetchColumn() ?: '');
+        $prefix = 'NSO-';
+        if ($latest !== '' && preg_match('/^([A-Za-z\\-]+)\\d+$/', $latest, $matches) === 1) {
+            $prefix = (string) ($matches[1] ?? 'NSO-');
+        }
+
+        return $prefix . $next;
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     private function getCustomerSnapshot(int $mainId, string $contactId): ?array

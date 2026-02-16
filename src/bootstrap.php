@@ -217,6 +217,7 @@ function app_router(): Router
     $router->post('/api/v1/sales-inquiries/{inquiryRefno}/items', [$salesInquiryController, 'addItem']);
     $router->patch('/api/v1/sales-inquiry-items/{itemId}', [$salesInquiryController, 'updateItem']);
     $router->delete('/api/v1/sales-inquiry-items/{itemId}', [$salesInquiryController, 'deleteItem']);
+    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/actions/{action}', [$salesInquiryController, 'action']);
     $router->get('/api/v1/sales-orders', [$salesOrderController, 'list']);
     $router->get('/api/v1/sales-orders/{salesRefno}', [$salesOrderController, 'show']);
     $router->post('/api/v1/sales-orders', [$salesOrderController, 'create']);
@@ -226,6 +227,7 @@ function app_router(): Router
     $router->patch('/api/v1/sales-order-items/{itemId}', [$salesOrderController, 'updateItem']);
     $router->delete('/api/v1/sales-order-items/{itemId}', [$salesOrderController, 'deleteItem']);
     $router->post('/api/v1/sales-orders/{salesRefno}/actions/{action}', [$salesOrderController, 'action']);
+    $router->post('/api/v1/sales-orders/{salesRefno}/convert/{documentType}', [$salesOrderController, 'convertDocument']);
 
     return $router;
 }
