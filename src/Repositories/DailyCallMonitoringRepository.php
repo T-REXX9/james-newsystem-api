@@ -25,9 +25,10 @@ final class DailyCallMonitoringRepository
             $customers
         )));
 
-        $purchases = $this->getPurchaseRows($mainId, $customerIds);
+        $monthFrom = date('Y-m-01');
+        $purchases = $this->getPurchaseRows($mainId, $customerIds, $monthFrom);
         $callLogs = $this->getCallLogRows($mainId, $customerIds);
-        $metrics = $this->getCustomerMetrics($customerIds);
+        $metrics = $this->getCustomerMetrics($mainId, $customerIds);
 
         $purchasesByCustomer = [];
         foreach ($purchases as $row) {
@@ -336,14 +337,20 @@ SQL;
 
         if (trim($search) !== '') {
             $sql .= " AND (
-                p.lcompany LIKE :search
-                OR p.lcity LIKE :search
-                OR p.lprovince LIKE :search
-                OR p.lmobile LIKE :search
-                OR p.lphone LIKE :search
-                OR p.lpatient_code LIKE :search
+                p.lcompany LIKE :search_company
+                OR p.lcity LIKE :search_city
+                OR p.lprovince LIKE :search_province
+                OR p.lmobile LIKE :search_mobile
+                OR p.lphone LIKE :search_phone
+                OR p.lpatient_code LIKE :search_code
             )";
-            $params['search'] = '%' . trim($search) . '%';
+            $searchValue = '%' . trim($search) . '%';
+            $params['search_company'] = $searchValue;
+            $params['search_city'] = $searchValue;
+            $params['search_province'] = $searchValue;
+            $params['search_mobile'] = $searchValue;
+            $params['search_phone'] = $searchValue;
+            $params['search_code'] = $searchValue;
         }
 
         $sql .= ' ORDER BY p.lcompany ASC';
@@ -361,7 +368,7 @@ SQL;
         return $rows;
     }
 
-    private function getPurchaseRows(int $mainId, array $contactIds): array
+    private function getPurchaseRows(int $mainId, array $contactIds, ?string $dateFrom = null): array
     {
         if (count($contactIds) === 0) {
             return [];
@@ -372,22 +379,30 @@ SQL;
 SELECT
     tr.lrefno AS id,
     tr.lcustomerid AS contact_id,
-    COALESCE(NULLIF(tr.lamount, 0), (
-        SELECT SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0))
-        FROM tbltransaction_item it
-        WHERE it.lrefno = tr.lrefno
-          AND COALESCE(it.lcancel, 0) = 0
-    ), 0) AS total_amount,
+    COALESCE(NULLIF(tr.lamount, 0), COALESCE(its.total_amount, 0), 0) AS total_amount,
     tr.ldate AS purchase_date
 FROM tbltransaction tr
+LEFT JOIN (
+    SELECT it.lrefno, SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0)) AS total_amount
+    FROM tbltransaction_item it
+    WHERE COALESCE(it.lcancel, 0) = 0
+    GROUP BY it.lrefno
+) its ON its.lrefno = tr.lrefno
 WHERE tr.lmain_id = ?
   AND tr.lcustomerid IN ({$placeholders})
   AND COALESCE(tr.lcancel, 0) = 0
   AND COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+SQL;
+        $params = array_merge([$mainId], $contactIds);
+        if ($dateFrom !== null && trim($dateFrom) !== '') {
+            $sql .= ' AND tr.ldate >= ?';
+            $params[] = $dateFrom;
+        }
+        $sql .= ' ';
+        $sql .= <<<SQL
 ORDER BY tr.ldate DESC, tr.lid DESC
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
-        $params = array_merge([$mainId], $contactIds);
         $stmt->execute($params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -459,7 +474,7 @@ SQL;
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    private function getCustomerMetrics(array $contactIds): array
+    private function getCustomerMetrics(int $mainId, array $contactIds): array
     {
         $result = [];
         if (count($contactIds) === 0) {
@@ -467,37 +482,63 @@ SQL;
         }
 
         $placeholders = implode(',', array_fill(0, count($contactIds), '?'));
-        $sql = <<<SQL
+        $ledgerSql = <<<SQL
 SELECT
-    p.lsessionid AS contact_id,
-    COALESCE((
-        SELECT SUM(COALESCE(lg.ldebit, 0) - COALESCE(lg.lcredit, 0))
-        FROM tblledger lg
-        WHERE lg.lcustomerid = p.lsessionid
-    ), 0) AS outstanding_balance,
-    COALESCE((
-        SELECT AVG(month_total) FROM (
-            SELECT DATE_FORMAT(tr.ldate, '%Y-%m') AS ym,
-                   SUM(COALESCE(NULLIF(tr.lamount, 0), (
-                       SELECT SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0))
-                       FROM tbltransaction_item it
-                       WHERE it.lrefno = tr.lrefno
-                         AND COALESCE(it.lcancel, 0) = 0
-                   ), 0)) AS month_total
-            FROM tbltransaction tr
-            WHERE tr.lcustomerid = p.lsessionid
-              AND COALESCE(tr.lcancel, 0) = 0
-            GROUP BY DATE_FORMAT(tr.ldate, '%Y-%m')
-        ) m
-    ), 0) AS average_monthly_purchase
-FROM tblpatient p
-WHERE p.lsessionid IN ({$placeholders})
+    lg.lcustomerid AS contact_id,
+    SUM(COALESCE(lg.ldebit, 0) - COALESCE(lg.lcredit, 0)) AS outstanding_balance
+FROM tblledger lg
+WHERE lg.lcustomerid IN ({$placeholders})
+GROUP BY lg.lcustomerid
 SQL;
-        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt = $this->db->pdo()->prepare($ledgerSql);
         $stmt->execute($contactIds);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         foreach ($rows as $row) {
-            $result[(string) $row['contact_id']] = $row;
+            $result[(string) $row['contact_id']] = [
+                'outstanding_balance' => (float) ($row['outstanding_balance'] ?? 0),
+                'average_monthly_purchase' => 0.0,
+            ];
+        }
+
+        $avgSql = <<<SQL
+SELECT
+    monthly.customer_id AS contact_id,
+    AVG(monthly.month_total) AS average_monthly_purchase
+FROM (
+    SELECT
+        tr.lcustomerid AS customer_id,
+        DATE_FORMAT(tr.ldate, '%Y-%m') AS ym,
+        SUM(COALESCE(NULLIF(tr.lamount, 0), COALESCE(its.total_amount, 0), 0)) AS month_total
+    FROM tbltransaction tr
+    LEFT JOIN (
+        SELECT it.lrefno, SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0)) AS total_amount
+        FROM tbltransaction_item it
+        WHERE COALESCE(it.lcancel, 0) = 0
+        GROUP BY it.lrefno
+    ) its ON its.lrefno = tr.lrefno
+    WHERE tr.lmain_id = ?
+      AND tr.lcustomerid IN ({$placeholders})
+      AND COALESCE(tr.lcancel, 0) = 0
+      AND COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+    GROUP BY tr.lcustomerid, DATE_FORMAT(tr.ldate, '%Y-%m')
+) monthly
+GROUP BY monthly.customer_id
+SQL;
+        $avgStmt = $this->db->pdo()->prepare($avgSql);
+        $avgStmt->execute(array_merge([$mainId], $contactIds));
+        $avgRows = $avgStmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($avgRows as $row) {
+            $contactId = (string) ($row['contact_id'] ?? '');
+            if ($contactId === '') {
+                continue;
+            }
+            if (!isset($result[$contactId])) {
+                $result[$contactId] = [
+                    'outstanding_balance' => 0.0,
+                    'average_monthly_purchase' => 0.0,
+                ];
+            }
+            $result[$contactId]['average_monthly_purchase'] = (float) ($row['average_monthly_purchase'] ?? 0);
         }
 
         return $result;
