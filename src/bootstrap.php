@@ -8,6 +8,7 @@ use App\Controllers\CustomerController;
 use App\Controllers\DailyCallMonitoringController;
 use App\Controllers\HealthController;
 use App\Controllers\AuthController;
+use App\Controllers\ProductController;
 use App\Controllers\SalesController;
 use App\Http\Router;
 use App\Support\Env;
@@ -22,6 +23,7 @@ require __DIR__ . '/Repositories/CustomerRepository.php';
 require __DIR__ . '/Repositories/CollectionRepository.php';
 require __DIR__ . '/Repositories/DailyCallMonitoringRepository.php';
 require __DIR__ . '/Repositories/AuthRepository.php';
+require __DIR__ . '/Repositories/ProductRepository.php';
 require __DIR__ . '/Repositories/SalesRepository.php';
 require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Controllers/HealthController.php';
@@ -29,6 +31,7 @@ require __DIR__ . '/Controllers/CustomerController.php';
 require __DIR__ . '/Controllers/CollectionController.php';
 require __DIR__ . '/Controllers/DailyCallMonitoringController.php';
 require __DIR__ . '/Controllers/AuthController.php';
+require __DIR__ . '/Controllers/ProductController.php';
 require __DIR__ . '/Controllers/SalesController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
@@ -88,6 +91,7 @@ function app_router(): Router
         new App\Repositories\AuthRepository($db),
         new App\Security\TokenService($config->authSecret, $config->authTokenTtlSeconds)
     );
+    $productController = new ProductController(new App\Repositories\ProductRepository($db));
     $salesController = new SalesController(new App\Repositories\SalesRepository($db));
 
     $router = new Router();
@@ -110,6 +114,12 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/purchase-history', [$dailyCallMonitoringController, 'customerPurchaseHistory']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-reports', [$dailyCallMonitoringController, 'customerSalesReports']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/incident-reports', [$dailyCallMonitoringController, 'customerIncidentReports']);
+    $router->get('/api/v1/products', [$productController, 'list']);
+    $router->get('/api/v1/products/{productSession}', [$productController, 'show']);
+    $router->post('/api/v1/products', [$productController, 'create']);
+    $router->patch('/api/v1/products/{productSession}', [$productController, 'update']);
+    $router->post('/api/v1/products/bulk-update', [$productController, 'bulkUpdate']);
+    $router->delete('/api/v1/products/{productSession}', [$productController, 'delete']);
     $router->post('/api/v1/auth/login', [$authController, 'login']);
     $router->get('/api/v1/auth/me', [$authController, 'me']);
     $router->post('/api/v1/auth/logout', [$authController, 'logout']);

@@ -40,6 +40,12 @@ If you use the combined launcher, API URL/port come from:
 - `GET /daily-call-monitoring/customers/{contactId}/purchase-history?main_id={mainId}`
 - `GET /daily-call-monitoring/customers/{contactId}/sales-reports?main_id={mainId}`
 - `GET /daily-call-monitoring/customers/{contactId}/incident-reports?main_id={mainId}`
+- `GET /products?main_id={mainId}&search=&status=all|active|inactive&page=1&per_page=100`
+- `GET /products/{productSession}?main_id={mainId}`
+- `POST /products`
+- `PATCH /products/{productSession}`
+- `POST /products/bulk-update`
+- `DELETE /products/{productSession}?main_id={mainId}`
 - `POST /auth/login`
 - `GET /auth/me` (Authorization: Bearer token)
 - `POST /auth/logout` (Authorization: Bearer token)
