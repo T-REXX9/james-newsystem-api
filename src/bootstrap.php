@@ -10,6 +10,7 @@ use App\Controllers\HealthController;
 use App\Controllers\AuthController;
 use App\Controllers\ProductController;
 use App\Controllers\PurchaseOrderController;
+use App\Controllers\ReceivingStockController;
 use App\Controllers\SalesController;
 use App\Controllers\StockMovementController;
 use App\Http\Router;
@@ -27,6 +28,7 @@ require __DIR__ . '/Repositories/DailyCallMonitoringRepository.php';
 require __DIR__ . '/Repositories/AuthRepository.php';
 require __DIR__ . '/Repositories/ProductRepository.php';
 require __DIR__ . '/Repositories/PurchaseOrderRepository.php';
+require __DIR__ . '/Repositories/ReceivingStockRepository.php';
 require __DIR__ . '/Repositories/SalesRepository.php';
 require __DIR__ . '/Repositories/StockMovementRepository.php';
 require __DIR__ . '/Security/TokenService.php';
@@ -37,6 +39,7 @@ require __DIR__ . '/Controllers/DailyCallMonitoringController.php';
 require __DIR__ . '/Controllers/AuthController.php';
 require __DIR__ . '/Controllers/ProductController.php';
 require __DIR__ . '/Controllers/PurchaseOrderController.php';
+require __DIR__ . '/Controllers/ReceivingStockController.php';
 require __DIR__ . '/Controllers/SalesController.php';
 require __DIR__ . '/Controllers/StockMovementController.php';
 
@@ -99,6 +102,7 @@ function app_router(): Router
     );
     $productController = new ProductController(new App\Repositories\ProductRepository($db));
     $purchaseOrderController = new PurchaseOrderController(new App\Repositories\PurchaseOrderRepository($db));
+    $receivingStockController = new ReceivingStockController(new App\Repositories\ReceivingStockRepository($db));
     $salesController = new SalesController(new App\Repositories\SalesRepository($db));
     $stockMovementController = new StockMovementController(new App\Repositories\StockMovementRepository($db));
 
@@ -137,6 +141,15 @@ function app_router(): Router
     $router->post('/api/v1/purchase-orders/{purchaseRefno}/items', [$purchaseOrderController, 'addItem']);
     $router->patch('/api/v1/purchase-order-items/{itemId}', [$purchaseOrderController, 'updateItem']);
     $router->delete('/api/v1/purchase-order-items/{itemId}', [$purchaseOrderController, 'deleteItem']);
+    $router->get('/api/v1/receiving-stocks', [$receivingStockController, 'list']);
+    $router->get('/api/v1/receiving-stocks/{receivingRefno}', [$receivingStockController, 'show']);
+    $router->post('/api/v1/receiving-stocks', [$receivingStockController, 'create']);
+    $router->patch('/api/v1/receiving-stocks/{receivingRefno}', [$receivingStockController, 'update']);
+    $router->delete('/api/v1/receiving-stocks/{receivingRefno}', [$receivingStockController, 'delete']);
+    $router->post('/api/v1/receiving-stocks/{receivingRefno}/items', [$receivingStockController, 'addItem']);
+    $router->patch('/api/v1/receiving-stock-items/{itemId}', [$receivingStockController, 'updateItem']);
+    $router->delete('/api/v1/receiving-stock-items/{itemId}', [$receivingStockController, 'deleteItem']);
+    $router->post('/api/v1/receiving-stocks/{receivingRefno}/finalize', [$receivingStockController, 'finalize']);
     $router->get('/api/v1/stock-movements', [$stockMovementController, 'list']);
     $router->get('/api/v1/stock-movements/{logId}', [$stockMovementController, 'show']);
     $router->post('/api/v1/stock-movements', [$stockMovementController, 'create']);

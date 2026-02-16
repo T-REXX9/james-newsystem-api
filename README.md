@@ -55,6 +55,15 @@ If you use the combined launcher, API URL/port come from:
 - `POST /purchase-orders/{purchaseRefno}/items`
 - `PATCH /purchase-order-items/{itemId}`
 - `DELETE /purchase-order-items/{itemId}?main_id={mainId}`
+- `GET /receiving-stocks?main_id={mainId}&month=1-12&year=YYYY&status=all|pending|delivered|cancelled&search=&page=1&per_page=100`
+- `GET /receiving-stocks/{receivingRefno}?main_id={mainId}`
+- `POST /receiving-stocks`
+- `PATCH /receiving-stocks/{receivingRefno}`
+- `DELETE /receiving-stocks/{receivingRefno}?main_id={mainId}`
+- `POST /receiving-stocks/{receivingRefno}/items`
+- `PATCH /receiving-stock-items/{itemId}`
+- `DELETE /receiving-stock-items/{itemId}?main_id={mainId}`
+- `POST /receiving-stocks/{receivingRefno}/finalize`
 - `GET /stock-movements?main_id={mainId}&item_id={productSession}&warehouse_id=WH1|All&transaction_type=&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&search=&page=1&per_page=200`
 - `GET /stock-movements/{logId}?main_id={mainId}`
 - `POST /stock-movements`
