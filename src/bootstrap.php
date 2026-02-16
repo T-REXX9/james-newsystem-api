@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Config;
 use App\Controllers\CollectionController;
 use App\Controllers\CustomerController;
+use App\Controllers\CustomerDatabaseController;
 use App\Controllers\DailyCallMonitoringController;
 use App\Controllers\HealthController;
 use App\Controllers\AuthController;
@@ -12,6 +13,7 @@ use App\Controllers\ProductController;
 use App\Controllers\PurchaseOrderController;
 use App\Controllers\ReceivingStockController;
 use App\Controllers\SalesController;
+use App\Controllers\SalesInquiryController;
 use App\Controllers\StockMovementController;
 use App\Http\Router;
 use App\Support\Env;
@@ -23,6 +25,7 @@ require __DIR__ . '/Database.php';
 require __DIR__ . '/Http/Response.php';
 require __DIR__ . '/Http/Router.php';
 require __DIR__ . '/Repositories/CustomerRepository.php';
+require __DIR__ . '/Repositories/CustomerDatabaseRepository.php';
 require __DIR__ . '/Repositories/CollectionRepository.php';
 require __DIR__ . '/Repositories/DailyCallMonitoringRepository.php';
 require __DIR__ . '/Repositories/AuthRepository.php';
@@ -30,10 +33,12 @@ require __DIR__ . '/Repositories/ProductRepository.php';
 require __DIR__ . '/Repositories/PurchaseOrderRepository.php';
 require __DIR__ . '/Repositories/ReceivingStockRepository.php';
 require __DIR__ . '/Repositories/SalesRepository.php';
+require __DIR__ . '/Repositories/SalesInquiryRepository.php';
 require __DIR__ . '/Repositories/StockMovementRepository.php';
 require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Controllers/HealthController.php';
 require __DIR__ . '/Controllers/CustomerController.php';
+require __DIR__ . '/Controllers/CustomerDatabaseController.php';
 require __DIR__ . '/Controllers/CollectionController.php';
 require __DIR__ . '/Controllers/DailyCallMonitoringController.php';
 require __DIR__ . '/Controllers/AuthController.php';
@@ -41,6 +46,7 @@ require __DIR__ . '/Controllers/ProductController.php';
 require __DIR__ . '/Controllers/PurchaseOrderController.php';
 require __DIR__ . '/Controllers/ReceivingStockController.php';
 require __DIR__ . '/Controllers/SalesController.php';
+require __DIR__ . '/Controllers/SalesInquiryController.php';
 require __DIR__ . '/Controllers/StockMovementController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
@@ -94,6 +100,7 @@ function app_router(): Router
 
     $healthController = new HealthController();
     $customerController = new CustomerController(new App\Repositories\CustomerRepository($db));
+    $customerDatabaseController = new CustomerDatabaseController(new App\Repositories\CustomerDatabaseRepository($db));
     $collectionController = new CollectionController(new App\Repositories\CollectionRepository($db));
     $dailyCallMonitoringController = new DailyCallMonitoringController(new App\Repositories\DailyCallMonitoringRepository($db));
     $authController = new AuthController(
@@ -104,12 +111,24 @@ function app_router(): Router
     $purchaseOrderController = new PurchaseOrderController(new App\Repositories\PurchaseOrderRepository($db));
     $receivingStockController = new ReceivingStockController(new App\Repositories\ReceivingStockRepository($db));
     $salesController = new SalesController(new App\Repositories\SalesRepository($db));
+    $salesInquiryController = new SalesInquiryController(new App\Repositories\SalesInquiryRepository($db));
     $stockMovementController = new StockMovementController(new App\Repositories\StockMovementRepository($db));
 
     $router = new Router();
     $router->get('/api/v1/health', [$healthController, 'index']);
     $router->get('/api/v1/customers/{sessionId}', [$customerController, 'show']);
     $router->get('/api/v1/customers/{sessionId}/purchase-history', [$customerController, 'purchaseHistory']);
+    $router->get('/api/v1/customer-database', [$customerDatabaseController, 'list']);
+    $router->get('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'show']);
+    $router->post('/api/v1/customer-database', [$customerDatabaseController, 'create']);
+    $router->patch('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'update']);
+    $router->delete('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'delete']);
+    $router->post('/api/v1/customer-database/{sessionId}/contacts', [$customerDatabaseController, 'addContact']);
+    $router->patch('/api/v1/customer-database/contacts/{contactId}', [$customerDatabaseController, 'updateContact']);
+    $router->delete('/api/v1/customer-database/contacts/{contactId}', [$customerDatabaseController, 'deleteContact']);
+    $router->post('/api/v1/customer-database/{sessionId}/terms', [$customerDatabaseController, 'addTerm']);
+    $router->patch('/api/v1/customer-database/terms/{termId}', [$customerDatabaseController, 'updateTerm']);
+    $router->delete('/api/v1/customer-database/terms/{termId}', [$customerDatabaseController, 'deleteTerm']);
     $router->get('/api/v1/collections', [$collectionController, 'list']);
     $router->post('/api/v1/collections', [$collectionController, 'create']);
     $router->get('/api/v1/collections/unpaid', [$collectionController, 'unpaid']);
@@ -160,6 +179,14 @@ function app_router(): Router
     $router->post('/api/v1/auth/logout', [$authController, 'logout']);
     $router->get('/api/v1/sales/flow/inquiry/{inquiryRefno}', [$salesController, 'flowByInquiry']);
     $router->get('/api/v1/sales/flow/so/{soRefno}', [$salesController, 'flowBySalesOrder']);
+    $router->get('/api/v1/sales-inquiries', [$salesInquiryController, 'list']);
+    $router->get('/api/v1/sales-inquiries/{inquiryRefno}', [$salesInquiryController, 'show']);
+    $router->post('/api/v1/sales-inquiries', [$salesInquiryController, 'create']);
+    $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', [$salesInquiryController, 'update']);
+    $router->delete('/api/v1/sales-inquiries/{inquiryRefno}', [$salesInquiryController, 'delete']);
+    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/items', [$salesInquiryController, 'addItem']);
+    $router->patch('/api/v1/sales-inquiry-items/{itemId}', [$salesInquiryController, 'updateItem']);
+    $router->delete('/api/v1/sales-inquiry-items/{itemId}', [$salesInquiryController, 'deleteItem']);
 
     return $router;
 }
