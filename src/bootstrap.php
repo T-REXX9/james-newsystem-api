@@ -18,6 +18,7 @@ use App\Controllers\SalesController;
 use App\Controllers\SalesInquiryController;
 use App\Controllers\SalesOrderController;
 use App\Controllers\StockMovementController;
+use App\Controllers\TransferStockController;
 use App\Http\Router;
 use App\Support\Env;
 
@@ -41,6 +42,7 @@ require __DIR__ . '/Repositories/SalesRepository.php';
 require __DIR__ . '/Repositories/SalesInquiryRepository.php';
 require __DIR__ . '/Repositories/SalesOrderRepository.php';
 require __DIR__ . '/Repositories/StockMovementRepository.php';
+require __DIR__ . '/Repositories/TransferStockRepository.php';
 require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Controllers/HealthController.php';
 require __DIR__ . '/Controllers/CustomerController.php';
@@ -57,6 +59,7 @@ require __DIR__ . '/Controllers/SalesController.php';
 require __DIR__ . '/Controllers/SalesInquiryController.php';
 require __DIR__ . '/Controllers/SalesOrderController.php';
 require __DIR__ . '/Controllers/StockMovementController.php';
+require __DIR__ . '/Controllers/TransferStockController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
 date_default_timezone_set((string) Env::get('APP_TIMEZONE', 'UTC'));
@@ -125,6 +128,7 @@ function app_router(): Router
     $salesInquiryController = new SalesInquiryController(new App\Repositories\SalesInquiryRepository($db));
     $salesOrderController = new SalesOrderController(new App\Repositories\SalesOrderRepository($db));
     $stockMovementController = new StockMovementController(new App\Repositories\StockMovementRepository($db));
+    $transferStockController = new TransferStockController(new App\Repositories\TransferStockRepository($db));
 
     $router = new Router();
     $router->get('/api/v1/health', [$healthController, 'index']);
@@ -199,6 +203,15 @@ function app_router(): Router
     $router->patch('/api/v1/invoice-items/{itemId}', [$invoiceController, 'updateItem']);
     $router->delete('/api/v1/invoice-items/{itemId}', [$invoiceController, 'deleteItem']);
     $router->post('/api/v1/invoices/{invoiceRefno}/actions/{action}', [$invoiceController, 'action']);
+    $router->get('/api/v1/transfer-stocks', [$transferStockController, 'list']);
+    $router->get('/api/v1/transfer-stocks/{transferRefno}', [$transferStockController, 'show']);
+    $router->post('/api/v1/transfer-stocks', [$transferStockController, 'create']);
+    $router->patch('/api/v1/transfer-stocks/{transferRefno}', [$transferStockController, 'update']);
+    $router->delete('/api/v1/transfer-stocks/{transferRefno}', [$transferStockController, 'delete']);
+    $router->post('/api/v1/transfer-stocks/{transferRefno}/items', [$transferStockController, 'addItem']);
+    $router->patch('/api/v1/transfer-stock-items/{itemId}', [$transferStockController, 'updateItem']);
+    $router->delete('/api/v1/transfer-stock-items/{itemId}', [$transferStockController, 'deleteItem']);
+    $router->post('/api/v1/transfer-stocks/{transferRefno}/actions/{action}', [$transferStockController, 'action']);
     $router->get('/api/v1/stock-movements', [$stockMovementController, 'list']);
     $router->get('/api/v1/stock-movements/{logId}', [$stockMovementController, 'show']);
     $router->post('/api/v1/stock-movements', [$stockMovementController, 'create']);
