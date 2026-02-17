@@ -88,20 +88,10 @@ SELECT
     COALESCE(tr.lpartno, '') AS part_numbers_raw,
     COALESCE(tr.lmain_id, '') AS main_id,
     COALESCE(tr.luser_id, '') AS user_id,
-    TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by,
-    COALESCE(agg.item_count, 0) AS item_count,
-    COALESCE(agg.total_transfer_qty, 0) AS total_transfer_qty
+    TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by
 FROM tblbranchinventory_transferlist tr
 LEFT JOIN tblaccount acc
   ON acc.lid = tr.luser_id
-LEFT JOIN (
-    SELECT
-        lrefno,
-        COUNT(*) AS item_count,
-        SUM(COALESCE(ltransfer_qty, 0)) AS total_transfer_qty
-    FROM tblbranchinventory_transferproducts
-    GROUP BY lrefno
-) agg ON agg.lrefno = tr.lrefno
 WHERE {$whereSql}
 ORDER BY tr.lid DESC
 LIMIT :limit OFFSET :offset
@@ -114,6 +104,7 @@ SQL;
         $this->bindParams($stmt, $params, true);
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $rows = $this->mergeTransferAggregates($rows);
         $rows = array_map(fn(array $row): array => $this->mapTransferSummaryRow($row), $rows);
 
         return [
@@ -564,6 +555,73 @@ SQL;
         ];
     }
 
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function mergeTransferAggregates(array $rows): array
+    {
+        if ($rows === []) {
+            return $rows;
+        }
+
+        $refnos = [];
+        foreach ($rows as $row) {
+            $refno = trim((string) ($row['transfer_refno'] ?? ''));
+            if ($refno !== '') {
+                $refnos[] = $refno;
+            }
+        }
+        $refnos = array_values(array_unique($refnos));
+        if ($refnos === []) {
+            return $rows;
+        }
+
+        $placeholders = [];
+        $bind = [];
+        foreach ($refnos as $idx => $refno) {
+            $key = ':ref' . $idx;
+            $placeholders[] = $key;
+            $bind[$key] = $refno;
+        }
+
+        $sql = sprintf(
+            'SELECT lrefno, COUNT(*) AS item_count, SUM(COALESCE(ltransfer_qty, 0)) AS total_transfer_qty
+             FROM tblbranchinventory_transferproducts
+             WHERE lrefno IN (%s)
+             GROUP BY lrefno',
+            implode(', ', $placeholders)
+        );
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        foreach ($bind as $key => $value) {
+            $stmt->bindValue($key, $value, PDO::PARAM_STR);
+        }
+        $stmt->execute();
+
+        $aggregateByRef = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $agg) {
+            $refno = (string) ($agg['lrefno'] ?? '');
+            if ($refno === '') {
+                continue;
+            }
+            $aggregateByRef[$refno] = [
+                'item_count' => (int) ($agg['item_count'] ?? 0),
+                'total_transfer_qty' => (float) ($agg['total_transfer_qty'] ?? 0),
+            ];
+        }
+
+        foreach ($rows as &$row) {
+            $refno = (string) ($row['transfer_refno'] ?? '');
+            $agg = $aggregateByRef[$refno] ?? ['item_count' => 0, 'total_transfer_qty' => 0.0];
+            $row['item_count'] = $agg['item_count'];
+            $row['total_transfer_qty'] = $agg['total_transfer_qty'];
+        }
+        unset($row);
+
+        return $rows;
+    }
+
     private function nextTransferCounter(PDO $pdo): int
     {
         $stmt = $pdo->prepare(
@@ -737,22 +795,6 @@ SQL;
             throw new RuntimeException('item_id, item_session, part_no, or item_code is required');
         }
 
-        $where = ['itm.lmain_id = :main_id', 'itm.lstatus = 1'];
-        $params = ['main_id' => $mainId];
-        if ($itemId !== '') {
-            $where[] = 'itm.lid = :item_id';
-            $params['item_id'] = $itemId;
-        } elseif ($itemSession !== '') {
-            $where[] = 'itm.lsession = :session';
-            $params['session'] = $itemSession;
-        } elseif ($partNo !== '') {
-            $where[] = 'itm.lpartno = :part_no';
-            $params['part_no'] = $partNo;
-        } else {
-            $where[] = 'itm.litemcode = :item_code';
-            $params['item_code'] = $itemCode;
-        }
-
         $sql = <<<SQL
 SELECT
     itm.lid AS id,
@@ -764,18 +806,57 @@ SELECT
     COALESCE(loc.lname, '') AS location_name
 FROM tblinventory_item itm
 LEFT JOIN tblitem_location loc ON loc.lid = itm.llocation
-WHERE %s
+WHERE itm.lmain_id = :main_id
+  AND itm.lstatus = 1
+  AND %s
 ORDER BY itm.litemcode ASC
 LIMIT 1
 SQL;
 
-        $stmt = $this->db->pdo()->prepare(sprintf($sql, implode(' AND ', $where)));
-        $stmt->execute($params);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($row === false) {
-            throw new RuntimeException('Inventory item not found');
+        $lookups = [];
+        if ($itemId !== '') {
+            $lookups[] = [
+                'where' => 'itm.lid = :lookup_value',
+                'value' => $itemId,
+            ];
+            // Some migrated UIs send legacy session as item_id. Try that too.
+            $lookups[] = [
+                'where' => 'itm.lsession = :lookup_value',
+                'value' => $itemId,
+            ];
         }
-        return $row;
+        if ($itemSession !== '') {
+            $lookups[] = [
+                'where' => 'itm.lsession = :lookup_value',
+                'value' => $itemSession,
+            ];
+        }
+        if ($partNo !== '') {
+            $lookups[] = [
+                'where' => 'TRIM(itm.lpartno) = TRIM(:lookup_value)',
+                'value' => $partNo,
+            ];
+        }
+        if ($itemCode !== '') {
+            $lookups[] = [
+                'where' => 'TRIM(itm.litemcode) = TRIM(:lookup_value)',
+                'value' => $itemCode,
+            ];
+        }
+
+        foreach ($lookups as $lookup) {
+            $stmt = $this->db->pdo()->prepare(sprintf($sql, (string) $lookup['where']));
+            $stmt->execute([
+                'main_id' => $mainId,
+                'lookup_value' => (string) $lookup['value'],
+            ]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row !== false) {
+                return $row;
+            }
+        }
+
+        throw new RuntimeException('Inventory item not found');
     }
 
     private function postTransferRecord(int $mainId, int $userId, string $transferRefno): void
