@@ -25,8 +25,9 @@ final class CustomerDatabaseController
         $status = trim((string) ($query['status'] ?? 'all'));
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, (int) ($query['per_page'] ?? 100));
+        $mode = trim((string) ($query['mode'] ?? 'full'));
 
-        return $this->repo->listCustomers($mainId, $search, $status, $page, $perPage);
+        return $this->repo->listCustomers($mainId, $search, $status, $page, $perPage, $mode);
     }
 
     public function show(array $params = [], array $query = [], array $body = []): array

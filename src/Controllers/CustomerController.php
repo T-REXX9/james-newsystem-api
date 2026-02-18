@@ -63,4 +63,19 @@ final class CustomerController
             'items' => $this->repo->getInquiryHistory($sessionId, $dateFrom, $dateTo),
         ];
     }
+
+    public function ledger(array $params, array $query = [], array $body = []): array
+    {
+        $sessionId = $params['sessionId'] ?? '';
+        if ($sessionId === '') {
+            throw new HttpException(422, 'sessionId is required');
+        }
+
+        $reportType = (string) ($query['report_type'] ?? 'detailed');
+        $dateType = (string) ($query['date_type'] ?? 'all');
+        $dateFrom = isset($query['date_from']) ? (string) $query['date_from'] : null;
+        $dateTo = isset($query['date_to']) ? (string) $query['date_to'] : null;
+
+        return $this->repo->getCustomerLedger($sessionId, $reportType, $dateType, $dateFrom, $dateTo);
+    }
 }

@@ -146,6 +146,7 @@ function app_router(): Router
     $router->get('/api/v1/health', [$healthController, 'index']);
     $router->get('/api/v1/customers/{sessionId}', [$customerController, 'show']);
     $router->get('/api/v1/customers/{sessionId}/purchase-history', [$customerController, 'purchaseHistory']);
+    $router->get('/api/v1/customers/{sessionId}/ledger', [$customerController, 'ledger']);
     $router->get('/api/v1/customer-database', [$customerDatabaseController, 'list']);
     $router->get('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'show']);
     $router->post('/api/v1/customer-database', [$customerDatabaseController, 'create']);

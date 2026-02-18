@@ -22,7 +22,8 @@ final class CustomerDatabaseRepository
         string $search = '',
         string $status = 'all',
         int $page = 1,
-        int $perPage = 100
+        int $perPage = 100,
+        string $mode = 'full'
     ): array {
         $page = max(1, $page);
         $perPage = min(500, max(1, $perPage));
@@ -51,15 +52,26 @@ final class CustomerDatabaseRepository
         }
 
         $trimmedSearch = trim($search);
+        $normalizedMode = strtolower(trim($mode));
+        $isPickerMode = $normalizedMode === 'picker' || $normalizedMode === 'minimal';
         if ($trimmedSearch !== '') {
             $params['search_code'] = '%' . $trimmedSearch . '%';
             $params['search_company'] = '%' . $trimmedSearch . '%';
-            $params['search_sales'] = '%' . $trimmedSearch . '%';
-            $params['search_area'] = '%' . $trimmedSearch . '%';
             $params['search_mobile'] = '%' . $trimmedSearch . '%';
-            $params['search_tin'] = '%' . $trimmedSearch . '%';
-            $params['search_contact'] = '%' . $trimmedSearch . '%';
-            $where[] = <<<SQL
+            if ($isPickerMode) {
+                $where[] = <<<SQL
+(
+    COALESCE(p.lpatient_code, '') LIKE :search_code
+    OR COALESCE(p.lcompany, '') LIKE :search_company
+    OR COALESCE(p.lmobile, '') LIKE :search_mobile
+)
+SQL;
+            } else {
+                $params['search_sales'] = '%' . $trimmedSearch . '%';
+                $params['search_area'] = '%' . $trimmedSearch . '%';
+                $params['search_tin'] = '%' . $trimmedSearch . '%';
+                $params['search_contact'] = '%' . $trimmedSearch . '%';
+                $where[] = <<<SQL
 (
     COALESCE(p.lpatient_code, '') LIKE :search_code
     OR COALESCE(p.lcompany, '') LIKE :search_company
@@ -75,17 +87,30 @@ final class CustomerDatabaseRepository
     )
 )
 SQL;
+            }
         }
 
         $whereSql = implode(' AND ', $where);
-
-        $countSql = "SELECT COUNT(*) AS total FROM tblpatient p LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person WHERE {$whereSql}";
+        $countSql = $isPickerMode
+            ? "SELECT COUNT(*) AS total FROM tblpatient p WHERE {$whereSql}"
+            : "SELECT COUNT(*) AS total FROM tblpatient p LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person WHERE {$whereSql}";
         $countStmt = $this->db->pdo()->prepare($countSql);
         $this->bindParams($countStmt, $params, false);
         $countStmt->execute();
         $total = (int) ($countStmt->fetchColumn() ?: 0);
 
-        $sql = <<<SQL
+        $sql = $isPickerMode ? <<<SQL
+SELECT
+    p.lid AS id,
+    COALESCE(p.lsessionid, '') AS session_id,
+    COALESCE(p.lpatient_code, '') AS customer_code,
+    COALESCE(p.lcompany, '') AS company
+FROM tblpatient p
+WHERE {$whereSql}
+ORDER BY p.lid DESC
+LIMIT :limit OFFSET :offset
+SQL
+        : <<<SQL
 SELECT
     p.lid AS id,
     COALESCE(p.lsessionid, '') AS session_id,
