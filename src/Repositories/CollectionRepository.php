@@ -70,31 +70,23 @@ SQL;
         $collectionNo = $prefix . $next;
 
         $pdo = $this->db->pdo();
-        $pdo->beginTransaction();
-        try {
-            $stmt = $pdo->prepare(
-                'INSERT INTO tblcollection (lrefno, lmain_id, luserid, lstatus, lcolection_no, lamt, ldatetime)
-                 VALUES (:refno, :main_id, :user_id, :status, :collection_no, :amt, NOW())'
-            );
-            $stmt->execute([
-                'refno' => $refno,
-                'main_id' => $mainId,
-                'user_id' => $userId,
-                'status' => 'Pending',
-                'collection_no' => $collectionNo,
-                'amt' => 0.00,
-            ]);
+        $stmt = $pdo->prepare(
+            'INSERT INTO tblcollection (lrefno, lmain_id, luserid, lstatus, lcolection_no, lamt, ldatetime)
+             VALUES (:refno, :main_id, :user_id, :status, :collection_no, :amt, NOW())'
+        );
+        $stmt->execute([
+            'refno' => $refno,
+            'main_id' => $mainId,
+            'user_id' => $userId,
+            'status' => 'Pending',
+            'collection_no' => $collectionNo,
+            'amt' => 0.00,
+        ]);
 
-            $stmt2 = $pdo->prepare(
-                'INSERT INTO tblnumber_generator (ltransaction_type, lmax_no) VALUES (:type, :max_no)'
-            );
-            $stmt2->execute(['type' => 'Collection', 'max_no' => $next]);
-
-            $pdo->commit();
-        } catch (\Throwable $e) {
-            $pdo->rollBack();
-            throw $e;
-        }
+        $stmt2 = $pdo->prepare(
+            'INSERT INTO tblnumber_generator (ltransaction_type, lmax_no) VALUES (:type, :max_no)'
+        );
+        $stmt2->execute(['type' => 'Collection', 'max_no' => $next]);
 
         return [
             'lrefno' => $refno,
