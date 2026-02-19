@@ -125,13 +125,21 @@ final class CollectionController
             }
         }
 
+        $rawType = (string) ($body['type'] ?? '');
+        $normalizedType = $this->normalizeCollectionType($rawType);
+        $normalizedCheckNo = (string) ($body['check_no'] ?? '');
+        if ($this->isLegacyTransferType($rawType)) {
+            // Old system records transfer-like collections as Check with empty check no (counted as TT in reports).
+            $normalizedCheckNo = '';
+        }
+
         $itemId = $this->repo->addCollectionPayment($refno, [
             'main_id' => (int) $body['main_id'],
             'user_id' => (int) $body['user_id'],
             'customer_id' => (string) $body['customer_id'],
-            'type' => (string) $body['type'],
+            'type' => $normalizedType,
             'bank' => (string) ($body['bank'] ?? ''),
-            'check_no' => (string) ($body['check_no'] ?? ''),
+            'check_no' => $normalizedCheckNo,
             'check_date' => (string) ($body['check_date'] ?? ''),
             'amount' => (float) $body['amount'],
             'status' => (string) $body['status'],
@@ -181,6 +189,14 @@ final class CollectionController
         $itemId = (int) ($params['itemId'] ?? 0);
         if ($itemId <= 0) {
             throw new HttpException(422, 'itemId is required');
+        }
+
+        if (isset($body['type'])) {
+            $rawType = (string) $body['type'];
+            $body['type'] = $this->normalizeCollectionType($rawType);
+            if ($this->isLegacyTransferType($rawType)) {
+                $body['check_no'] = '';
+            }
         }
 
         return $this->repo->updateCollectionPaymentLine($itemId, $body);
@@ -288,5 +304,24 @@ final class CollectionController
             return $fallback->format('Y-m-d');
         }
         return date('Y-m-d', $ts);
+    }
+
+    private function normalizeCollectionType(string $type): string
+    {
+        $normalized = strtoupper(trim($type));
+        return match ($normalized) {
+            'CASH' => 'Cash',
+            'CHECK', 'CHEQUE', 'TT', 'T/T', 'ONLINE TRANSFER', 'CREDIT CARD' => 'Check',
+            default => throw new HttpException(422, 'Unsupported collection payment type'),
+        };
+    }
+
+    private function isLegacyTransferType(string $type): bool
+    {
+        $normalized = strtoupper(trim($type));
+        return $normalized === 'TT'
+            || $normalized === 'T/T'
+            || $normalized === 'ONLINE TRANSFER'
+            || $normalized === 'CREDIT CARD';
     }
 }
