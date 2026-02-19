@@ -262,11 +262,10 @@ SQL;
         $trimmedCollectionType = trim($collectionType);
         if ($trimmedCollectionType !== '' && strcasecmp($trimmedCollectionType, 'All') !== 0) {
             if (strcasecmp($trimmedCollectionType, 'Cheque') === 0) {
-                $itemWhere[] = 'COALESCE(ci.ltype, \'\') = :collection_type';
-                $itemParams['collection_type'] = 'Check';
+                $itemWhere[] = "UPPER(TRIM(COALESCE(ci.ltype, ''))) IN ('CHECK','TT','T/T')";
             } else {
-                $itemWhere[] = 'COALESCE(ci.ltype, \'\') = :collection_type';
-                $itemParams['collection_type'] = $trimmedCollectionType;
+                $itemWhere[] = 'UPPER(TRIM(COALESCE(ci.ltype, \'\'))) = :collection_type';
+                $itemParams['collection_type'] = strtoupper($trimmedCollectionType);
             }
         }
 
@@ -322,19 +321,19 @@ SQL;
             $tt = 0.0;
             $less = 0.0;
             $remarksText = '';
-            $type = (string) ($row['ltype'] ?? '');
+            $type = strtoupper(trim((string) ($row['ltype'] ?? '')));
             $checkNo = (string) ($row['lchk_no'] ?? '');
             $checkDate = (string) ($row['lchk_date'] ?? '');
             $remarks = (string) ($row['lremarks'] ?? '');
             $bankName = (string) ($row['lbank'] ?? '');
 
-            if ($type === 'Cash') {
+            if ($type === 'CASH') {
                 if ($checkNo === '') {
                     $cash = $amount;
                     $summary['grand_cash'] += $cash;
                 }
                 $remarksText = trim(($checkDate !== '' ? date('m/d/Y', strtotime($checkDate)) : '') . ' ' . $remarks);
-            } elseif ($type === 'Check') {
+            } elseif ($type === 'CHECK') {
                 if ($checkNo === '') {
                     $tt = $amount;
                     $summary['grand_tt'] += $tt;
@@ -344,6 +343,10 @@ SQL;
                     $summary['grand_check'] += $check;
                     $remarksText = trim($bankName . ' ' . $checkNo . ' ' . ($checkDate !== '' ? date('m/d/Y', strtotime($checkDate)) : '') . ' ' . $remarks);
                 }
+            } elseif ($type === 'TT' || $type === 'T/T') {
+                $tt = $amount;
+                $summary['grand_tt'] += $tt;
+                $remarksText = trim('TT/' . $bankName . ' ' . ($checkDate !== '' ? date('m/d/Y', strtotime($checkDate)) : '') . ' ' . $remarks);
             }
 
             $normalizedCollectionRows[] = [
