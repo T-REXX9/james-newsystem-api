@@ -171,6 +171,7 @@ function app_router(): Router
     $router->get('/api/v1/collections', [$collectionController, 'list']);
     $router->post('/api/v1/collections', [$collectionController, 'create']);
     $router->get('/api/v1/collections/unpaid', [$collectionController, 'unpaid']);
+    $router->get('/api/v1/collections/summary', [$collectionController, 'summary']);
     $router->get('/api/v1/collections/{collectionRefno}', [$collectionController, 'show']);
     $router->get('/api/v1/collections/{collectionRefno}/items', [$collectionController, 'items']);
     $router->get('/api/v1/collections/{collectionRefno}/approver-logs', [$collectionController, 'approverLogs']);

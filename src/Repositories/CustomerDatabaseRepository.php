@@ -91,13 +91,14 @@ SQL;
         }
 
         $whereSql = implode(' AND ', $where);
-        $countSql = $isPickerMode
-            ? "SELECT COUNT(*) AS total FROM tblpatient p WHERE {$whereSql}"
-            : "SELECT COUNT(*) AS total FROM tblpatient p LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person WHERE {$whereSql}";
-        $countStmt = $this->db->pdo()->prepare($countSql);
-        $this->bindParams($countStmt, $params, false);
-        $countStmt->execute();
-        $total = (int) ($countStmt->fetchColumn() ?: 0);
+        $total = 0;
+        if (!$isPickerMode) {
+            $countSql = "SELECT COUNT(*) AS total FROM tblpatient p LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person WHERE {$whereSql}";
+            $countStmt = $this->db->pdo()->prepare($countSql);
+            $this->bindParams($countStmt, $params, false);
+            $countStmt->execute();
+            $total = (int) ($countStmt->fetchColumn() ?: 0);
+        }
 
         $sql = $isPickerMode ? <<<SQL
 SELECT
@@ -153,13 +154,17 @@ SQL;
         $stmt->execute();
         $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+        if ($isPickerMode) {
+            $total = $offset + count($items);
+        }
+
         return [
             'items' => $items,
             'meta' => [
                 'page' => $page,
                 'per_page' => $perPage,
                 'total' => $total,
-                'total_pages' => (int) ceil($total / max(1, $perPage)),
+                'total_pages' => $isPickerMode ? $page : (int) ceil($total / max(1, $perPage)),
                 'filters' => [
                     'search' => $trimmedSearch,
                     'status' => $normalizedStatus === '' ? 'all' : $normalizedStatus,

@@ -6,6 +6,7 @@ namespace App\Controllers;
 
 use App\Repositories\CollectionRepository;
 use App\Support\Exceptions\HttpException;
+use DateTimeImmutable;
 
 final class CollectionController
 {
@@ -26,6 +27,37 @@ final class CollectionController
             (string) ($query['status'] ?? ''),
             (string) ($query['date_from'] ?? ''),
             (string) ($query['date_to'] ?? '')
+        );
+    }
+
+    public function summary(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $dateType = strtolower(trim((string) ($query['date_type'] ?? 'today')));
+        [$dateFrom, $dateTo] = $this->resolveDateRange(
+            $dateType,
+            (string) ($query['date_from'] ?? ''),
+            (string) ($query['date_to'] ?? '')
+        );
+        $limit = (int) ($query['limit'] ?? 200);
+        if ($limit <= 0) {
+            $limit = 200;
+        }
+        $limit = min($limit, 1000);
+
+        return $this->repo->collectionSummary(
+            $mainId,
+            $dateFrom,
+            $dateTo,
+            (string) ($query['bank'] ?? ''),
+            (string) ($query['check_status'] ?? ''),
+            (string) ($query['customer_id'] ?? ''),
+            (string) ($query['collection_type'] ?? ''),
+            $limit
         );
     }
 
@@ -222,5 +254,39 @@ final class CollectionController
             'Disapprove',
             isset($body['remarks']) ? (string) $body['remarks'] : null
         );
+    }
+
+    /**
+     * @return array{0:string,1:string}
+     */
+    private function resolveDateRange(string $dateType, string $dateFrom, string $dateTo): array
+    {
+        $today = new DateTimeImmutable('today');
+
+        return match ($dateType) {
+            'all' => ['1900-01-01', $today->format('Y-m-d')],
+            'today' => [$today->format('Y-m-d'), $today->format('Y-m-d')],
+            'week' => [$today->modify('-1 week')->format('Y-m-d'), $today->format('Y-m-d')],
+            'month' => [$today->modify('-1 month')->format('Y-m-d'), $today->format('Y-m-d')],
+            'year' => [$today->modify('-1 year')->format('Y-m-d'), $today->format('Y-m-d')],
+            'custom' => [
+                $this->normalizeDateOrToday($dateFrom, $today),
+                $this->normalizeDateOrToday($dateTo, $today),
+            ],
+            default => [$today->format('Y-m-d'), $today->format('Y-m-d')],
+        };
+    }
+
+    private function normalizeDateOrToday(string $value, DateTimeImmutable $fallback): string
+    {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return $fallback->format('Y-m-d');
+        }
+        $ts = strtotime($trimmed);
+        if ($ts === false) {
+            return $fallback->format('Y-m-d');
+        }
+        return date('Y-m-d', $ts);
     }
 }

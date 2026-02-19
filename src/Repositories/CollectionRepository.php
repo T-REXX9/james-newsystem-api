@@ -220,6 +220,219 @@ SQL;
         ];
     }
 
+    public function collectionSummary(
+        int $mainId,
+        string $dateFrom,
+        string $dateTo,
+        string $bank = '',
+        string $checkStatus = '',
+        string $customerId = '',
+        string $collectionType = '',
+        int $limit = 200
+    ): array {
+        $itemWhere = [
+            'ci.lcollect_date >= :date_from',
+            'ci.lcollect_date <= :date_to',
+            'CAST(COALESCE(ci.lmainid, 0) AS SIGNED) = :main_id',
+        ];
+        $itemParams = [
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
+            'main_id' => $mainId,
+        ];
+
+        $trimmedBank = trim($bank);
+        if ($trimmedBank !== '') {
+            $itemWhere[] = 'COALESCE(ci.lbank, \'\') = :bank';
+            $itemParams['bank'] = $trimmedBank;
+        }
+
+        $trimmedCheckStatus = trim($checkStatus);
+        if ($trimmedCheckStatus !== '') {
+            $itemWhere[] = 'COALESCE(ci.lremarks, \'\') = :check_status';
+            $itemParams['check_status'] = $trimmedCheckStatus;
+        }
+
+        $trimmedCustomerId = trim($customerId);
+        if ($trimmedCustomerId !== '') {
+            $itemWhere[] = 'COALESCE(ci.lcustomer, \'\') = :customer_id';
+            $itemParams['customer_id'] = $trimmedCustomerId;
+        }
+
+        $trimmedCollectionType = trim($collectionType);
+        if ($trimmedCollectionType !== '' && strcasecmp($trimmedCollectionType, 'All') !== 0) {
+            if (strcasecmp($trimmedCollectionType, 'Cheque') === 0) {
+                $itemWhere[] = 'COALESCE(ci.ltype, \'\') = :collection_type';
+                $itemParams['collection_type'] = 'Check';
+            } else {
+                $itemWhere[] = 'COALESCE(ci.ltype, \'\') = :collection_type';
+                $itemParams['collection_type'] = $trimmedCollectionType;
+            }
+        }
+
+        $itemSql = sprintf(
+            'SELECT
+                ci.lid,
+                COALESCE(ci.lrefno, \'\') AS lrefno,
+                COALESCE(ci.lcustomer, \'\') AS lcustomer,
+                COALESCE(ci.lcustomer_fname, \'\') AS lcustomer_fname,
+                COALESCE(ci.lcustomer_lname, \'\') AS lcustomer_lname,
+                COALESCE(ci.ltype, \'\') AS ltype,
+                COALESCE(ci.lbank, \'\') AS lbank,
+                COALESCE(ci.lchk_no, \'\') AS lchk_no,
+                COALESCE(ci.lchk_date, \'\') AS lchk_date,
+                COALESCE(ci.lamt, 0) AS lamt,
+                COALESCE(ci.lnotes, \'\') AS lnotes,
+                COALESCE(ci.lremarks, \'\') AS lremarks,
+                COALESCE(ci.ldatetime, \'\') AS ldatetime,
+                COALESCE(ci.lcollect_date, \'\') AS lcollect_date,
+                COALESCE(c.lcolection_no, \'\') AS lcollection_no
+             FROM tblcollection_item ci
+             LEFT JOIN tblcollection c ON c.lrefno = ci.lrefno
+             WHERE %s
+             ORDER BY ci.lid DESC
+             LIMIT :item_limit',
+            implode(' AND ', $itemWhere)
+        );
+        $itemStmt = $this->db->pdo()->prepare($itemSql);
+        foreach ($itemParams as $key => $value) {
+            if ($key === 'main_id') {
+                $itemStmt->bindValue($key, (int) $value, PDO::PARAM_INT);
+                continue;
+            }
+            $itemStmt->bindValue($key, (string) $value, PDO::PARAM_STR);
+        }
+        $itemStmt->bindValue('item_limit', max(1, min(1000, $limit)), PDO::PARAM_INT);
+        $itemStmt->execute();
+        $collectionRows = $itemStmt->fetchAll(PDO::FETCH_ASSOC);
+        $collectionRows = array_reverse($collectionRows);
+
+        $summary = [
+            'grand_cash' => 0.0,
+            'grand_check' => 0.0,
+            'grand_tt' => 0.0,
+            'grand_less' => 0.0,
+        ];
+
+        $normalizedCollectionRows = [];
+        foreach ($collectionRows as $row) {
+            $amount = (float) ($row['lamt'] ?? 0);
+            $cash = 0.0;
+            $check = 0.0;
+            $tt = 0.0;
+            $less = 0.0;
+            $remarksText = '';
+            $type = (string) ($row['ltype'] ?? '');
+            $checkNo = (string) ($row['lchk_no'] ?? '');
+            $checkDate = (string) ($row['lchk_date'] ?? '');
+            $remarks = (string) ($row['lremarks'] ?? '');
+            $bankName = (string) ($row['lbank'] ?? '');
+
+            if ($type === 'Cash') {
+                if ($checkNo === '') {
+                    $cash = $amount;
+                    $summary['grand_cash'] += $cash;
+                }
+                $remarksText = trim(($checkDate !== '' ? date('m/d/Y', strtotime($checkDate)) : '') . ' ' . $remarks);
+            } elseif ($type === 'Check') {
+                if ($checkNo === '') {
+                    $tt = $amount;
+                    $summary['grand_tt'] += $tt;
+                    $remarksText = trim('TT/' . $bankName . ' ' . ($checkDate !== '' ? date('m/d/Y', strtotime($checkDate)) : '') . ' ' . $remarks);
+                } else {
+                    $check = $amount;
+                    $summary['grand_check'] += $check;
+                    $remarksText = trim($bankName . ' ' . $checkNo . ' ' . ($checkDate !== '' ? date('m/d/Y', strtotime($checkDate)) : '') . ' ' . $remarks);
+                }
+            }
+
+            $normalizedCollectionRows[] = [
+                'date' => $row['ldatetime'] !== '' ? date('Y-m-d', strtotime((string) $row['ldatetime'])) : (string) ($row['lcollect_date'] ?? ''),
+                'customer' => (string) ($row['lcustomer_fname'] ?? ''),
+                'dcr_no' => ltrim((string) ($row['lcollection_no'] ?? ''), 'DCR-'),
+                'cash' => $cash,
+                'check' => $check,
+                'tt' => $tt,
+                'less' => $less,
+                'remarks' => $remarksText,
+                'raw' => $row,
+            ];
+        }
+
+        $debitWhere = [
+            'dm.ldate >= :date_from',
+            'dm.ldate <= :date_to',
+            'CAST(COALESCE(dm.lmain_id, 0) AS SIGNED) = :main_id',
+        ];
+        $debitParams = [
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
+            'main_id' => $mainId,
+        ];
+        if ($trimmedCustomerId !== '') {
+            $debitWhere[] = 'COALESCE(dm.lcustomer, \'\') = :customer_id';
+            $debitParams['customer_id'] = $trimmedCustomerId;
+        }
+
+        $debitSql = sprintf(
+            <<<'SQL'
+SELECT
+    dm.lid,
+    COALESCE(dm.lrefno, '') AS lrefno,
+    COALESCE(dm.ldm_no, '') AS ldm_no,
+    COALESCE(dm.lcustomer_fname, '') AS lcustomer_code,
+    COALESCE(dm.lcustomer_lname, '') AS lcustomer_name,
+    COALESCE(dm.ldatetime, '') AS ldatetime,
+    (
+      SELECT COALESCE(SUM(COALESCE(dmi.lamount, 0)), 0)
+      FROM tbldebit_memo_items dmi
+      WHERE dmi.lrefno = dm.lrefno
+    ) AS lamount
+FROM tbldebit_memo dm
+WHERE %s
+ORDER BY dm.lid DESC
+LIMIT :debit_limit
+SQL,
+            implode(' AND ', $debitWhere)
+        );
+        $debitStmt = $this->db->pdo()->prepare($debitSql);
+        foreach ($debitParams as $key => $value) {
+            if ($key === 'main_id') {
+                $debitStmt->bindValue($key, (int) $value, PDO::PARAM_INT);
+                continue;
+            }
+            $debitStmt->bindValue($key, (string) $value, PDO::PARAM_STR);
+        }
+        $debitStmt->bindValue('debit_limit', max(1, min(1000, $limit)), PDO::PARAM_INT);
+        $debitStmt->execute();
+        $debitRows = $debitStmt->fetchAll(PDO::FETCH_ASSOC);
+        $debitRows = array_reverse($debitRows);
+
+        $debitTotal = 0.0;
+        foreach ($debitRows as &$debitRow) {
+            $amount = (float) ($debitRow['lamount'] ?? 0);
+            $debitRow['lamount'] = $amount;
+            $debitTotal += $amount;
+        }
+        unset($debitRow);
+
+        return [
+            'date_from' => $dateFrom,
+            'date_to' => $dateTo,
+            'collection_items' => $normalizedCollectionRows,
+            'collection_totals' => [
+                'cash' => $summary['grand_cash'],
+                'check' => $summary['grand_check'],
+                'tt' => $summary['grand_tt'],
+                'less' => $summary['grand_less'],
+            ],
+            'debit_items' => $debitRows,
+            'debit_totals' => [
+                'amount' => $debitTotal,
+            ],
+        ];
+    }
+
     public function addCollectionPayment(string $collectionRefno, array $payload): int
     {
         $customer = $this->getCustomerBySession($payload['customer_id']);
