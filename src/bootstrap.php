@@ -22,6 +22,7 @@ use App\Controllers\SalesController;
 use App\Controllers\SalesInquiryController;
 use App\Controllers\SalesOrderController;
 use App\Controllers\StockMovementController;
+use App\Controllers\StatementOfAccountController;
 use App\Controllers\TransferStockController;
 use App\Http\Router;
 use App\Support\Env;
@@ -50,6 +51,7 @@ require __DIR__ . '/Repositories/SalesRepository.php';
 require __DIR__ . '/Repositories/SalesInquiryRepository.php';
 require __DIR__ . '/Repositories/SalesOrderRepository.php';
 require __DIR__ . '/Repositories/StockMovementRepository.php';
+require __DIR__ . '/Repositories/StatementOfAccountRepository.php';
 require __DIR__ . '/Repositories/TransferStockRepository.php';
 require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Controllers/HealthController.php';
@@ -71,6 +73,7 @@ require __DIR__ . '/Controllers/SalesController.php';
 require __DIR__ . '/Controllers/SalesInquiryController.php';
 require __DIR__ . '/Controllers/SalesOrderController.php';
 require __DIR__ . '/Controllers/StockMovementController.php';
+require __DIR__ . '/Controllers/StatementOfAccountController.php';
 require __DIR__ . '/Controllers/TransferStockController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
@@ -144,6 +147,7 @@ function app_router(): Router
     $salesInquiryController = new SalesInquiryController(new App\Repositories\SalesInquiryRepository($db));
     $salesOrderController = new SalesOrderController(new App\Repositories\SalesOrderRepository($db));
     $stockMovementController = new StockMovementController(new App\Repositories\StockMovementRepository($db));
+    $statementOfAccountController = new StatementOfAccountController(new App\Repositories\StatementOfAccountRepository($db));
     $transferStockController = new TransferStockController(new App\Repositories\TransferStockRepository($db));
 
     $router = new Router();
@@ -151,6 +155,8 @@ function app_router(): Router
     $router->get('/api/v1/customers/{sessionId}', [$customerController, 'show']);
     $router->get('/api/v1/customers/{sessionId}/purchase-history', [$customerController, 'purchaseHistory']);
     $router->get('/api/v1/customers/{sessionId}/ledger', [$customerController, 'ledger']);
+    $router->get('/api/v1/statements/customers', [$statementOfAccountController, 'customers']);
+    $router->get('/api/v1/statements/of-account', [$statementOfAccountController, 'report']);
     $router->get('/api/v1/adjustment-entries', [$adjustmentEntryController, 'list']);
     $router->get('/api/v1/adjustment-entries/{refno}', [$adjustmentEntryController, 'show']);
     $router->post('/api/v1/adjustment-entries', [$adjustmentEntryController, 'create']);
