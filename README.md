@@ -43,6 +43,11 @@ If you use the combined launcher, API URL/port come from:
 - `GET /fast-slow-inventory-report?main_id={mainId}&sort_by=sales_volume|part_no&sort_direction=asc|desc`
 - `GET /inventory-report/options?main_id={mainId}`
 - `GET /inventory-report?main_id={mainId}&category=&part_number=&item_code=&stock_status=all|with_stock|without_stock&report_type=inventory|product`
+- `GET /sales-return-report/options?main_id={mainId}`
+- `GET /sales-return-report?main_id={mainId}&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&status=&search=&page=1&per_page=100`
+- `GET /sales-returns?main_id={mainId}&search=&status=&month=MM&year=YYYY&page=1&per_page=50`
+- `GET /sales-returns/{refno}?main_id={mainId}`
+- `GET /sales-returns/{refno}/items?main_id={mainId}`
 - `GET /products?main_id={mainId}&search=&status=all|active|inactive&page=1&per_page=100`
 - `GET /products/{productSession}?main_id={mainId}`
 - `POST /products`
