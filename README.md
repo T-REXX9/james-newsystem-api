@@ -40,6 +40,7 @@ If you use the combined launcher, API URL/port come from:
 - `GET /daily-call-monitoring/customers/{contactId}/purchase-history?main_id={mainId}`
 - `GET /daily-call-monitoring/customers/{contactId}/sales-reports?main_id={mainId}`
 - `GET /daily-call-monitoring/customers/{contactId}/incident-reports?main_id={mainId}`
+- `GET /fast-slow-inventory-report?main_id={mainId}&sort_by=sales_volume|part_no&sort_direction=asc|desc`
 - `GET /products?main_id={mainId}&search=&status=all|active|inactive&page=1&per_page=100`
 - `GET /products/{productSession}?main_id={mainId}`
 - `POST /products`
