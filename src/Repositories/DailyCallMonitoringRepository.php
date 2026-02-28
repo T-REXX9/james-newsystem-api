@@ -13,9 +13,9 @@ final class DailyCallMonitoringRepository
     {
     }
 
-    public function getExcelRows(int $mainId, string $status = 'all', string $search = ''): array
+    public function getExcelRows(int $mainId, string $status = 'all', string $search = '', ?int $viewerUserId = null): array
     {
-        $customers = $this->getCustomerBaseRows($mainId, $status, $search);
+        $customers = $this->getCustomerBaseRows($mainId, $status, $search, $viewerUserId);
         if (count($customers) === 0) {
             return [];
         }
@@ -296,8 +296,10 @@ SQL;
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    private function getCustomerBaseRows(int $mainId, string $status, string $search): array
+    private function getCustomerBaseRows(int $mainId, string $status, string $search, ?int $viewerUserId = null): array
     {
+        $viewerTeamContext = $this->resolveViewerTeamContext($viewerUserId);
+
         $sql = <<<SQL
 SELECT
     p.lsessionid AS id,
@@ -318,8 +320,10 @@ SELECT
     p.lrefer_by AS source,
     COALESCE(a.lfname, '') AS assigned_to_fname,
     COALESCE(a.llname, '') AS assigned_to_lname,
+    CAST(COALESCE(a.lteam, 0) AS SIGNED) AS assigned_team_id,
     p.ldate_assigned AS assigned_date,
     p.lsince AS client_since,
+    p.llast_transaction AS last_transaction_date,
     p.ldatetime AS status_date,
     CASE
         WHEN LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' THEN 'prospective'
@@ -331,6 +335,55 @@ LEFT JOIN tblaccount a ON CAST(a.lid AS CHAR) = CAST(p.lsales_person AS CHAR)
 WHERE p.lmain_id = :main_id
 SQL;
         $params = ['main_id' => $mainId];
+
+        if ($viewerTeamContext !== null) {
+            $teamAId = (int) $viewerTeamContext['team_a_id'];
+            $teamBId = (int) $viewerTeamContext['team_b_id'];
+            $viewerTeamId = (int) $viewerTeamContext['viewer_team_id'];
+            $teamAFrom = '2025-10-01';
+            $teamATo = '2026-02-28';
+            $teamBInactiveCutoff = '2025-09-01';
+
+            if ($viewerTeamId === $teamAId) {
+                $sql .= " AND (
+                    CAST(COALESCE(a.lteam, 0) AS SIGNED) <> :team_b_id_exclude
+                    AND LOWER(COALESCE(p.lprofile_type, '')) NOT LIKE '%prospective%'
+                    AND NOT (
+                        (
+                            LOWER(COALESCE(p.lactive, '')) LIKE '%inactive%'
+                            OR COALESCE(p.lstatus, 1) = 0
+                        )
+                        AND COALESCE(p.llast_transaction, '') <> ''
+                        AND COALESCE(p.llast_transaction, '') < :team_b_inactive_cutoff
+                    )
+                    AND (
+                        COALESCE(p.llast_transaction, '') >= :team_a_from
+                        AND COALESCE(p.llast_transaction, '') <= :team_a_to
+                    )
+                )";
+                $params['team_b_id_exclude'] = $teamBId;
+                $params['team_a_from'] = $teamAFrom;
+                $params['team_a_to'] = $teamATo;
+                $params['team_b_inactive_cutoff'] = $teamBInactiveCutoff;
+            } elseif ($viewerTeamId === $teamBId) {
+                $sql .= " AND (
+                    CAST(COALESCE(a.lteam, 0) AS SIGNED) = :team_b_id_primary
+                    OR (
+                        LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%'
+                        OR (
+                            (
+                                LOWER(COALESCE(p.lactive, '')) LIKE '%inactive%'
+                                OR COALESCE(p.lstatus, 1) = 0
+                            )
+                            AND COALESCE(p.llast_transaction, '') <> ''
+                            AND COALESCE(p.llast_transaction, '') < :team_b_inactive_cutoff
+                        )
+                    )
+                )";
+                $params['team_b_id_primary'] = $teamBId;
+                $params['team_b_inactive_cutoff'] = $teamBInactiveCutoff;
+            }
+        }
 
         $statusLower = strtolower(trim($status));
         if ($statusLower !== '' && $statusLower !== 'all') {
@@ -375,6 +428,83 @@ SQL;
         }
 
         return $rows;
+    }
+
+    private function resolveViewerTeamContext(?int $viewerUserId): ?array
+    {
+        if ($viewerUserId === null || $viewerUserId <= 0) {
+            return null;
+        }
+
+        $viewerStmt = $this->db->pdo()->prepare(
+            'SELECT CAST(COALESCE(ltype, 0) AS SIGNED) AS user_type, CAST(COALESCE(lteam, 0) AS SIGNED) AS team_id
+             FROM tblaccount
+             WHERE lid = :viewer_id
+             LIMIT 1'
+        );
+        $viewerStmt->execute(['viewer_id' => $viewerUserId]);
+        $viewer = $viewerStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$viewer) {
+            return null;
+        }
+
+        $userType = (int) ($viewer['user_type'] ?? 0);
+        $viewerTeamId = (int) ($viewer['team_id'] ?? 0);
+        if ($userType !== 2 || $viewerTeamId <= 0) {
+            return null;
+        }
+
+        $teamStmt = $this->db->pdo()->query(
+            'SELECT CAST(lid AS SIGNED) AS id, LOWER(TRIM(COALESCE(lteamname, \'\'))) AS name
+             FROM tblteamstaff
+             ORDER BY lid ASC'
+        );
+        $teamRows = $teamStmt->fetchAll(PDO::FETCH_ASSOC);
+        if (count($teamRows) === 0) {
+            return null;
+        }
+
+        $teamAId = null;
+        $teamBId = null;
+        foreach ($teamRows as $team) {
+            $id = (int) ($team['id'] ?? 0);
+            $name = (string) ($team['name'] ?? '');
+            if ($id <= 0) {
+                continue;
+            }
+            if ($teamAId === null && ($name === 'a' || str_starts_with($name, 'a') || str_contains($name, 'alpha') || str_contains($name, 'aplha'))) {
+                $teamAId = $id;
+            }
+            if ($teamBId === null && ($name === 'b' || str_starts_with($name, 'b') || str_contains($name, 'bravo'))) {
+                $teamBId = $id;
+            }
+        }
+
+        $teamIds = array_values(array_map(static fn(array $row): int => (int) ($row['id'] ?? 0), $teamRows));
+        $teamIds = array_values(array_filter($teamIds, static fn(int $id): bool => $id > 0));
+        sort($teamIds);
+
+        if ($teamAId === null && isset($teamIds[0])) {
+            $teamAId = $teamIds[0];
+        }
+        if ($teamBId === null) {
+            foreach ($teamIds as $candidateId) {
+                if ($candidateId !== $teamAId) {
+                    $teamBId = $candidateId;
+                    break;
+                }
+            }
+        }
+
+        if ($teamAId === null || $teamBId === null) {
+            return null;
+        }
+
+        return [
+            'viewer_team_id' => $viewerTeamId,
+            'team_a_id' => $teamAId,
+            'team_b_id' => $teamBId,
+        ];
     }
 
     private function getPurchaseRows(int $mainId, array $contactIds, ?string $dateFrom = null): array

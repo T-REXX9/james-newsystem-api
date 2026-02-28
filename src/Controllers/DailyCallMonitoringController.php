@@ -22,8 +22,9 @@ final class DailyCallMonitoringController
 
         $status = (string) ($query['status'] ?? 'all');
         $search = (string) ($query['search'] ?? '');
+        $viewerUserId = isset($query['viewer_user_id']) ? (int) $query['viewer_user_id'] : null;
 
-        return $this->repo->getExcelRows($mainId, $status, $search);
+        return $this->repo->getExcelRows($mainId, $status, $search, $viewerUserId);
     }
 
     public function ownerSnapshot(array $params = [], array $query = [], array $body = []): array
