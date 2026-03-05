@@ -46,5 +46,19 @@ final class Database
 
         return $this->pdo;
     }
+
+    /**
+     * Execute a query with optional parameters
+     *
+     * @param string $sql The SQL query with ? placeholders
+     * @param array $params Optional parameters to bind
+     * @return array Query results
+     */
+    public function query(string $sql, array $params = []): array
+    {
+        $stmt = $this->pdo()->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll();
+    }
 }
 

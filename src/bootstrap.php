@@ -4,6 +4,11 @@ declare(strict_types=1);
 
 use App\Config;
 use App\Controllers\CollectionController;
+use App\Controllers\ContactsController;
+use App\Controllers\DealsController;
+use App\Controllers\TasksController;
+use App\Controllers\MessagesController;
+use App\Controllers\ProfilesController;
 use App\Controllers\CustomerController;
 use App\Controllers\CustomerDatabaseController;
 use App\Controllers\AdjustmentEntryController;
@@ -39,6 +44,8 @@ use App\Controllers\ApproverController;
 use App\Controllers\StaffController;
 use App\Controllers\TeamController;
 use App\Controllers\TransferStockController;
+use App\Controllers\CampaignController;
+use App\Controllers\PromotionController;
 use App\Http\Router;
 use App\Support\Env;
 
@@ -54,6 +61,11 @@ require __DIR__ . '/Repositories/AdjustmentEntryRepository.php';
 require __DIR__ . '/Repositories/ApproverRepository.php';
 require __DIR__ . '/Repositories/ActivityLogRepository.php';
 require __DIR__ . '/Repositories/CollectionRepository.php';
+require __DIR__ . '/Repositories/ContactsRepository.php';
+require __DIR__ . '/Repositories/DealsRepository.php';
+require __DIR__ . '/Repositories/TasksRepository.php';
+require __DIR__ . '/Repositories/MessagesRepository.php';
+require __DIR__ . '/Repositories/ProfilesRepository.php';
 require __DIR__ . '/Repositories/DailyCallMonitoringRepository.php';
 require __DIR__ . '/Repositories/FastSlowInventoryReportRepository.php';
 require __DIR__ . '/Repositories/FreightChargesRepository.php';
@@ -83,6 +95,12 @@ require __DIR__ . '/Repositories/SuggestedStockReportRepository.php';
 require __DIR__ . '/Repositories/StaffRepository.php';
 require __DIR__ . '/Repositories/TeamRepository.php';
 require __DIR__ . '/Repositories/TransferStockRepository.php';
+require __DIR__ . '/Repositories/CampaignOutreachRepository.php';
+require __DIR__ . '/Repositories/CampaignFeedbackRepository.php';
+require __DIR__ . '/Repositories/MessageTemplateRepository.php';
+require __DIR__ . '/Repositories/PromotionRepository.php';
+require __DIR__ . '/Repositories/PromotionProductRepository.php';
+require __DIR__ . '/Repositories/PromotionPostingRepository.php';
 require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Controllers/HealthController.php';
 require __DIR__ . '/Controllers/CustomerController.php';
@@ -91,6 +109,11 @@ require __DIR__ . '/Controllers/AdjustmentEntryController.php';
 require __DIR__ . '/Controllers/ApproverController.php';
 require __DIR__ . '/Controllers/ActivityLogController.php';
 require __DIR__ . '/Controllers/CollectionController.php';
+require __DIR__ . '/Controllers/ContactsController.php';
+require __DIR__ . '/Controllers/DealsController.php';
+require __DIR__ . '/Controllers/TasksController.php';
+require __DIR__ . '/Controllers/MessagesController.php';
+require __DIR__ . '/Controllers/ProfilesController.php';
 require __DIR__ . '/Controllers/DailyCallMonitoringController.php';
 require __DIR__ . '/Controllers/FastSlowInventoryReportController.php';
 require __DIR__ . '/Controllers/FreightChargesController.php';
@@ -120,6 +143,8 @@ require __DIR__ . '/Controllers/SuggestedStockReportController.php';
 require __DIR__ . '/Controllers/StaffController.php';
 require __DIR__ . '/Controllers/TeamController.php';
 require __DIR__ . '/Controllers/TransferStockController.php';
+require __DIR__ . '/Controllers/CampaignController.php';
+require __DIR__ . '/Controllers/PromotionController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
 date_default_timezone_set((string) Env::get('APP_TIMEZONE', 'UTC'));
@@ -177,6 +202,11 @@ function app_router(): Router
     $approverController = new ApproverController(new App\Repositories\ApproverRepository($db));
     $activityLogController = new ActivityLogController(new App\Repositories\ActivityLogRepository($db));
     $collectionController = new CollectionController(new App\Repositories\CollectionRepository($db));
+    $contactsController = new ContactsController(new App\Repositories\ContactsRepository($db));
+    $dealsController = new DealsController(new App\Repositories\DealsRepository($db));
+    $tasksController = new TasksController(new App\Repositories\TasksRepository($db));
+    $messagesController = new MessagesController(new App\Repositories\MessagesRepository($db));
+    $profilesController = new ProfilesController(new App\Repositories\ProfilesRepository($db));
     $dailyCallMonitoringController = new DailyCallMonitoringController(new App\Repositories\DailyCallMonitoringRepository($db));
     $fastSlowInventoryReportController = new FastSlowInventoryReportController(new App\Repositories\FastSlowInventoryReportRepository($db));
     $freightChargesController = new FreightChargesController(new App\Repositories\FreightChargesRepository($db));
@@ -209,6 +239,16 @@ function app_router(): Router
     $staffController = new StaffController(new App\Repositories\StaffRepository($db));
     $teamController = new TeamController(new App\Repositories\TeamRepository($db));
     $transferStockController = new TransferStockController(new App\Repositories\TransferStockRepository($db));
+    $campaignController = new CampaignController(
+        new App\Repositories\CampaignOutreachRepository($db),
+        new App\Repositories\CampaignFeedbackRepository($db),
+        new App\Repositories\MessageTemplateRepository($db)
+    );
+    $promotionController = new PromotionController(
+        new App\Repositories\PromotionRepository($db),
+        new App\Repositories\PromotionProductRepository($db),
+        new App\Repositories\PromotionPostingRepository($db)
+    );
 
     $router = new Router();
     $router->get('/api/v1/health', [$healthController, 'index']);
@@ -248,6 +288,42 @@ function app_router(): Router
     $router->post('/api/v1/collections/{collectionRefno}/actions/{action}', [$collectionController, 'action']);
     $router->patch('/api/v1/collection-items/{itemId}', [$collectionController, 'updateItem']);
     $router->delete('/api/v1/collection-items/{itemId}', [$collectionController, 'deleteItem']);
+    $router->get('/api/v1/contacts', [$contactsController, 'list']);
+    $router->get('/api/v1/contacts/{id}', [$contactsController, 'show']);
+    $router->post('/api/v1/contacts', [$contactsController, 'create']);
+    $router->patch('/api/v1/contacts/{id}', [$contactsController, 'update']);
+    $router->delete('/api/v1/contacts/{id}', [$contactsController, 'delete']);
+    $router->post('/api/v1/contacts/bulk-update', [$contactsController, 'bulkUpdate']);
+    $router->get('/api/v1/deals', [$dealsController, 'list']);
+    $router->get('/api/v1/deals/stage/{stageId}', [$dealsController, 'getByStage']);
+    $router->get('/api/v1/deals/{id}', [$dealsController, 'show']);
+    $router->post('/api/v1/deals', [$dealsController, 'create']);
+    $router->patch('/api/v1/deals/{id}', [$dealsController, 'update']);
+    $router->delete('/api/v1/deals/{id}', [$dealsController, 'delete']);
+    $router->post('/api/v1/deals/{id}/restore', [$dealsController, 'restore']);
+    $router->post('/api/v1/deals/{id}/move-stage', [$dealsController, 'moveToStage']);
+    $router->post('/api/v1/deals/bulk-update', [$dealsController, 'bulkUpdate']);
+    $router->get('/api/v1/tasks', [$tasksController, 'list']);
+    $router->get('/api/v1/tasks/{id}', [$tasksController, 'show']);
+    $router->post('/api/v1/tasks', [$tasksController, 'create']);
+    $router->patch('/api/v1/tasks/{id}', [$tasksController, 'update']);
+    $router->delete('/api/v1/tasks/{id}', [$tasksController, 'delete']);
+    $router->post('/api/v1/tasks/{id}/restore', [$tasksController, 'restore']);
+    $router->get('/api/v1/tasks/status/{status}', [$tasksController, 'getByStatus']);
+    $router->post('/api/v1/tasks/bulk-update', [$tasksController, 'bulkUpdate']);
+    $router->get('/api/v1/teams/{teamId}/messages', [$messagesController, 'list']);
+    $router->get('/api/v1/messages/{id}', [$messagesController, 'show']);
+    $router->post('/api/v1/teams/{teamId}/messages', [$messagesController, 'create']);
+    $router->patch('/api/v1/messages/{id}', [$messagesController, 'update']);
+    $router->delete('/api/v1/messages/{id}', [$messagesController, 'delete']);
+    $router->get('/api/v1/teams/{teamId}/messages/sender/{senderId}', [$messagesController, 'getBySender']);
+    $router->get('/api/v1/profiles', [$profilesController, 'list']);
+    $router->get('/api/v1/profiles/sales-agents', [$profilesController, 'salesAgents']);
+    $router->get('/api/v1/profiles/{id}', [$profilesController, 'show']);
+    $router->patch('/api/v1/profiles/{id}', [$profilesController, 'update']);
+    $router->post('/api/v1/profiles/{id}/deactivate', [$profilesController, 'deactivate']);
+    $router->post('/api/v1/profiles/{id}/activate', [$profilesController, 'activate']);
+    $router->post('/api/v1/profiles/{id}/role', [$profilesController, 'updateRole']);
     $router->get('/api/v1/daily-call-monitoring/excel', [$dailyCallMonitoringController, 'excelRows']);
     $router->get('/api/v1/daily-call-monitoring/owner-snapshot', [$dailyCallMonitoringController, 'ownerSnapshot']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/purchase-history', [$dailyCallMonitoringController, 'customerPurchaseHistory']);
@@ -411,6 +487,49 @@ function app_router(): Router
     $router->post('/api/v1/teams', [$teamController, 'create']);
     $router->patch('/api/v1/teams/{teamId}', [$teamController, 'update']);
     $router->delete('/api/v1/teams/{teamId}', [$teamController, 'delete']);
+    // Campaign Outreach
+    $router->get('/api/v1/campaigns/{campaignId}/outreach', [$campaignController, 'listOutreach']);
+    $router->get('/api/v1/campaigns/{campaignId}/outreach/{id}', [$campaignController, 'getOutreach']);
+    $router->post('/api/v1/campaigns/{campaignId}/outreach', [$campaignController, 'createOutreach']);
+    $router->patch('/api/v1/outreach/{id}', [$campaignController, 'updateOutreachStatus']);
+    $router->post('/api/v1/outreach/{id}/response', [$campaignController, 'recordOutreachResponse']);
+    $router->get('/api/v1/outreach/pending', [$campaignController, 'getPendingOutreach']);
+    // Campaign Feedback
+    $router->get('/api/v1/campaigns/{campaignId}/feedback', [$campaignController, 'listFeedback']);
+    $router->post('/api/v1/campaigns/{campaignId}/feedback', [$campaignController, 'createFeedback']);
+    $router->get('/api/v1/campaigns/{campaignId}/feedback/analysis', [$campaignController, 'analyzeFeedback']);
+    // Campaign Stats
+    $router->get('/api/v1/campaigns/{campaignId}/stats', [$campaignController, 'getStats']);
+    // Message Templates
+    $router->get('/api/v1/message-templates', [$campaignController, 'listTemplates']);
+    $router->get('/api/v1/message-templates/{id}', [$campaignController, 'getTemplate']);
+    $router->post('/api/v1/message-templates', [$campaignController, 'createTemplate']);
+    $router->patch('/api/v1/message-templates/{id}', [$campaignController, 'updateTemplate']);
+    $router->delete('/api/v1/message-templates/{id}', [$campaignController, 'deleteTemplate']);
+    // Queue Processing
+    $router->post('/api/v1/outreach/queue/process', [$campaignController, 'processOutreachQueue']);
+    // Promotions
+    $router->get('/api/v1/promotions', [$promotionController, 'listPromotions']);
+    $router->get('/api/v1/promotions/{promotionId}', [$promotionController, 'getPromotion']);
+    $router->post('/api/v1/promotions', [$promotionController, 'createPromotion']);
+    $router->patch('/api/v1/promotions/{promotionId}', [$promotionController, 'updatePromotion']);
+    $router->delete('/api/v1/promotions/{promotionId}', [$promotionController, 'deletePromotion']);
+    $router->get('/api/v1/promotions/status/{status}', [$promotionController, 'getPromotionsByStatus']);
+    $router->get('/api/v1/promotions/active/list', [$promotionController, 'getActivePromotions']);
+    // Promotion Products
+    $router->get('/api/v1/promotions/{promotionId}/products', [$promotionController, 'listProducts']);
+    $router->get('/api/v1/promotion-products/{productId}', [$promotionController, 'getProduct']);
+    $router->post('/api/v1/promotions/{promotionId}/products', [$promotionController, 'addProduct']);
+    $router->patch('/api/v1/promotion-products/{productId}', [$promotionController, 'updateProduct']);
+    $router->delete('/api/v1/promotion-products/{productId}', [$promotionController, 'deleteProduct']);
+    // Promotion Postings
+    $router->get('/api/v1/promotions/{promotionId}/postings', [$promotionController, 'listPostings']);
+    $router->get('/api/v1/promotion-postings/{postingId}', [$promotionController, 'getPosting']);
+    $router->post('/api/v1/promotions/{promotionId}/postings', [$promotionController, 'createPosting']);
+    $router->patch('/api/v1/promotion-postings/{postingId}', [$promotionController, 'updatePosting']);
+    $router->post('/api/v1/promotion-postings/{postingId}/review', [$promotionController, 'reviewPosting']);
+    $router->delete('/api/v1/promotion-postings/{postingId}', [$promotionController, 'deletePosting']);
+    $router->get('/api/v1/promotion-postings/review/pending', [$promotionController, 'getPendingReview']);
 
     return $router;
 }
