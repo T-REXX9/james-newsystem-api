@@ -972,4 +972,80 @@ SQL;
         }
         return 'pending';
     }
+
+    /**
+     * Get call logs for a specific contact
+     * Replaces Supabase call_logs table queries
+     */
+    public function getCallLogs(int $mainId, string $contactId, ?string $fromDate = null, ?string $toDate = null): array
+    {
+        $sql = <<<SQL
+SELECT
+    CAST(cl.lid AS CHAR) AS id,
+    cl.lcustomer_id AS contact_id,
+    cl.ldatetime AS occurred_at,
+    COALESCE(cl.ltype, 'call') AS channel,
+    cl.lnotes AS notes
+FROM tblcustomer_logs cl
+WHERE cl.lmain_id = :main_id
+  AND cl.lcustomer_id = :contact_id
+SQL;
+
+        $params = [
+            'main_id' => $mainId,
+            'contact_id' => $contactId,
+        ];
+
+        if ($fromDate !== null && $fromDate !== '') {
+            $sql .= ' AND cl.ldatetime >= :from_date';
+            $params['from_date'] = $fromDate;
+        }
+
+        if ($toDate !== null && $toDate !== '') {
+            $sql .= ' AND cl.ldatetime <= :to_date';
+            $params['to_date'] = $toDate;
+        }
+
+        $sql .= ' ORDER BY cl.ldatetime DESC, cl.lid DESC';
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Get return/LBC RTO records for a specific contact
+     * Replaces Supabase lbc_rto_records and sales_returns table queries
+     * Uses tblcredit_memo (sales returns) table
+     */
+    public function getReturnRecords(int $mainId, string $contactId): array
+    {
+        // Get from credit_memo (sales returns) table
+        $sql = <<<SQL
+SELECT
+    CAST(cm.lrefno AS CHAR) AS id,
+    CAST(cm.lcustomer AS CHAR) AS contact_id,
+    cm.ldate AS date,
+    COALESCE(cm.ltrackno, CONCAT('RTO-', SUBSTRING(cm.lrefno, 1, 8))) AS tracking_number,
+    COALESCE(cm.lremark, 'Return to origin') AS reason,
+    CASE
+        WHEN cm.lstatus = 'Processed' OR cm.lstatus = 'processed' THEN 'resolved'
+        WHEN cm.lstatus = 'Cancelled' OR cm.lstatus = 'cancelled' THEN 'cancelled'
+        ELSE 'pending'
+    END AS status,
+    COALESCE(cm.lnote, '') AS notes
+FROM tblcredit_memo cm
+WHERE cm.lmainid = :main_id
+  AND CAST(cm.lcustomer AS CHAR) = :contact_id
+ORDER BY cm.ldate DESC, cm.lid DESC
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([
+            'main_id' => $mainId,
+            'contact_id' => $contactId,
+        ]);
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
 }

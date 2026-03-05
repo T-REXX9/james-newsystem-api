@@ -253,6 +253,8 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/purchase-history', [$dailyCallMonitoringController, 'customerPurchaseHistory']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-reports', [$dailyCallMonitoringController, 'customerSalesReports']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/incident-reports', [$dailyCallMonitoringController, 'customerIncidentReports']);
+    $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/call-logs', [$dailyCallMonitoringController, 'callLogs']);
+    $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/returns', [$dailyCallMonitoringController, 'returnRecords']);
     $router->get('/api/v1/fast-slow-inventory-report', [$fastSlowInventoryReportController, 'report']);
     $router->get('/api/v1/freight-charges', [$freightChargesController, 'list']);
     $router->get('/api/v1/freight-charges/{refno}', [$freightChargesController, 'show']);
