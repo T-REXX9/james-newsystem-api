@@ -510,12 +510,15 @@ function app_router(): Router
     $router->post('/api/v1/outreach/queue/process', [$campaignController, 'processOutreachQueue']);
     // Promotions
     $router->get('/api/v1/promotions', [$promotionController, 'listPromotions']);
-    $router->get('/api/v1/promotions/{promotionId}', [$promotionController, 'getPromotion']);
-    $router->post('/api/v1/promotions', [$promotionController, 'createPromotion']);
-    $router->patch('/api/v1/promotions/{promotionId}', [$promotionController, 'updatePromotion']);
-    $router->delete('/api/v1/promotions/{promotionId}', [$promotionController, 'deletePromotion']);
+    // Promotion Stats & Extended Operations (static routes before {promotionId})
+    $router->get('/api/v1/promotions/stats/summary', [$promotionController, 'getStats']);
+    $router->get('/api/v1/promotions/assigned/list', [$promotionController, 'getAssignedPromotions']);
     $router->get('/api/v1/promotions/status/{status}', [$promotionController, 'getPromotionsByStatus']);
     $router->get('/api/v1/promotions/active/list', [$promotionController, 'getActivePromotions']);
+    $router->post('/api/v1/promotions', [$promotionController, 'createPromotion']);
+    $router->get('/api/v1/promotions/{promotionId}', [$promotionController, 'getPromotion']);
+    $router->patch('/api/v1/promotions/{promotionId}', [$promotionController, 'updatePromotion']);
+    $router->delete('/api/v1/promotions/{promotionId}', [$promotionController, 'deletePromotion']);
     // Promotion Products
     $router->get('/api/v1/promotions/{promotionId}/products', [$promotionController, 'listProducts']);
     $router->get('/api/v1/promotion-products/{productId}', [$promotionController, 'getProduct']);
@@ -530,6 +533,11 @@ function app_router(): Router
     $router->post('/api/v1/promotion-postings/{postingId}/review', [$promotionController, 'reviewPosting']);
     $router->delete('/api/v1/promotion-postings/{postingId}', [$promotionController, 'deletePosting']);
     $router->get('/api/v1/promotion-postings/review/pending', [$promotionController, 'getPendingReview']);
+    // Promotion Extended Operations
+    $router->post('/api/v1/promotions/{promotionId}/extend', [$promotionController, 'extendPromotion']);
+    $router->post('/api/v1/promotions/{promotionId}/products/batch', [$promotionController, 'batchAddProducts']);
+    $router->delete('/api/v1/promotions/{promotionId}/products/by-product/{productId}', [$promotionController, 'removeProductByProductId']);
+    $router->post('/api/v1/promotions/upload-screenshot', [$promotionController, 'uploadScreenshot']);
 
     return $router;
 }
