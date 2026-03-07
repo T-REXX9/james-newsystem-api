@@ -10,7 +10,13 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
 1. Copy env file:
    - `cp .env.example .env`
 2. Update DB values in `.env` if needed.
-3. Run local server:
+3. Run SQL migrations before starting the API, especially before using `GET/PATCH/POST /api/v1/staff`:
+   - `mysql -u root topnotch < migrations/001_create_promotions_tables.sql`
+   - `mysql -u root topnotch < migrations/002_add_promotion_targeting.sql`
+   - `mysql -u root topnotch < migrations/003_create_ai_campaign_tables.sql`
+   - `mysql -u root topnotch < migrations/004_add_tblaccount_access_rights.sql`
+   - `mysql -u root topnotch < migrations/005_add_stock_adjustment_header_fields.sql`
+4. Run local server:
    - `php -S 127.0.0.1:8081 -t public`
 
 If you use the combined launcher, API URL/port come from:
@@ -54,6 +60,12 @@ If you use the combined launcher, API URL/port come from:
 - `PATCH /products/{productSession}`
 - `POST /products/bulk-update`
 - `DELETE /products/{productSession}?main_id={mainId}`
+- `GET /staff?main_id={mainId}&search=&page=1&per_page=200`
+- `POST /staff`
+- `GET /staff/{staffId}?main_id={mainId}`
+- `PATCH /staff/{staffId}`
+- `DELETE /staff/{staffId}?main_id={mainId}`
+- `GET /staff/roles?main_id={mainId}`
 - `GET /purchase-orders?main_id={mainId}&month=1-12&year=YYYY&status=all|pending|posted|partial delivery|cancelled&search=&page=1&per_page=100`
 - `GET /purchase-orders/suppliers?main_id={mainId}`
 - `GET /purchase-orders/{purchaseRefno}?main_id={mainId}`
@@ -77,6 +89,10 @@ If you use the combined launcher, API URL/port come from:
 - `POST /stock-movements`
 - `PATCH /stock-movements/{logId}`
 - `DELETE /stock-movements/{logId}?main_id={mainId}`
+- `GET /stock-adjustments?main_id={mainId}`
+- `GET /stock-adjustments/{refno}?main_id={mainId}`
+- `POST /stock-adjustments`
+- `POST /stock-adjustments/{refno}/finalize`
 - `POST /auth/login`
 - `GET /auth/me` (Authorization: Bearer token)
 - `POST /auth/logout` (Authorization: Bearer token)

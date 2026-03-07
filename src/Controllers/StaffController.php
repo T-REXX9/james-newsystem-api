@@ -73,6 +73,7 @@ final class StaffController
             'prospect_quota',
             'commission',
             'branch_id',
+            'access_rights',
         ];
 
         $data = [];
@@ -92,6 +93,48 @@ final class StaffController
         }
 
         return $updated;
+    }
+
+    public function create(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $fullName = trim((string) ($body['full_name'] ?? ''));
+        if ($fullName === '') {
+            throw new HttpException(422, 'full_name is required');
+        }
+
+        $email = trim((string) ($body['email'] ?? ''));
+        if ($email === '') {
+            throw new HttpException(422, 'email is required');
+        }
+
+        $password = (string) ($body['password'] ?? '');
+        if ($password === '') {
+            throw new HttpException(422, 'password is required');
+        }
+
+        if (strlen($password) < 8) {
+            throw new HttpException(422, 'password must be at least 8 characters');
+        }
+
+        $role = trim((string) ($body['role'] ?? ''));
+        if ($role === '') {
+            throw new HttpException(422, 'role is required');
+        }
+
+        return $this->repo->createStaff($mainId, [
+            'full_name' => $fullName,
+            'email' => $email,
+            'password' => $password,
+            'role' => $role,
+            'birthday' => $body['birthday'] ?? null,
+            'mobile' => $body['mobile'] ?? null,
+            'access_rights' => $body['access_rights'] ?? [],
+        ]);
     }
 
     public function delete(array $params = [], array $query = [], array $body = []): array

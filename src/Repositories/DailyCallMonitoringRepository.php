@@ -116,6 +116,65 @@ final class DailyCallMonitoringRepository
         ];
     }
 
+    public function getAgentSnapshot(int $mainId, int $viewerUserId): array
+    {
+        $customers = $this->getCustomerBaseRows($mainId, 'all', '', $viewerUserId);
+        $contactIds = array_values(array_filter(array_map(
+            static fn(array $row): string => (string) ($row['id'] ?? ''),
+            $customers
+        )));
+
+        return [
+            'contacts' => $customers,
+            'call_logs' => $this->getCallLogRows($mainId, $contactIds),
+            'inquiries' => $this->getInquiryRows($mainId, $contactIds),
+            'purchases' => $this->getPurchaseRows($mainId, $contactIds),
+            'team_messages' => $this->getRecentOwnerMessages($viewerUserId),
+        ];
+    }
+
+    public function createCallLog(int $mainId, array $data): array
+    {
+        $sql = <<<SQL
+INSERT INTO tblcustomer_logs (
+    lmain_id,
+    lcustomer_id,
+    luser,
+    ltype,
+    lstatus,
+    lnotes,
+    ldatetime
+) VALUES (
+    :main_id,
+    :contact_id,
+    :user_value,
+    :type,
+    :status,
+    :notes,
+    :occurred_at
+)
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([
+            'main_id' => $mainId,
+            'contact_id' => (string) ($data['contact_id'] ?? ''),
+            'user_value' => (string) ($data['agent_name'] ?? $data['user_id'] ?? ''),
+            'type' => (string) ($data['channel'] ?? 'call'),
+            'status' => (string) ($data['outcome'] ?? 'logged'),
+            'notes' => (string) ($data['notes'] ?? ''),
+            'occurred_at' => (string) ($data['occurred_at'] ?? date('Y-m-d H:i:s')),
+        ]);
+
+        $id = (int) $this->db->pdo()->lastInsertId();
+        $created = $this->getCallLogById($mainId, $id);
+        if ($created === null) {
+            throw new \RuntimeException('Failed to load created call log');
+        }
+
+        return $created;
+    }
+
     public function getCustomerPurchaseHistory(int $mainId, string $contactId): array
     {
         $sql = <<<SQL
@@ -594,7 +653,10 @@ SQL;
 SELECT
     CAST(cl.lid AS CHAR) AS id,
     cl.lcustomer_id AS contact_id,
-    CAST(cl.luser AS CHAR) AS agent_name,
+    COALESCE(
+        NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
+        CAST(cl.luser AS CHAR)
+    ) AS agent_name,
     CASE
         WHEN LOWER(COALESCE(cl.ltype, '')) LIKE '%text%' OR LOWER(COALESCE(cl.ltype, '')) LIKE '%sms%' THEN 'text'
         ELSE 'call'
@@ -602,6 +664,7 @@ SELECT
     cl.lstatus AS outcome,
     cl.ldatetime AS occurred_at
 FROM tblcustomer_logs cl
+LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.luser AS CHAR)
 WHERE cl.lmain_id = ?
   AND cl.lcustomer_id IN ({$placeholders})
 ORDER BY cl.ldatetime DESC, cl.lid DESC
@@ -983,10 +1046,26 @@ SQL;
 SELECT
     CAST(cl.lid AS CHAR) AS id,
     cl.lcustomer_id AS contact_id,
+    COALESCE(
+        NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
+        CAST(cl.luser AS CHAR)
+    ) AS agent_name,
     cl.ldatetime AS occurred_at,
-    COALESCE(cl.ltype, 'call') AS channel,
-    cl.lnotes AS notes
+    CASE
+        WHEN LOWER(COALESCE(cl.ltype, '')) LIKE '%text%' OR LOWER(COALESCE(cl.ltype, '')) LIKE '%sms%' THEN 'text'
+        ELSE 'call'
+    END AS channel,
+    CASE
+        WHEN LOWER(COALESCE(cl.lnotes, '')) LIKE '%inbound%' THEN 'inbound'
+        ELSE 'outbound'
+    END AS direction,
+    0 AS duration_seconds,
+    cl.lnotes AS notes,
+    COALESCE(NULLIF(cl.lstatus, ''), 'logged') AS outcome,
+    NULL AS next_action,
+    NULL AS next_action_due
 FROM tblcustomer_logs cl
+LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.luser AS CHAR)
 WHERE cl.lmain_id = :main_id
   AND cl.lcustomer_id = :contact_id
 SQL;
@@ -1011,6 +1090,47 @@ SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    private function getCallLogById(int $mainId, int $logId): ?array
+    {
+        $sql = <<<SQL
+SELECT
+    CAST(cl.lid AS CHAR) AS id,
+    cl.lcustomer_id AS contact_id,
+    COALESCE(
+        NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
+        CAST(cl.luser AS CHAR)
+    ) AS agent_name,
+    cl.ldatetime AS occurred_at,
+    CASE
+        WHEN LOWER(COALESCE(cl.ltype, '')) LIKE '%text%' OR LOWER(COALESCE(cl.ltype, '')) LIKE '%sms%' THEN 'text'
+        ELSE 'call'
+    END AS channel,
+    CASE
+        WHEN LOWER(COALESCE(cl.lnotes, '')) LIKE '%inbound%' THEN 'inbound'
+        ELSE 'outbound'
+    END AS direction,
+    0 AS duration_seconds,
+    cl.lnotes AS notes,
+    COALESCE(NULLIF(cl.lstatus, ''), 'logged') AS outcome,
+    NULL AS next_action,
+    NULL AS next_action_due
+FROM tblcustomer_logs cl
+LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.luser AS CHAR)
+WHERE cl.lmain_id = :main_id
+  AND cl.lid = :log_id
+LIMIT 1
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([
+            'main_id' => $mainId,
+            'log_id' => $logId,
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $row ?: null;
     }
 
     /**
@@ -1047,5 +1167,67 @@ SQL;
         ]);
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    private function getRecentOwnerMessages(int $viewerUserId): array
+    {
+        if ($viewerUserId <= 0) {
+            return [];
+        }
+
+        $teamSql = <<<SQL
+SELECT
+    CAST(COALESCE(lteam, 0) AS CHAR) AS team_id,
+    CAST(COALESCE(lmother_id, 0) AS CHAR) AS main_id
+FROM tblaccount
+WHERE lid = :viewer_id
+LIMIT 1
+SQL;
+        $teamStmt = $this->db->pdo()->prepare($teamSql);
+        $teamStmt->execute(['viewer_id' => $viewerUserId]);
+        $context = $teamStmt->fetch(PDO::FETCH_ASSOC);
+        $teamId = trim((string) ($context['team_id'] ?? ''));
+        $mainId = trim((string) ($context['main_id'] ?? ''));
+
+        if ($teamId === '' || $teamId === '0') {
+            return [];
+        }
+
+        $sql = <<<SQL
+SELECT
+    CAST(tm.id AS CHAR) AS id,
+    CAST(tm.sender_id AS CHAR) AS sender_id,
+    COALESCE(tm.sender_name, '') AS sender_name,
+    COALESCE(tm.sender_avatar, '') AS sender_avatar,
+    COALESCE(tm.message, '') AS message,
+    tm.created_at AS created_at
+FROM tblteam_messages tm
+WHERE CAST(tm.team_id AS CHAR) = :team_id
+  AND COALESCE(tm.is_deleted, 0) = 0
+  AND (
+      :main_id = ''
+      OR CAST(tm.sender_id AS CHAR) = :main_id
+  )
+ORDER BY tm.created_at ASC
+LIMIT 100
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([
+            'team_id' => $teamId,
+            'main_id' => $mainId,
+        ]);
+
+        return array_map(
+            static fn(array $row): array => [
+                'id' => (string) ($row['id'] ?? ''),
+                'sender_id' => (string) ($row['sender_id'] ?? ''),
+                'sender_name' => (string) ($row['sender_name'] ?? ''),
+                'sender_avatar' => (string) ($row['sender_avatar'] ?? ''),
+                'message' => (string) ($row['message'] ?? ''),
+                'created_at' => (string) ($row['created_at'] ?? ''),
+                'is_from_owner' => true,
+            ],
+            $stmt->fetchAll(PDO::FETCH_ASSOC)
+        );
     }
 }

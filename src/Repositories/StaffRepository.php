@@ -57,6 +57,7 @@ SELECT
     CAST(COALESCE(a.lstatus, 1) AS SIGNED) AS status,
     COALESCE(a.lbirthday, '') AS birthday,
     COALESCE(a.lavatar, '') AS avatar_url,
+    COALESCE(a.laccess_rights, '[]') AS access_rights,
     CAST(COALESCE(a.lsales_quota, 0) AS DECIMAL(15,2)) AS monthly_quota,
     CAST(COALESCE(a.lcommission, 0) AS DECIMAL(10,2)) AS commission,
     COALESCE(a.ldatereg, NOW()) AS created_at
@@ -78,9 +79,7 @@ SQL;
 
         // Normalize rows
         foreach ($rows as &$row) {
-            $row['id'] = (string) $row['id'];
-            $row['full_name'] = trim($row['full_name']);
-            $row['team_id'] = $row['team_id'] === '0' ? '' : $row['team_id'];
+            $row = $this->normalizeStaffRow($row);
         }
 
         $countSql = "SELECT COUNT(*) AS total FROM tblaccount a WHERE {$whereSql}";
@@ -129,6 +128,7 @@ SELECT
     COALESCE(a.lgender, '') AS gender,
     COALESCE(DATE_FORMAT(a.lbirthday, '%Y-%m-%d'), '') AS birthday,
     COALESCE(a.lavatar, '') AS avatar_url,
+    COALESCE(a.laccess_rights, '[]') AS access_rights,
     CAST(COALESCE(a.lbranch, 0) AS SIGNED) AS branch_id,
     CAST(COALESCE(a.lsales_quota, 0) AS DECIMAL(15,2)) AS sales_quota,
     CAST(COALESCE(a.lprospect_quota, 0) AS DECIMAL(15,2)) AS prospect_quota,
@@ -151,11 +151,7 @@ SQL;
             return null;
         }
 
-        $row['id'] = (string) $row['id'];
-        $row['full_name'] = trim($row['full_name']);
-        $row['team_id'] = $row['team_id'] === '0' ? '' : $row['team_id'];
-
-        return $row;
+        return $this->normalizeStaffRow($row);
     }
 
     public function updateStaff(int $mainId, int $staffId, array $data): ?array
@@ -239,6 +235,14 @@ SQL;
             $params['branch_id'] = (int) $data['branch_id'];
         }
 
+        if (array_key_exists('access_rights', $data)) {
+            $updates[] = 'laccess_rights = :access_rights';
+            $params['access_rights'] = json_encode(
+                is_array($data['access_rights']) ? array_values($data['access_rights']) : [],
+                JSON_UNESCAPED_SLASHES
+            );
+        }
+
         if (empty($updates)) {
             return $existing;
         }
@@ -260,6 +264,73 @@ SQL;
         $stmt->execute();
 
         return $this->getStaffById($mainId, $staffId);
+    }
+
+    public function createStaff(int $mainId, array $data): array
+    {
+        $nameParts = preg_split('/\s+/', trim((string) ($data['full_name'] ?? '')), 2) ?: [];
+        $firstName = trim((string) ($nameParts[0] ?? ''));
+        $lastName = trim((string) ($nameParts[1] ?? ''));
+        $roleId = $this->findOrCreateUserType($mainId, (string) $data['role']);
+        $password = (string) ($data['password'] ?? '');
+        $recode = md5($password);
+        $hashedPassword = md5($password . $recode);
+        $accessRights = json_encode(
+            is_array($data['access_rights'] ?? null) ? array_values($data['access_rights']) : [],
+            JSON_UNESCAPED_SLASHES
+        );
+
+        $sql = <<<SQL
+INSERT INTO tblaccount (
+    lfname,
+    llname,
+    lemail,
+    lpassword,
+    lmobile,
+    lbirthday,
+    ltype,
+    lmother_id,
+    lstatus,
+    lactivation,
+    laccess_rights
+) VALUES (
+    :first_name,
+    :last_name,
+    :email,
+    :password,
+    :mobile,
+    :birthday,
+    :role_id,
+    :main_id,
+    1,
+    1,
+    :access_rights
+)
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->bindValue('first_name', $firstName, PDO::PARAM_STR);
+        $stmt->bindValue('last_name', $lastName, PDO::PARAM_STR);
+        $stmt->bindValue('email', trim((string) ($data['email'] ?? '')), PDO::PARAM_STR);
+        $stmt->bindValue('password', $hashedPassword, PDO::PARAM_STR);
+        $stmt->bindValue('mobile', (string) ($data['mobile'] ?? ''), PDO::PARAM_STR);
+        $birthday = trim((string) ($data['birthday'] ?? ''));
+        if ($birthday === '') {
+            $stmt->bindValue('birthday', null, PDO::PARAM_NULL);
+        } else {
+            $stmt->bindValue('birthday', $birthday, PDO::PARAM_STR);
+        }
+        $stmt->bindValue('role_id', (string) $roleId, PDO::PARAM_STR);
+        $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('access_rights', $accessRights, PDO::PARAM_STR);
+        $stmt->execute();
+
+        $created = $this->getStaffById($mainId, (int) $this->db->pdo()->lastInsertId());
+        if ($created === null) {
+            throw new \RuntimeException('Failed to load created staff record');
+        }
+
+        return $created;
     }
 
     public function deleteStaff(int $mainId, int $staffId): bool
@@ -334,5 +405,38 @@ SQL;
         $stmt->execute();
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    private function normalizeStaffRow(array $row): array
+    {
+        $row['id'] = (string) ($row['id'] ?? '');
+        $row['full_name'] = trim((string) ($row['full_name'] ?? ''));
+        if (array_key_exists('team_id', $row)) {
+            $row['team_id'] = ($row['team_id'] ?? '') === '0' ? '' : (string) $row['team_id'];
+        }
+        $row['access_rights'] = $this->decodeAccessRights($row['access_rights'] ?? []);
+
+        return $row;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function decodeAccessRights(mixed $value): array
+    {
+        if (is_array($value)) {
+            return array_values(array_filter($value, static fn (mixed $item): bool => is_string($item)));
+        }
+
+        if (!is_string($value) || trim($value) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        return array_values(array_filter($decoded, static fn (mixed $item): bool => is_string($item)));
     }
 }

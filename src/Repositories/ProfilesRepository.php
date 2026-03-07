@@ -198,9 +198,31 @@ final class ProfilesRepository
             'fullName' => $fullName,
             'full_name' => $fullName,
             'role' => $row['lgroup'] ?? '',
+            'access_rights' => $this->decodeAccessRights($row['laccess_rights'] ?? $row['access_rights'] ?? []),
             'status' => (int) ($row['lstatus'] ?? 0),
             'avatar' => null, // Not in original tbluser
             'avatarUrl' => null,
         ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function decodeAccessRights(mixed $value): array
+    {
+        if (is_array($value)) {
+            return array_values(array_filter($value, static fn (mixed $item): bool => is_string($item)));
+        }
+
+        if (!is_string($value) || trim($value) === '') {
+            return [];
+        }
+
+        $decoded = json_decode($value, true);
+        if (!is_array($decoded)) {
+            return [];
+        }
+
+        return array_values(array_filter($decoded, static fn (mixed $item): bool => is_string($item)));
     }
 }

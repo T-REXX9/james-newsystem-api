@@ -37,6 +37,21 @@ final class DailyCallMonitoringController
         return $this->repo->getOwnerSnapshot($mainId);
     }
 
+    public function agentSnapshot(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $viewerUserId = (int) ($query['viewer_user_id'] ?? 0);
+        if ($viewerUserId <= 0) {
+            throw new HttpException(422, 'viewer_user_id is required');
+        }
+
+        return $this->repo->getAgentSnapshot($mainId, $viewerUserId);
+    }
+
     public function customerPurchaseHistory(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);
@@ -121,5 +136,33 @@ final class DailyCallMonitoringController
         }
 
         return $this->repo->getReturnRecords($mainId, $contactId);
+    }
+
+    public function createCallLog(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $contactId = trim((string) ($body['contact_id'] ?? ''));
+        if ($contactId === '') {
+            throw new HttpException(422, 'contact_id is required');
+        }
+
+        $notes = trim((string) ($body['notes'] ?? ''));
+        if ($notes === '') {
+            throw new HttpException(422, 'notes is required');
+        }
+
+        return $this->repo->createCallLog($mainId, [
+            'contact_id' => $contactId,
+            'user_id' => $body['user_id'] ?? null,
+            'agent_name' => $body['agent_name'] ?? null,
+            'channel' => $body['channel'] ?? 'call',
+            'outcome' => $body['outcome'] ?? 'logged',
+            'notes' => $notes,
+            'occurred_at' => $body['occurred_at'] ?? null,
+        ]);
     }
 }
