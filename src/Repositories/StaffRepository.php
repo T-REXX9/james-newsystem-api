@@ -58,6 +58,8 @@ SELECT
     COALESCE(a.lbirthday, '') AS birthday,
     COALESCE(a.lavatar, '') AS avatar_url,
     COALESCE(a.laccess_rights, '[]') AS access_rights,
+    CAST(a.group_id AS CHAR) AS group_id,
+    CAST(COALESCE(a.access_override, 0) AS SIGNED) AS access_override,
     CAST(COALESCE(a.lsales_quota, 0) AS DECIMAL(15,2)) AS monthly_quota,
     CAST(COALESCE(a.lcommission, 0) AS DECIMAL(10,2)) AS commission,
     COALESCE(a.ldatereg, NOW()) AS created_at
@@ -129,6 +131,8 @@ SELECT
     COALESCE(DATE_FORMAT(a.lbirthday, '%Y-%m-%d'), '') AS birthday,
     COALESCE(a.lavatar, '') AS avatar_url,
     COALESCE(a.laccess_rights, '[]') AS access_rights,
+    CAST(a.group_id AS CHAR) AS group_id,
+    CAST(COALESCE(a.access_override, 0) AS SIGNED) AS access_override,
     CAST(COALESCE(a.lbranch, 0) AS SIGNED) AS branch_id,
     CAST(COALESCE(a.lsales_quota, 0) AS DECIMAL(15,2)) AS sales_quota,
     CAST(COALESCE(a.lprospect_quota, 0) AS DECIMAL(15,2)) AS prospect_quota,
@@ -243,6 +247,16 @@ SQL;
             );
         }
 
+        if (array_key_exists('access_override', $data)) {
+            $updates[] = 'access_override = :access_override';
+            $params['access_override'] = $data['access_override'] ? 1 : 0;
+        }
+
+        if (array_key_exists('group_id', $data)) {
+            $updates[] = 'group_id = :group_id';
+            $params['group_id'] = $data['group_id'] === '' || $data['group_id'] === null ? null : (int) $data['group_id'];
+        }
+
         if (empty($updates)) {
             return $existing;
         }
@@ -292,7 +306,8 @@ INSERT INTO tblaccount (
     lmother_id,
     lstatus,
     lactivation,
-    laccess_rights
+    laccess_rights,
+    group_id
 ) VALUES (
     :first_name,
     :last_name,
@@ -304,7 +319,8 @@ INSERT INTO tblaccount (
     :main_id,
     1,
     1,
-    :access_rights
+    :access_rights,
+    :group_id
 )
 SQL;
 
@@ -323,6 +339,12 @@ SQL;
         $stmt->bindValue('role_id', (string) $roleId, PDO::PARAM_STR);
         $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
         $stmt->bindValue('access_rights', $accessRights, PDO::PARAM_STR);
+        $groupId = $data['group_id'] ?? null;
+        if ($groupId === '' || $groupId === null) {
+            $stmt->bindValue('group_id', null, PDO::PARAM_NULL);
+        } else {
+            $stmt->bindValue('group_id', (int) $groupId, PDO::PARAM_INT);
+        }
         $stmt->execute();
 
         $created = $this->getStaffById($mainId, (int) $this->db->pdo()->lastInsertId());
@@ -414,6 +436,12 @@ SQL;
         if (array_key_exists('team_id', $row)) {
             $row['team_id'] = ($row['team_id'] ?? '') === '0' ? '' : (string) $row['team_id'];
         }
+        if (array_key_exists('group_id', $row)) {
+            $row['group_id'] = ($row['group_id'] ?? '') === '' || ($row['group_id'] ?? '') === '0'
+                ? null
+                : (string) $row['group_id'];
+        }
+        $row['access_override'] = (bool) ($row['access_override'] ?? 0);
         $row['access_rights'] = $this->decodeAccessRights($row['access_rights'] ?? []);
 
         return $row;

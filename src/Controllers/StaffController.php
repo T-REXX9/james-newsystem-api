@@ -74,6 +74,8 @@ final class StaffController
             'commission',
             'branch_id',
             'access_rights',
+            'access_override',
+            'group_id',
         ];
 
         $data = [];
@@ -134,6 +136,7 @@ final class StaffController
             'birthday' => $body['birthday'] ?? null,
             'mobile' => $body['mobile'] ?? null,
             'access_rights' => $body['access_rights'] ?? [],
+            'group_id' => $body['group_id'] ?? null,
         ]);
     }
 

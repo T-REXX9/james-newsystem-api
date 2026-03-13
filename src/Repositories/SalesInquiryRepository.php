@@ -555,6 +555,22 @@ SQL;
             }
         }
 
+        $items = is_array($inquiry['items'] ?? null) ? $inquiry['items'] : [];
+        $approvedItems = array_values(array_filter(
+            $items,
+            static function (mixed $item): bool {
+                if (!is_array($item)) {
+                    return false;
+                }
+
+                return (int) ($item['approved'] ?? 0) > 0
+                    && strcasecmp(trim((string) ($item['remark'] ?? '')), 'NotListed') !== 0;
+            }
+        ));
+        if ($approvedItems === []) {
+            throw new RuntimeException('Inquiry has no approved items to convert');
+        }
+
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
@@ -599,14 +615,13 @@ SQL;
                 'lcity' => (string) ($inquiry['city'] ?? ''),
             ]);
 
-            $items = is_array($inquiry['items'] ?? null) ? $inquiry['items'] : [];
             $insertItem = $pdo->prepare(
                 'INSERT INTO tbltransaction_item
                 (lrefno, ltype, litemid, lname, ldesc, lprice, lqty, luser, linv_refno, litem_refno, litemcode, lpartno, lbrand, llocation, lremark, ltransaction_date, lcancel)
                 VALUES
                 (:lrefno, :ltype, :litemid, :lname, :ldesc, :lprice, :lqty, :luser, :linv_refno, :litem_refno, :litemcode, :lpartno, :lbrand, :llocation, :lremark, :ltransaction_date, 0)'
             );
-            foreach ($items as $item) {
+            foreach ($approvedItems as $item) {
                 if (!is_array($item)) {
                     continue;
                 }

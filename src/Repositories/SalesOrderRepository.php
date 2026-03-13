@@ -156,7 +156,7 @@ SQL;
         )));
 
         $aggregateByRef = $this->fetchListAggregatesByRefnos($refnos);
-        $viewerIsApprover = $viewerUserId > 0 ? $this->isApprover($viewerUserId) : false;
+        $viewerIsApprover = $viewerUserId > 0 ? $this->isApprover($mainId, $viewerUserId, 'SO') : false;
         foreach ($items as &$row) {
             $ref = (string) ($row['sales_refno'] ?? '');
             $agg = $aggregateByRef[$ref] ?? ['item_count' => 0, 'grand_total' => 0.0];
@@ -324,7 +324,7 @@ SQL;
         }
 
         $items = $this->listItems($salesRefno);
-        $order['viewer_is_approver'] = $viewerUserId > 0 ? $this->isApprover($viewerUserId) : false;
+        $order['viewer_is_approver'] = $viewerUserId > 0 ? $this->isApprover($mainId, $viewerUserId, 'SO') : false;
         $summary = [
             'item_count' => count($items),
             'total_qty' => 0,
@@ -668,7 +668,7 @@ SQL;
             $set[] = "lsubmitstat = 'Submitted'";
             $set[] = 'lcancel = 0';
         } elseif ($normalizedAction === 'approve' || $normalizedAction === 'approvesales') {
-            if (!$this->isApprover($viewerUserId)) {
+            if (!$this->isApprover($mainId, $viewerUserId, 'SO')) {
                 throw new RuntimeException('Only approver accounts can approve sales orders');
             }
             $set[] = "lsubmitstat = 'Approved'";
@@ -1280,20 +1280,62 @@ SQL;
         return $candidate === '' ? $fallback : $candidate;
     }
 
-    private function isApprover(int $userId): bool
+    private function isApprover(int $mainId, int $userId, string $module): bool
     {
-        if ($userId <= 0) {
+        if ($mainId <= 0 || $userId <= 0) {
             return false;
+        }
+
+        $ownerStmt = $this->db->pdo()->prepare(
+            'SELECT 1
+             FROM tblaccount
+             WHERE lid = :user_id
+               AND COALESCE(lstatus, 0) = 1
+               AND CAST(COALESCE(ltype, 0) AS SIGNED) = 1
+             LIMIT 1'
+        );
+        $ownerStmt->execute(['user_id' => $userId]);
+        if ($ownerStmt->fetchColumn() !== false) {
+            return true;
+        }
+
+        $aliases = $this->approverModuleAliases($module);
+        $placeholders = [];
+        $params = [
+            'main_id' => (string) $mainId,
+            'user_id' => (string) $userId,
+        ];
+        foreach ($aliases as $index => $alias) {
+            $key = 'module_' . $index;
+            $placeholders[] = ':' . $key;
+            $params[$key] = $alias;
         }
 
         $stmt = $this->db->pdo()->prepare(
             'SELECT 1
              FROM tblapprover
-             WHERE lstaff_id = :user_id
+             WHERE lmain_id = :main_id
+               AND lstaff_id = :user_id
+               AND COALESCE(ltrans_type, \'\') IN (' . implode(', ', $placeholders) . ')
              LIMIT 1'
         );
-        $stmt->execute(['user_id' => (string) $userId]);
+        $stmt->execute($params);
         return $stmt->fetchColumn() !== false;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function approverModuleAliases(string $module): array
+    {
+        $normalized = strtolower(trim($module));
+
+        return match ($normalized) {
+            'so', 'sales order', 'sales-order' => ['SO', 'Sales Order'],
+            'po', 'purchase order', 'purchase-order' => ['PO', 'Purchase Order'],
+            'pr', 'purchase request', 'purchase-request' => ['PR', 'Purchase Request'],
+            default => [strtoupper(trim($module)), trim($module)],
+        };
     }
 
     /**

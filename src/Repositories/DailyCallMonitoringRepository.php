@@ -1205,8 +1205,8 @@ FROM tblteam_messages tm
 WHERE CAST(tm.team_id AS CHAR) = :team_id
   AND COALESCE(tm.is_deleted, 0) = 0
   AND (
-      :main_id = ''
-      OR CAST(tm.sender_id AS CHAR) = :main_id
+      :filter_main_id = ''
+      OR CAST(tm.sender_id AS CHAR) = :sender_main_id
   )
 ORDER BY tm.created_at ASC
 LIMIT 100
@@ -1214,7 +1214,8 @@ SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute([
             'team_id' => $teamId,
-            'main_id' => $mainId,
+            'filter_main_id' => $mainId,
+            'sender_main_id' => $mainId,
         ]);
 
         return array_map(

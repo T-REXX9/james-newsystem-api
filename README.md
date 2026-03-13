@@ -16,6 +16,8 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
    - `mysql -u root topnotch < migrations/003_create_ai_campaign_tables.sql`
    - `mysql -u root topnotch < migrations/004_add_tblaccount_access_rights.sql`
    - `mysql -u root topnotch < migrations/005_add_stock_adjustment_header_fields.sql`
+   - `mysql -u root topnotch < migrations/006_add_access_groups_and_staff_group.sql`
+     *(Required for `/api/v1/access-groups` endpoints and `group_id` on `/api/v1/staff`)*
 4. Run local server:
    - `php -S 127.0.0.1:8081 -t public`
 
@@ -96,6 +98,10 @@ If you use the combined launcher, API URL/port come from:
 - `POST /auth/login`
 - `GET /auth/me` (Authorization: Bearer token)
 - `POST /auth/logout` (Authorization: Bearer token)
+- `GET /access-groups?main_id={mainId}`
+- `POST /access-groups`
+- `PATCH /access-groups/{id}`
+- `DELETE /access-groups/{id}?main_id={mainId}`
 - `GET /sales/flow/inquiry/{inquiryRefno}`
 - `GET /sales/flow/so/{soRefno}`
 
