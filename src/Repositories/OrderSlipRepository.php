@@ -658,6 +658,24 @@ SQL;
             return $this->getOrderSlip($mainId, $orderSlipRefno);
         }
 
+        if ($normalized === 'unpost') {
+            $stmt = $this->db->pdo()->prepare(
+                'UPDATE tbldelivery_receipt
+                 SET lstatus = :status, lcancel = 0
+                 WHERE lmain_id = :main_id AND lrefno = :order_slip_refno
+                 LIMIT 1'
+            );
+            $stmt->execute([
+                'status' => 'Pending',
+                'main_id' => (string) $mainId,
+                'order_slip_refno' => $orderSlipRefno,
+            ]);
+            if ($stmt->rowCount() === 0) {
+                return null;
+            }
+            return $this->getOrderSlip($mainId, $orderSlipRefno);
+        }
+
         if ($normalized === 'print' || $normalized === 'printed') {
             $stmt = $this->db->pdo()->prepare(
                 'UPDATE tbldelivery_receipt

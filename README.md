@@ -18,6 +18,11 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
    - `mysql -u root topnotch < migrations/005_add_stock_adjustment_header_fields.sql`
    - `mysql -u root topnotch < migrations/006_add_access_groups_and_staff_group.sql`
      *(Required for `/api/v1/access-groups` endpoints and `group_id` on `/api/v1/staff`)*
+   - `mysql -u root topnotch < migrations/007_add_tblaccount_access_override.sql`
+   - `php migrations/008_backfill_access_groups_from_legacy.php`
+     *(Required for rollout — backfills `access_groups` and staff assignments from legacy
+     `tblusertype`/`tblweb_permission` data. Idempotent; safe to run multiple times.
+     Reads DB credentials from `.env`.)*
 4. Run local server:
    - `php -S 127.0.0.1:8081 -t public`
 
