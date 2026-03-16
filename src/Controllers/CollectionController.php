@@ -173,6 +173,22 @@ final class CollectionController
         };
     }
 
+    public function delete(array $params, array $query = [], array $body = []): array
+    {
+        $refno = (string) ($params['collectionRefno'] ?? '');
+        if ($refno === '') {
+            throw new HttpException(422, 'collectionRefno is required');
+        }
+
+        $record = $this->repo->getCollection($refno);
+        if ($record === null) {
+            throw new HttpException(404, 'Collection record not found');
+        }
+
+        $this->repo->deleteCollection($refno);
+        return ['deleted' => true, 'collection_refno' => $refno];
+    }
+
     public function deleteItem(array $params, array $query = [], array $body = []): array
     {
         $itemId = (int) ($params['itemId'] ?? 0);

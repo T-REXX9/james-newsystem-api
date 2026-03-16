@@ -733,6 +733,42 @@ SQL;
         }
     }
 
+    public function deleteCollection(string $refno): void
+    {
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            // Delete collection item transactions linked to items of this collection
+            $stmtTx = $pdo->prepare(
+                'DELETE cit FROM tblcollection_item_transactions cit
+                 INNER JOIN tblcollection_item ci ON ci.lid = cit.lcollection_itemid
+                 WHERE ci.lrefno = :refno'
+            );
+            $stmtTx->execute(['refno' => $refno]);
+
+            // Delete ledger entries linked to this collection
+            $stmtLedger = $pdo->prepare('DELETE FROM tblledger WHERE lrefno = :refno');
+            $stmtLedger->execute(['refno' => $refno]);
+
+            // Delete approver logs linked to this collection
+            $stmtLogs = $pdo->prepare('DELETE FROM tblapprove_logs WHERE lsales_refno = :refno');
+            $stmtLogs->execute(['refno' => $refno]);
+
+            // Delete all collection items
+            $stmtItems = $pdo->prepare('DELETE FROM tblcollection_item WHERE lrefno = :refno');
+            $stmtItems->execute(['refno' => $refno]);
+
+            // Delete the collection header
+            $stmtHeader = $pdo->prepare('DELETE FROM tblcollection WHERE lrefno = :refno');
+            $stmtHeader->execute(['refno' => $refno]);
+
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
     public function deleteCollectionItem(int $itemId): void
     {
         $pdo = $this->db->pdo();
