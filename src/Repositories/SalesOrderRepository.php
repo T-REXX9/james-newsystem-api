@@ -111,6 +111,7 @@ SQL;
 SELECT
     so.lid AS id,
     COALESCE(so.luser, '') AS user_id,
+    COALESCE(so.luser, '') AS created_by_id,
     COALESCE(so.lrefno, '') AS sales_refno,
     COALESCE(so.lsaleno, '') AS sales_no,
     COALESCE(so.ldate, '') AS sales_date,
@@ -275,6 +276,7 @@ SQL;
         $orderSql = <<<SQL
 SELECT
     so.lid AS id,
+    COALESCE(so.luser, '') AS created_by_id,
     COALESCE(so.lrefno, '') AS sales_refno,
     COALESCE(so.lsaleno, '') AS sales_no,
     COALESCE(so.ldate, '') AS sales_date,

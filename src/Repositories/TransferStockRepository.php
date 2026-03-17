@@ -88,6 +88,7 @@ SELECT
     COALESCE(tr.lpartno, '') AS part_numbers_raw,
     COALESCE(tr.lmain_id, '') AS main_id,
     COALESCE(tr.luser_id, '') AS user_id,
+    COALESCE(tr.luser_id, '') AS processed_by_id,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by
 FROM tblbranchinventory_transferlist tr
 LEFT JOIN tblaccount acc
@@ -472,6 +473,7 @@ SELECT
     COALESCE(tr.lpartno, '') AS part_numbers_raw,
     COALESCE(tr.lmain_id, '') AS main_id,
     COALESCE(tr.luser_id, '') AS user_id,
+    COALESCE(tr.luser_id, '') AS processed_by_id,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by
 FROM tblbranchinventory_transferlist tr
 LEFT JOIN tblaccount acc
@@ -549,6 +551,7 @@ SQL;
             'part_numbers_raw' => (string) ($row['part_numbers_raw'] ?? ''),
             'created_by' => trim((string) ($row['created_by'] ?? '')),
             'processed_by' => (string) ($row['user_id'] ?? ''),
+            'processed_by_id' => (string) ($row['processed_by_id'] ?? $row['user_id'] ?? ''),
             'main_id' => (string) ($row['main_id'] ?? ''),
             'item_count' => (int) ($row['item_count'] ?? 0),
             'total_transfer_qty' => (float) ($row['total_transfer_qty'] ?? 0),
