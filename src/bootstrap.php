@@ -31,6 +31,7 @@ use App\Controllers\PurchaseOrderController;
 use App\Controllers\ReceivingStockController;
 use App\Controllers\ReorderReportController;
 use App\Controllers\ReturnToSupplierController;
+use App\Controllers\SupplierController;
 use App\Controllers\SalesController;
 use App\Controllers\SalesDevelopmentReportController;
 use App\Controllers\SalesReturnController;
@@ -43,12 +44,16 @@ use App\Controllers\StockAdjustmentController;
 use App\Controllers\StatementOfAccountController;
 use App\Controllers\SuggestedStockReportController;
 use App\Controllers\ApproverController;
+use App\Controllers\AccountsReceivableController;
 use App\Controllers\StaffController;
+use App\Controllers\SpecialPriceController;
 use App\Controllers\TeamController;
 use App\Controllers\TransferStockController;
 use App\Controllers\CampaignController;
 use App\Controllers\PromotionController;
 use App\Http\Router;
+use App\Security\TokenService;
+use App\Support\Exceptions\HttpException;
 use App\Support\Env;
 
 require __DIR__ . '/Support/Env.php';
@@ -63,6 +68,7 @@ require __DIR__ . '/Repositories/AdjustmentEntryRepository.php';
 require __DIR__ . '/Repositories/ApproverRepository.php';
 require __DIR__ . '/Repositories/ActivityLogRepository.php';
 require __DIR__ . '/Repositories/AccessGroupRepository.php';
+require __DIR__ . '/Repositories/AccountsReceivableRepository.php';
 require __DIR__ . '/Repositories/CollectionRepository.php';
 require __DIR__ . '/Repositories/ContactsRepository.php';
 require __DIR__ . '/Repositories/DealsRepository.php';
@@ -79,6 +85,7 @@ require __DIR__ . '/Repositories/PurchaseOrderRepository.php';
 require __DIR__ . '/Repositories/ReceivingStockRepository.php';
 require __DIR__ . '/Repositories/ReorderReportRepository.php';
 require __DIR__ . '/Repositories/ReturnToSupplierRepository.php';
+require __DIR__ . '/Repositories/SupplierRepository.php';
 require __DIR__ . '/Repositories/OrderSlipRepository.php';
 require __DIR__ . '/Repositories/InvoiceRepository.php';
 require __DIR__ . '/Repositories/InquiryReportRepository.php';
@@ -97,6 +104,7 @@ require __DIR__ . '/Repositories/StockAdjustmentRepository.php';
 require __DIR__ . '/Repositories/StatementOfAccountRepository.php';
 require __DIR__ . '/Repositories/SuggestedStockReportRepository.php';
 require __DIR__ . '/Repositories/StaffRepository.php';
+require __DIR__ . '/Repositories/SpecialPriceRepository.php';
 require __DIR__ . '/Repositories/TeamRepository.php';
 require __DIR__ . '/Repositories/TransferStockRepository.php';
 require __DIR__ . '/Repositories/CampaignOutreachRepository.php';
@@ -113,6 +121,7 @@ require __DIR__ . '/Controllers/AdjustmentEntryController.php';
 require __DIR__ . '/Controllers/ApproverController.php';
 require __DIR__ . '/Controllers/ActivityLogController.php';
 require __DIR__ . '/Controllers/AccessGroupController.php';
+require __DIR__ . '/Controllers/AccountsReceivableController.php';
 require __DIR__ . '/Controllers/CollectionController.php';
 require __DIR__ . '/Controllers/ContactsController.php';
 require __DIR__ . '/Controllers/DealsController.php';
@@ -129,6 +138,7 @@ require __DIR__ . '/Controllers/PurchaseOrderController.php';
 require __DIR__ . '/Controllers/ReceivingStockController.php';
 require __DIR__ . '/Controllers/ReorderReportController.php';
 require __DIR__ . '/Controllers/ReturnToSupplierController.php';
+require __DIR__ . '/Controllers/SupplierController.php';
 require __DIR__ . '/Controllers/OrderSlipController.php';
 require __DIR__ . '/Controllers/InvoiceController.php';
 require __DIR__ . '/Controllers/InactiveActiveCustomersReportController.php';
@@ -147,6 +157,7 @@ require __DIR__ . '/Controllers/StockAdjustmentController.php';
 require __DIR__ . '/Controllers/StatementOfAccountController.php';
 require __DIR__ . '/Controllers/SuggestedStockReportController.php';
 require __DIR__ . '/Controllers/StaffController.php';
+require __DIR__ . '/Controllers/SpecialPriceController.php';
 require __DIR__ . '/Controllers/TeamController.php';
 require __DIR__ . '/Controllers/TransferStockController.php';
 require __DIR__ . '/Controllers/CampaignController.php';
@@ -208,6 +219,7 @@ function app_router(): Router
     $approverController = new ApproverController(new App\Repositories\ApproverRepository($db));
     $activityLogController = new ActivityLogController(new App\Repositories\ActivityLogRepository($db));
     $accessGroupController = new AccessGroupController(new App\Repositories\AccessGroupRepository($db));
+    $accountsReceivableController = new AccountsReceivableController(new App\Repositories\AccountsReceivableRepository($db));
     $collectionController = new CollectionController(new App\Repositories\CollectionRepository($db));
     $contactsController = new ContactsController(new App\Repositories\ContactsRepository($db));
     $dealsController = new DealsController(new App\Repositories\DealsRepository($db));
@@ -217,9 +229,10 @@ function app_router(): Router
     $dailyCallMonitoringController = new DailyCallMonitoringController(new App\Repositories\DailyCallMonitoringRepository($db));
     $fastSlowInventoryReportController = new FastSlowInventoryReportController(new App\Repositories\FastSlowInventoryReportRepository($db));
     $freightChargesController = new FreightChargesController(new App\Repositories\FreightChargesRepository($db));
+    $tokenService = new TokenService($config->authSecret, $config->authTokenTtlSeconds);
     $authController = new AuthController(
         new App\Repositories\AuthRepository($db),
-        new App\Security\TokenService($config->authSecret, $config->authTokenTtlSeconds)
+        $tokenService
     );
     $productController = new ProductController(new App\Repositories\ProductRepository($db));
     $purchaseRequestController = new PurchaseRequestController(new App\Repositories\PurchaseRequestRepository($db));
@@ -227,6 +240,7 @@ function app_router(): Router
     $receivingStockController = new ReceivingStockController(new App\Repositories\ReceivingStockRepository($db));
     $reorderReportController = new ReorderReportController(new App\Repositories\ReorderReportRepository($db));
     $returnToSupplierController = new ReturnToSupplierController(new App\Repositories\ReturnToSupplierRepository($db));
+    $supplierController = new SupplierController(new App\Repositories\SupplierRepository($db));
     $orderSlipController = new OrderSlipController(new App\Repositories\OrderSlipRepository($db));
     $invoiceController = new InvoiceController(new App\Repositories\InvoiceRepository($db));
     $inactiveActiveCustomersReportController = new InactiveActiveCustomersReportController(new App\Repositories\InactiveActiveCustomersReportRepository($db));
@@ -246,6 +260,10 @@ function app_router(): Router
     $suggestedStockReportController = new SuggestedStockReportController(new App\Repositories\SuggestedStockReportRepository($db));
     $staffController = new StaffController(new App\Repositories\StaffRepository($db));
     $teamController = new TeamController(new App\Repositories\TeamRepository($db));
+    $specialPriceController = new SpecialPriceController(
+        new App\Repositories\SpecialPriceRepository($db),
+        $tokenService
+    );
     $transferStockController = new TransferStockController(new App\Repositories\TransferStockRepository($db));
     $campaignController = new CampaignController(
         new App\Repositories\CampaignOutreachRepository($db),
@@ -258,6 +276,22 @@ function app_router(): Router
         new App\Repositories\PromotionPostingRepository($db)
     );
 
+    $requireBearerAuth = static function (callable $handler) use ($tokenService): callable {
+        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService) {
+            $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['Authorization'] ?? '';
+            if (!is_string($header) || trim($header) === '') {
+                throw new HttpException(401, 'Authorization header is required');
+            }
+
+            if (!preg_match('/^Bearer\s+(.+)$/i', trim($header), $matches)) {
+                throw new HttpException(401, 'Bearer token is required');
+            }
+
+            $tokenService->verify((string) $matches[1]);
+            return $handler($params, $query, $body);
+        };
+    };
+
     $router = new Router();
     $router->get('/api/v1/health', [$healthController, 'index']);
     $router->get('/api/v1/customers/{sessionId}', [$customerController, 'show']);
@@ -265,6 +299,7 @@ function app_router(): Router
     $router->get('/api/v1/customers/{sessionId}/ledger', [$customerController, 'ledger']);
     $router->get('/api/v1/statements/customers', [$statementOfAccountController, 'customers']);
     $router->get('/api/v1/statements/of-account', [$statementOfAccountController, 'report']);
+    $router->get('/api/v1/accounts-receivable', [$accountsReceivableController, 'report']);
     $router->get('/api/v1/adjustment-entries', [$adjustmentEntryController, 'list']);
     $router->get('/api/v1/adjustment-entries/{refno}', [$adjustmentEntryController, 'show']);
     $router->post('/api/v1/adjustment-entries', [$adjustmentEntryController, 'create']);
@@ -380,6 +415,11 @@ function app_router(): Router
     $router->patch('/api/v1/purchase-orders/{purchaseRefno}', [$purchaseOrderController, 'update']);
     $router->delete('/api/v1/purchase-orders/{purchaseRefno}', [$purchaseOrderController, 'delete']);
     $router->post('/api/v1/purchase-orders/{purchaseRefno}/items', [$purchaseOrderController, 'addItem']);
+    $router->get('/api/v1/suppliers', [$supplierController, 'list']);
+    $router->get('/api/v1/suppliers/{supplierId}', [$supplierController, 'show']);
+    $router->post('/api/v1/suppliers', [$supplierController, 'create']);
+    $router->patch('/api/v1/suppliers/{supplierId}', [$supplierController, 'update']);
+    $router->delete('/api/v1/suppliers/{supplierId}', [$supplierController, 'delete']);
     $router->patch('/api/v1/purchase-order-items/{itemId}', [$purchaseOrderController, 'updateItem']);
     $router->delete('/api/v1/purchase-order-items/{itemId}', [$purchaseOrderController, 'deleteItem']);
     $router->get('/api/v1/receiving-stocks', [$receivingStockController, 'list']);
@@ -507,6 +547,21 @@ function app_router(): Router
     $router->post('/api/v1/teams', [$teamController, 'create']);
     $router->patch('/api/v1/teams/{teamId}', [$teamController, 'update']);
     $router->delete('/api/v1/teams/{teamId}', [$teamController, 'delete']);
+    $router->get('/api/v1/special-prices/products', $requireBearerAuth([$specialPriceController, 'products']));
+    $router->get('/api/v1/special-prices/customers', $requireBearerAuth([$specialPriceController, 'customers']));
+    $router->get('/api/v1/special-prices/areas', $requireBearerAuth([$specialPriceController, 'areas']));
+    $router->get('/api/v1/special-prices/categories', $requireBearerAuth([$specialPriceController, 'categories']));
+    $router->get('/api/v1/special-prices', $requireBearerAuth([$specialPriceController, 'list']));
+    $router->post('/api/v1/special-prices', $requireBearerAuth([$specialPriceController, 'create']));
+    $router->get('/api/v1/special-prices/{refno}', $requireBearerAuth([$specialPriceController, 'show']));
+    $router->patch('/api/v1/special-prices/{refno}', $requireBearerAuth([$specialPriceController, 'update']));
+    $router->delete('/api/v1/special-prices/{refno}', $requireBearerAuth([$specialPriceController, 'delete']));
+    $router->post('/api/v1/special-prices/{refno}/customers', $requireBearerAuth([$specialPriceController, 'addCustomer']));
+    $router->delete('/api/v1/special-prices/{refno}/customers/{patientRefno}', $requireBearerAuth([$specialPriceController, 'removeCustomer']));
+    $router->post('/api/v1/special-prices/{refno}/areas', $requireBearerAuth([$specialPriceController, 'addArea']));
+    $router->delete('/api/v1/special-prices/{refno}/areas/{areaCode}', $requireBearerAuth([$specialPriceController, 'removeArea']));
+    $router->post('/api/v1/special-prices/{refno}/categories', $requireBearerAuth([$specialPriceController, 'addCategory']));
+    $router->delete('/api/v1/special-prices/{refno}/categories/{categoryId}', $requireBearerAuth([$specialPriceController, 'removeCategory']));
     // Campaign Outreach
     $router->get('/api/v1/campaigns/{campaignId}/outreach', [$campaignController, 'listOutreach']);
     $router->get('/api/v1/campaigns/{campaignId}/outreach/{id}', [$campaignController, 'getOutreach']);
