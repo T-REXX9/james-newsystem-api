@@ -89,6 +89,30 @@ final class CustomerDatabaseController
         return $record;
     }
 
+    public function bulkUpdate(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $sessionIds = is_array($body['session_ids'] ?? null) ? $body['session_ids'] : [];
+        if ($sessionIds === []) {
+            throw new HttpException(422, 'session_ids is required');
+        }
+
+        $updates = is_array($body['updates'] ?? null) ? $body['updates'] : [];
+        if ($updates === []) {
+            throw new HttpException(422, 'updates is required');
+        }
+
+        try {
+            return $this->repo->bulkUpdateCustomers($mainId, $sessionIds, $updates);
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
+    }
+
     public function delete(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);

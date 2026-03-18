@@ -10,6 +10,8 @@ use RuntimeException;
 
 final class CustomerDatabaseRepository
 {
+    private const DEFAULT_VAT_TYPE = 'Zero-Rated';
+
     public function __construct(private readonly Database $db)
     {
     }
@@ -266,9 +268,9 @@ SQL;
                 'business_line' => (string) ($payload['business_line'] ?? ''),
                 'terms' => (string) ($payload['terms'] ?? ''),
                 'transaction_type' => (string) (($payload['transaction_type'] ?? '') !== '' ? $payload['transaction_type'] : 'Order Slip'),
-                'vat_type' => (string) (($payload['vat_type'] ?? '') !== '' ? $payload['vat_type'] : 'Zero-Rated'),
+                'vat_type' => (string) (($payload['vat_type'] ?? '') !== '' ? $payload['vat_type'] : self::DEFAULT_VAT_TYPE),
                 'vat_percent' => isset($payload['vat_percent']) ? ((float) $payload['vat_percent']) : 0.12,
-                'dealer_since' => $this->normalizeDateNullable((string) ($payload['dealer_since'] ?? '')),
+                'dealer_since' => $this->normalizeDateNullable((string) ($payload['dealer_since'] ?? ''), 'dealer_since'),
                 'dealer_quota' => isset($payload['dealer_quota']) ? (float) $payload['dealer_quota'] : 0,
                 'credit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : 0,
                 'status' => isset($payload['status']) ? (int) $payload['status'] : 1,
@@ -362,7 +364,7 @@ SQL;
             'transaction_type' => (string) ($payload['transaction_type'] ?? $existing['transaction_type'] ?? ''),
             'vat_type' => (string) ($payload['vat_type'] ?? $existing['vat_type'] ?? ''),
             'vat_percent' => isset($payload['vat_percent']) ? ((float) $payload['vat_percent']) : (float) ($existing['vat_percent'] ?? 0),
-            'dealer_since' => $this->normalizeDateNullable((string) ($payload['dealer_since'] ?? $existing['dealer_since'] ?? '')),
+            'dealer_since' => $this->normalizeDateNullable((string) ($payload['dealer_since'] ?? $existing['dealer_since'] ?? ''), 'dealer_since'),
             'dealer_quota' => isset($payload['dealer_quota']) ? (float) $payload['dealer_quota'] : (float) ($existing['dealer_quota'] ?? 0),
             'credit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($existing['credit_limit'] ?? 0),
             'status' => isset($payload['status']) ? (int) $payload['status'] : (int) ($existing['status'] ?? 1),
@@ -376,6 +378,95 @@ SQL;
         ]);
 
         return $this->getCustomer($mainId, $sessionId);
+    }
+
+    public function bulkUpdateCustomers(int $mainId, array $sessionIds, array $payload): array
+    {
+        $normalizedSessionIds = array_values(array_unique(array_filter(array_map(
+            static fn ($sessionId): string => trim((string) $sessionId),
+            $sessionIds
+        ), static fn (string $sessionId): bool => $sessionId !== '')));
+
+        if ($normalizedSessionIds === []) {
+            throw new RuntimeException('session_ids must include at least one valid session ID');
+        }
+
+        $fieldMap = [
+            'company' => ['column' => 'lcompany', 'value' => static fn ($value): string => (string) $value],
+            'sales_person_id' => ['column' => 'lsales_person', 'value' => static fn ($value): string => (string) $value],
+            'refer_by' => ['column' => 'lrefer_by', 'value' => static fn ($value): string => (string) $value],
+            'address' => ['column' => 'laddress', 'value' => static fn ($value): string => (string) $value],
+            'delivery_address' => ['column' => 'ldelivery_address', 'value' => static fn ($value): string => (string) $value],
+            'area' => ['column' => 'larea', 'value' => static fn ($value): string => (string) $value],
+            'city' => ['column' => 'lcity', 'value' => static fn ($value): string => (string) $value],
+            'province' => ['column' => 'lprovince', 'value' => static fn ($value): string => (string) $value],
+            'tin' => ['column' => 'ltin', 'value' => static fn ($value): string => (string) $value],
+            'price_group' => ['column' => 'lprice_group', 'value' => static fn ($value): string => (string) $value],
+            'business_line' => ['column' => 'lbusiness_line', 'value' => static fn ($value): string => (string) $value],
+            'terms' => ['column' => 'lterms', 'value' => static fn ($value): string => (string) $value],
+            'transaction_type' => ['column' => 'ltransaction_type', 'value' => static fn ($value): string => (string) $value],
+            'vat_type' => ['column' => 'lvat_type', 'value' => static fn ($value): string => (string) $value],
+            'vat_percent' => ['column' => 'lvat_percent', 'value' => static fn ($value): float => (float) $value],
+            'dealer_since' => ['column' => 'ldealer_since', 'value' => fn ($value): ?string => $this->normalizeDateNullable((string) $value, 'dealer_since')],
+            'dealer_quota' => ['column' => 'ldealer_quota', 'value' => static fn ($value): float => (float) $value],
+            'credit_limit' => ['column' => 'lcredit', 'value' => static fn ($value): float => (float) $value],
+            'status' => ['column' => 'lstatus', 'value' => static fn ($value): int => (int) $value],
+            'notes' => ['column' => 'lnotes', 'value' => static fn ($value): string => (string) $value],
+            'debt_type' => ['column' => 'ldebt_type', 'value' => static fn ($value): string => (string) $value],
+            'profile_type' => ['column' => 'lprofile_type', 'value' => static fn ($value): string => (string) $value],
+        ];
+
+        $assignments = [];
+        $params = ['main_id' => $mainId];
+
+        foreach ($fieldMap as $apiField => $config) {
+            if (!array_key_exists($apiField, $payload)) {
+                continue;
+            }
+
+            $paramKey = 'set_' . $apiField;
+            $assignments[] = sprintf('%s = :%s', $config['column'], $paramKey);
+            $params[$paramKey] = $config['value']($payload[$apiField]);
+        }
+
+        if ($assignments === []) {
+            throw new RuntimeException('No supported fields provided for bulk update');
+        }
+
+        $sessionPlaceholders = [];
+        foreach ($normalizedSessionIds as $index => $sessionId) {
+            $paramKey = 'session_id_' . $index;
+            $sessionPlaceholders[] = ':' . $paramKey;
+            $params[$paramKey] = $sessionId;
+        }
+
+        $sql = sprintf(
+            'UPDATE tblpatient SET %s WHERE lmain_id = :main_id AND lsessionid IN (%s)',
+            implode(', ', $assignments),
+            implode(', ', $sessionPlaceholders)
+        );
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        foreach ($params as $key => $value) {
+            if (is_int($value)) {
+                $stmt->bindValue($key, $value, PDO::PARAM_INT);
+                continue;
+            }
+
+            if ($value === null) {
+                $stmt->bindValue($key, null, PDO::PARAM_NULL);
+                continue;
+            }
+
+            $stmt->bindValue($key, (string) $value, PDO::PARAM_STR);
+        }
+        $stmt->execute();
+
+        return [
+            'updated' => true,
+            'updated_count' => $stmt->rowCount(),
+            'session_ids' => $normalizedSessionIds,
+        ];
     }
 
     public function deleteCustomer(int $mainId, string $sessionId): bool
@@ -466,7 +557,7 @@ SQL;
             'mobile' => (string) ($payload['mobile'] ?? $existing['lc_mobile'] ?? ''),
             'email' => (string) ($payload['email'] ?? $existing['lemail'] ?? ''),
             'address' => (string) ($payload['address'] ?? $existing['laddress'] ?? ''),
-            'birthday' => $this->normalizeDateNullable((string) ($payload['birthday'] ?? $existing['lbday'] ?? '')),
+            'birthday' => $this->normalizeDateNullable((string) ($payload['birthday'] ?? $existing['lbday'] ?? ''), 'birthday'),
             'id' => $contactId,
         ]);
 
@@ -522,7 +613,7 @@ SQL;
         $stmt->execute([
             'name' => (string) ($payload['name'] ?? $existing['lname'] ?? ''),
             'class_code' => (string) ($payload['class_code'] ?? $existing['lclass_code'] ?? ''),
-            'since_date' => $this->normalizeDateNullable((string) ($payload['since'] ?? $existing['lsince'] ?? '')),
+            'since_date' => $this->normalizeDateNullable((string) ($payload['since'] ?? $existing['lsince'] ?? ''), 'since_date'),
             'quota' => isset($payload['quota']) ? (float) $payload['quota'] : (float) ($existing['lquota'] ?? 0),
             'id' => $termId,
         ]);
@@ -636,7 +727,7 @@ SQL;
             'middle_name' => (string) ($payload['middle_name'] ?? ''),
             'last_name' => (string) ($payload['last_name'] ?? ''),
             'gender' => (string) ($payload['gender'] ?? ''),
-            'birthday' => $this->normalizeDateNullable((string) ($payload['birthday'] ?? '')),
+            'birthday' => $this->normalizeDateNullable((string) ($payload['birthday'] ?? ''), 'birthday'),
             'address' => (string) ($payload['address'] ?? ''),
             'mobile' => (string) ($payload['mobile'] ?? ''),
             'phone' => (string) ($payload['phone'] ?? ''),
@@ -667,7 +758,7 @@ SQL;
             'months' => (string) ($payload['months'] ?? ''),
             'name' => $name,
             'status' => isset($payload['status']) ? (int) $payload['status'] : 0,
-            'since_date' => $this->normalizeDateNullable((string) ($payload['since'] ?? date('Y-m-d'))),
+            'since_date' => $this->normalizeDateNullable((string) ($payload['since'] ?? date('Y-m-d')), 'since_date'),
             'class_code' => (string) ($payload['class_code'] ?? ''),
             'quota' => isset($payload['quota']) ? (float) $payload['quota'] : 0,
         ]);
@@ -679,7 +770,7 @@ SQL;
         return (string) random_int(10, 15) . date('YmdHis') . (string) random_int(1, 10000) . (string) $mainId;
     }
 
-    private function normalizeDateNullable(string $value): ?string
+    private function normalizeDateNullable(string $value, string $fieldName = 'date'): ?string
     {
         $trimmed = trim($value);
         if ($trimmed === '') {
@@ -687,7 +778,7 @@ SQL;
         }
         $timestamp = strtotime($trimmed);
         if ($timestamp === false) {
-            throw new RuntimeException('invalid date format');
+            throw new RuntimeException("Invalid date format for field '{$fieldName}'. Please use YYYY-MM-DD.");
         }
         return date('Y-m-d', $timestamp);
     }

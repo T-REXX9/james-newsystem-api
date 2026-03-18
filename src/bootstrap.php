@@ -12,6 +12,7 @@ use App\Controllers\MessagesController;
 use App\Controllers\ProfilesController;
 use App\Controllers\CustomerController;
 use App\Controllers\CustomerDatabaseController;
+use App\Controllers\CustomerGroupController;
 use App\Controllers\AdjustmentEntryController;
 use App\Controllers\ActivityLogController;
 use App\Controllers\AccessGroupController;
@@ -53,6 +54,7 @@ use App\Controllers\SpecialPriceController;
 use App\Controllers\TeamController;
 use App\Controllers\TransferStockController;
 use App\Controllers\CampaignController;
+use App\Controllers\CategoryController;
 use App\Controllers\PromotionController;
 use App\Http\Router;
 use App\Security\TokenService;
@@ -67,6 +69,7 @@ require __DIR__ . '/Http/Response.php';
 require __DIR__ . '/Http/Router.php';
 require __DIR__ . '/Repositories/CustomerRepository.php';
 require __DIR__ . '/Repositories/CustomerDatabaseRepository.php';
+require __DIR__ . '/Repositories/CustomerGroupRepository.php';
 require __DIR__ . '/Repositories/AdjustmentEntryRepository.php';
 require __DIR__ . '/Repositories/ApproverRepository.php';
 require __DIR__ . '/Repositories/ActivityLogRepository.php';
@@ -114,6 +117,7 @@ require __DIR__ . '/Repositories/TeamRepository.php';
 require __DIR__ . '/Repositories/TransferStockRepository.php';
 require __DIR__ . '/Repositories/CampaignOutreachRepository.php';
 require __DIR__ . '/Repositories/CampaignFeedbackRepository.php';
+require __DIR__ . '/Repositories/CategoryRepository.php';
 require __DIR__ . '/Repositories/MessageTemplateRepository.php';
 require __DIR__ . '/Repositories/PromotionRepository.php';
 require __DIR__ . '/Repositories/PromotionProductRepository.php';
@@ -122,6 +126,7 @@ require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Controllers/HealthController.php';
 require __DIR__ . '/Controllers/CustomerController.php';
 require __DIR__ . '/Controllers/CustomerDatabaseController.php';
+require __DIR__ . '/Controllers/CustomerGroupController.php';
 require __DIR__ . '/Controllers/AdjustmentEntryController.php';
 require __DIR__ . '/Controllers/ApproverController.php';
 require __DIR__ . '/Controllers/ActivityLogController.php';
@@ -169,6 +174,7 @@ require __DIR__ . '/Controllers/SpecialPriceController.php';
 require __DIR__ . '/Controllers/TeamController.php';
 require __DIR__ . '/Controllers/TransferStockController.php';
 require __DIR__ . '/Controllers/CampaignController.php';
+require __DIR__ . '/Controllers/CategoryController.php';
 require __DIR__ . '/Controllers/PromotionController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
@@ -223,6 +229,7 @@ function app_router(): Router
     $healthController = new HealthController();
     $customerController = new CustomerController(new App\Repositories\CustomerRepository($db));
     $customerDatabaseController = new CustomerDatabaseController(new App\Repositories\CustomerDatabaseRepository($db));
+    $customerGroupController = new CustomerGroupController(new App\Repositories\CustomerGroupRepository($db));
     $adjustmentEntryController = new AdjustmentEntryController(new App\Repositories\AdjustmentEntryRepository($db));
     $approverController = new ApproverController(new App\Repositories\ApproverRepository($db));
     $activityLogController = new ActivityLogController(new App\Repositories\ActivityLogRepository($db));
@@ -281,6 +288,7 @@ function app_router(): Router
         new App\Repositories\CampaignFeedbackRepository($db),
         new App\Repositories\MessageTemplateRepository($db)
     );
+    $categoryController = new CategoryController(new App\Repositories\CategoryRepository($db));
     $promotionController = new PromotionController(
         new App\Repositories\PromotionRepository($db),
         new App\Repositories\PromotionProductRepository($db),
@@ -320,8 +328,14 @@ function app_router(): Router
     $router->get('/api/v1/activity-logs', [$activityLogController, 'list']);
     $router->get('/api/v1/activity-logs/users', [$activityLogController, 'users']);
     $router->get('/api/v1/customer-database', [$customerDatabaseController, 'list']);
+    $router->get('/api/v1/customer-groups', [$customerGroupController, 'list']);
+    $router->get('/api/v1/customer-groups/{groupId}', [$customerGroupController, 'show']);
+    $router->post('/api/v1/customer-groups', [$customerGroupController, 'create']);
+    $router->patch('/api/v1/customer-groups/{groupId}', [$customerGroupController, 'update']);
+    $router->delete('/api/v1/customer-groups/{groupId}', [$customerGroupController, 'delete']);
     $router->get('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'show']);
     $router->post('/api/v1/customer-database', [$customerDatabaseController, 'create']);
+    $router->patch('/api/v1/customer-database/bulk', [$customerDatabaseController, 'bulkUpdate']);
     $router->patch('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'update']);
     $router->delete('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'delete']);
     $router->post('/api/v1/customer-database/{sessionId}/contacts', [$customerDatabaseController, 'addContact']);
@@ -564,6 +578,11 @@ function app_router(): Router
     $router->post('/api/v1/couriers', [$courierController, 'create']);
     $router->patch('/api/v1/couriers/{courierId}', [$courierController, 'update']);
     $router->delete('/api/v1/couriers/{courierId}', [$courierController, 'delete']);
+    $router->get('/api/v1/categories', [$categoryController, 'list']);
+    $router->get('/api/v1/categories/{categoryId}', [$categoryController, 'show']);
+    $router->post('/api/v1/categories', [$categoryController, 'create']);
+    $router->patch('/api/v1/categories/{categoryId}', [$categoryController, 'update']);
+    $router->delete('/api/v1/categories/{categoryId}', [$categoryController, 'delete']);
     $router->get('/api/v1/remark-templates', [$remarkTemplateController, 'list']);
     $router->get('/api/v1/remark-templates/{remarkTemplateId}', [$remarkTemplateController, 'show']);
     $router->post('/api/v1/remark-templates', [$remarkTemplateController, 'create']);
