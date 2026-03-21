@@ -25,6 +25,12 @@ final class CustomerController
             throw new HttpException(404, 'Customer not found');
         }
 
+        $priceGroup = $customer['price_group'] ?? '';
+        $customerSince = $customer['customer_since'] ?? '';
+        $eligible = $this->repo->resolvePlatinumEligibility($priceGroup, $customerSince);
+        $normalized = $this->repo->getNormalizedPriceGroup($priceGroup);
+        $customer['pricing_tier'] = $eligible ? 'platinum' : $normalized;
+
         return $customer;
     }
 

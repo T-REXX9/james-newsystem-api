@@ -11,8 +11,46 @@ use RuntimeException;
 
 final class CustomerRepository
 {
+    public const PLATINUM_MIN_MONTHS = 3;
+
     public function __construct(private readonly Database $db)
     {
+    }
+
+    /**
+     * Maps legacy database pricing groups to API-facing tiers.
+     */
+    public function getNormalizedPriceGroup(string $dbValue): string
+    {
+        return match (strtolower(trim($dbValue))) {
+            'aaa' => 'regular',
+            'vip1' => 'silver',
+            'vip2' => 'gold',
+            default => 'unknown',
+        };
+    }
+
+    /**
+     * Platinum applies only to gold customers retained for at least 3 months.
+     */
+    public function resolvePlatinumEligibility(string $priceGroup, string $customerSince): bool
+    {
+        $internal = $this->getNormalizedPriceGroup($priceGroup);
+        if ($internal !== 'gold' || trim($customerSince) === '') {
+            return false;
+        }
+
+        try {
+            $since = new DateTimeImmutable($customerSince);
+            $now = new DateTimeImmutable();
+        } catch (\Exception) {
+            return false;
+        }
+
+        $diff = $since->diff($now);
+        $months = ($diff->y * 12) + $diff->m;
+
+        return !$diff->invert && $months >= self::PLATINUM_MIN_MONTHS;
     }
 
     public function findCustomerBySession(string $sessionId): ?array
@@ -33,6 +71,8 @@ SELECT
     p.lprovince,
     p.lterms,
     p.lprice_group,
+    p.lprice_group AS price_group,
+    COALESCE(p.ldealer_since, p.ldatereg, '') AS customer_since,
     p.lsales_person,
     p.lvat_type,
     p.lvat_percent,

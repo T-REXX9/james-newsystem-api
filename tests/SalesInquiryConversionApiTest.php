@@ -101,8 +101,8 @@ $create = request('POST', "{$API_BASE}/api/v1/sales-inquiries", [
     'delivery_address' => 'Integration Address',
     'reference_no' => "IT-INQ-{$seed}",
     'customer_reference' => "IT-INQ-{$seed}",
-    'price_group' => 'VIP2',
-    'terms' => 'VIP2',
+            'price_group' => 'gold',
+            'terms' => 'gold',
     'status' => 'Submitted',
     'items' => [
         [
