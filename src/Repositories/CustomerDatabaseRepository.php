@@ -110,7 +110,7 @@ SELECT
     COALESCE(p.lcompany, '') AS company
 FROM tblpatient p
 WHERE {$whereSql}
-ORDER BY p.lid DESC
+ORDER BY p.lcompany ASC, p.lid ASC
 LIMIT :limit OFFSET :offset
 SQL
         : <<<SQL
@@ -148,7 +148,7 @@ FROM tblpatient p
 LEFT JOIN tblaccount acc
     ON acc.lid = p.lsales_person
 WHERE {$whereSql}
-ORDER BY p.lid DESC
+ORDER BY p.lcompany ASC, p.lid ASC
 LIMIT :limit OFFSET :offset
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);

@@ -36,7 +36,7 @@ SQL;
                 . ')';
         }
 
-        $sql .= ' ORDER BY p.lcompany ASC, p.lid DESC LIMIT :limit';
+        $sql .= ' ORDER BY company ASC LIMIT :limit';
 
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
