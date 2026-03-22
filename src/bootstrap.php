@@ -56,7 +56,9 @@ use App\Controllers\TransferStockController;
 use App\Controllers\CampaignController;
 use App\Controllers\CategoryController;
 use App\Controllers\PromotionController;
+use App\Controllers\RolePermissionController;
 use App\Http\Router;
+use App\Middleware\PermissionMiddleware;
 use App\Security\TokenService;
 use App\Support\Exceptions\HttpException;
 use App\Support\Env;
@@ -122,7 +124,9 @@ require __DIR__ . '/Repositories/MessageTemplateRepository.php';
 require __DIR__ . '/Repositories/PromotionRepository.php';
 require __DIR__ . '/Repositories/PromotionProductRepository.php';
 require __DIR__ . '/Repositories/PromotionPostingRepository.php';
+require __DIR__ . '/Repositories/RolePermissionRepository.php';
 require __DIR__ . '/Security/TokenService.php';
+require __DIR__ . '/Middleware/PermissionMiddleware.php';
 require __DIR__ . '/Controllers/HealthController.php';
 require __DIR__ . '/Controllers/CustomerController.php';
 require __DIR__ . '/Controllers/CustomerDatabaseController.php';
@@ -176,6 +180,7 @@ require __DIR__ . '/Controllers/TransferStockController.php';
 require __DIR__ . '/Controllers/CampaignController.php';
 require __DIR__ . '/Controllers/CategoryController.php';
 require __DIR__ . '/Controllers/PromotionController.php';
+require __DIR__ . '/Controllers/RolePermissionController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
 date_default_timezone_set((string) Env::get('APP_TIMEZONE', 'UTC'));
@@ -233,7 +238,11 @@ function app_router(): Router
     $adjustmentEntryController = new AdjustmentEntryController(new App\Repositories\AdjustmentEntryRepository($db));
     $approverController = new ApproverController(new App\Repositories\ApproverRepository($db));
     $activityLogController = new ActivityLogController(new App\Repositories\ActivityLogRepository($db));
-    $accessGroupController = new AccessGroupController(new App\Repositories\AccessGroupRepository($db));
+    $tokenService = new TokenService($config->authSecret, $config->authTokenTtlSeconds);
+    $rolePermissionRepo = new App\Repositories\RolePermissionRepository($db);
+    $authRepo = new App\Repositories\AuthRepository($db);
+    $permissionMiddleware = new PermissionMiddleware($tokenService, $rolePermissionRepo);
+    $accessGroupController = new AccessGroupController(new App\Repositories\AccessGroupRepository($db), $rolePermissionRepo);
     $accountsReceivableController = new AccountsReceivableController(new App\Repositories\AccountsReceivableRepository($db));
     $collectionController = new CollectionController(new App\Repositories\CollectionRepository($db));
     $contactsController = new ContactsController(new App\Repositories\ContactsRepository($db));
@@ -245,10 +254,10 @@ function app_router(): Router
     $dailyCallMonitoringController = new DailyCallMonitoringController(new App\Repositories\DailyCallMonitoringRepository($db));
     $fastSlowInventoryReportController = new FastSlowInventoryReportController(new App\Repositories\FastSlowInventoryReportRepository($db));
     $freightChargesController = new FreightChargesController(new App\Repositories\FreightChargesRepository($db));
-    $tokenService = new TokenService($config->authSecret, $config->authTokenTtlSeconds);
     $authController = new AuthController(
-        new App\Repositories\AuthRepository($db),
-        $tokenService
+        $authRepo,
+        $tokenService,
+        $rolePermissionRepo
     );
     $productController = new ProductController(new App\Repositories\ProductRepository($db));
     $purchaseRequestController = new PurchaseRequestController(new App\Repositories\PurchaseRequestRepository($db));
@@ -276,7 +285,8 @@ function app_router(): Router
     $stockAdjustmentController = new StockAdjustmentController(new App\Repositories\StockAdjustmentRepository($db));
     $statementOfAccountController = new StatementOfAccountController(new App\Repositories\StatementOfAccountRepository($db));
     $suggestedStockReportController = new SuggestedStockReportController(new App\Repositories\SuggestedStockReportRepository($db));
-    $staffController = new StaffController(new App\Repositories\StaffRepository($db));
+    $staffController = new StaffController(new App\Repositories\StaffRepository($db), $authRepo, $rolePermissionRepo);
+    $rolePermissionController = new RolePermissionController($rolePermissionRepo, $permissionMiddleware);
     $teamController = new TeamController(new App\Repositories\TeamRepository($db));
     $specialPriceController = new SpecialPriceController(
         new App\Repositories\SpecialPriceRepository($db),
@@ -562,6 +572,10 @@ function app_router(): Router
     $router->post('/api/v1/access-groups', [$accessGroupController, 'create']);
     $router->patch('/api/v1/access-groups/{id}', [$accessGroupController, 'update']);
     $router->delete('/api/v1/access-groups/{id}', [$accessGroupController, 'delete']);
+    $router->get('/api/v1/roles', [$rolePermissionController, 'list']);
+    $router->post('/api/v1/roles', [$rolePermissionController, 'create']);
+    $router->get('/api/v1/roles/{roleId}/permissions', [$rolePermissionController, 'show']);
+    $router->patch('/api/v1/roles/{roleId}/permissions', [$rolePermissionController, 'update']);
     $router->get('/api/v1/staff', [$staffController, 'list']);
     $router->post('/api/v1/staff', [$staffController, 'create']);
     $router->get('/api/v1/staff/roles', [$staffController, 'roles']);

@@ -5,15 +5,20 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\AuthRepository;
+use App\Repositories\RolePermissionRepository;
 use App\Security\TokenService;
 use App\Support\Exceptions\HttpException;
 
 final class AuthController
 {
+    private ?RolePermissionRepository $rolePermissionRepo;
+
     public function __construct(
         private readonly AuthRepository $repo,
-        private readonly TokenService $tokens
+        private readonly TokenService $tokens,
+        ?RolePermissionRepository $rolePermissionRepo = null
     ) {
+        $this->rolePermissionRepo = $rolePermissionRepo;
     }
 
     public function login(array $params = [], array $query = [], array $body = []): array
@@ -110,6 +115,27 @@ final class AuthController
         $roleId = (int) ($user['ltype'] ?? 0);
         $roleName = $this->repo->getRoleName($roleId);
 
+        $webPermissions = $this->repo->getWebPermissions($mainUserId, $userType);
+        $packagePermissions = $servicePackage === '' ? [] : $this->repo->getPackagePermissions($mainUserId, $servicePackage);
+
+        // Build action-level permissions from web permissions (ladd_action, ledit_action, ldelete_action)
+        $actionPermissions = [];
+        if ($this->rolePermissionRepo !== null && $roleId > 0) {
+            $actionPermissions = $this->rolePermissionRepo->getActionPermissionsByModule($mainUserId, $roleId);
+        } else {
+            // Fallback: derive action permissions directly from web permissions
+            foreach ($webPermissions as $wp) {
+                $pageNo = (string) ($wp['lpageno'] ?? '');
+                if ($pageNo !== '') {
+                    $actionPermissions[$pageNo] = [
+                        'can_add' => (int) ($wp['ladd_action'] ?? 0) === 1,
+                        'can_edit' => (int) ($wp['ledit_action'] ?? 0) === 1,
+                        'can_delete' => (int) ($wp['ldelete_action'] ?? 0) === 1,
+                    ];
+                }
+            }
+        }
+
         return [
             'user' => [
                 'id' => $userId,
@@ -127,6 +153,7 @@ final class AuthController
                 'access_rights' => $accessRights,
                 'group_id' => $roleId > 0 ? (string) $roleId : null,
                 'role_name' => $roleName,
+                'action_permissions' => $actionPermissions,
             ],
             'main_userid' => $mainUserId,
             'user_type' => $userType,
@@ -134,8 +161,8 @@ final class AuthController
             'logintype' => $userType,
             'industry' => $industry,
             'permissions' => [
-                'web' => $this->repo->getWebPermissions($mainUserId, $userType),
-                'package' => $servicePackage === '' ? [] : $this->repo->getPackagePermissions($mainUserId, $servicePackage),
+                'web' => $webPermissions,
+                'package' => $packagePermissions,
             ],
         ];
     }

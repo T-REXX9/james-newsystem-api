@@ -4,13 +4,23 @@ declare(strict_types=1);
 
 namespace App\Controllers;
 
+use App\Repositories\AuthRepository;
+use App\Repositories\RolePermissionRepository;
 use App\Repositories\StaffRepository;
 use App\Support\Exceptions\HttpException;
 
 final class StaffController
 {
-    public function __construct(private readonly StaffRepository $repo)
-    {
+    private ?AuthRepository $authRepo;
+    private ?RolePermissionRepository $rolePermissionRepo;
+
+    public function __construct(
+        private readonly StaffRepository $repo,
+        ?AuthRepository $authRepo = null,
+        ?RolePermissionRepository $rolePermissionRepo = null
+    ) {
+        $this->authRepo = $authRepo;
+        $this->rolePermissionRepo = $rolePermissionRepo;
     }
 
     public function list(array $params = [], array $query = [], array $body = []): array
@@ -128,7 +138,7 @@ final class StaffController
             throw new HttpException(422, 'role is required');
         }
 
-        return $this->repo->createStaff($mainId, [
+        $created = $this->repo->createStaff($mainId, [
             'full_name' => $fullName,
             'email' => $email,
             'password' => $password,
@@ -138,6 +148,28 @@ final class StaffController
             'access_rights' => $body['access_rights'] ?? [],
             'group_id' => $body['group_id'] ?? null,
         ]);
+
+        // Initialize permissions based on the user's role
+        $newUserId = (int) ($created['id'] ?? 0);
+        $groupId = (string) ($created['group_id'] ?? '0');
+
+        if ($newUserId > 0 && $groupId !== '' && $groupId !== '0') {
+            if ($this->rolePermissionRepo !== null) {
+                $this->rolePermissionRepo->initializeUserPermissions($mainId, $newUserId, (int) $groupId);
+                $this->rolePermissionRepo->logPermissionChange(
+                    $mainId,
+                    (int) $groupId,
+                    'NEW_USER_PERMISSIONS',
+                    'system',
+                    null,
+                    $this->rolePermissionRepo->getRoleDefaultPermissions($mainId, (int) $groupId)
+                );
+            } elseif ($this->authRepo !== null) {
+                $this->authRepo->initializeUserPermissions($newUserId, $groupId, $mainId);
+            }
+        }
+
+        return $created;
     }
 
     public function delete(array $params = [], array $query = [], array $body = []): array

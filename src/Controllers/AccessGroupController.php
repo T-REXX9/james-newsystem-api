@@ -5,12 +5,18 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\AccessGroupRepository;
+use App\Repositories\RolePermissionRepository;
 use App\Support\Exceptions\HttpException;
 
 final class AccessGroupController
 {
-    public function __construct(private readonly AccessGroupRepository $repo)
-    {
+    private ?RolePermissionRepository $rolePermissionRepo;
+
+    public function __construct(
+        private readonly AccessGroupRepository $repo,
+        ?RolePermissionRepository $rolePermissionRepo = null
+    ) {
+        $this->rolePermissionRepo = $rolePermissionRepo;
     }
 
     public function list(array $params = [], array $query = [], array $body = []): array
@@ -65,9 +71,25 @@ final class AccessGroupController
             throw new HttpException(422, 'No valid fields to update');
         }
 
+        // Capture old permissions for audit logging
+        $oldGroup = $this->repo->getGroupById($mainId, $groupId);
+        $oldPermissions = $oldGroup ? ($oldGroup['access_rights'] ?? []) : [];
+
         $updated = $this->repo->updateGroup($mainId, $groupId, $data);
         if ($updated === null) {
             throw new HttpException(404, 'Access group not found');
+        }
+
+        // Log permission changes for audit trail
+        if (array_key_exists('access_rights', $data) && $this->rolePermissionRepo !== null) {
+            $this->rolePermissionRepo->logPermissionChange(
+                $mainId,
+                $groupId,
+                'UPDATE_GROUP_PERMISSIONS',
+                'admin',
+                $oldPermissions,
+                $updated['access_rights'] ?? []
+            );
         }
 
         return $updated;
@@ -89,9 +111,25 @@ final class AccessGroupController
             throw new HttpException(409, 'Cannot delete group while staff are assigned');
         }
 
+        // Capture old permissions for audit logging before deletion
+        $oldGroup = $this->repo->getGroupById($mainId, $groupId);
+        $oldPermissions = $oldGroup ? ($oldGroup['access_rights'] ?? []) : [];
+
         $deleted = $this->repo->deleteGroup($mainId, $groupId);
         if (!$deleted) {
             throw new HttpException(404, 'Access group not found');
+        }
+
+        // Log the deletion for audit trail
+        if ($this->rolePermissionRepo !== null) {
+            $this->rolePermissionRepo->logPermissionChange(
+                $mainId,
+                $groupId,
+                'DELETE_GROUP',
+                'admin',
+                $oldPermissions,
+                null
+            );
         }
 
         return [
