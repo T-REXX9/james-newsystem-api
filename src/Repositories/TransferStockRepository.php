@@ -1101,7 +1101,19 @@ SQL;
 
     private function normalizeDateTime(string $value): string
     {
-        $ts = strtotime(trim($value) === '' ? 'now' : $value);
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            $trimmed = 'now';
+        }
+
+        // Date-only transfer inputs should keep the actual processing time
+        // instead of defaulting to midnight, which makes stock movement logs
+        // look like they happened at 12:00 AM.
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $trimmed) === 1) {
+            $trimmed .= ' ' . date('H:i:s');
+        }
+
+        $ts = strtotime($trimmed);
         if ($ts === false) {
             throw new RuntimeException('Invalid datetime value');
         }
