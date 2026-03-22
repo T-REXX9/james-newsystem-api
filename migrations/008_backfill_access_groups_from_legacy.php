@@ -178,6 +178,22 @@ if ($idxExists === 0) {
     $pdo->exec('ALTER TABLE access_groups ADD UNIQUE INDEX uq_access_groups_main_name (main_id, name)');
 }
 
+$pageCategColumns = $pdo->query(
+    "SELECT COLUMN_NAME
+     FROM INFORMATION_SCHEMA.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = 'tblweb_pagecateg'"
+)->fetchAll(PDO::FETCH_COLUMN);
+
+$pageCategColumns = array_fill_keys(array_map('strtolower', $pageCategColumns), true);
+$hasPageName = isset($pageCategColumns['lpage_name']);
+$hasCategoryPage = isset($pageCategColumns['lcateg_page']);
+
+if (!$hasPageName && !$hasCategoryPage) {
+    echo "ERROR: tblweb_pagecateg is missing both `lpage_name` and `lcateg_page`.\n";
+    exit(1);
+}
+
 // ---------------------------------------------------------------------------
 // 4. Read legacy groups from tblusertype
 // ---------------------------------------------------------------------------
@@ -198,13 +214,20 @@ echo sprintf("Found %d legacy group(s) in tblusertype.\n", count($legacyGroups))
 //    then upsert into access_groups.
 // ---------------------------------------------------------------------------
 
+$permSelectFields = ['wp.lpageno', 'wp.lstatus'];
+$permSelectFields[] = $hasPageName ? 'pc.lpage_name' : "'' AS lpage_name";
+$permSelectFields[] = $hasCategoryPage ? 'pc.lcateg_page' : "'' AS lcateg_page";
+
 $permStmt = $pdo->prepare(
-    "SELECT wp.lpageno, wp.lstatus, pc.lpage_name, pc.lcateg_page
-     FROM tblweb_permission wp
-     JOIN tblweb_pagecateg pc ON pc.lid = wp.lpageno
-     WHERE wp.lgroup = :group_id
-       AND wp.lmain_id = :main_id
-       AND wp.lstatus = 1"
+    sprintf(
+        "SELECT %s
+         FROM tblweb_permission wp
+         JOIN tblweb_pagecateg pc ON pc.lid = wp.lpageno
+         WHERE wp.lgroup = :group_id
+           AND wp.lmain_id = :main_id
+           AND wp.lstatus = 1",
+        implode(', ', $permSelectFields)
+    )
 );
 
 $upsertStmt = $pdo->prepare(

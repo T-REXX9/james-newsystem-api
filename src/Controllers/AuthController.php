@@ -106,21 +106,9 @@ final class AuthController
 
         $servicePackage = (string) ($userType === '1' ? ($user['lservice'] ?? '') : $this->getMainService($mainUserId));
 
-        $rawAccessRights = $user['laccess_rights'] ?? null;
-        $accessRights = null;
-        if (is_string($rawAccessRights) && trim($rawAccessRights) !== '') {
-            $decoded = json_decode($rawAccessRights, true);
-            if (is_array($decoded)) {
-                $accessRights = array_values(array_filter($decoded, static fn ($v): bool => is_string($v)));
-            }
-        }
-
-        $groupId = ($user['group_id'] ?? null);
-        if ($groupId !== null && $groupId !== '' && $groupId !== '0') {
-            $groupId = (string) $groupId;
-        } else {
-            $groupId = null;
-        }
+        $accessRights = $this->repo->getDerivedAccessRights($user);
+        $roleId = (int) ($user['ltype'] ?? 0);
+        $roleName = $this->repo->getRoleName($roleId);
 
         return [
             'user' => [
@@ -137,7 +125,8 @@ final class AuthController
                 'service_package' => $servicePackage,
                 'sales_quota' => (float) ($user['lsales_quota'] ?? 0),
                 'access_rights' => $accessRights,
-                'group_id' => $groupId,
+                'group_id' => $roleId > 0 ? (string) $roleId : null,
+                'role_name' => $roleName,
             ],
             'main_userid' => $mainUserId,
             'user_type' => $userType,

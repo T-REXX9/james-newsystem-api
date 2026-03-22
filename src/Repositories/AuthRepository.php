@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\LegacyPermissionMapper;
 use PDO;
 
 final class AuthRepository
 {
+    private LegacyPermissionMapper $legacyPermissions;
+
     public function __construct(private readonly Database $db)
     {
+        $this->legacyPermissions = new LegacyPermissionMapper($db->pdo());
     }
 
     public function findActiveUserByEmail(string $email): ?array
@@ -87,5 +91,36 @@ final class AuthRepository
 
         $mother = (int) ($user['lmother_id'] ?? 0);
         return $mother > 0 ? $mother : $userId;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    public function getDerivedAccessRights(array $user): array
+    {
+        $mainUserId = $this->resolveMainUserId($user);
+        $groupId = (int) ($user['ltype'] ?? 0);
+        if ($mainUserId <= 0 || $groupId <= 0) {
+            return ['home'];
+        }
+
+        return $this->legacyPermissions->getAccessRightsForGroup($mainUserId, $groupId);
+    }
+
+    public function getRoleName(int $groupId): ?string
+    {
+        if ($groupId <= 0) {
+            return null;
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT ltype_name
+             FROM tblusertype
+             WHERE lid = :group_id
+             LIMIT 1'
+        );
+        $stmt->execute(['group_id' => $groupId]);
+        $value = $stmt->fetchColumn();
+        return is_string($value) && trim($value) !== '' ? trim($value) : null;
     }
 }

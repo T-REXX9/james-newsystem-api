@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\LegacyPermissionMapper;
 use PDO;
 
 final class StaffRepository
 {
+    private LegacyPermissionMapper $legacyPermissions;
+
     public function __construct(private readonly Database $db)
     {
+        $this->legacyPermissions = new LegacyPermissionMapper($db->pdo());
     }
 
     /**
@@ -42,6 +46,7 @@ final class StaffRepository
         $sql = <<<SQL
 SELECT
     CAST(a.lid AS SIGNED) AS id,
+    CAST(COALESCE(a.lmother_id, 0) AS SIGNED) AS main_id,
     CONCAT_WS(' ', COALESCE(a.lfname, ''), COALESCE(a.lmname, ''), COALESCE(a.llname, '')) AS full_name,
     COALESCE(a.lemail, '') AS email,
     COALESCE(
@@ -57,9 +62,7 @@ SELECT
     CAST(COALESCE(a.lstatus, 1) AS SIGNED) AS status,
     COALESCE(a.lbirthday, '') AS birthday,
     COALESCE(a.lavatar, '') AS avatar_url,
-    COALESCE(a.laccess_rights, '[]') AS access_rights,
-    CAST(a.group_id AS CHAR) AS group_id,
-    CAST(COALESCE(a.access_override, 0) AS SIGNED) AS access_override,
+    CAST(COALESCE(a.ltype, 0) AS CHAR) AS group_id,
     CAST(COALESCE(a.lsales_quota, 0) AS DECIMAL(15,2)) AS monthly_quota,
     CAST(COALESCE(a.lcommission, 0) AS DECIMAL(10,2)) AS commission,
     COALESCE(a.ldatereg, NOW()) AS created_at
@@ -109,6 +112,7 @@ SQL;
         $sql = <<<SQL
 SELECT
     CAST(a.lid AS SIGNED) AS id,
+    CAST(COALESCE(a.lmother_id, 0) AS SIGNED) AS main_id,
     COALESCE(a.lfname, '') AS first_name,
     COALESCE(a.lmname, '') AS middle_name,
     COALESCE(a.llname, '') AS last_name,
@@ -130,9 +134,7 @@ SELECT
     COALESCE(a.lgender, '') AS gender,
     COALESCE(DATE_FORMAT(a.lbirthday, '%Y-%m-%d'), '') AS birthday,
     COALESCE(a.lavatar, '') AS avatar_url,
-    COALESCE(a.laccess_rights, '[]') AS access_rights,
-    CAST(a.group_id AS CHAR) AS group_id,
-    CAST(COALESCE(a.access_override, 0) AS SIGNED) AS access_override,
+    CAST(COALESCE(a.ltype, 0) AS CHAR) AS group_id,
     CAST(COALESCE(a.lbranch, 0) AS SIGNED) AS branch_id,
     CAST(COALESCE(a.lsales_quota, 0) AS DECIMAL(15,2)) AS sales_quota,
     CAST(COALESCE(a.lprospect_quota, 0) AS DECIMAL(15,2)) AS prospect_quota,
@@ -239,22 +241,17 @@ SQL;
             $params['branch_id'] = (int) $data['branch_id'];
         }
 
-        if (array_key_exists('access_rights', $data)) {
-            $updates[] = 'laccess_rights = :access_rights';
-            $params['access_rights'] = json_encode(
-                is_array($data['access_rights']) ? array_values($data['access_rights']) : [],
-                JSON_UNESCAPED_SLASHES
-            );
-        }
-
-        if (array_key_exists('access_override', $data)) {
-            $updates[] = 'access_override = :access_override';
-            $params['access_override'] = $data['access_override'] ? 1 : 0;
-        }
-
         if (array_key_exists('group_id', $data)) {
-            $updates[] = 'group_id = :group_id';
-            $params['group_id'] = $data['group_id'] === '' || $data['group_id'] === null ? null : (int) $data['group_id'];
+            $updates[] = 'ltype = :group_id';
+            $params['group_id'] = $data['group_id'] === '' || $data['group_id'] === null
+                ? (int) ($existing['role_id'] ?? 0)
+                : (int) $data['group_id'];
+        } elseif (array_key_exists('access_rights', $data) && is_array($data['access_rights'])) {
+            $this->legacyPermissions->syncGroupPermissions(
+                $mainId,
+                (int) ($existing['role_id'] ?? 0),
+                array_values($data['access_rights'])
+            );
         }
 
         if (empty($updates)) {
@@ -289,11 +286,6 @@ SQL;
         $password = (string) ($data['password'] ?? '');
         $recode = md5($password);
         $hashedPassword = md5($password . $recode);
-        $accessRights = json_encode(
-            is_array($data['access_rights'] ?? null) ? array_values($data['access_rights']) : [],
-            JSON_UNESCAPED_SLASHES
-        );
-
         $sql = <<<SQL
 INSERT INTO tblaccount (
     lfname,
@@ -305,9 +297,7 @@ INSERT INTO tblaccount (
     ltype,
     lmother_id,
     lstatus,
-    lactivation,
-    laccess_rights,
-    group_id
+    lactivation
 ) VALUES (
     :first_name,
     :last_name,
@@ -318,9 +308,7 @@ INSERT INTO tblaccount (
     :role_id,
     :main_id,
     1,
-    1,
-    :access_rights,
-    :group_id
+    1
 )
 SQL;
 
@@ -338,13 +326,6 @@ SQL;
         }
         $stmt->bindValue('role_id', (string) $roleId, PDO::PARAM_STR);
         $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
-        $stmt->bindValue('access_rights', $accessRights, PDO::PARAM_STR);
-        $groupId = $data['group_id'] ?? null;
-        if ($groupId === '' || $groupId === null) {
-            $stmt->bindValue('group_id', null, PDO::PARAM_NULL);
-        } else {
-            $stmt->bindValue('group_id', (int) $groupId, PDO::PARAM_INT);
-        }
         $stmt->execute();
 
         $created = $this->getStaffById($mainId, (int) $this->db->pdo()->lastInsertId());
@@ -436,35 +417,20 @@ SQL;
         if (array_key_exists('team_id', $row)) {
             $row['team_id'] = ($row['team_id'] ?? '') === '0' ? '' : (string) $row['team_id'];
         }
-        if (array_key_exists('group_id', $row)) {
-            $row['group_id'] = ($row['group_id'] ?? '') === '' || ($row['group_id'] ?? '') === '0'
-                ? null
-                : (string) $row['group_id'];
+        $groupId = (int) ($row['group_id'] ?? $row['role_id'] ?? 0);
+        $row['group_id'] = $groupId > 0 ? (string) $groupId : null;
+        $row['access_override'] = false;
+        $mainId = (int) ($row['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            $mainId = (int) ($row['mother_id'] ?? 0);
         }
-        $row['access_override'] = (bool) ($row['access_override'] ?? 0);
-        $row['access_rights'] = $this->decodeAccessRights($row['access_rights'] ?? []);
+        if ($mainId <= 0) {
+            $mainId = (int) ($row['resolved_main_id'] ?? 0);
+        }
+        $row['access_rights'] = $mainId > 0 && $groupId > 0
+            ? $this->legacyPermissions->getAccessRightsForGroup($mainId, $groupId)
+            : ['home'];
 
         return $row;
-    }
-
-    /**
-     * @return array<int, string>
-     */
-    private function decodeAccessRights(mixed $value): array
-    {
-        if (is_array($value)) {
-            return array_values(array_filter($value, static fn (mixed $item): bool => is_string($item)));
-        }
-
-        if (!is_string($value) || trim($value) === '') {
-            return [];
-        }
-
-        $decoded = json_decode($value, true);
-        if (!is_array($decoded)) {
-            return [];
-        }
-
-        return array_values(array_filter($decoded, static fn (mixed $item): bool => is_string($item)));
     }
 }
