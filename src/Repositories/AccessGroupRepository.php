@@ -20,29 +20,33 @@ final class AccessGroupRepository
     public function listGroups(int $mainId): array
     {
         $stmt = $this->db->pdo()->prepare(
-            'SELECT DISTINCT
+            'SELECT
                 CAST(ut.lid AS CHAR) AS id,
-                CAST(COALESCE(NULLIF(ut.lmain_id, 0), :main_id) AS SIGNED) AS main_id,
+                CAST(COALESCE(NULLIF(ut.lmain_id, 0), :main_id_select) AS SIGNED) AS main_id,
                 COALESCE(ut.ltype_name, \'\') AS name,
                 COALESCE(ut.ldesc, \'\') AS description
              FROM tblusertype ut
              LEFT JOIN tblaccount a
                ON a.ltype = ut.lid
-              AND a.lmother_id = :main_id
+              AND a.lmother_id = :main_id_join_account
               AND a.lstatus = 1
              LEFT JOIN tblweb_permission wp
                ON wp.lgroup = ut.lid
-              AND wp.lmain_id = :main_id
+              AND wp.lmain_id = :main_id_join_wp
              WHERE ut.lid != 7
                AND (
-                 ut.lmain_id = :main_id
+                 ut.lmain_id = :main_id_where
                  OR COALESCE(ut.lmain_id, 0) = 0
                  OR a.lid IS NOT NULL
                  OR wp.lpageno IS NOT NULL
                )
-             ORDER BY name ASC, id ASC'
+             GROUP BY ut.lid
+             ORDER BY ut.ltype_name ASC, ut.lid ASC'
         );
-        $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('main_id_select', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('main_id_join_account', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('main_id_join_wp', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('main_id_where', $mainId, PDO::PARAM_INT);
         $stmt->execute();
 
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
@@ -54,31 +58,34 @@ final class AccessGroupRepository
         $stmt = $this->db->pdo()->prepare(
             'SELECT
                 CAST(ut.lid AS CHAR) AS id,
-                CAST(COALESCE(NULLIF(ut.lmain_id, 0), :main_id) AS SIGNED) AS main_id,
+                CAST(COALESCE(NULLIF(ut.lmain_id, 0), :main_id_select) AS SIGNED) AS main_id,
                 COALESCE(ut.ltype_name, \'\') AS name,
                 COALESCE(ut.ldesc, \'\') AS description
              FROM tblusertype ut
              WHERE ut.lid = :group_id
                AND (
-                 ut.lmain_id = :main_id
+                 ut.lmain_id = :main_id_where
                  OR COALESCE(ut.lmain_id, 0) = 0
                  OR EXISTS (
                    SELECT 1
                    FROM tblaccount a
                    WHERE a.ltype = ut.lid
-                     AND a.lmother_id = :main_id
+                     AND a.lmother_id = :main_id_account
                      AND a.lstatus = 1
                  )
                  OR EXISTS (
                    SELECT 1
                    FROM tblweb_permission wp
                    WHERE wp.lgroup = ut.lid
-                     AND wp.lmain_id = :main_id
+                     AND wp.lmain_id = :main_id_wp
                  )
                )
              LIMIT 1'
         );
-        $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('main_id_select', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('main_id_where', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('main_id_account', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('main_id_wp', $mainId, PDO::PARAM_INT);
         $stmt->bindValue('group_id', $groupId, PDO::PARAM_INT);
         $stmt->execute();
 

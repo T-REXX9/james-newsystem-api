@@ -15,6 +15,28 @@ final class TransferStockRepository
     }
 
     /**
+     * Normalize warehouse ID to canonical label format (WH1, WH2, etc.)
+     * Handles both numeric IDs (1, 2, etc.) and canonical labels (WH1, WH2, etc.)
+     */
+    private function normalizeWarehouseId(string $value): string
+    {
+        $trimmed = trim(strtoupper($value));
+        if ($trimmed === '') {
+            return '';
+        }
+        // If already in canonical format (WH1, WH2, etc.), return as-is
+        if (preg_match('/^WH\d+$/', $trimmed)) {
+            return $trimmed;
+        }
+        // If numeric, convert to canonical format
+        if (preg_match('/^\d+$/', $trimmed)) {
+            return 'WH' . $trimmed;
+        }
+        // Return as-is for any other format
+        return $trimmed;
+    }
+
+    /**
      * @return array{
      *   items: array<int, array<string, mixed>>,
      *   meta: array<string, mixed>
@@ -368,11 +390,11 @@ SQL;
         }
         if (array_key_exists('from_warehouse_id', $payload)) {
             $fields[] = 'lwarehouse_from = :from_warehouse';
-            $params['from_warehouse'] = trim((string) $payload['from_warehouse_id']);
+            $params['from_warehouse'] = $this->normalizeWarehouseId((string) $payload['from_warehouse_id']);
         }
         if (array_key_exists('to_warehouse_id', $payload)) {
             $fields[] = 'lwarehouse_to = :to_warehouse';
-            $params['to_warehouse'] = trim((string) $payload['to_warehouse_id']);
+            $params['to_warehouse'] = $this->normalizeWarehouseId((string) $payload['to_warehouse_id']);
         }
         if (array_key_exists('from_original_qty', $payload)) {
             $fields[] = 'loriginal_qty_from = :from_original_qty';
@@ -704,7 +726,27 @@ SQL;
             }
         }
 
+        // Normalize warehouse IDs to canonical format
+        $fromWarehouse = $this->normalizeWarehouseId($fromWarehouse);
+        $toWarehouse = $this->normalizeWarehouseId($toWarehouse);
+
+        // Validate source and destination warehouses are not empty
+        if ($fromWarehouse === '' || $toWarehouse === '') {
+            throw new RuntimeException('Source and destination warehouses are required');
+        }
+
+        // Validate source and destination are different
+        if ($fromWarehouse === $toWarehouse) {
+            throw new RuntimeException('Source and destination warehouses must be different');
+        }
+
         $transferQty = max(0.0, (float) ($payload['transfer_qty'] ?? 0));
+
+        // Validate quantity is positive
+        if ($transferQty <= 0) {
+            throw new RuntimeException('Transfer quantity must be positive');
+        }
+
         $edited = $transferQty > 0 ? 1 : (int) ($payload['edited'] ?? 0);
 
         $stmt = $pdo->prepare(
@@ -882,6 +924,43 @@ SQL;
                     continue;
                 }
 
+                // Normalize warehouse IDs to canonical format
+                $fromWarehouse = $this->normalizeWarehouseId((string) ($row['from_warehouse_id'] ?? ''));
+                $toWarehouse = $this->normalizeWarehouseId((string) ($row['to_warehouse_id'] ?? ''));
+
+                // Validate source and destination warehouses are not empty
+                if ($fromWarehouse === '' || $toWarehouse === '') {
+                    throw new RuntimeException('Source and destination warehouses are required for all items');
+                }
+
+                // Validate source and destination are different
+                if ($fromWarehouse === $toWarehouse) {
+                    throw new RuntimeException('Source and destination warehouses must be different for all items');
+                }
+
+                // Re-check availability within the approval transaction
+                $itemSession = (string) ($row['from_item_session'] ?? '');
+                if ($itemSession !== '') {
+                    $availStmt = $pdo->prepare(
+                        'SELECT COALESCE(SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0)), 0) AS available_qty
+                         FROM tblinventory_logs lg
+                         WHERE lg.linvent_id = :item_session
+                           AND lg.lwarehouse = :warehouse'
+                    );
+                    $availStmt->execute([
+                        'item_session' => $itemSession,
+                        'warehouse' => $fromWarehouse,
+                    ]);
+                    $availRow = $availStmt->fetch(PDO::FETCH_ASSOC);
+                    $availableQty = max(0.0, (float) ($availRow['available_qty'] ?? 0));
+
+                    if ($qty > $availableQty) {
+                        throw new RuntimeException(
+                            'Insufficient stock for transfer. Item has only ' . $availableQty . ' units available in ' . $fromWarehouse
+                        );
+                    }
+                }
+
                 $insertIn = $pdo->prepare(
                     'INSERT INTO tblinventory_logs
                     (linvent_id, lin, lout, ltotal, ldateadded, lprocess_by, lstatus_logs, lnote, linventory_id, lrefno, llocation, lwarehouse, ltransaction_type)
@@ -894,10 +973,10 @@ SQL;
                     'ltotal' => $qty,
                     'dateadded' => $timestamp,
                     'process_by' => $transferNo,
-                    'note' => 'Stock Transfer from Item Code: ' . (string) ($row['item_code'] ?? '') . ' Warehouse: ' . (string) ($row['from_warehouse_id'] ?? ''),
+                    'note' => 'Stock Transfer IN from ' . $fromWarehouse . ' to ' . $toWarehouse . ' (Item Code: ' . (string) ($row['item_code'] ?? '') . ')',
                     'inventory_id' => (string) ($row['item_id'] ?? ''),
                     'refno' => $transferRefno,
-                    'warehouse' => (string) ($row['to_warehouse_id'] ?? ''),
+                    'warehouse' => $toWarehouse,
                 ]);
 
                 $insertOut = $pdo->prepare(
@@ -912,10 +991,10 @@ SQL;
                     'ltotal' => $qty,
                     'dateadded' => $timestamp,
                     'process_by' => $transferNo,
-                    'note' => 'Stock Transfer to Item Code: ' . (string) ($row['item_code'] ?? '') . ' Warehouse: ' . (string) ($row['to_warehouse_id'] ?? ''),
+                    'note' => 'Stock Transfer OUT from ' . $fromWarehouse . ' to ' . $toWarehouse . ' (Item Code: ' . (string) ($row['item_code'] ?? '') . ')',
                     'inventory_id' => (string) ($row['item_id'] ?? ''),
                     'refno' => $transferRefno,
-                    'warehouse' => (string) ($row['from_warehouse_id'] ?? ''),
+                    'warehouse' => $fromWarehouse,
                 ]);
             }
 
