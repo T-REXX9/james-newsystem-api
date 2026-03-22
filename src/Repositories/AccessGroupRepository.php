@@ -40,7 +40,7 @@ final class AccessGroupRepository
                  OR a.lid IS NOT NULL
                  OR wp.lpageno IS NOT NULL
                )
-             ORDER BY ut.ltype_name ASC, ut.lid ASC'
+             ORDER BY name ASC, id ASC'
         );
         $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
         $stmt->execute();
