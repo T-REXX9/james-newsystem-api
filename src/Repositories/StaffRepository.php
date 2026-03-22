@@ -65,7 +65,9 @@ SELECT
     CAST(COALESCE(a.ltype, 0) AS CHAR) AS group_id,
     CAST(COALESCE(a.lsales_quota, 0) AS DECIMAL(15,2)) AS monthly_quota,
     CAST(COALESCE(a.lcommission, 0) AS DECIMAL(10,2)) AS commission,
-    COALESCE(a.ldatereg, NOW()) AS created_at
+    COALESCE(a.ldatereg, NOW()) AS created_at,
+    COALESCE(a.laccess_rights, '[]') AS laccess_rights,
+    COALESCE(a.access_override, 0) AS access_override
 FROM tblaccount a
 WHERE {$whereSql}
 ORDER BY a.lid DESC
@@ -139,7 +141,9 @@ SELECT
     CAST(COALESCE(a.lsales_quota, 0) AS DECIMAL(15,2)) AS sales_quota,
     CAST(COALESCE(a.lprospect_quota, 0) AS DECIMAL(15,2)) AS prospect_quota,
     CAST(COALESCE(a.lcommission, 0) AS DECIMAL(10,2)) AS commission,
-    COALESCE(a.ldatereg, NOW()) AS created_at
+    COALESCE(a.ldatereg, NOW()) AS created_at,
+    COALESCE(a.laccess_rights, '[]') AS laccess_rights,
+    COALESCE(a.access_override, 0) AS access_override
 FROM tblaccount a
 WHERE a.lid = :staff_id
   AND a.lmother_id = :main_id
@@ -241,12 +245,21 @@ SQL;
             $params['branch_id'] = (int) $data['branch_id'];
         }
 
+        if (array_key_exists('access_override', $data)) {
+            $updates[] = 'access_override = :access_override';
+            $params['access_override'] = (int) (bool) $data['access_override'];
+        }
+
         if (array_key_exists('group_id', $data)) {
             $updates[] = 'ltype = :group_id';
             $params['group_id'] = $data['group_id'] === '' || $data['group_id'] === null
                 ? (int) ($existing['role_id'] ?? 0)
                 : (int) $data['group_id'];
-        } elseif (array_key_exists('access_rights', $data) && is_array($data['access_rights'])) {
+        }
+
+        if (array_key_exists('access_rights', $data) && is_array($data['access_rights'])) {
+            $updates[] = 'laccess_rights = :laccess_rights';
+            $params['laccess_rights'] = json_encode(array_values($data['access_rights']));
             $this->legacyPermissions->syncGroupPermissions(
                 $mainId,
                 (int) ($existing['role_id'] ?? 0),
@@ -410,6 +423,22 @@ SQL;
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    private function parseAccessRights($value): array
+    {
+        if (is_array($value)) {
+            return array_filter($value, 'is_string');
+        }
+        if (!is_string($value) || trim($value) === '') {
+            return [];
+        }
+        try {
+            $parsed = json_decode($value, true);
+            return is_array($parsed) ? array_filter($parsed, 'is_string') : [];
+        } catch (\Exception $e) {
+            return [];
+        }
+    }
+
     private function normalizeStaffRow(array $row): array
     {
         $row['id'] = (string) ($row['id'] ?? '');
@@ -419,7 +448,7 @@ SQL;
         }
         $groupId = (int) ($row['group_id'] ?? $row['role_id'] ?? 0);
         $row['group_id'] = $groupId > 0 ? (string) $groupId : null;
-        $row['access_override'] = false;
+        $row['access_override'] = (bool) ($row['access_override'] ?? 0);
         $mainId = (int) ($row['main_id'] ?? 0);
         if ($mainId <= 0) {
             $mainId = (int) ($row['mother_id'] ?? 0);
@@ -427,9 +456,13 @@ SQL;
         if ($mainId <= 0) {
             $mainId = (int) ($row['resolved_main_id'] ?? 0);
         }
-        $row['access_rights'] = $mainId > 0 && $groupId > 0
-            ? $this->legacyPermissions->getAccessRightsForGroup($mainId, $groupId)
-            : ['home'];
+        if ($row['access_override'] && !empty($row['laccess_rights'])) {
+            $row['access_rights'] = $this->parseAccessRights($row['laccess_rights']);
+        } else {
+            $row['access_rights'] = $mainId > 0 && $groupId > 0
+                ? $this->legacyPermissions->getAccessRightsForGroup($mainId, $groupId)
+                : ['home'];
+        }
 
         return $row;
     }

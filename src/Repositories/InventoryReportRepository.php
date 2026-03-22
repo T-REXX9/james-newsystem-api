@@ -203,6 +203,23 @@ SQL;
             return [];
         }
 
+        // Fetch all warehouses to ensure every item has a complete warehouse stock record
+        $warehouses = $this->listWarehouses();
+        $warehouseNames = array_map(
+            static fn(array $wh): string => $wh['name'],
+            $warehouses
+        );
+
+        // Pre-populate result with all warehouses set to 0 for each item session
+        $result = [];
+        foreach ($itemSessions as $session) {
+            $result[$session] = [];
+            foreach ($warehouseNames as $name) {
+                $result[$session][$name] = 0.0;
+            }
+        }
+
+        // Execute query to get actual stock values
         $placeholders = implode(',', array_fill(0, count($itemSessions), '?'));
         $sql = <<<SQL
 SELECT
@@ -228,17 +245,16 @@ SQL;
         $stmt->execute($params);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        $result = [];
+        // Merge actual stock values into the pre-initialized structure
         foreach ($rows as $row) {
             $session = (string) ($row['item_session'] ?? '');
             $warehouseName = trim((string) ($row['warehouse_name'] ?? ''));
             if ($session === '' || $warehouseName === '') {
                 continue;
             }
-            if (!isset($result[$session])) {
-                $result[$session] = [];
+            if (isset($result[$session])) {
+                $result[$session][$warehouseName] = (float) ($row['stock'] ?? 0);
             }
-            $result[$session][$warehouseName] = (float) ($row['stock'] ?? 0);
         }
 
         return $result;
