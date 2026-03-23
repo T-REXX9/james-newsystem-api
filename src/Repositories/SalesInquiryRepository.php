@@ -266,7 +266,7 @@ SQL;
         try {
             $inquiryRefno = trim((string) ($payload['inquiry_refno'] ?? ''));
             if ($inquiryRefno === '') {
-                $inquiryRefno = date('YmdHis') . random_int(10000, 99999);
+                $inquiryRefno = $this->generateInquiryRefno();
             }
 
             $inquiryNo = trim((string) ($payload['inquiry_no'] ?? ''));
@@ -297,7 +297,7 @@ SQL;
                 'lsales_address' => $this->stringOrFallback($payload['delivery_address'] ?? null, $customer['ldelivery_address'] ?? ''),
                 'lterms' => (string) ($payload['terms'] ?? ($customer['lterms'] ?? '')),
                 'lterms_condition' => (string) ($payload['terms'] ?? ($customer['lterms'] ?? '')),
-                'lmy_refno' => (string) ($payload['reference_no'] ?? $inquiryNo),
+                'lmy_refno' => $this->resolveInquiryReferenceNo($payload['reference_no'] ?? null, $inquiryNo),
                 'lyour_refno' => (string) ($payload['customer_reference'] ?? ''),
                 'lprice_group' => (string) ($payload['price_group'] ?? ($customer['lprice_group'] ?? '')),
                 'lcredit_limit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($customer['lcredit'] ?? 0),
@@ -885,7 +885,37 @@ SQL;
         );
         $insert->execute(['lmax_no' => $next]);
 
-        return 'INQ' . str_pad((string) $next, 6, '0', STR_PAD_LEFT);
+        return $this->legacyInquiryPrefix() . $next;
+    }
+
+    private function generateInquiryRefno(): string
+    {
+        return date('ymdhis') . random_int(1, 10000) . random_int(1, 100000000);
+    }
+
+    private function resolveInquiryReferenceNo(mixed $providedReferenceNo, string $inquiryNo): string
+    {
+        $referenceNo = trim((string) ($providedReferenceNo ?? ''));
+        if ($referenceNo !== '') {
+            return $referenceNo;
+        }
+
+        return $this->generateLegacyInquiryReferenceNo($inquiryNo);
+    }
+
+    private function generateLegacyInquiryReferenceNo(string $inquiryNo): string
+    {
+        $counter = 0;
+        if (preg_match('/(\d+)$/', $inquiryNo, $matches) === 1) {
+            $counter = (int) ($matches[1] ?? 0);
+        }
+
+        return 'REF' . ((int) date('ymd') + $counter);
+    }
+
+    private function legacyInquiryPrefix(): string
+    {
+        return 'INQ' . date('y') . '-';
     }
 
     private function normalizeStatus(string $status): string
