@@ -28,7 +28,8 @@ final class SalesOrderRepository
         string $search = '',
         int $page = 1,
         int $perPage = 100,
-        int $viewerUserId = 0
+        int $viewerUserId = 0,
+        string $dateField = 'created'
     ): array {
         if ($month === null || $year === null) {
             $period = $this->resolveLatestPeriod($mainId);
@@ -40,6 +41,9 @@ final class SalesOrderRepository
         $perPage = min(500, max(1, $perPage));
         $offset = ($page - 1) * $perPage;
 
+        // Use ldate (sales_date) for 'sales' filter, default to ldate (creation date in legacy)
+        $dateColumn = $dateField === 'sales' ? 'so.ldate' : 'so.ldate';
+
         $params = [
             'main_id' => (string) $mainId,
             'month' => $month,
@@ -49,8 +53,8 @@ final class SalesOrderRepository
         ];
         $where = [
             'so.lmain_id = :main_id',
-            'MONTH(so.ldate) = :month',
-            'YEAR(so.ldate) = :year',
+            "MONTH({$dateColumn}) = :month",
+            "YEAR({$dateColumn}) = :year",
         ];
 
         $normalizedStatus = strtolower(trim($status));

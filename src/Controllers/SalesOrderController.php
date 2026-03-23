@@ -44,8 +44,9 @@ final class SalesOrderController
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, (int) ($query['per_page'] ?? 100));
         $viewerUserId = max(0, (int) ($query['viewer_user_id'] ?? 0));
+        $dateField = in_array(($query['date_field'] ?? ''), ['created', 'sales'], true) ? $query['date_field'] : 'created';
 
-        return $this->repo->listSalesOrders($mainId, $month, $year, $status, $search, $page, $perPage, $viewerUserId);
+        return $this->repo->listSalesOrders($mainId, $month, $year, $status, $search, $page, $perPage, $viewerUserId, $dateField);
     }
 
     public function show(array $params = [], array $query = [], array $body = []): array
