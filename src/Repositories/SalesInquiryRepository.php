@@ -845,7 +845,8 @@ SQL;
 
     private function insertItem(PDO $pdo, string $inquiryRefno, string $inquiryNo, string $inquiryDate, array $item): void
     {
-        $qty = max(0, (int) ($item['qty'] ?? 0));
+        $rawQty = $item['qty'] ?? null;
+        $qty = trim((string) $rawQty) === '' ? 1 : max(1, (int) $rawQty);
         $unitPrice = (float) ($item['unit_price'] ?? 0);
 
         $stmt = $pdo->prepare(
