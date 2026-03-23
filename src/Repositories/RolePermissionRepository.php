@@ -17,6 +17,7 @@ final class RolePermissionRepository
 
     /** @var array<string, array<int, array{module_id: string, can_add: bool, can_edit: bool, can_delete: bool}>> */
     private array $actionPermissionCache = [];
+    private ?bool $hasAccountAccessRightsColumn = null;
 
     public function __construct(private readonly Database $db)
     {
@@ -291,16 +292,18 @@ final class RolePermissionRepository
     {
         $rolePermissions = $this->getRoleDefaultPermissions($mainId, $groupId);
 
-        // Store the role-based permissions as the user's initial access_rights
-        $stmt = $this->db->pdo()->prepare(
-            'UPDATE tblaccount
-             SET laccess_rights = :access_rights
-             WHERE lid = :user_id'
-        );
-        $stmt->execute([
-            'access_rights' => json_encode($rolePermissions),
-            'user_id' => $userId,
-        ]);
+        // Older local databases may not have the optional laccess_rights column yet.
+        if ($this->accountAccessRightsColumnExists()) {
+            $stmt = $this->db->pdo()->prepare(
+                'UPDATE tblaccount
+                 SET laccess_rights = :access_rights
+                 WHERE lid = :user_id'
+            );
+            $stmt->execute([
+                'access_rights' => json_encode($rolePermissions),
+                'user_id' => $userId,
+            ]);
+        }
 
         $this->logPermissionChange(
             $mainId,
@@ -319,5 +322,24 @@ final class RolePermissionRepository
     {
         $this->permissionCache = [];
         $this->actionPermissionCache = [];
+    }
+
+    private function accountAccessRightsColumnExists(): bool
+    {
+        if ($this->hasAccountAccessRightsColumn !== null) {
+            return $this->hasAccountAccessRightsColumn;
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT COUNT(*)
+             FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'tblaccount'
+               AND COLUMN_NAME = 'laccess_rights'"
+        );
+        $stmt->execute();
+
+        $this->hasAccountAccessRightsColumn = (int) $stmt->fetchColumn() > 0;
+        return $this->hasAccountAccessRightsColumn;
     }
 }

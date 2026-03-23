@@ -11,6 +11,7 @@ use PDO;
 final class AuthRepository
 {
     private LegacyPermissionMapper $legacyPermissions;
+    private ?bool $hasAccountAccessRightsColumn = null;
 
     public function __construct(private readonly Database $db)
     {
@@ -147,16 +148,18 @@ final class AuthRepository
         $groupId = (int) $roleType;
         $rolePermissions = $this->getRoleDefaultPermissions($mainId, $groupId);
 
-        // Store the permissions as the user's access_rights
-        $stmt = $this->db->pdo()->prepare(
-            'UPDATE tblaccount
-             SET laccess_rights = :access_rights
-             WHERE lid = :user_id'
-        );
-        $stmt->execute([
-            'access_rights' => json_encode($rolePermissions),
-            'user_id' => $userId,
-        ]);
+        if ($this->accountAccessRightsColumnExists()) {
+            // Store the permissions as the user's access_rights when the column exists.
+            $stmt = $this->db->pdo()->prepare(
+                'UPDATE tblaccount
+                 SET laccess_rights = :access_rights
+                 WHERE lid = :user_id'
+            );
+            $stmt->execute([
+                'access_rights' => json_encode($rolePermissions),
+                'user_id' => $userId,
+            ]);
+        }
     }
 
     /**
@@ -192,5 +195,24 @@ final class AuthRepository
         }
 
         return $result;
+    }
+
+    private function accountAccessRightsColumnExists(): bool
+    {
+        if ($this->hasAccountAccessRightsColumn !== null) {
+            return $this->hasAccountAccessRightsColumn;
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT COUNT(*)
+             FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'tblaccount'
+               AND COLUMN_NAME = 'laccess_rights'"
+        );
+        $stmt->execute();
+
+        $this->hasAccountAccessRightsColumn = (int) $stmt->fetchColumn() > 0;
+        return $this->hasAccountAccessRightsColumn;
     }
 }
