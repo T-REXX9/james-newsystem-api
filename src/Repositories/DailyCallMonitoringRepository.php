@@ -388,6 +388,8 @@ SELECT
     p.lcity AS city,
     p.lmobile AS mobile,
     p.lphone AS phone,
+    cp.lc_mobile AS cp_mobile,
+    cp.lc_phone AS cp_phone,
     p.lterms AS mode_of_payment,
     p.ldelivery_address AS courier,
     p.ldealer_quota AS quota,
@@ -412,6 +414,9 @@ SELECT
     END AS status_label
 FROM tblpatient p
 LEFT JOIN tblaccount a ON CAST(a.lid AS CHAR) = CAST(p.lsales_person AS CHAR)
+LEFT JOIN tblcontact_person cp ON cp.lrefno = p.lsessionid AND cp.lid = (
+    SELECT MIN(cp2.lid) FROM tblcontact_person cp2 WHERE cp2.lrefno = p.lsessionid
+)
 WHERE p.lmain_id = :main_id
 SQL;
         $params = ['main_id' => $mainId];
@@ -504,7 +509,7 @@ SQL;
         foreach ($rows as &$row) {
             $assigned = trim(($row['assigned_to_fname'] ?? '') . ' ' . ($row['assigned_to_lname'] ?? ''));
             $row['assigned_to'] = $assigned;
-            $row['contact_number'] = (string) ($row['mobile'] ?: $row['phone'] ?: '');
+            $row['contact_number'] = (string) ($row['mobile'] ?: $row['phone'] ?: $row['cp_mobile'] ?: $row['cp_phone'] ?: '');
         }
 
         return $rows;
