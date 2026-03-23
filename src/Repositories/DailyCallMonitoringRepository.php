@@ -105,10 +105,11 @@ final class DailyCallMonitoringRepository
             $contacts
         )));
 
+        $twelveMonthsAgo = date('Y-m-01', strtotime('-12 months'));
         return [
             'contacts' => $contacts,
             'callLogs' => $this->getCallLogRows($mainId, $contactIds),
-            'purchases' => $this->getPurchaseRows($mainId, $contactIds),
+            'purchases' => $this->getPurchaseRows($mainId, $contactIds, $twelveMonthsAgo),
             'inquiries' => $this->getInquiryRows($mainId, $contactIds),
             'returns' => [],
             'deals' => [],
@@ -124,11 +125,12 @@ final class DailyCallMonitoringRepository
             $customers
         )));
 
+        $twelveMonthsAgo = date('Y-m-01', strtotime('-12 months'));
         return [
             'contacts' => $customers,
             'call_logs' => $this->getCallLogRows($mainId, $contactIds),
             'inquiries' => $this->getInquiryRows($mainId, $contactIds),
-            'purchases' => $this->getPurchaseRows($mainId, $contactIds),
+            'purchases' => $this->getPurchaseRows($mainId, $contactIds, $twelveMonthsAgo),
             'team_messages' => $this->getRecentOwnerMessages($viewerUserId),
         ];
     }
@@ -361,13 +363,14 @@ SELECT
     p.llast_transaction AS lastContactDate,
     p.ldatetime AS created_at,
     COALESCE(p.lcredit, 0) AS creditLimit,
-    COALESCE((
-        SELECT SUM(COALESCE(lg.ldebit, 0) - COALESCE(lg.lcredit, 0))
-        FROM tblledger lg
-        WHERE lg.lcustomerid = p.lsessionid
-    ), 0) AS balance,
+    COALESCE(lg_bal.balance, 0) AS balance,
     0 AS is_deleted
 FROM tblpatient p
+LEFT JOIN (
+    SELECT lg.lcustomerid, SUM(COALESCE(lg.ldebit, 0) - COALESCE(lg.lcredit, 0)) AS balance
+    FROM tblledger lg
+    GROUP BY lg.lcustomerid
+) lg_bal ON lg_bal.lcustomerid = p.lsessionid
 WHERE p.lmain_id = :main_id
 ORDER BY p.lid DESC
 SQL;
@@ -388,8 +391,8 @@ SELECT
     p.lcity AS city,
     p.lmobile AS mobile,
     p.lphone AS phone,
-    cp.lc_mobile AS cp_mobile,
-    cp.lc_phone AS cp_phone,
+    cp_first.lc_mobile AS cp_mobile,
+    cp_first.lc_phone AS cp_phone,
     p.lterms AS mode_of_payment,
     p.ldelivery_address AS courier,
     p.ldealer_quota AS quota,
@@ -413,10 +416,14 @@ SELECT
         ELSE 'active'
     END AS status_label
 FROM tblpatient p
-LEFT JOIN tblaccount a ON CAST(a.lid AS CHAR) = CAST(p.lsales_person AS CHAR)
-LEFT JOIN tblcontact_person cp ON cp.lrefno = p.lsessionid AND cp.lid = (
-    SELECT MIN(cp2.lid) FROM tblcontact_person cp2 WHERE cp2.lrefno = p.lsessionid
-)
+LEFT JOIN tblaccount a ON a.lid = p.lsales_person
+LEFT JOIN (
+    SELECT cp.lrefno, cp.lc_mobile, cp.lc_phone
+    FROM tblcontact_person cp
+    INNER JOIN (
+        SELECT lrefno, MIN(lid) AS min_lid FROM tblcontact_person GROUP BY lrefno
+    ) cp_min ON cp_min.lrefno = cp.lrefno AND cp_min.min_lid = cp.lid
+) cp_first ON cp_first.lrefno = p.lsessionid
 WHERE p.lmain_id = :main_id
 SQL;
         $params = ['main_id' => $mainId];
@@ -603,15 +610,13 @@ SQL;
 SELECT
     tr.lrefno AS id,
     tr.lcustomerid AS contact_id,
-    COALESCE(NULLIF(tr.lamount, 0), COALESCE(its.total_amount, 0), 0) AS total_amount,
+    COALESCE(NULLIF(tr.lamount, 0), (
+        SELECT SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0))
+        FROM tbltransaction_item it
+        WHERE it.lrefno = tr.lrefno AND COALESCE(it.lcancel, 0) = 0
+    ), 0) AS total_amount,
     tr.ldate AS purchase_date
 FROM tbltransaction tr
-LEFT JOIN (
-    SELECT it.lrefno, SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0)) AS total_amount
-    FROM tbltransaction_item it
-    WHERE COALESCE(it.lcancel, 0) = 0
-    GROUP BY it.lrefno
-) its ON its.lrefno = tr.lrefno
 WHERE tr.lmain_id = ?
   AND tr.lcustomerid IN ({$placeholders})
   AND COALESCE(tr.lcancel, 0) = 0
@@ -622,10 +627,7 @@ SQL;
             $sql .= ' AND tr.ldate >= ?';
             $params[] = $dateFrom;
         }
-        $sql .= ' ';
-        $sql .= <<<SQL
-ORDER BY tr.ldate DESC, tr.lid DESC
-SQL;
+        $sql .= ' ORDER BY tr.ldate DESC, tr.lid DESC';
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -638,6 +640,7 @@ SQL;
         }
 
         $placeholders = implode(',', array_fill(0, count($contactIds), '?'));
+        $sixMonthsAgo = date('Y-m-d', strtotime('-6 months'));
         $sql = <<<SQL
 SELECT
     inq.lrefno AS id,
@@ -649,10 +652,11 @@ SELECT
 FROM tblinquiry inq
 WHERE inq.lmain_id = ?
   AND inq.lcustomerid IN ({$placeholders})
+  AND inq.ldate >= ?
 ORDER BY inq.ldate DESC, inq.lid DESC
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
-        $params = array_merge([$mainId], $contactIds);
+        $params = array_merge([$mainId], $contactIds, [$sixMonthsAgo]);
         $stmt->execute($params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -675,10 +679,11 @@ SQL;
         }
 
         $placeholders = implode(',', array_fill(0, count($contactIds), '?'));
+        $threeMonthsAgo = date('Y-m-d', strtotime('-3 months'));
         $sql = <<<SQL
 SELECT
     CAST(cle.lid AS CHAR) AS id,
-    CAST(cle.lcustomer_id AS CHAR) AS contact_id,
+    cle.lcustomer_id AS contact_id,
     COALESCE(
         NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
         CAST(cl.lsalesman_id AS CHAR)
@@ -691,14 +696,15 @@ SELECT
     CONCAT(cl.lcall_date, ' 00:00:00') AS occurred_at
 FROM tblcall_logs_entry cle
 INNER JOIN tblcall_logs cl ON cl.lrefno = cle.lrefno
-LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.lsalesman_id AS CHAR)
-WHERE CAST(cl.lmain_id AS CHAR) = ?
-  AND CAST(cle.lcustomer_id AS CHAR) IN ({$placeholders})
+LEFT JOIN tblaccount ua ON ua.lid = cl.lsalesman_id
+WHERE cl.lmain_id = ?
+  AND cle.lcustomer_id IN ({$placeholders})
+  AND cl.lcall_date >= ?
 ORDER BY cl.lcall_date DESC, cle.lid DESC
 SQL;
 
         $stmt = $this->db->pdo()->prepare($sql);
-        $params = array_merge([$mainId], $contactIds);
+        $params = array_merge([$mainId], $contactIds, [$threeMonthsAgo]);
         $stmt->execute($params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -729,6 +735,7 @@ SQL;
             ];
         }
 
+        $twelveMonthsAgo = date('Y-m-01', strtotime('-12 months'));
         $avgSql = <<<SQL
 SELECT
     monthly.customer_id AS contact_id,
@@ -737,24 +744,23 @@ FROM (
     SELECT
         tr.lcustomerid AS customer_id,
         DATE_FORMAT(tr.ldate, '%Y-%m') AS ym,
-        SUM(COALESCE(NULLIF(tr.lamount, 0), COALESCE(its.total_amount, 0), 0)) AS month_total
+        SUM(COALESCE(NULLIF(tr.lamount, 0), (
+            SELECT SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0))
+            FROM tbltransaction_item it
+            WHERE it.lrefno = tr.lrefno AND COALESCE(it.lcancel, 0) = 0
+        ), 0)) AS month_total
     FROM tbltransaction tr
-    LEFT JOIN (
-        SELECT it.lrefno, SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0)) AS total_amount
-        FROM tbltransaction_item it
-        WHERE COALESCE(it.lcancel, 0) = 0
-        GROUP BY it.lrefno
-    ) its ON its.lrefno = tr.lrefno
     WHERE tr.lmain_id = ?
       AND tr.lcustomerid IN ({$placeholders})
       AND COALESCE(tr.lcancel, 0) = 0
       AND COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+      AND tr.ldate >= ?
     GROUP BY tr.lcustomerid, DATE_FORMAT(tr.ldate, '%Y-%m')
 ) monthly
 GROUP BY monthly.customer_id
 SQL;
         $avgStmt = $this->db->pdo()->prepare($avgSql);
-        $avgStmt->execute(array_merge([$mainId], $contactIds));
+        $avgStmt->execute(array_merge([$mainId], $contactIds, [$twelveMonthsAgo]));
         $avgRows = $avgStmt->fetchAll(PDO::FETCH_ASSOC);
         foreach ($avgRows as $row) {
             $contactId = (string) ($row['contact_id'] ?? '');
