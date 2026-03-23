@@ -221,6 +221,28 @@ final class CustomerDatabaseController
         }
     }
 
+    public function listTerms(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $sessionId = trim((string) ($params['sessionId'] ?? ''));
+        if ($sessionId === '') {
+            throw new HttpException(422, 'sessionId is required');
+        }
+
+        try {
+            return $this->repo->getTermsHistory($mainId, $sessionId);
+        } catch (RuntimeException $e) {
+            if ($e->getMessage() === 'Customer not found') {
+                throw new HttpException(404, $e->getMessage());
+            }
+            throw new HttpException(422, $e->getMessage());
+        }
+    }
+
     public function updateTerm(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($body['main_id'] ?? 0);

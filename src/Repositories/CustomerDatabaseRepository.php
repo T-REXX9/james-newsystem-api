@@ -119,6 +119,9 @@ SELECT
     COALESCE(p.lsessionid, '') AS session_id,
     COALESCE(p.lpatient_code, '') AS customer_code,
     COALESCE(p.lcompany, '') AS company,
+    COALESCE(p.lemail, '') AS email,
+    COALESCE(p.lphone, '') AS phone,
+    COALESCE(p.lmobile, '') AS mobile,
     COALESCE(p.lprofile_type, 'Old') AS profile_type,
     COALESCE(p.lstatus, 1) AS status,
     COALESCE(p.ltransaction_type, '') AS transaction_type,
@@ -186,6 +189,9 @@ SELECT
     COALESCE(p.lsessionid, '') AS session_id,
     COALESCE(p.lpatient_code, '') AS customer_code,
     COALESCE(p.lcompany, '') AS company,
+    COALESCE(p.lemail, '') AS email,
+    COALESCE(p.lphone, '') AS phone,
+    COALESCE(p.lmobile, '') AS mobile,
     COALESCE(p.lprofile_type, 'Old') AS profile_type,
     COALESCE(p.lstatus, 1) AS status,
     COALESCE(p.ltransaction_type, '') AS transaction_type,
@@ -248,9 +254,9 @@ SQL;
         try {
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group, lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lprovince, lcity, ldebt_type, lprofile_type)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group, lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lprovince, lcity, ldebt_type, lprofile_type)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group, :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :province, :city, :debt_type, :profile_type)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group, :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :province, :city, :debt_type, :profile_type)'
             );
             $insert->execute([
                 'main_id' => $mainId,
@@ -258,6 +264,9 @@ SQL;
                 'datereg' => date('Y-m-d H:i:s'),
                 'session_id' => $sessionId,
                 'company' => $company,
+                'email' => (string) ($payload['email'] ?? ''),
+                'phone' => (string) ($payload['phone'] ?? ''),
+                'mobile' => (string) ($payload['mobile'] ?? ''),
                 'sales_person' => (string) ($payload['sales_person_id'] ?? ''),
                 'refer_by' => (string) ($payload['refer_by'] ?? ''),
                 'address' => (string) ($payload['address'] ?? ''),
@@ -325,6 +334,9 @@ SQL;
 UPDATE tblpatient
 SET
     lcompany = :company,
+    lemail = :email,
+    lphone = :phone,
+    lmobile = :mobile,
     lsales_person = :sales_person,
     lrefer_by = :refer_by,
     laddress = :address,
@@ -352,6 +364,9 @@ SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute([
             'company' => (string) ($payload['company'] ?? $existing['company'] ?? ''),
+            'email' => (string) ($payload['email'] ?? $existing['email'] ?? ''),
+            'phone' => (string) ($payload['phone'] ?? $existing['phone'] ?? ''),
+            'mobile' => (string) ($payload['mobile'] ?? $existing['mobile'] ?? ''),
             'sales_person' => (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? ''),
             'refer_by' => (string) ($payload['refer_by'] ?? $existing['refer_by'] ?? ''),
             'address' => (string) ($payload['address'] ?? $existing['address'] ?? ''),
@@ -393,6 +408,9 @@ SQL;
 
         $fieldMap = [
             'company' => ['column' => 'lcompany', 'value' => static fn ($value): string => (string) $value],
+            'email' => ['column' => 'lemail', 'value' => static fn ($value): string => (string) $value],
+            'phone' => ['column' => 'lphone', 'value' => static fn ($value): string => (string) $value],
+            'mobile' => ['column' => 'lmobile', 'value' => static fn ($value): string => (string) $value],
             'sales_person_id' => ['column' => 'lsales_person', 'value' => static fn ($value): string => (string) $value],
             'refer_by' => ['column' => 'lrefer_by', 'value' => static fn ($value): string => (string) $value],
             'address' => ['column' => 'laddress', 'value' => static fn ($value): string => (string) $value],
@@ -588,6 +606,21 @@ SQL;
         $stmt->execute(['id' => $id]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row !== false ? $row : [];
+    }
+
+    /**
+     * @return array{items: array<int, array<string, mixed>>}
+     */
+    public function getTermsHistory(int $mainId, string $sessionId): array
+    {
+        $exists = $this->getCustomer($mainId, $sessionId);
+        if ($exists === null) {
+            throw new RuntimeException('Customer not found');
+        }
+
+        return [
+            'items' => $this->listTerms($sessionId),
+        ];
     }
 
     /**

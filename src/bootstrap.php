@@ -351,6 +351,7 @@ function app_router(): Router
     $router->post('/api/v1/customer-database/{sessionId}/contacts', [$customerDatabaseController, 'addContact']);
     $router->patch('/api/v1/customer-database/contacts/{contactId}', [$customerDatabaseController, 'updateContact']);
     $router->delete('/api/v1/customer-database/contacts/{contactId}', [$customerDatabaseController, 'deleteContact']);
+    $router->get('/api/v1/customer-database/{sessionId}/terms', [$customerDatabaseController, 'listTerms']);
     $router->post('/api/v1/customer-database/{sessionId}/terms', [$customerDatabaseController, 'addTerm']);
     $router->patch('/api/v1/customer-database/terms/{termId}', [$customerDatabaseController, 'updateTerm']);
     $router->delete('/api/v1/customer-database/terms/{termId}', [$customerDatabaseController, 'deleteTerm']);
