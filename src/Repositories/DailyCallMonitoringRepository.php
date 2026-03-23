@@ -135,35 +135,56 @@ final class DailyCallMonitoringRepository
 
     public function createCallLog(int $mainId, array $data): array
     {
-        $sql = <<<SQL
-INSERT INTO tblcustomer_logs (
+        $occurredAt = (string) ($data['occurred_at'] ?? date('Y-m-d H:i:s'));
+        $callDate = substr($occurredAt, 0, 10);
+        $refno = 'API-CALL-' . date('YmdHis') . '-' . bin2hex(random_bytes(4));
+
+        $headerSql = <<<SQL
+INSERT INTO tblcall_logs (
     lmain_id,
-    lcustomer_id,
-    luser,
-    ltype,
-    lstatus,
-    lnotes,
-    ldatetime
+    lrefno,
+    lsalesman_id,
+    lcall_date,
+    lcall_type
 ) VALUES (
     :main_id,
-    :contact_id,
-    :user_value,
-    :type,
-    :status,
-    :notes,
-    :occurred_at
+    :refno,
+    :salesman_id,
+    :call_date,
+    :call_type
 )
 SQL;
+        $headerStmt = $this->db->pdo()->prepare($headerSql);
+        $headerStmt->execute([
+            'main_id' => (string) $mainId,
+            'refno' => $refno,
+            'salesman_id' => (string) ($data['user_id'] ?? ''),
+            'call_date' => $callDate,
+            'call_type' => (string) ($data['channel'] ?? 'call'),
+        ]);
 
-        $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute([
-            'main_id' => $mainId,
-            'contact_id' => (string) ($data['contact_id'] ?? ''),
-            'user_value' => (string) ($data['agent_name'] ?? $data['user_id'] ?? ''),
-            'type' => (string) ($data['channel'] ?? 'call'),
+        $entrySql = <<<SQL
+INSERT INTO tblcall_logs_entry (
+    lrefno,
+    lstatus,
+    lcustomer_id,
+    lremarks,
+    lnotes
+) VALUES (
+    :refno,
+    :status,
+    :customer_id,
+    :remarks,
+    :notes
+)
+SQL;
+        $entryStmt = $this->db->pdo()->prepare($entrySql);
+        $entryStmt->execute([
+            'refno' => $refno,
             'status' => (string) ($data['outcome'] ?? 'logged'),
+            'customer_id' => (string) ($data['contact_id'] ?? ''),
+            'remarks' => (string) ($data['outcome'] ?? 'logged'),
             'notes' => (string) ($data['notes'] ?? ''),
-            'occurred_at' => (string) ($data['occurred_at'] ?? date('Y-m-d H:i:s')),
         ]);
 
         $id = (int) $this->db->pdo()->lastInsertId();
@@ -651,23 +672,24 @@ SQL;
         $placeholders = implode(',', array_fill(0, count($contactIds), '?'));
         $sql = <<<SQL
 SELECT
-    CAST(cl.lid AS CHAR) AS id,
-    cl.lcustomer_id AS contact_id,
+    CAST(cle.lid AS CHAR) AS id,
+    CAST(cle.lcustomer_id AS CHAR) AS contact_id,
     COALESCE(
         NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
-        CAST(cl.luser AS CHAR)
+        CAST(cl.lsalesman_id AS CHAR)
     ) AS agent_name,
     CASE
-        WHEN LOWER(COALESCE(cl.ltype, '')) LIKE '%text%' OR LOWER(COALESCE(cl.ltype, '')) LIKE '%sms%' THEN 'text'
+        WHEN LOWER(COALESCE(cl.lcall_type, '')) LIKE '%text%' OR LOWER(COALESCE(cl.lcall_type, '')) LIKE '%sms%' THEN 'text'
         ELSE 'call'
     END AS channel,
-    cl.lstatus AS outcome,
-    cl.ldatetime AS occurred_at
-FROM tblcustomer_logs cl
-LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.luser AS CHAR)
-WHERE cl.lmain_id = ?
-  AND cl.lcustomer_id IN ({$placeholders})
-ORDER BY cl.ldatetime DESC, cl.lid DESC
+    COALESCE(NULLIF(cle.lstatus, ''), NULLIF(cle.lremarks, ''), 'logged') AS outcome,
+    CONCAT(cl.lcall_date, ' 00:00:00') AS occurred_at
+FROM tblcall_logs_entry cle
+INNER JOIN tblcall_logs cl ON cl.lrefno = cle.lrefno
+LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.lsalesman_id AS CHAR)
+WHERE CAST(cl.lmain_id AS CHAR) = ?
+  AND CAST(cle.lcustomer_id AS CHAR) IN ({$placeholders})
+ORDER BY cl.lcall_date DESC, cle.lid DESC
 SQL;
 
         $stmt = $this->db->pdo()->prepare($sql);
@@ -1044,30 +1066,28 @@ SQL;
     {
         $sql = <<<SQL
 SELECT
-    CAST(cl.lid AS CHAR) AS id,
-    cl.lcustomer_id AS contact_id,
+    CAST(cle.lid AS CHAR) AS id,
+    CAST(cle.lcustomer_id AS CHAR) AS contact_id,
     COALESCE(
         NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
-        CAST(cl.luser AS CHAR)
+        CAST(cl.lsalesman_id AS CHAR)
     ) AS agent_name,
-    cl.ldatetime AS occurred_at,
+    CONCAT(cl.lcall_date, ' 00:00:00') AS occurred_at,
     CASE
-        WHEN LOWER(COALESCE(cl.ltype, '')) LIKE '%text%' OR LOWER(COALESCE(cl.ltype, '')) LIKE '%sms%' THEN 'text'
+        WHEN LOWER(COALESCE(cl.lcall_type, '')) LIKE '%text%' OR LOWER(COALESCE(cl.lcall_type, '')) LIKE '%sms%' THEN 'text'
         ELSE 'call'
     END AS channel,
-    CASE
-        WHEN LOWER(COALESCE(cl.lnotes, '')) LIKE '%inbound%' THEN 'inbound'
-        ELSE 'outbound'
-    END AS direction,
+    'outbound' AS direction,
     0 AS duration_seconds,
-    cl.lnotes AS notes,
-    COALESCE(NULLIF(cl.lstatus, ''), 'logged') AS outcome,
+    cle.lnotes AS notes,
+    COALESCE(NULLIF(cle.lstatus, ''), NULLIF(cle.lremarks, ''), 'logged') AS outcome,
     NULL AS next_action,
     NULL AS next_action_due
-FROM tblcustomer_logs cl
-LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.luser AS CHAR)
-WHERE cl.lmain_id = :main_id
-  AND cl.lcustomer_id = :contact_id
+FROM tblcall_logs_entry cle
+INNER JOIN tblcall_logs cl ON cl.lrefno = cle.lrefno
+LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.lsalesman_id AS CHAR)
+WHERE CAST(cl.lmain_id AS CHAR) = :main_id
+  AND CAST(cle.lcustomer_id AS CHAR) = :contact_id
 SQL;
 
         $params = [
@@ -1076,16 +1096,16 @@ SQL;
         ];
 
         if ($fromDate !== null && $fromDate !== '') {
-            $sql .= ' AND cl.ldatetime >= :from_date';
-            $params['from_date'] = $fromDate;
+            $sql .= ' AND cl.lcall_date >= :from_date';
+            $params['from_date'] = substr($fromDate, 0, 10);
         }
 
         if ($toDate !== null && $toDate !== '') {
-            $sql .= ' AND cl.ldatetime <= :to_date';
-            $params['to_date'] = $toDate;
+            $sql .= ' AND cl.lcall_date <= :to_date';
+            $params['to_date'] = substr($toDate, 0, 10);
         }
 
-        $sql .= ' ORDER BY cl.ldatetime DESC, cl.lid DESC';
+        $sql .= ' ORDER BY cl.lcall_date DESC, cle.lid DESC';
 
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute($params);
@@ -1096,30 +1116,28 @@ SQL;
     {
         $sql = <<<SQL
 SELECT
-    CAST(cl.lid AS CHAR) AS id,
-    cl.lcustomer_id AS contact_id,
+    CAST(cle.lid AS CHAR) AS id,
+    CAST(cle.lcustomer_id AS CHAR) AS contact_id,
     COALESCE(
         NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
-        CAST(cl.luser AS CHAR)
+        CAST(cl.lsalesman_id AS CHAR)
     ) AS agent_name,
-    cl.ldatetime AS occurred_at,
+    CONCAT(cl.lcall_date, ' 00:00:00') AS occurred_at,
     CASE
-        WHEN LOWER(COALESCE(cl.ltype, '')) LIKE '%text%' OR LOWER(COALESCE(cl.ltype, '')) LIKE '%sms%' THEN 'text'
+        WHEN LOWER(COALESCE(cl.lcall_type, '')) LIKE '%text%' OR LOWER(COALESCE(cl.lcall_type, '')) LIKE '%sms%' THEN 'text'
         ELSE 'call'
     END AS channel,
-    CASE
-        WHEN LOWER(COALESCE(cl.lnotes, '')) LIKE '%inbound%' THEN 'inbound'
-        ELSE 'outbound'
-    END AS direction,
+    'outbound' AS direction,
     0 AS duration_seconds,
-    cl.lnotes AS notes,
-    COALESCE(NULLIF(cl.lstatus, ''), 'logged') AS outcome,
+    cle.lnotes AS notes,
+    COALESCE(NULLIF(cle.lstatus, ''), NULLIF(cle.lremarks, ''), 'logged') AS outcome,
     NULL AS next_action,
     NULL AS next_action_due
-FROM tblcustomer_logs cl
-LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.luser AS CHAR)
-WHERE cl.lmain_id = :main_id
-  AND cl.lid = :log_id
+FROM tblcall_logs_entry cle
+INNER JOIN tblcall_logs cl ON cl.lrefno = cle.lrefno
+LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.lsalesman_id AS CHAR)
+WHERE CAST(cl.lmain_id AS CHAR) = :main_id
+  AND cle.lid = :log_id
 LIMIT 1
 SQL;
 
@@ -1171,64 +1189,6 @@ SQL;
 
     private function getRecentOwnerMessages(int $viewerUserId): array
     {
-        if ($viewerUserId <= 0) {
-            return [];
-        }
-
-        $teamSql = <<<SQL
-SELECT
-    CAST(COALESCE(lteam, 0) AS CHAR) AS team_id,
-    CAST(COALESCE(lmother_id, 0) AS CHAR) AS main_id
-FROM tblaccount
-WHERE lid = :viewer_id
-LIMIT 1
-SQL;
-        $teamStmt = $this->db->pdo()->prepare($teamSql);
-        $teamStmt->execute(['viewer_id' => $viewerUserId]);
-        $context = $teamStmt->fetch(PDO::FETCH_ASSOC);
-        $teamId = trim((string) ($context['team_id'] ?? ''));
-        $mainId = trim((string) ($context['main_id'] ?? ''));
-
-        if ($teamId === '' || $teamId === '0') {
-            return [];
-        }
-
-        $sql = <<<SQL
-SELECT
-    CAST(tm.id AS CHAR) AS id,
-    CAST(tm.sender_id AS CHAR) AS sender_id,
-    COALESCE(tm.sender_name, '') AS sender_name,
-    COALESCE(tm.sender_avatar, '') AS sender_avatar,
-    COALESCE(tm.message, '') AS message,
-    tm.created_at AS created_at
-FROM tblteam_messages tm
-WHERE CAST(tm.team_id AS CHAR) = :team_id
-  AND COALESCE(tm.is_deleted, 0) = 0
-  AND (
-      :filter_main_id = ''
-      OR CAST(tm.sender_id AS CHAR) = :sender_main_id
-  )
-ORDER BY tm.created_at ASC
-LIMIT 100
-SQL;
-        $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute([
-            'team_id' => $teamId,
-            'filter_main_id' => $mainId,
-            'sender_main_id' => $mainId,
-        ]);
-
-        return array_map(
-            static fn(array $row): array => [
-                'id' => (string) ($row['id'] ?? ''),
-                'sender_id' => (string) ($row['sender_id'] ?? ''),
-                'sender_name' => (string) ($row['sender_name'] ?? ''),
-                'sender_avatar' => (string) ($row['sender_avatar'] ?? ''),
-                'message' => (string) ($row['message'] ?? ''),
-                'created_at' => (string) ($row['created_at'] ?? ''),
-                'is_from_owner' => true,
-            ],
-            $stmt->fetchAll(PDO::FETCH_ASSOC)
-        );
+        return [];
     }
 }
