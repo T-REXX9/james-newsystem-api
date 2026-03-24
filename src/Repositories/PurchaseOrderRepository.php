@@ -47,9 +47,16 @@ final class PurchaseOrderRepository
         ];
 
         $trimmedStatus = strtolower(trim($status));
+        if ($trimmedStatus === 'approved') {
+            $trimmedStatus = 'posted';
+        }
         if ($trimmedStatus !== '' && $trimmedStatus !== 'all') {
             $params['status'] = $trimmedStatus;
-            $where[] = 'LOWER(COALESCE(po.ltransaction_status, "")) = :status';
+            if ($trimmedStatus === 'posted') {
+                $where[] = 'LOWER(COALESCE(po.ltransaction_status, "")) IN ("posted", "approved")';
+            } else {
+                $where[] = 'LOWER(COALESCE(po.ltransaction_status, "")) = :status';
+            }
         }
 
         $trimmedSearch = trim($search);
@@ -94,7 +101,10 @@ SELECT
     COALESCE(po.lpurchaseno, '') AS po_number,
     po.ldate AS order_date,
     po.ltime AS order_time,
-    COALESCE(po.ltransaction_status, 'Pending') AS status,
+    CASE
+        WHEN LOWER(COALESCE(po.ltransaction_status, 'pending')) IN ('posted', 'approved') THEN 'Posted'
+        ELSE COALESCE(po.ltransaction_status, 'Pending')
+    END AS status,
     COALESCE(po.lpr_no, '') AS pr_number,
     COALESCE(po.lpr_refno, '') AS pr_refno,
     COALESCE(po.lsupplier, '') AS supplier_id,
@@ -189,7 +199,10 @@ SELECT
     COALESCE(po.lpurchaseno, '') AS po_number,
     po.ldate AS order_date,
     po.ltime AS order_time,
-    COALESCE(po.ltransaction_status, 'Pending') AS status,
+    CASE
+        WHEN LOWER(COALESCE(po.ltransaction_status, 'pending')) IN ('posted', 'approved') THEN 'Posted'
+        ELSE COALESCE(po.ltransaction_status, 'Pending')
+    END AS status,
     COALESCE(po.lpr_no, '') AS pr_number,
     COALESCE(po.lpr_refno, '') AS pr_refno,
     COALESCE(po.lsupplier, '') AS supplier_id,
@@ -306,10 +319,7 @@ SQL;
 
             $supplier = $this->getSupplierById((string) ($payload['supplier_id'] ?? ''));
             $orderDate = $this->normalizeDate((string) ($payload['order_date'] ?? date('Y-m-d')));
-            $status = trim((string) ($payload['status'] ?? 'Pending'));
-            if ($status === '') {
-                $status = 'Pending';
-            }
+            $status = $this->normalizeStatus((string) ($payload['status'] ?? 'Pending'));
 
             $stmt = $pdo->prepare(
                 'INSERT INTO tblpo_list
@@ -387,7 +397,7 @@ SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute([
             'order_date' => $this->normalizeDate((string) ($payload['order_date'] ?? $order['order_date'] ?? date('Y-m-d'))),
-            'status' => (string) ($payload['status'] ?? $order['status'] ?? 'Pending'),
+            'status' => $this->normalizeStatus((string) ($payload['status'] ?? $order['status'] ?? 'Pending')),
             'supplier_id' => $supplier['id'],
             'supplier_name' => $supplier['name'],
             'supplier_code' => $supplier['code'],
@@ -713,5 +723,18 @@ SQL;
     private function generateRefno(): string
     {
         return date('YmdHis') . (string) random_int(1000, 9999999);
+    }
+
+    private function normalizeStatus(string $status): string
+    {
+        $normalized = strtolower(trim($status));
+
+        return match ($normalized) {
+            '', 'draft' => 'Pending',
+            'approved', 'posted' => 'Posted',
+            'partial delivery' => 'Partial Delivery',
+            'cancelled' => 'Cancelled',
+            default => trim($status),
+        };
     }
 }

@@ -241,9 +241,31 @@ SQL;
 SELECT
     COALESCE(po.lrefno, '') AS id,
     COALESCE(po.lpurchaseno, '') AS po_no,
-    COALESCE(po.lsupplier_name, '') AS supplier_name,
-    COALESCE(po.ltransaction_status, 'Pending') AS status
+    COALESCE(
+        NULLIF(TRIM(po.lsupplier_name), ''),
+        NULLIF(TRIM(item_supplier.supplier_name), ''),
+        NULLIF(TRIM(s.lname), ''),
+        ''
+    ) AS supplier_name,
+    CASE
+        WHEN LOWER(COALESCE(po.ltransaction_status, 'pending')) IN ('posted', 'approved') THEN 'Posted'
+        ELSE COALESCE(po.ltransaction_status, 'Pending')
+    END AS status
 FROM tblpo_list po
+LEFT JOIN tblsupplier s
+    ON CAST(s.lid AS CHAR) = CAST(po.lsupplier AS CHAR)
+LEFT JOIN (
+    SELECT
+        lrefno,
+        SUBSTRING_INDEX(
+            GROUP_CONCAT(NULLIF(TRIM(lsupp_name), '') ORDER BY lid ASC SEPARATOR '||'),
+            '||',
+            1
+        ) AS supplier_name
+    FROM tblpo_itemlist
+    GROUP BY lrefno
+) item_supplier
+    ON item_supplier.lrefno = po.lrefno
 WHERE po.lmain_id = :main_id
   AND LOWER(COALESCE(po.ltransaction_status, 'pending')) NOT IN ('cancelled', 'completed', 'closed', 'deleted')
 ORDER BY po.lid DESC
