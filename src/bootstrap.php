@@ -469,6 +469,7 @@ function app_router(): Router
     $router->post('/api/v1/receiving-stocks/{receivingRefno}/finalize', [$receivingStockController, 'finalize']);
     $router->get('/api/v1/reorder-report', [$reorderReportController, 'list']);
     $router->post('/api/v1/reorder-report/hide-items', [$reorderReportController, 'hideItems']);
+    $router->post('/api/v1/reorder-report/restore-items', [$reorderReportController, 'restoreItems']);
     $router->get('/api/v1/return-to-suppliers', [$returnToSupplierController, 'list']);
     $router->get('/api/v1/return-to-suppliers/rr/search', [$returnToSupplierController, 'searchReceivingReports']);
     $router->get('/api/v1/return-to-suppliers/rr/{rrRefno}/items', [$returnToSupplierController, 'receivingReportItems']);

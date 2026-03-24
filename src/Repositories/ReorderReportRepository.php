@@ -22,7 +22,8 @@ final class ReorderReportRepository
         int $page = 1,
         int $perPage = 100,
         bool $hideZeroReorder = false,
-        bool $hideZeroReplenish = false
+        bool $hideZeroReplenish = false,
+        bool $includeHidden = false
     ): array {
         $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
@@ -33,6 +34,7 @@ final class ReorderReportRepository
             'per_page' => $perPage,
             'hide_zero_reorder' => $hideZeroReorder ? 1 : 0,
             'hide_zero_replenish' => $hideZeroReplenish ? 1 : 0,
+            'include_hidden' => $includeHidden ? 1 : 0,
         ]);
         $cached = $this->readCache($cacheKey, 30);
         if ($cached !== null) {
@@ -61,10 +63,13 @@ final class ReorderReportRepository
 
         $where = [
             'itm.lmain_id = :main_id',
-            'COALESCE(itm.lstatus, 0) = 1',
             'COALESCE(st.current_stock, 0) < ' . $targetExpr,
         ];
         $params = ['main_id' => $mainId];
+
+        if (!$includeHidden) {
+            $where[] = 'COALESCE(itm.lstatus, 0) = 1';
+        }
 
         if ($hideZeroReorder) {
             $where[] = "CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2)) > 0";
@@ -92,12 +97,13 @@ SQL;
         $total = (int) ($countStmt->fetchColumn() ?: 0);
 
         $listSql = <<<SQL
-SELECT
+    SELECT
     CAST(itm.lid AS UNSIGNED) AS id,
     COALESCE(itm.lsession, '') AS product_session,
     COALESCE(itm.litemcode, '') AS item_code,
     COALESCE(itm.lpartno, '') AS part_no,
     COALESCE(itm.ldescription, '') AS description,
+    CASE WHEN COALESCE(itm.lstatus, 0) = 1 THEN 0 ELSE 1 END AS is_hidden,
     CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2)) AS reorder_qty,
     CAST(COALESCE(NULLIF(itm.lreplenish, ''), '0') AS DECIMAL(15,2)) AS replenish_qty,
     CAST(COALESCE(st.current_stock, 0) AS DECIMAL(15,2)) AS current_stock,
@@ -171,6 +177,7 @@ SQL;
                 'item_code' => $itemCode,
                 'part_no' => (string) ($row['part_no'] ?? ''),
                 'description' => (string) ($row['description'] ?? ''),
+                'is_hidden' => (bool) ((int) ($row['is_hidden'] ?? 0)),
                 'reorder_qty' => (float) ($row['reorder_qty'] ?? 0),
                 'replenish_qty' => (float) ($row['replenish_qty'] ?? 0),
                 'current_stock' => (float) ($row['current_stock'] ?? 0),
@@ -217,6 +224,27 @@ SQL;
         $placeholders = implode(',', array_fill(0, count($itemIds), '?'));
         $sql = sprintf(
             'UPDATE tblinventory_item SET lstatus = 0 WHERE lmain_id = ? AND lid IN (%s)',
+            $placeholders
+        );
+        $stmt = $this->db->pdo()->prepare($sql);
+        $values = array_merge([$mainId], $itemIds);
+        foreach ($values as $index => $value) {
+            $stmt->bindValue($index + 1, (int) $value, PDO::PARAM_INT);
+        }
+        $stmt->execute();
+        $this->clearCache();
+        return $stmt->rowCount();
+    }
+
+    /**
+     * @param array<int, int> $itemIds
+     */
+    public function restoreItems(int $mainId, array $itemIds): int
+    {
+        if (count($itemIds) === 0) return 0;
+        $placeholders = implode(',', array_fill(0, count($itemIds), '?'));
+        $sql = sprintf(
+            'UPDATE tblinventory_item SET lstatus = 1 WHERE lmain_id = ? AND lstatus = 0 AND lid IN (%s)',
             $placeholders
         );
         $stmt = $this->db->pdo()->prepare($sql);

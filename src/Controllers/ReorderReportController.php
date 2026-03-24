@@ -32,6 +32,7 @@ final class ReorderReportController
         $search = trim((string) ($query['search'] ?? ''));
         $hideZeroReorder = $this->toBool($query['hide_zero_reorder'] ?? false);
         $hideZeroReplenish = $this->toBool($query['hide_zero_replenish'] ?? false);
+        $includeHidden = $this->toBool($query['include_hidden'] ?? ($query['show_hidden'] ?? false));
 
         return $this->repo->listReport(
             $mainId,
@@ -40,7 +41,8 @@ final class ReorderReportController
             $page,
             $perPage,
             $hideZeroReorder,
-            $hideZeroReplenish
+            $hideZeroReplenish,
+            $includeHidden
         );
     }
 
@@ -71,6 +73,37 @@ final class ReorderReportController
         $hidden = $this->repo->hideItems($mainId, $normalized);
         return [
             'hidden' => $hidden,
+            'requested' => count($normalized),
+        ];
+    }
+
+    public function restoreItems(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $itemIds = is_array($body['item_ids'] ?? null) ? $body['item_ids'] : [];
+        if (count($itemIds) === 0) {
+            throw new HttpException(422, 'item_ids is required');
+        }
+
+        $normalized = [];
+        foreach ($itemIds as $id) {
+            $value = (int) $id;
+            if ($value > 0) {
+                $normalized[] = $value;
+            }
+        }
+        $normalized = array_values(array_unique($normalized));
+        if (count($normalized) === 0) {
+            throw new HttpException(422, 'item_ids must contain valid IDs');
+        }
+
+        $restored = $this->repo->restoreItems($mainId, $normalized);
+        return [
+            'restored' => $restored,
             'requested' => count($normalized),
         ];
     }
