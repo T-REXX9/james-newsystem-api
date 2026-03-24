@@ -9,6 +9,8 @@ use App\Support\Exceptions\HttpException;
 
 final class ReorderReportController
 {
+    private const WAREHOUSE_TYPES = ['total', 'wh1', 'wh2', 'wh3', 'wh4', 'wh5', 'wh6'];
+
     public function __construct(private readonly ReorderReportRepository $repo)
     {
     }
@@ -21,8 +23,8 @@ final class ReorderReportController
         }
 
         $warehouseType = strtolower(trim((string) ($query['warehouse_type'] ?? 'total')));
-        if (!in_array($warehouseType, ['total', 'wh1'], true)) {
-            throw new HttpException(422, 'warehouse_type must be one of: total, wh1');
+        if (!in_array($warehouseType, self::WAREHOUSE_TYPES, true)) {
+            throw new HttpException(422, 'warehouse_type must be one of: ' . implode(', ', self::WAREHOUSE_TYPES));
         }
 
         $page = max(1, (int) ($query['page'] ?? 1));

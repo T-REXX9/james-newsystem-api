@@ -9,6 +9,8 @@ use PDO;
 
 final class ReorderReportRepository
 {
+    private const WAREHOUSE_TYPES = ['wh1', 'wh2', 'wh3', 'wh4', 'wh5', 'wh6'];
+
     public function __construct(private readonly Database $db)
     {
     }
@@ -22,9 +24,10 @@ final class ReorderReportRepository
         bool $hideZeroReorder = false,
         bool $hideZeroReplenish = false
     ): array {
+        $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
             'main_id' => $mainId,
-            'warehouse_type' => strtolower($warehouseType) === 'wh1' ? 'wh1' : 'total',
+            'warehouse_type' => $normalizedWarehouseType,
             'search' => trim($search),
             'page' => $page,
             'per_page' => $perPage,
@@ -40,18 +43,19 @@ final class ReorderReportRepository
         $page = max(1, $page);
         $perPage = max(1, min(500, $perPage));
         $offset = ($page - 1) * $perPage;
-        $isWh1 = strtolower($warehouseType) === 'wh1';
+        $selectedWarehouse = $normalizedWarehouseType !== 'total' ? strtoupper($normalizedWarehouseType) : null;
+        $isWarehouseSpecific = $selectedWarehouse !== null;
 
-        $stockSubquery = $isWh1
+        $stockSubquery = $isWarehouseSpecific
             ? "SELECT lg.linvent_id, SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0)) AS current_stock
                FROM tblinventory_logs lg
-               WHERE COALESCE(lg.lwarehouse, '') = 'WH1'
-               GROUP BY lg.linvent_id"
+               WHERE COALESCE(lg.lwarehouse, '') = " . $this->db->pdo()->quote($selectedWarehouse)
+               . " GROUP BY lg.linvent_id"
             : "SELECT lg.linvent_id, SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0)) AS current_stock
                FROM tblinventory_logs lg
                GROUP BY lg.linvent_id";
 
-        $targetExpr = $isWh1
+        $targetExpr = $isWarehouseSpecific
             ? "CAST(COALESCE(NULLIF(itm.lreplenish, ''), '0') AS DECIMAL(15,2))"
             : "CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2))";
 
@@ -115,16 +119,16 @@ SQL;
             $result = [
                 'items' => [],
                 'meta' => [
-                    'page' => $page,
-                    'per_page' => $perPage,
-                    'total' => $total,
-                    'total_pages' => (int) ceil($total / max(1, $perPage)),
-                    'filters' => [
-                        'main_id' => $mainId,
-                        'warehouse_type' => $isWh1 ? 'wh1' : 'total',
-                        'search' => $trimmedSearch,
-                        'hide_zero_reorder' => $hideZeroReorder,
-                        'hide_zero_replenish' => $hideZeroReplenish,
+                        'page' => $page,
+                        'per_page' => $perPage,
+                        'total' => $total,
+                        'total_pages' => (int) ceil($total / max(1, $perPage)),
+                        'filters' => [
+                            'main_id' => $mainId,
+                            'warehouse_type' => $normalizedWarehouseType,
+                            'search' => $trimmedSearch,
+                            'hide_zero_reorder' => $hideZeroReorder,
+                            'hide_zero_replenish' => $hideZeroReplenish,
                     ],
                 ],
             ];
@@ -148,8 +152,8 @@ SQL;
         $latestPrByItem = $this->fetchLatestPrByItemCode($itemCodes);
         $latestPoByItem = $this->fetchLatestPoByItemCode($itemCodes);
         $latestRrByItem = $this->fetchLatestRrByItemCode($itemCodes);
-        $lastArrivalByItem = $isWh1
-            ? $this->fetchLastTransferByItemCode($itemCodes)
+        $lastArrivalByItem = $isWarehouseSpecific
+            ? $this->fetchLastTransferByItemCode($itemCodes, $selectedWarehouse)
             : $this->mapRrAsLastArrival($latestRrByItem);
 
         $mapped = [];
@@ -193,7 +197,7 @@ SQL;
                 'total_pages' => (int) ceil($total / max(1, $perPage)),
                 'filters' => [
                     'main_id' => $mainId,
-                    'warehouse_type' => $isWh1 ? 'wh1' : 'total',
+                    'warehouse_type' => $normalizedWarehouseType,
                     'search' => $trimmedSearch,
                     'hide_zero_reorder' => $hideZeroReorder,
                     'hide_zero_replenish' => $hideZeroReplenish,
@@ -223,6 +227,12 @@ SQL;
         $stmt->execute();
         $this->clearCache();
         return $stmt->rowCount();
+    }
+
+    private function normalizeWarehouseType(string $warehouseType): string
+    {
+        $normalized = strtolower(trim($warehouseType));
+        return in_array($normalized, self::WAREHOUSE_TYPES, true) ? $normalized : 'total';
     }
 
     private function buildCacheKey(array $payload): string
@@ -460,10 +470,11 @@ SQL;
      * @param array<int, string> $itemCodes
      * @return array<string, array{last_arrival_date:string,last_arrival_qty:float}>
      */
-    private function fetchLastTransferByItemCode(array $itemCodes): array
+    private function fetchLastTransferByItemCode(array $itemCodes, string $warehouse): array
     {
         if (count($itemCodes) === 0) return [];
         [$inClause, $bind] = $this->buildInClause($itemCodes, 'tr');
+        $bind['warehouse'] = $warehouse;
         $sql = <<<SQL
 SELECT
     trp.litemcode,
@@ -473,7 +484,7 @@ FROM tblbranchinventory_transferproducts trp
 INNER JOIN (
     SELECT litemcode, MAX(lid) AS max_lid
     FROM tblbranchinventory_transferproducts
-    WHERE lwarehouse_to = 'WH1'
+    WHERE lwarehouse_to = :warehouse
       AND litemcode IN ({$inClause})
     GROUP BY litemcode
 ) latest ON latest.max_lid = trp.lid
