@@ -659,21 +659,28 @@ SQL;
         }
 
         if ($normalized === 'unpost') {
-            $stmt = $this->db->pdo()->prepare(
-                'UPDATE tbldelivery_receipt
-                 SET lstatus = :status, lcancel = 0
-                 WHERE lmain_id = :main_id AND lrefno = :order_slip_refno
-                 LIMIT 1'
-            );
-            $stmt->execute([
-                'status' => 'Pending',
-                'main_id' => (string) $mainId,
-                'order_slip_refno' => $orderSlipRefno,
-            ]);
-            if ($stmt->rowCount() === 0) {
+            $record = $this->getOrderSlip($mainId, $orderSlipRefno);
+            if ($record === null) {
                 return null;
             }
-            return $this->getOrderSlip($mainId, $orderSlipRefno);
+
+            $salesRefno = trim((string) (($record['order_slip']['order_id'] ?? '')));
+            if ($salesRefno === '') {
+                throw new RuntimeException('Unpost action is unavailable for order slips without a linked sales order');
+            }
+
+            $salesOrderRepo = new SalesOrderRepository($this->db);
+            $result = $salesOrderRepo->applyAction(
+                $mainId,
+                $salesRefno,
+                'unpost',
+                ['user_id' => (int) ($payload['user_id'] ?? 0)]
+            );
+            if ($result === null) {
+                throw new RuntimeException('Linked sales order not found');
+            }
+
+            return $result;
         }
 
         if ($normalized === 'print' || $normalized === 'printed') {

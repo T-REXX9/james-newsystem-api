@@ -674,6 +674,31 @@ SQL;
             return $this->getInvoice($mainId, $invoiceRefno);
         }
 
+        if ($normalized === 'unpost') {
+            $record = $this->getInvoice($mainId, $invoiceRefno);
+            if ($record === null) {
+                return null;
+            }
+
+            $salesRefno = trim((string) (($record['invoice']['order_id'] ?? '')));
+            if ($salesRefno === '') {
+                throw new RuntimeException('Unpost action is unavailable for invoices without a linked sales order');
+            }
+
+            $salesOrderRepo = new SalesOrderRepository($this->db);
+            $result = $salesOrderRepo->applyAction(
+                $mainId,
+                $salesRefno,
+                'unpost',
+                ['user_id' => (int) ($payload['user_id'] ?? 0)]
+            );
+            if ($result === null) {
+                throw new RuntimeException('Linked sales order not found');
+            }
+
+            return $result;
+        }
+
         throw new RuntimeException('Unsupported action: ' . $action);
     }
 

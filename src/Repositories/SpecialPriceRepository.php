@@ -143,7 +143,12 @@ SQL
 SELECT
     COALESCE(sp.lpatient_refno, '') AS patient_refno,
     COALESCE(p.lcompany, '') AS company,
-    COALESCE(p.lpatient_code, '') AS patient_code
+    COALESCE(p.lpatient_code, '') AS patient_code,
+    COALESCE((
+        SELECT SUM(COALESCE(ldebit, 0)) - SUM(COALESCE(lcredit, 0))
+        FROM tblledger
+        WHERE lcustomerid = sp.lpatient_refno
+    ), 0) AS balance
 FROM tblspecial_price sp
 LEFT JOIN tblpatient p
     ON p.lsessionid = sp.lpatient_refno
@@ -268,6 +273,27 @@ SQL
         }
 
         $refno = $itemSession;
+        $duplicateStmt = $this->db->pdo()->prepare(
+            <<<SQL
+SELECT COUNT(*)
+FROM tblspecial_price sp
+WHERE sp.lrefno = :refno
+  AND EXISTS (
+    SELECT 1
+    FROM tblinventory_item scope_item
+    WHERE scope_item.lsession = sp.litem_refno
+      AND scope_item.lmain_id = :main_id
+  )
+SQL
+        );
+        $duplicateStmt->execute([
+            'refno' => $refno,
+            'main_id' => $mainId,
+        ]);
+        if ((int) $duplicateStmt->fetchColumn() > 0) {
+            throw new RuntimeException('A special price for this product already exists');
+        }
+
         $stmt = $this->db->pdo()->prepare(
             <<<SQL
 INSERT INTO tblspecial_price (
@@ -730,6 +756,11 @@ SQL
         $where = [
             'lmain_id = :main_id',
             'COALESCE(lnot_inventory, 0) = 0',
+            'NOT EXISTS (
+                SELECT 1
+                FROM tblspecial_price sp
+                WHERE sp.lrefno = tblinventory_item.lsession
+            )',
         ];
         if ($trimmedSearch !== '') {
             $where[] = '(COALESCE(litemcode, "") LIKE :search OR COALESCE(lpartno, "") LIKE :search OR COALESCE(ldescription, "") LIKE :search)';

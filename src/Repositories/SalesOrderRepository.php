@@ -680,6 +680,12 @@ SQL;
             $set[] = "lsubmitstat = 'Approved'";
             $set[] = 'lcancel = 0';
         } elseif ($normalizedAction === 'unpost') {
+            $lastLinkedDocumentNo = trim((string) ($existing['order']['order_slip_no'] ?? ''));
+            if ($lastLinkedDocumentNo === '') {
+                $lastLinkedDocumentNo = trim((string) ($existing['order']['invoice_no'] ?? ''));
+            }
+
+            $this->cleanupLinkedDocumentsForSalesOrder($salesRefno);
             $set[] = "lsubmitstat = 'Pending'";
             $set[] = "ltransaction_status = 'Pending'";
             $set[] = 'lcancel = 0';
@@ -687,6 +693,8 @@ SQL;
             $set[] = 'invoice_no = NULL';
             $set[] = 'ldr_refno = NULL';
             $set[] = 'ldr_no = NULL';
+            $set[] = 'llast_refno = :last_refno';
+            $params['last_refno'] = $lastLinkedDocumentNo !== '' ? $lastLinkedDocumentNo : null;
             $this->syncInquiryOnSalesUnpost($salesRefno);
         } elseif ($normalizedAction === 'cancel' || $normalizedAction === 'cancel_so' || $normalizedAction === 'cancelled' || $normalizedAction === 'canceled') {
             $set[] = "lsubmitstat = 'Cancelled'";
@@ -706,6 +714,39 @@ SQL;
         }
 
         return $this->getSalesOrder($mainId, $salesRefno, $viewerUserId);
+    }
+
+    private function cleanupLinkedDocumentsForSalesOrder(string $salesRefno): void
+    {
+        $pdo = $this->db->pdo();
+
+        $invoiceRefStmt = $pdo->prepare('SELECT lrefno FROM tblinvoice_list WHERE lsales_refno = :sales_refno');
+        $invoiceRefStmt->execute(['sales_refno' => $salesRefno]);
+        $invoiceRefnos = $invoiceRefStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        foreach ($invoiceRefnos as $invoiceRefno) {
+            $invoiceRef = trim((string) $invoiceRefno);
+            if ($invoiceRef === '') {
+                continue;
+            }
+            $pdo->prepare('DELETE FROM tblinvoice_itemrec WHERE linvoice_refno = :refno')->execute(['refno' => $invoiceRef]);
+            $pdo->prepare('DELETE FROM tblledger WHERE lrefno = :refno')->execute(['refno' => $invoiceRef]);
+            $pdo->prepare('DELETE FROM tblinventory_logs WHERE lrefno = :refno')->execute(['refno' => $invoiceRef]);
+            $pdo->prepare('DELETE FROM tblinvoice_list WHERE lrefno = :refno')->execute(['refno' => $invoiceRef]);
+        }
+
+        $orderSlipRefStmt = $pdo->prepare('SELECT lrefno FROM tbldelivery_receipt WHERE lsales_refno = :sales_refno');
+        $orderSlipRefStmt->execute(['sales_refno' => $salesRefno]);
+        $orderSlipRefnos = $orderSlipRefStmt->fetchAll(PDO::FETCH_COLUMN) ?: [];
+        foreach ($orderSlipRefnos as $orderSlipRefno) {
+            $orderSlipRef = trim((string) $orderSlipRefno);
+            if ($orderSlipRef === '') {
+                continue;
+            }
+            $pdo->prepare('DELETE FROM tbldelivery_receipt_items WHERE lor_refno = :refno')->execute(['refno' => $orderSlipRef]);
+            $pdo->prepare('DELETE FROM tblledger WHERE lrefno = :refno')->execute(['refno' => $orderSlipRef]);
+            $pdo->prepare('DELETE FROM tblinventory_logs WHERE lrefno = :refno')->execute(['refno' => $orderSlipRef]);
+            $pdo->prepare('DELETE FROM tbldelivery_receipt WHERE lrefno = :refno')->execute(['refno' => $orderSlipRef]);
+        }
     }
 
     /**
