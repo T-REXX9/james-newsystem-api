@@ -159,6 +159,14 @@ SQL;
         $stmt->execute();
         $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+        if (!$isPickerMode && $items !== []) {
+            foreach ($items as &$item) {
+                $sessionId = trim((string) ($item['session_id'] ?? ''));
+                $item['contacts'] = $sessionId !== '' ? $this->listContacts($sessionId) : [];
+            }
+            unset($item);
+        }
+
         if ($isPickerMode) {
             $total = $offset + count($items);
         }
