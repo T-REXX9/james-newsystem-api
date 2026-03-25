@@ -15,61 +15,6 @@ final class SpecialPriceRepository
     }
 
     /**
-     * @return list<string>
-     */
-    private function splitSearchTerms(string $search): array
-    {
-        $normalized = trim(preg_replace('/\s+/', ' ', $search) ?? '');
-        if ($normalized === '') {
-            return [];
-        }
-
-        $parts = preg_split('/[\s,]+/', $normalized) ?: [];
-        $terms = [];
-        foreach ($parts as $part) {
-            $term = trim((string) $part);
-            if ($term === '') {
-                continue;
-            }
-            $terms[] = mb_substr($term, 0, 100);
-        }
-
-        return array_values(array_unique($terms));
-    }
-
-    /**
-     * @param list<string> $fields
-     * @param list<string> $terms
-     */
-    private function buildSmartSearchClause(array $fields, array $terms): string
-    {
-        if ($fields === [] || $terms === []) {
-            return '';
-        }
-
-        $termClauses = [];
-        foreach (array_values($terms) as $termIndex => $_term) {
-            $fieldClauses = [];
-            foreach ($fields as $field) {
-                $fieldClauses[] = sprintf('COALESCE(%s, \'\') LIKE :search_%d', $field, $termIndex);
-            }
-            $termClauses[] = '(' . implode(' OR ', $fieldClauses) . ')';
-        }
-
-        return '(' . implode(' AND ', $termClauses) . ')';
-    }
-
-    /**
-     * @param list<string> $terms
-     */
-    private function bindSmartSearchTerms(\PDOStatement $stmt, array $terms): void
-    {
-        foreach (array_values($terms) as $termIndex => $term) {
-            $stmt->bindValue('search_' . $termIndex, '%' . $term . '%', PDO::PARAM_STR);
-        }
-    }
-
-    /**
      * @return array{
      *   items: array<int, array<string, mixed>>,
      *   meta: array<string, mixed>
@@ -806,7 +751,7 @@ SQL
         $page = max(1, $page);
         $perPage = min(500, max(1, $perPage));
         $offset = ($page - 1) * $perPage;
-        $searchTerms = $this->splitSearchTerms($search);
+        $trimmedSearch = trim($search);
 
         $where = [
             'lmain_id = :main_id',
@@ -817,12 +762,8 @@ SQL
                 WHERE sp.lrefno = tblinventory_item.lsession
             )',
         ];
-        $smartSearchClause = $this->buildSmartSearchClause(
-            ['litemcode', 'lpartno', 'ldescription'],
-            $searchTerms
-        );
-        if ($smartSearchClause !== '') {
-            $where[] = $smartSearchClause;
+        if ($trimmedSearch !== '') {
+            $where[] = "CONCAT_WS(' ', lsession, litemcode, lpartno, ldescription) LIKE :search";
         }
         $whereSql = implode(' AND ', $where);
 
@@ -834,7 +775,9 @@ WHERE {$whereSql}
 SQL
         );
         $countStmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
-        $this->bindSmartSearchTerms($countStmt, $searchTerms);
+        if ($trimmedSearch !== '') {
+            $countStmt->bindValue('search', '%' . $trimmedSearch . '%', PDO::PARAM_STR);
+        }
         $countStmt->execute();
         $total = (int) ($countStmt->fetchColumn() ?: 0);
 
@@ -852,7 +795,9 @@ LIMIT :limit OFFSET :offset
 SQL
         );
         $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
-        $this->bindSmartSearchTerms($stmt, $searchTerms);
+        if ($trimmedSearch !== '') {
+            $stmt->bindValue('search', '%' . $trimmedSearch . '%', PDO::PARAM_STR);
+        }
         $stmt->bindValue('limit', $perPage, PDO::PARAM_INT);
         $stmt->bindValue('offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
