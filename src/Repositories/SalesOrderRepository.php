@@ -697,10 +697,15 @@ SQL;
             $params['last_refno'] = $lastLinkedDocumentNo !== '' ? $lastLinkedDocumentNo : null;
             $this->syncInquiryOnSalesUnpost($salesRefno);
         } elseif ($normalizedAction === 'cancel' || $normalizedAction === 'cancel_so' || $normalizedAction === 'cancelled' || $normalizedAction === 'canceled') {
+            $this->cleanupLinkedDocumentsForSalesOrder($salesRefno);
             $set[] = "lsubmitstat = 'Cancelled'";
             $set[] = "ltransaction_status = 'Cancelled'";
             $set[] = 'lcancel = 1';
             $set[] = 'lcancel_reason = :cancel_reason';
+            $set[] = 'invoice_refno = NULL';
+            $set[] = 'invoice_no = NULL';
+            $set[] = 'ldr_refno = NULL';
+            $set[] = 'ldr_no = NULL';
             $params['cancel_reason'] = trim((string) ($payload['reason'] ?? ''));
             $this->syncInquiryOnSalesCancel($salesRefno);
         } else {
@@ -728,6 +733,7 @@ SQL;
             if ($invoiceRef === '') {
                 continue;
             }
+            $this->insertLinkedDocumentReversalLogs($salesRefno, $invoiceRef, 'Invoice');
             $pdo->prepare('DELETE FROM tblinvoice_itemrec WHERE linvoice_refno = :refno')->execute(['refno' => $invoiceRef]);
             $pdo->prepare('DELETE FROM tblledger WHERE lrefno = :refno')->execute(['refno' => $invoiceRef]);
             $pdo->prepare('DELETE FROM tblinventory_logs WHERE lrefno = :refno')->execute(['refno' => $invoiceRef]);
@@ -742,6 +748,7 @@ SQL;
             if ($orderSlipRef === '') {
                 continue;
             }
+            $this->insertLinkedDocumentReversalLogs($salesRefno, $orderSlipRef, 'Order Slip');
             $pdo->prepare('DELETE FROM tbldelivery_receipt_items WHERE lor_refno = :refno')->execute(['refno' => $orderSlipRef]);
             $pdo->prepare('DELETE FROM tblledger WHERE lrefno = :refno')->execute(['refno' => $orderSlipRef]);
             $pdo->prepare('DELETE FROM tblinventory_logs WHERE lrefno = :refno')->execute(['refno' => $orderSlipRef]);
@@ -854,6 +861,14 @@ SQL;
         $doc = $created['order_slip'] ?? [];
         $docRef = (string) ($doc['order_slip_refno'] ?? '');
         $docNo = (string) ($doc['slip_no'] ?? '');
+        $this->insertDocumentStockLogs(
+            $salesRefno,
+            $order,
+            $items,
+            $docRef,
+            $docNo,
+            'Order Slip'
+        );
 
         $update = $this->db->pdo()->prepare(
             'UPDATE tbltransaction
@@ -944,6 +959,14 @@ SQL;
         $doc = $created['invoice'] ?? [];
         $docRef = (string) ($doc['invoice_refno'] ?? '');
         $docNo = (string) ($doc['invoice_no'] ?? '');
+        $this->insertDocumentStockLogs(
+            $salesRefno,
+            $order,
+            $items,
+            $docRef,
+            $docNo,
+            'Invoice'
+        );
 
         $update = $this->db->pdo()->prepare(
             'UPDATE tbltransaction
@@ -1196,6 +1219,146 @@ SQL;
             'lremark' => (string) ($item['remark'] ?? 'OnStock'),
             'ltransaction_date' => $salesDate,
         ]);
+    }
+
+    /**
+     * @param array<string, mixed> $order
+     * @param array<int, array<string, mixed>> $items
+     */
+    private function insertDocumentStockLogs(
+        string $salesRefno,
+        array $order,
+        array $items,
+        string $documentRefno,
+        string $documentNo,
+        string $transactionType
+    ): void {
+        $documentRefno = trim($documentRefno);
+        if ($documentRefno === '' || $items === []) {
+            return;
+        }
+
+        $pdo = $this->db->pdo();
+        $check = $pdo->prepare(
+            'SELECT COUNT(*) FROM tblinventory_logs
+             WHERE lrefno = :refno
+               AND ltransaction_type = :transaction_type'
+        );
+        $check->execute([
+            'refno' => $documentRefno,
+            'transaction_type' => $transactionType,
+        ]);
+        if ((int) ($check->fetchColumn() ?: 0) > 0) {
+            return;
+        }
+
+        $salesDate = trim((string) ($order['sales_date'] ?? ''));
+        $salesTime = trim((string) ($order['sales_time'] ?? ''));
+        if ($salesDate === '') {
+            $salesDate = date('Y-m-d');
+        }
+        if ($salesTime === '') {
+            $salesTime = date('H:i:s');
+        }
+
+        $processPrefix = $transactionType === 'Order Slip' ? 'DR ' : 'INV ';
+        $insert = $pdo->prepare(
+            'INSERT INTO tblinventory_logs
+            (linvent_id, lin, lout, ltotal, ldateadded, lprocess_by, lstatus_logs, lnote, linventory_id, lprice, lrefno, lcustomer_id, llocation, lwarehouse, ltransaction_type)
+            VALUES
+            (:linvent_id, :lin, :lout, :ltotal, :ldateadded, :lprocess_by, :lstatus_logs, :lnote, :linventory_id, :lprice, :lrefno, :lcustomer_id, :llocation, :lwarehouse, :ltransaction_type)'
+        );
+
+        foreach ($items as $item) {
+            $qty = max(0, (int) ($item['qty'] ?? 0));
+            if ($qty <= 0) {
+                continue;
+            }
+            $insert->execute([
+                'linvent_id' => (string) ($item['item_refno'] ?? ''),
+                'lin' => 0,
+                'lout' => $qty,
+                'ltotal' => $qty,
+                'ldateadded' => $salesDate . ' ' . $salesTime,
+                'lprocess_by' => $processPrefix . $documentNo,
+                'lstatus_logs' => '-',
+                'lnote' => (string) ($order['customer_company'] ?? ''),
+                'linventory_id' => (string) ($item['item_id'] ?? ''),
+                'lprice' => (float) ($item['unit_price'] ?? 0),
+                'lrefno' => $documentRefno,
+                'lcustomer_id' => (string) ($order['contact_id'] ?? ''),
+                'llocation' => (string) ($item['location'] ?? ''),
+                'lwarehouse' => 'WH1',
+                'ltransaction_type' => $transactionType,
+            ]);
+        }
+    }
+
+    private function insertLinkedDocumentReversalLogs(string $salesRefno, string $documentRefno, string $transactionType): void
+    {
+        $documentRefno = trim($documentRefno);
+        if ($documentRefno === '') {
+            return;
+        }
+
+        $pdo = $this->db->pdo();
+        $headerTable = $transactionType === 'Invoice' ? 'tblinvoice_list' : 'tbldelivery_receipt';
+        $itemTable = $transactionType === 'Invoice' ? 'tblinvoice_itemrec' : 'tbldelivery_receipt_items';
+        $itemRefColumn = $transactionType === 'Invoice' ? 'linvoice_refno' : 'lor_refno';
+
+        $stmt = $pdo->prepare(
+            "SELECT
+                hdr.lsales_no AS sales_no,
+                hdr.lcustomerid AS customer_id,
+                COALESCE(hdr.lcustomer_name, '') AS customer_name,
+                itm.litemid AS item_id,
+                itm.linv_refno AS item_refno,
+                itm.lqty AS qty,
+                itm.lprice AS unit_price,
+                itm.llocation AS location
+             FROM {$itemTable} itm
+             INNER JOIN {$headerTable} hdr
+                ON hdr.lrefno = itm.{$itemRefColumn}
+             WHERE hdr.lrefno = :document_refno"
+        );
+        $stmt->execute([
+            'document_refno' => $documentRefno,
+        ]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if ($rows === []) {
+            return;
+        }
+
+        $insert = $pdo->prepare(
+            'INSERT INTO tblinventory_logs
+            (linvent_id, lin, lout, ltotal, ldateadded, lprocess_by, lstatus_logs, lnote, linventory_id, lprice, lrefno, lcustomer_id, llocation, lwarehouse, ltransaction_type)
+            VALUES
+            (:linvent_id, :lin, :lout, :ltotal, :ldateadded, :lprocess_by, :lstatus_logs, :lnote, :linventory_id, :lprice, :lrefno, :lcustomer_id, :llocation, :lwarehouse, :ltransaction_type)'
+        );
+
+        foreach ($rows as $row) {
+            $qty = max(0, (int) ($row['qty'] ?? 0));
+            if ($qty <= 0) {
+                continue;
+            }
+            $insert->execute([
+                'linvent_id' => (string) ($row['item_refno'] ?? ''),
+                'lin' => $qty,
+                'lout' => 0,
+                'ltotal' => $qty,
+                'ldateadded' => date('Y-m-d H:i:s'),
+                'lprocess_by' => (string) ($row['sales_no'] ?? ''),
+                'lstatus_logs' => '+',
+                'lnote' => (string) ($row['customer_name'] ?? ''),
+                'linventory_id' => (string) ($row['item_id'] ?? ''),
+                'lprice' => (float) ($row['unit_price'] ?? 0),
+                'lrefno' => $salesRefno,
+                'lcustomer_id' => (string) ($row['customer_id'] ?? ''),
+                'llocation' => (string) ($row['location'] ?? ''),
+                'lwarehouse' => 'WH1',
+                'ltransaction_type' => $transactionType,
+            ]);
+        }
     }
 
     /**
