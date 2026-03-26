@@ -869,6 +869,15 @@ SQL;
             $docNo,
             'Order Slip'
         );
+        $this->insertDocumentLedgerDebit(
+            $mainId,
+            $userId,
+            $order,
+            $items,
+            $docRef,
+            $docNo,
+            'Order Slip'
+        );
 
         $update = $this->db->pdo()->prepare(
             'UPDATE tbltransaction
@@ -966,6 +975,16 @@ SQL;
             $docRef,
             $docNo,
             'Invoice'
+        );
+        $this->insertDocumentLedgerDebit(
+            $mainId,
+            $userId,
+            $order,
+            $items,
+            $docRef,
+            $docNo,
+            'Invoice',
+            (string) ($payload['tax_type'] ?? '')
         );
 
         $update = $this->db->pdo()->prepare(
@@ -1292,6 +1311,105 @@ SQL;
                 'ltransaction_type' => $transactionType,
             ]);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $order
+     * @param array<int, array<string, mixed>> $items
+     */
+    private function insertDocumentLedgerDebit(
+        int $mainId,
+        int $userId,
+        array $order,
+        array $items,
+        string $documentRefno,
+        string $documentNo,
+        string $referenceName,
+        string $taxType = ''
+    ): void {
+        $documentRefno = trim($documentRefno);
+        $customerId = trim((string) ($order['contact_id'] ?? ''));
+        if ($documentRefno === '' || $customerId === '') {
+            return;
+        }
+
+        $pdo = $this->db->pdo();
+        $exists = $pdo->prepare(
+            'SELECT lid FROM tblledger WHERE lrefno = :refno AND lcustomerid = :customer_id LIMIT 1'
+        );
+        $exists->execute([
+            'refno' => $documentRefno,
+            'customer_id' => $customerId,
+        ]);
+        if ($exists->fetch(PDO::FETCH_ASSOC) !== false) {
+            return;
+        }
+
+        $amount = $this->calculateLedgerDebitAmount($items, $referenceName, $taxType);
+        if ($amount <= 0) {
+            return;
+        }
+
+        $salesDate = trim((string) ($order['sales_date'] ?? ''));
+        $salesTime = trim((string) ($order['sales_time'] ?? ''));
+        if ($salesDate === '') {
+            $salesDate = date('Y-m-d');
+        }
+        if ($salesTime === '') {
+            $salesTime = date('H:i:s');
+        }
+
+        $insert = $pdo->prepare(
+            'INSERT INTO tblledger
+            (lcustomerid, lrefno, lamt, lmesssage, ldatetime, lmainid, ltype, lcredit, ldebit, luserid, lcheckdate, lcheck_no, ldcr, lpdc, lremarks, lref_name, ldebit_refno)
+            VALUES
+            (:lcustomerid, :lrefno, :lamt, :lmesssage, :ldatetime, :lmainid, :ltype, 0, :ldebit, :luserid, :lcheckdate, :lcheck_no, :ldcr, :lpdc, :lremarks, :lref_name, :ldebit_refno)'
+        );
+        $insert->execute([
+            'lcustomerid' => $customerId,
+            'lrefno' => $documentRefno,
+            'lamt' => $amount,
+            'lmesssage' => $documentNo,
+            'ldatetime' => $salesDate . ' ' . $salesTime,
+            'lmainid' => (string) $mainId,
+            'ltype' => 'Debit',
+            'ldebit' => $amount,
+            'luserid' => $userId,
+            'lcheckdate' => '',
+            'lcheck_no' => '',
+            'ldcr' => '',
+            'lpdc' => 0,
+            'lremarks' => (string) ($order['remarks'] ?? ''),
+            'lref_name' => $referenceName,
+            'ldebit_refno' => date('Ymd') . random_int(1, 1000000) . random_int(1, 1000000),
+        ]);
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $items
+     */
+    private function calculateLedgerDebitAmount(array $items, string $referenceName, string $taxType = ''): float
+    {
+        $totalSales = 0.0;
+        foreach ($items as $item) {
+            $qty = (float) ($item['qty'] ?? 0);
+            $unitPrice = (float) ($item['unit_price'] ?? 0);
+            if ($qty <= 0) {
+                continue;
+            }
+            $totalSales += $qty * $unitPrice;
+        }
+
+        if ($referenceName !== 'Invoice') {
+            return $totalSales;
+        }
+
+        $normalizedTaxType = strtolower(trim($taxType));
+        if ($normalizedTaxType === 'exclusive') {
+            return $totalSales * 1.12;
+        }
+
+        return $totalSales;
     }
 
     private function insertLinkedDocumentReversalLogs(string $salesRefno, string $documentRefno, string $transactionType): void
