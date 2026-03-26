@@ -100,7 +100,11 @@ SELECT
     COALESCE(iq.lurgency, '') AS urgency,
     COALESCE(iq.lurgency_date, NULL) AS urgency_date,
     COALESCE(iq.lsubmitstat, 'Pending') AS status,
-    COALESCE(iq.IsCancel, 0) AS is_cancelled
+    COALESCE(iq.IsCancel, 0) AS is_cancelled,
+    COALESCE(iq.lso_no, '') AS so_no,
+    COALESCE(iq.lso_refno, '') AS so_refno,
+    (SELECT COALESCE(t.invoice_no, '') FROM tbltransaction t WHERE t.lrefno = iq.lso_refno LIMIT 1) AS invoice_no,
+    (SELECT COALESCE(t.ldr_no, '') FROM tbltransaction t WHERE t.lrefno = iq.lso_refno LIMIT 1) AS dr_no
 FROM tblinquiry iq
 WHERE {$whereSql}
 ORDER BY iq.lid DESC
