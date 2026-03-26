@@ -345,67 +345,79 @@ SQL;
 
         $salesDate = $this->normalizeDate((string) ($payload['sales_date'] ?? (string) ($existing['sales_date'] ?? date('Y-m-d'))));
         $status = $this->normalizeStatus((string) ($payload['status'] ?? (string) ($existing['status'] ?? 'Pending')));
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare(
+                'UPDATE tblinquiry
+                 SET
+                    ldate = :ldate,
+                    ltime = :ltime,
+                    lcustomerid = :lcustomerid,
+                    lcompany = :lcompany,
+                    lsalesperson = :lsalesperson,
+                    lsales_person_id = :lsales_person_id,
+                    lsales_address = :lsales_address,
+                    lterms = :lterms,
+                    lterms_condition = :lterms_condition,
+                    lmy_refno = :lmy_refno,
+                    lyour_refno = :lyour_refno,
+                    lprice_group = :lprice_group,
+                    lcredit_limit = :lcredit_limit,
+                    lpromissory_note = :lpromissory_note,
+                    lpo_no = :lpo_no,
+                    lnote = :lnote,
+                    lsource = :lsource,
+                    lsubmitstat = :lsubmitstat,
+                    lurgency = :lurgency,
+                    lurgency_date = :lurgency_date
+                 WHERE lmain_id = :lmain_id
+                   AND lrefno = :lrefno'
+            );
+            $stmt->execute([
+                'ldate' => $salesDate,
+                'ltime' => $this->normalizeTime((string) ($payload['sales_time'] ?? (string) ($existing['sales_time'] ?? date('H:i:s')))),
+                'lcustomerid' => (string) ($payload['contact_id'] ?? $existing['contact_id'] ?? ''),
+                'lcompany' => (string) ($payload['customer_company'] ?? $existing['customer_company'] ?? ''),
+                'lsalesperson' => (string) ($payload['sales_person'] ?? $existing['sales_person'] ?? ''),
+                'lsales_person_id' => (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? ''),
+                'lsales_address' => (string) ($payload['delivery_address'] ?? $existing['delivery_address'] ?? ''),
+                'lterms' => (string) ($payload['terms'] ?? $existing['terms'] ?? ''),
+                'lterms_condition' => (string) ($payload['terms'] ?? $existing['terms'] ?? ''),
+                'lmy_refno' => (string) ($payload['reference_no'] ?? $existing['reference_no'] ?? ''),
+                'lyour_refno' => (string) ($payload['customer_reference'] ?? $existing['customer_reference'] ?? ''),
+                'lprice_group' => (string) ($payload['price_group'] ?? $existing['price_group'] ?? ''),
+                'lcredit_limit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($existing['credit_limit'] ?? 0),
+                'lpromissory_note' => (string) ($payload['promise_to_pay'] ?? $existing['promise_to_pay'] ?? ''),
+                'lpo_no' => (string) ($payload['po_number'] ?? $existing['po_number'] ?? ''),
+                'lnote' => (string) ($payload['remarks'] ?? $existing['remarks'] ?? ''),
+                'lsource' => (string) ($payload['inquiry_type'] ?? $existing['inquiry_type'] ?? ''),
+                'lsubmitstat' => $status,
+                'lurgency' => (string) ($payload['urgency'] ?? $existing['urgency'] ?? ''),
+                'lurgency_date' => $this->normalizeNullableDate((string) ($payload['urgency_date'] ?? $existing['urgency_date'] ?? '')),
+                'lmain_id' => (string) $mainId,
+                'lrefno' => $inquiryRefno,
+            ]);
 
-        $stmt = $this->db->pdo()->prepare(
-            'UPDATE tblinquiry
-             SET
-                ldate = :ldate,
-                ltime = :ltime,
-                lcustomerid = :lcustomerid,
-                lcompany = :lcompany,
-                lsalesperson = :lsalesperson,
-                lsales_person_id = :lsales_person_id,
-                lsales_address = :lsales_address,
-                lterms = :lterms,
-                lterms_condition = :lterms_condition,
-                lmy_refno = :lmy_refno,
-                lyour_refno = :lyour_refno,
-                lprice_group = :lprice_group,
-                lcredit_limit = :lcredit_limit,
-                lpromissory_note = :lpromissory_note,
-                lpo_no = :lpo_no,
-                lnote = :lnote,
-                lsource = :lsource,
-                lsubmitstat = :lsubmitstat,
-                lurgency = :lurgency,
-                lurgency_date = :lurgency_date
-             WHERE lmain_id = :lmain_id
-               AND lrefno = :lrefno'
-        );
-        $stmt->execute([
-            'ldate' => $salesDate,
-            'ltime' => $this->normalizeTime((string) ($payload['sales_time'] ?? (string) ($existing['sales_time'] ?? date('H:i:s')))),
-            'lcustomerid' => (string) ($payload['contact_id'] ?? $existing['contact_id'] ?? ''),
-            'lcompany' => (string) ($payload['customer_company'] ?? $existing['customer_company'] ?? ''),
-            'lsalesperson' => (string) ($payload['sales_person'] ?? $existing['sales_person'] ?? ''),
-            'lsales_person_id' => (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? ''),
-            'lsales_address' => (string) ($payload['delivery_address'] ?? $existing['delivery_address'] ?? ''),
-            'lterms' => (string) ($payload['terms'] ?? $existing['terms'] ?? ''),
-            'lterms_condition' => (string) ($payload['terms'] ?? $existing['terms'] ?? ''),
-            'lmy_refno' => (string) ($payload['reference_no'] ?? $existing['reference_no'] ?? ''),
-            'lyour_refno' => (string) ($payload['customer_reference'] ?? $existing['customer_reference'] ?? ''),
-            'lprice_group' => (string) ($payload['price_group'] ?? $existing['price_group'] ?? ''),
-            'lcredit_limit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($existing['credit_limit'] ?? 0),
-            'lpromissory_note' => (string) ($payload['promise_to_pay'] ?? $existing['promise_to_pay'] ?? ''),
-            'lpo_no' => (string) ($payload['po_number'] ?? $existing['po_number'] ?? ''),
-            'lnote' => (string) ($payload['remarks'] ?? $existing['remarks'] ?? ''),
-            'lsource' => (string) ($payload['inquiry_type'] ?? $existing['inquiry_type'] ?? ''),
-            'lsubmitstat' => $status,
-            'lurgency' => (string) ($payload['urgency'] ?? $existing['urgency'] ?? ''),
-            'lurgency_date' => $this->normalizeNullableDate((string) ($payload['urgency_date'] ?? $existing['urgency_date'] ?? '')),
-            'lmain_id' => (string) $mainId,
-            'lrefno' => $inquiryRefno,
-        ]);
-
-        if (is_array($payload['items'] ?? null)) {
-            $deleteStmt = $this->db->pdo()->prepare('DELETE FROM tblinquiry_item WHERE linq_refno = :linq_refno');
-            $deleteStmt->execute(['linq_refno' => $inquiryRefno]);
-            foreach ($payload['items'] as $item) {
-                if (!is_array($item)) {
-                    continue;
+            $syncItems = is_array($payload['items'] ?? null);
+            if ($syncItems) {
+                $deleteStmt = $pdo->prepare('DELETE FROM tblinquiry_item WHERE linq_refno = :linq_refno');
+                $deleteStmt->execute(['linq_refno' => $inquiryRefno]);
+                foreach ($payload['items'] as $item) {
+                    if (!is_array($item)) {
+                        continue;
+                    }
+                    $this->insertItem($pdo, $inquiryRefno, (string) ($existing['inquiry_no'] ?? ''), $salesDate, $item);
                 }
-                $this->insertItem($this->db->pdo(), $inquiryRefno, (string) ($existing['inquiry_no'] ?? ''), $salesDate, $item);
             }
+
+            $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, $inquiryRefno, true, $syncItems);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
         }
 
         return $this->getInquiry($mainId, $inquiryRefno);
@@ -434,14 +446,25 @@ SQL;
             throw new RuntimeException('Sales inquiry not found');
         }
 
-        $this->insertItem(
-            $this->db->pdo(),
-            $inquiryRefno,
-            (string) ($inquiry['inquiry_no'] ?? ''),
-            (string) ($inquiry['sales_date'] ?? date('Y-m-d')),
-            $payload
-        );
-        $itemId = (int) $this->db->pdo()->lastInsertId();
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $this->insertItem(
+                $pdo,
+                $inquiryRefno,
+                (string) ($inquiry['inquiry_no'] ?? ''),
+                (string) ($inquiry['sales_date'] ?? date('Y-m-d')),
+                $payload
+            );
+            $itemId = (int) $pdo->lastInsertId();
+            $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, $inquiryRefno, false, true);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
 
         $item = $this->getItemById($itemId);
         if ($item === null) {
@@ -456,7 +479,8 @@ SQL;
      */
     public function updateItem(int $mainId, int $itemId, array $payload): ?array
     {
-        if (!$this->itemBelongsToMain($mainId, $itemId)) {
+        $existing = $this->getItemById($itemId);
+        if ($existing === null || !$this->itemBelongsToMain($mainId, $itemId)) {
             return null;
         }
 
@@ -508,25 +532,51 @@ SQL;
         }
 
         if ($fields === []) {
-            return $this->getItemById($itemId);
+            return $existing;
         }
 
-        $sql = 'UPDATE tblinquiry_item SET ' . implode(', ', $fields) . ' WHERE lid = :item_id';
-        $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute($params);
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $sql = 'UPDATE tblinquiry_item SET ' . implode(', ', $fields) . ' WHERE lid = :item_id';
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, (string) ($existing['inquiry_refno'] ?? ''), false, true);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
 
         return $this->getItemById($itemId);
     }
 
     public function deleteItem(int $mainId, int $itemId): bool
     {
-        if (!$this->itemBelongsToMain($mainId, $itemId)) {
+        $existing = $this->getItemById($itemId);
+        if ($existing === null || !$this->itemBelongsToMain($mainId, $itemId)) {
             return false;
         }
 
-        $stmt = $this->db->pdo()->prepare('DELETE FROM tblinquiry_item WHERE lid = :item_id');
-        $stmt->execute(['item_id' => $itemId]);
-        return $stmt->rowCount() > 0;
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare('DELETE FROM tblinquiry_item WHERE lid = :item_id');
+            $stmt->execute(['item_id' => $itemId]);
+            $deleted = $stmt->rowCount() > 0;
+            if ($deleted) {
+                $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, (string) ($existing['inquiry_refno'] ?? ''), false, true);
+            }
+            $pdo->commit();
+            return $deleted;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -694,6 +744,205 @@ SQL;
             'inquiry_refno' => $inquiryRefno,
         ]);
         return (string) ($stmt->fetchColumn() ?: '');
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function getLinkedSalesOrderRow(PDO $pdo, int $mainId, string $inquiryRefno): ?array
+    {
+        $stmt = $pdo->prepare(
+            'SELECT
+                lrefno,
+                luser,
+                COALESCE(invoice_refno, "") AS invoice_refno,
+                COALESCE(ldr_refno, "") AS ldr_refno,
+                COALESCE(lcancel, 0) AS lcancel
+             FROM tbltransaction
+             WHERE lmain_id = :main_id
+               AND linquiry_refno = :inquiry_refno
+             ORDER BY lid DESC
+             LIMIT 1'
+        );
+        $stmt->execute([
+            'main_id' => (string) $mainId,
+            'inquiry_refno' => $inquiryRefno,
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row === false ? null : $row;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function getInquiryForSalesSync(PDO $pdo, int $mainId, string $inquiryRefno): ?array
+    {
+        $stmt = $pdo->prepare(
+            'SELECT
+                COALESCE(linqno, "") AS inquiry_no,
+                COALESCE(lrefno, "") AS inquiry_refno,
+                COALESCE(ldate, "") AS sales_date,
+                COALESCE(ltime, "") AS sales_time,
+                COALESCE(lcustomerid, "") AS contact_id,
+                COALESCE(lcompany, "") AS customer_company,
+                COALESCE(lsalesperson, "") AS sales_person,
+                COALESCE(lsales_person_id, "") AS sales_person_id,
+                COALESCE(lsales_address, "") AS delivery_address,
+                COALESCE(lmy_refno, "") AS reference_no,
+                COALESCE(lyour_refno, "") AS customer_reference,
+                COALESCE(lprice_group, "") AS price_group,
+                COALESCE(lcredit_limit, 0) AS credit_limit,
+                COALESCE(lterms, "") AS terms,
+                COALESCE(lpromissory_note, "") AS promise_to_pay,
+                COALESCE(lpo_no, "") AS po_number,
+                COALESCE(lnote, "") AS remarks,
+                COALESCE(lurgency, "") AS urgency,
+                COALESCE(lurgency_date, NULL) AS urgency_date,
+                COALESCE(lcity, "") AS city
+             FROM tblinquiry
+             WHERE lmain_id = :main_id
+               AND lrefno = :inquiry_refno
+             LIMIT 1'
+        );
+        $stmt->execute([
+            'main_id' => (string) $mainId,
+            'inquiry_refno' => $inquiryRefno,
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row === false ? null : $row;
+    }
+
+    private function canSyncLinkedSalesOrder(array $salesOrder): bool
+    {
+        if ((int) ($salesOrder['lcancel'] ?? 0) > 0) {
+            return false;
+        }
+
+        if (trim((string) ($salesOrder['invoice_refno'] ?? '')) !== '') {
+            return false;
+        }
+
+        return trim((string) ($salesOrder['ldr_refno'] ?? '')) === '';
+    }
+
+    private function syncLinkedSalesOrderFromInquiry(PDO $pdo, int $mainId, string $inquiryRefno, bool $syncHeader, bool $syncItems): void
+    {
+        $inquiryRefno = trim($inquiryRefno);
+        if ($inquiryRefno === '' || (!$syncHeader && !$syncItems)) {
+            return;
+        }
+
+        $salesOrder = $this->getLinkedSalesOrderRow($pdo, $mainId, $inquiryRefno);
+        if ($salesOrder === null || !$this->canSyncLinkedSalesOrder($salesOrder)) {
+            return;
+        }
+
+        $inquiry = $this->getInquiryForSalesSync($pdo, $mainId, $inquiryRefno);
+        if ($inquiry === null) {
+            return;
+        }
+
+        $salesRefno = (string) ($salesOrder['lrefno'] ?? '');
+        if ($salesRefno === '') {
+            return;
+        }
+
+        if ($syncHeader) {
+            $update = $pdo->prepare(
+                'UPDATE tbltransaction
+                 SET
+                    ldate = :ldate,
+                    ltime = :ltime,
+                    lcustomerid = :lcustomerid,
+                    lcompany = :lcompany,
+                    lsales_address = :lsales_address,
+                    lmy_refno = :lmy_refno,
+                    lyour_refno = :lyour_refno,
+                    lprice_group = :lprice_group,
+                    lcredit_limit = :lcredit_limit,
+                    lterms = :lterms,
+                    lterm_condition = :lterm_condition,
+                    lpromissory_note = :lpromissory_note,
+                    lpo_no = :lpo_no,
+                    lnote = :lnote,
+                    lsales_person = :lsales_person,
+                    lsales_person_id = :lsales_person_id,
+                    lurgency = :lurgency,
+                    lurgency_date = :lurgency_date,
+                    lcity = :lcity
+                 WHERE lmain_id = :main_id
+                   AND lrefno = :sales_refno'
+            );
+            $update->execute([
+                'ldate' => $this->normalizeDate((string) ($inquiry['sales_date'] ?? '')),
+                'ltime' => $this->normalizeTime((string) ($inquiry['sales_time'] ?? '')),
+                'lcustomerid' => (string) ($inquiry['contact_id'] ?? ''),
+                'lcompany' => (string) ($inquiry['customer_company'] ?? ''),
+                'lsales_address' => (string) ($inquiry['delivery_address'] ?? ''),
+                'lmy_refno' => (string) ($inquiry['reference_no'] ?? ''),
+                'lyour_refno' => (string) ($inquiry['customer_reference'] ?? ''),
+                'lprice_group' => (string) ($inquiry['price_group'] ?? ''),
+                'lcredit_limit' => (float) ($inquiry['credit_limit'] ?? 0),
+                'lterms' => (string) ($inquiry['terms'] ?? ''),
+                'lterm_condition' => (string) ($inquiry['terms'] ?? ''),
+                'lpromissory_note' => (string) ($inquiry['promise_to_pay'] ?? ''),
+                'lpo_no' => (string) ($inquiry['po_number'] ?? ''),
+                'lnote' => (string) ($inquiry['remarks'] ?? ''),
+                'lsales_person' => (string) ($inquiry['sales_person'] ?? ''),
+                'lsales_person_id' => (string) ($inquiry['sales_person_id'] ?? ''),
+                'lurgency' => (string) ($inquiry['urgency'] ?? ''),
+                'lurgency_date' => $this->normalizeNullableDate((string) ($inquiry['urgency_date'] ?? '')),
+                'lcity' => (string) ($inquiry['city'] ?? ''),
+                'main_id' => (string) $mainId,
+                'sales_refno' => $salesRefno,
+            ]);
+        }
+
+        if ($syncItems) {
+            $delete = $pdo->prepare('DELETE FROM tbltransaction_item WHERE lrefno = :sales_refno');
+            $delete->execute(['sales_refno' => $salesRefno]);
+
+            foreach ($this->listItems($inquiryRefno) as $item) {
+                if (!$this->isConvertibleInquiryItem($item)) {
+                    continue;
+                }
+
+                $insert = $pdo->prepare(
+                    'INSERT INTO tbltransaction_item
+                    (lrefno, ltype, litemid, lname, ldesc, lprice, lqty, luser, linv_refno, litem_refno, litemcode, lpartno, lbrand, llocation, lremark, ltransaction_date, lcancel)
+                    VALUES
+                    (:lrefno, :ltype, :litemid, :lname, :ldesc, :lprice, :lqty, :luser, :linv_refno, :litem_refno, :litemcode, :lpartno, :lbrand, :llocation, :lremark, :ltransaction_date, 0)'
+                );
+                $itemRef = (string) ($item['item_refno'] ?? $item['item_id'] ?? '');
+                $insert->execute([
+                    'lrefno' => $salesRefno,
+                    'ltype' => 'Sales Order',
+                    'litemid' => (string) ($item['item_id'] ?? $itemRef),
+                    'lname' => (string) ($item['description'] ?? ''),
+                    'ldesc' => (string) ($item['description'] ?? ''),
+                    'lprice' => (float) ($item['unit_price'] ?? 0),
+                    'lqty' => max(0, (int) ($item['qty'] ?? 0)),
+                    'luser' => (string) ((int) ($salesOrder['luser'] ?? 0) > 0 ? (int) ($salesOrder['luser'] ?? 0) : 1),
+                    'linv_refno' => $itemRef,
+                    'litem_refno' => $itemRef,
+                    'litemcode' => (string) ($item['item_code'] ?? ''),
+                    'lpartno' => (string) ($item['part_no'] ?? ''),
+                    'lbrand' => '',
+                    'llocation' => (string) ($item['location'] ?? ''),
+                    'lremark' => (string) ($item['remark'] ?? 'OnStock'),
+                    'ltransaction_date' => $this->normalizeDate((string) ($inquiry['sales_date'] ?? '')),
+                ]);
+            }
+        }
+    }
+
+    private function isConvertibleInquiryItem(array $item): bool
+    {
+        if ((int) ($item['approved'] ?? 0) <= 0) {
+            return false;
+        }
+
+        return strcasecmp(trim((string) ($item['remark'] ?? '')), 'NotListed') !== 0;
     }
 
     private function generateSalesNumber(PDO $pdo): string
