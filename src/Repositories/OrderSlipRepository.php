@@ -109,6 +109,7 @@ SELECT
     COALESCE(dr.lsales_refno, '') AS order_id,
     COALESCE(dr.lsales_no, '') AS sales_no,
     COALESCE(dr.lcustomerid, '') AS contact_id,
+    COALESCE(dr.lcustomer_name, '') AS customer_name,
     COALESCE(dr.ldate, '') AS sales_date,
     COALESCE(dr.lsales_person, '') AS sales_person,
     COALESCE(dr.lsales_person_id, '') AS sales_person_id,
@@ -116,12 +117,22 @@ SELECT
     COALESCE(dr.lmy_refno, '') AS reference_no,
     COALESCE(dr.lyour_refno, '') AS customer_reference,
     COALESCE(dr.lshipped, '') AS send_by,
+    COALESCE(dr.ldel_to, '') AS delivered_to,
+    COALESCE(dr.lprod_type, '') AS product_type,
     COALESCE(dr.lprice_group, '') AS price_group,
     COALESCE(dr.lcredit_limit, 0) AS credit_limit,
     COALESCE(dr.lterms, '') AS terms,
     COALESCE(dr.lpromisorry_note, '') AS promise_to_pay,
     COALESCE(dr.lpo_no, '') AS po_number,
     COALESCE(dr.lnote, '') AS remarks,
+    COALESCE(dr.ldm_trackingno, '') AS tracking_no,
+    COALESCE((
+        SELECT dm.ldm_no
+        FROM tbldebit_memo dm
+        WHERE dm.ltrans_refno = dr.lrefno
+        ORDER BY dm.lid DESC
+        LIMIT 1
+    ), '') AS debit_memo_no,
     COALESCE(dr.lstatus, 'Pending') AS status,
     COALESCE(dr.IsPrinted, 0) AS is_printed,
     COALESCE(dr.lcancel, 0) AS is_cancelled,
@@ -268,6 +279,7 @@ SELECT
     COALESCE(dr.lsales_refno, '') AS order_id,
     COALESCE(dr.lsales_no, '') AS sales_no,
     COALESCE(dr.lcustomerid, '') AS contact_id,
+    COALESCE(dr.lcustomer_name, '') AS customer_name,
     COALESCE(dr.ldate, '') AS sales_date,
     COALESCE(dr.lsales_person, '') AS sales_person,
     COALESCE(dr.lsales_person_id, '') AS sales_person_id,
@@ -275,12 +287,22 @@ SELECT
     COALESCE(dr.lmy_refno, '') AS reference_no,
     COALESCE(dr.lyour_refno, '') AS customer_reference,
     COALESCE(dr.lshipped, '') AS send_by,
+    COALESCE(dr.ldel_to, '') AS delivered_to,
+    COALESCE(dr.lprod_type, '') AS product_type,
     COALESCE(dr.lprice_group, '') AS price_group,
     COALESCE(dr.lcredit_limit, 0) AS credit_limit,
     COALESCE(dr.lterms, '') AS terms,
     COALESCE(dr.lpromisorry_note, '') AS promise_to_pay,
     COALESCE(dr.lpo_no, '') AS po_number,
     COALESCE(dr.lnote, '') AS remarks,
+    COALESCE(dr.ldm_trackingno, '') AS tracking_no,
+    COALESCE((
+        SELECT dm.ldm_no
+        FROM tbldebit_memo dm
+        WHERE dm.ltrans_refno = dr.lrefno
+        ORDER BY dm.lid DESC
+        LIMIT 1
+    ), '') AS debit_memo_no,
     COALESCE(dr.lstatus, 'Pending') AS status,
     COALESCE(dr.IsPrinted, 0) AS is_printed,
     COALESCE(dr.lcancel, 0) AS is_cancelled,
@@ -315,11 +337,47 @@ SQL;
             $summary['grand_total'] += (float) ($item['amount'] ?? 0);
         }
 
+        $trackingOptions = $this->listTrackingOptions((string) ($orderSlip['contact_id'] ?? ''));
+
         return [
             'order_slip' => $orderSlip,
             'items' => $items,
             'summary' => $summary,
+            'tracking_options' => $trackingOptions,
         ];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function listTrackingOptions(string $contactId): array
+    {
+        $contactId = trim($contactId);
+        if ($contactId === '') {
+            return [];
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT DISTINCT COALESCE(ltrackingno, "") AS tracking_no
+             FROM tbldebit_memo
+             WHERE lcustomer = :customer_id
+               AND ltrans_refno IS NULL
+               AND COALESCE(ltrackingno, "") <> ""
+             ORDER BY lid DESC'
+        );
+        $stmt->execute([
+            'customer_id' => $contactId,
+        ]);
+
+        $rows = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        if (!is_array($rows)) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(
+            static fn($value): string => trim((string) $value),
+            $rows
+        )));
     }
 
     /**
@@ -447,6 +505,7 @@ SQL;
                 'remarks' => 'lnote',
                 'status' => 'lstatus',
                 'is_printed' => 'IsPrinted',
+                'tracking_no' => 'ldm_trackingno',
             ];
 
             foreach ($fieldMap as $inputKey => $column) {
