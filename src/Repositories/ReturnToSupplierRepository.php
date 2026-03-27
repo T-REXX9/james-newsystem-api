@@ -660,8 +660,14 @@ SQL;
     }
 
     /** @return array<int, array<string, mixed>> */
-    public function getReceivingReportItemsForReturn(int $mainId, string $rrRefno): array
+    public function getReceivingReportItemsForReturn(
+        int $mainId,
+        string $rrRefno,
+        string $search = '',
+        int $limit = 25
+    ): array
     {
+        $limit = min(100, max(1, $limit));
         $rrStmt = $this->db->pdo()->prepare(
             'SELECT lrefno FROM tblpurchase_order WHERE lmain_id = :main_id AND lrefno = :rr_refno LIMIT 1'
         );
@@ -705,13 +711,32 @@ FROM tblpurchase_item itm
 LEFT JOIN tblinventory_item inv
   ON inv.lid = itm.litemid
 WHERE itm.lrefno = :rr_refno
-ORDER BY itm.lid ASC
 SQL;
+
+        $trimmedSearch = trim($search);
+        if ($trimmedSearch !== '') {
+            $itemsSql .= <<<SQL
+ AND (
+    COALESCE(itm.lpartno, '') LIKE :search_part_no
+    OR COALESCE(itm.litem_code, '') LIKE :search_item_code
+    OR COALESCE(itm.ldesc, inv.ldescription, '') LIKE :search_description
+ )
+SQL;
+        }
+
+        $itemsSql .= "\nORDER BY itm.lid ASC\nLIMIT :limit";
 
         $stmt = $this->db->pdo()->prepare($itemsSql);
         $stmt->bindValue('rr_refno', $rrRefno, PDO::PARAM_STR);
         $stmt->bindValue('main_id_sub', (string) $mainId, PDO::PARAM_STR);
         $stmt->bindValue('rr_refno_sub', $rrRefno, PDO::PARAM_STR);
+        if ($trimmedSearch !== '') {
+            $like = '%' . $trimmedSearch . '%';
+            $stmt->bindValue('search_part_no', $like, PDO::PARAM_STR);
+            $stmt->bindValue('search_item_code', $like, PDO::PARAM_STR);
+            $stmt->bindValue('search_description', $like, PDO::PARAM_STR);
+        }
+        $stmt->bindValue('limit', $limit, PDO::PARAM_INT);
         $stmt->execute();
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);

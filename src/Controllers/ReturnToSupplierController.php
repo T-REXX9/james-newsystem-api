@@ -268,8 +268,11 @@ final class ReturnToSupplierController
             throw new HttpException(422, 'rrRefno is required');
         }
 
+        $search = trim((string) ($query['search'] ?? $query['q'] ?? ''));
+        $limit = max(1, (int) ($query['limit'] ?? 25));
+
         try {
-            return $this->repo->getReceivingReportItemsForReturn($mainId, $rrRefno);
+            return $this->repo->getReceivingReportItemsForReturn($mainId, $rrRefno, $search, $limit);
         } catch (RuntimeException $e) {
             throw new HttpException(404, $e->getMessage());
         }

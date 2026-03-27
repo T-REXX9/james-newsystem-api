@@ -358,12 +358,13 @@ SQL;
         }
 
         $stmt = $this->db->pdo()->prepare(
-            'SELECT DISTINCT COALESCE(ltrackingno, "") AS tracking_no
+            'SELECT COALESCE(ltrackingno, "") AS tracking_no
              FROM tbldebit_memo
              WHERE lcustomer = :customer_id
                AND ltrans_refno IS NULL
                AND COALESCE(ltrackingno, "") <> ""
-             ORDER BY lid DESC'
+             GROUP BY COALESCE(ltrackingno, "")
+             ORDER BY MAX(lid) DESC'
         );
         $stmt->execute([
             'customer_id' => $contactId,
