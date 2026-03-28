@@ -146,7 +146,13 @@ SELECT
     COALESCE(p.lnotes, '') AS notes,
     COALESCE(p.ldatereg, '') AS date_registered,
     (SELECT COUNT(*) FROM tblcontact_person cp WHERE cp.lrefno = p.lsessionid) AS contact_count,
-    (SELECT COUNT(*) FROM tblpatient_terms pt WHERE pt.lpatient = p.lsessionid) AS term_count
+    (SELECT COUNT(*) FROM tblpatient_terms pt WHERE pt.lpatient = p.lsessionid) AS term_count,
+    COALESCE(
+        (SELECT SUM(COALESCE(l.ldebit, 0)) - SUM(COALESCE(l.lcredit, 0))
+         FROM tblledger l
+         WHERE l.lcustomerid = p.lsessionid),
+        0
+    ) AS latest_balance
 FROM tblpatient p
 LEFT JOIN tblaccount acc
     ON acc.lid = p.lsales_person
@@ -843,5 +849,183 @@ SQL;
 
             $stmt->bindValue($key, (string) $value, PDO::PARAM_STR);
         }
+    }
+
+    /**
+     * Lightweight query for the Sales Map: returns customer counts per province.
+     *
+     * Resolution order for province:
+     *   1. tblpatient.lprovince  (if filled)
+     *   2. Match the last part of tblpatient.laddress against refprovince.provDesc
+     *
+     * @return array<int, array{province: string, customer_count: int}>
+     */
+    /**
+     * Mapping from DB province names (UPPER) to GeoJSON PROVINCE values.
+     * The GeoJSON source is macoymejia/geojsonph Province/Provinces.json.
+     */
+    private const GEOJSON_PROVINCE_MAP = [
+        'ABRA' => 'Abra',
+        'AGUSAN DEL NORTE' => 'Agusan del Norte',
+        'AGUSAN DEL SUR' => 'Agusan del Sur',
+        'AKLAN' => 'Aklan',
+        'ALBAY' => 'Albay',
+        'ANTIQUE' => 'Antique',
+        'APAYAO' => 'Apayao',
+        'AURORA' => 'Aurora',
+        'BASILAN' => 'Basilan',
+        'BATAAN' => 'Bataan',
+        'BATANES' => 'Batanes',
+        'BATANGAS' => 'Batangas',
+        'BENGUET' => 'Benguet',
+        'BILIRAN' => 'Biliran',
+        'BOHOL' => 'Bohol',
+        'BUKIDNON' => 'Bukidnon',
+        'BULACAN' => 'Bulacan',
+        'CAGAYAN' => 'Cagayan',
+        'CAMARINES NORTE' => 'Camarines Norte',
+        'CAMARINES SUR' => 'Camarines Sur',
+        'CAMIGUIN' => 'Camiguin',
+        'CAPIZ' => 'Capiz',
+        'CATANDUANES' => 'Catanduanes',
+        'CAVITE' => 'Cavite',
+        'CEBU' => 'Cebu',
+        'COMPOSTELA VALLEY' => 'Compostela Valley',
+        'DAVAO DE ORO' => 'Compostela Valley',
+        'DAVAO DEL NORTE' => 'Davao del Norte',
+        'DAVAO DEL SUR' => 'Davao del Sur',
+        'DAVAO OCCIDENTAL' => 'Davao del Sur',
+        'DAVAO ORIENTAL' => 'Davao Oriental',
+        'DINAGAT ISLANDS' => 'Dinagat Islands',
+        'EASTERN SAMAR' => 'Eastern Samar',
+        'GUIMARAS' => 'Guimaras',
+        'IFUGAO' => 'Ifugao',
+        'ILOCOS NORTE' => 'Ilocos Norte',
+        'ILOCOS SUR' => 'Ilocos Sur',
+        'ILOILO' => 'Iloilo',
+        'ISABELA' => 'Isabela',
+        'CITY OF ISABELA' => 'Isabela',
+        'KALINGA' => 'Kalinga',
+        'LA UNION' => 'La Union',
+        'LAGUNA' => 'Laguna',
+        'LANAO DEL NORTE' => 'Lanao del Norte',
+        'LANAO DEL SUR' => 'Lanao del Sur',
+        'LEYTE' => 'Leyte',
+        'MAGUINDANAO' => 'Maguindanao',
+        'MARINDUQUE' => 'Marinduque',
+        'MASBATE' => 'Masbate',
+        'MOUNTAIN PROVINCE' => 'Mountain Province',
+        'MISAMIS OCCIDENTAL' => 'Misamis Occidental',
+        'MISAMIS ORIENTAL' => 'Misamis Oriental',
+        'NEGROS OCCIDENTAL' => 'Negros Occidental',
+        'NEGROS ORIENTAL' => 'Negros Oriental',
+        'COTABATO (NORTH COTABATO)' => 'North Cotabato',
+        'NORTH COTABATO' => 'North Cotabato',
+        'NORTHERN SAMAR' => 'Northern Samar',
+        'NUEVA ECIJA' => 'Nueva Ecija',
+        'NUEVA VIZCAYA' => 'Nueva Vizcaya',
+        'OCCIDENTAL MINDORO' => 'Occidental Mindoro',
+        'ORIENTAL MINDORO' => 'Oriental Mindoro',
+        'PALAWAN' => 'Palawan',
+        'PAMPANGA' => 'Pampanga',
+        'PANGASINAN' => 'Pangasinan',
+        'QUEZON' => 'Quezon',
+        'QUIRINO' => 'Quirino',
+        'RIZAL' => 'Rizal',
+        'ROMBLON' => 'Romblon',
+        'SAMAR (WESTERN SAMAR)' => 'Samar',
+        'SAMAR' => 'Samar',
+        'SARANGANI' => 'Sarangani',
+        'SIQUIJOR' => 'Siquijor',
+        'SORSOGON' => 'Sorsogon',
+        'SOUTH COTABATO' => 'South Cotabato',
+        'SOUTHERN LEYTE' => 'Southern Leyte',
+        'SULTAN KUDARAT' => 'Sultan Kudarat',
+        'SULU' => 'Sulu',
+        'SURIGAO DEL NORTE' => 'Surigao del Norte',
+        'SURIGAO DEL SUR' => 'Surigao del Sur',
+        'TARLAC' => 'Tarlac',
+        'TAWI-TAWI' => 'Tawi-Tawi',
+        'ZAMBALES' => 'Zambales',
+        'ZAMBOANGA DEL NORTE' => 'Zamboanga del Norte',
+        'ZAMBOANGA DEL SUR' => 'Zamboanga del Sur',
+        'ZAMBOANGA SIBUGAY' => 'Zamboanga Sibugay',
+        // NCR districts all map to Metropolitan Manila
+        'NCR, CITY OF MANILA, FIRST DISTRICT' => 'Metropolitan Manila',
+        'CITY OF MANILA' => 'Metropolitan Manila',
+        'NCR, SECOND DISTRICT' => 'Metropolitan Manila',
+        'NCR, THIRD DISTRICT' => 'Metropolitan Manila',
+        'NCR, FOURTH DISTRICT' => 'Metropolitan Manila',
+        'COTABATO CITY' => 'Maguindanao',
+        'METRO MANILA' => 'Metropolitan Manila',
+        'MANILA' => 'Metropolitan Manila',
+    ];
+
+    /**
+     * Map a raw DB province name to its GeoJSON equivalent.
+     */
+    private function resolveGeoJsonProvince(string $raw): ?string
+    {
+        $upper = strtoupper(trim($raw));
+        return self::GEOJSON_PROVINCE_MAP[$upper] ?? null;
+    }
+
+    public function getCustomerCountsByProvince(int $mainId): array
+    {
+        $sql = <<<SQL
+SELECT
+    UPPER(TRIM(resolved_province)) AS province,
+    COUNT(*) AS customer_count
+FROM (
+    SELECT
+        CASE
+            WHEN COALESCE(TRIM(p.lprovince), '') <> ''
+                THEN TRIM(p.lprovince)
+            ELSE (
+                SELECT rp.provDesc
+                FROM refprovince rp
+                WHERE UPPER(p.laddress) LIKE CONCAT('%', UPPER(rp.provDesc), '%')
+                ORDER BY CHAR_LENGTH(rp.provDesc) DESC
+                LIMIT 1
+            )
+        END AS resolved_province
+    FROM tblpatient p
+    WHERE p.lmain_id = :main_id
+      AND COALESCE(p.lstatus, 1) = 1
+      AND COALESCE(p.lprofile_type, 'Old') <> 'Prospect'
+) sub
+WHERE resolved_province IS NOT NULL
+  AND resolved_province <> ''
+GROUP BY UPPER(TRIM(resolved_province))
+ORDER BY customer_count DESC
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        $stmt->execute();
+
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Re-key by GeoJSON province name and merge counts for aliases
+        $merged = [];
+        foreach ($rows as $row) {
+            $geoName = $this->resolveGeoJsonProvince((string) $row['province']);
+            if ($geoName === null) {
+                continue; // skip unrecognised values
+            }
+            if (!isset($merged[$geoName])) {
+                $merged[$geoName] = 0;
+            }
+            $merged[$geoName] += (int) $row['customer_count'];
+        }
+
+        $result = [];
+        foreach ($merged as $province => $count) {
+            $result[] = ['province' => $province, 'customer_count' => $count];
+        }
+
+        usort($result, static fn ($a, $b) => $b['customer_count'] <=> $a['customer_count']);
+
+        return $result;
     }
 }

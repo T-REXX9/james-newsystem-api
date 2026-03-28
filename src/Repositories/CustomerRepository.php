@@ -84,12 +84,11 @@ SELECT
         ORDER BY pt.lid DESC
         LIMIT 1
     ) AS latest_terms,
-    (
-        SELECT l.lbalance
-        FROM tblledger l
-        WHERE l.lcustomerid = p.lsessionid
-        ORDER BY l.lid DESC
-        LIMIT 1
+    COALESCE(
+        (SELECT SUM(COALESCE(l.ldebit, 0)) - SUM(COALESCE(l.lcredit, 0))
+         FROM tblledger l
+         WHERE l.lcustomerid = p.lsessionid),
+        0
     ) AS latest_balance
 FROM tblpatient p
 WHERE p.lsessionid = :session_id

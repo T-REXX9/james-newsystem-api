@@ -289,4 +289,20 @@ final class CustomerDatabaseController
             'term_id' => $termId,
         ];
     }
+
+    /**
+     * GET /api/v1/customer-database/province-summary
+     * Returns customer counts grouped by province for the Sales Map.
+     */
+    public function provinceSummary(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        return [
+            'data' => $this->repo->getCustomerCountsByProvince($mainId),
+        ];
+    }
 }

@@ -338,6 +338,7 @@ function app_router(): Router
     $router->get('/api/v1/activity-logs', [$activityLogController, 'list']);
     $router->get('/api/v1/activity-logs/users', [$activityLogController, 'users']);
     $router->get('/api/v1/customer-database', [$customerDatabaseController, 'list']);
+    $router->get('/api/v1/customer-database/province-summary', [$customerDatabaseController, 'provinceSummary']);
     $router->get('/api/v1/customer-groups', [$customerGroupController, 'list']);
     $router->get('/api/v1/customer-groups/{groupId}', [$customerGroupController, 'show']);
     $router->post('/api/v1/customer-groups', [$customerGroupController, 'create']);

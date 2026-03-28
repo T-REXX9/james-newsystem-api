@@ -79,6 +79,32 @@ assert_eq(true, $list['body']['ok'] ?? false, 'Customer database ok=true', $p, $
 $items = $list['body']['data']['items'] ?? [];
 assert_true(is_array($items) && count($items) > 0, 'Customer database returns at least one customer', $p, $f, $e);
 
+$firstCustomer = is_array($items[0] ?? null) ? $items[0] : null;
+assert_true(is_array($firstCustomer), 'Customer database returned a first customer record', $p, $f, $e);
+
+if (is_array($firstCustomer)) {
+    $sessionId = (string) ($firstCustomer['session_id'] ?? '');
+    assert_true($sessionId !== '', 'First customer includes a session_id', $p, $f, $e);
+
+    if ($sessionId !== '') {
+        $detail = request('GET', "{$API_BASE}/api/v1/customers/{$sessionId}");
+        assert_eq(200, $detail['http_code'], 'Customer detail returns 200', $p, $f, $e);
+
+        $detailData = $detail['body']['data'] ?? null;
+        $listBalance = (float) ($firstCustomer['latest_balance'] ?? 0);
+        $detailBalance = (float) ($detailData['latest_balance'] ?? 0);
+
+        assert_eq(
+            $detailBalance,
+            $listBalance,
+            'Customer database balance matches customer detail balance',
+            $p,
+            $f,
+            $e
+        );
+    }
+}
+
 $customerWithContacts = null;
 $namedContact = null;
 foreach ($items as $item) {
