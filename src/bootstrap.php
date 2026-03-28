@@ -544,8 +544,15 @@ function app_router(): Router
     $router->get('/api/v1/sales-development-report', [$salesDevelopmentReportController, 'report']);
     $router->get('/api/v1/sales-development-report/summary', [$salesDevelopmentReportController, 'summary']);
     $router->get('/api/v1/sales-returns', [$salesReturnController, 'list']);
+    $router->post('/api/v1/sales-returns', [$salesReturnController, 'create']);
     $router->get('/api/v1/sales-returns/{refno}', [$salesReturnController, 'show']);
+    $router->patch('/api/v1/sales-returns/{refno}', [$salesReturnController, 'update']);
     $router->get('/api/v1/sales-returns/{refno}/items', [$salesReturnController, 'items']);
+    $router->get('/api/v1/sales-returns/{refno}/source-items', [$salesReturnController, 'sourceItems']);
+    $router->post('/api/v1/sales-returns/{refno}/items', [$salesReturnController, 'addItem']);
+    $router->delete('/api/v1/sales-return-items/{itemId}', [$salesReturnController, 'deleteItem']);
+    $router->post('/api/v1/sales-returns/{refno}/actions/post', [$salesReturnController, 'postAction']);
+    $router->post('/api/v1/sales-returns/{refno}/actions/unpost', [$salesReturnController, 'unpostAction']);
     $router->get('/api/v1/sales-inquiries', [$salesInquiryController, 'list']);
     $router->get('/api/v1/sales-inquiries/{inquiryRefno}', [$salesInquiryController, 'show']);
     $router->post('/api/v1/sales-inquiries', [$salesInquiryController, 'create']);

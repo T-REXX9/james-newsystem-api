@@ -30,7 +30,8 @@ final class StatementOfAccountController
             'items' => $this->repo->listCustomers(
                 $mainId,
                 (string) ($query['search'] ?? ''),
-                $limit
+                $limit,
+                isset($query['user_type']) ? (string) $query['user_type'] : null
             ),
         ];
     }

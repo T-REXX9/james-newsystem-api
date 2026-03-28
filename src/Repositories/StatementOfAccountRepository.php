@@ -15,9 +15,11 @@ final class StatementOfAccountRepository
     {
     }
 
-    public function listCustomers(int $mainId, string $search = '', int $limit = 100): array
+    public function listCustomers(int $mainId, string $search = '', int $limit = 100, ?string $userType = null): array
     {
-        $sql = <<<SQL
+        $params = [];
+        if (trim((string) $userType) !== '1') {
+            $sql = <<<SQL
 SELECT
     p.lsessionid AS session_id,
     COALESCE(NULLIF(TRIM(p.lpatient_code), ''), '') AS customer_code,
@@ -27,16 +29,30 @@ FROM tblpatient p
 WHERE p.lmain_id = :main_id
   AND COALESCE(p.lstatus, 0) = 1
 SQL;
+            $params['main_id'] = $mainId;
+        } else {
+            $sql = <<<SQL
+SELECT
+    p.lsessionid AS session_id,
+    COALESCE(NULLIF(TRIM(p.lpatient_code), ''), '') AS customer_code,
+    COALESCE(NULLIF(TRIM(p.lcompany), ''), '') AS company,
+    COALESCE(NULLIF(TRIM(p.lstatus), ''), '') AS status
+FROM tblpatient p
+WHERE COALESCE(p.lstatus, 0) = 1
+SQL;
+        }
 
-        $params = ['main_id' => $mainId];
         $trimmedSearch = trim($search);
         if ($trimmedSearch !== '') {
             $sql .= ' AND ('
-                . 'p.lcompany LIKE :search '
-                . 'OR p.lpatient_code LIKE :search '
-                . 'OR p.lsessionid LIKE :search'
+                . 'p.lcompany LIKE :search_company '
+                . 'OR p.lpatient_code LIKE :search_code '
+                . 'OR p.lsessionid LIKE :search_session'
                 . ')';
-            $params['search'] = '%' . $trimmedSearch . '%';
+            $like = '%' . $trimmedSearch . '%';
+            $params['search_company'] = $like;
+            $params['search_code'] = $like;
+            $params['search_session'] = $like;
         }
 
         $sql .= ' ORDER BY p.lcompany ASC, p.lid DESC LIMIT :limit';

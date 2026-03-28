@@ -45,13 +45,18 @@ final class InactiveActiveCustomersReportRepository
 
         $trimmedSearch = trim($search);
         if ($trimmedSearch !== '') {
-            $params['search'] = '%' . $trimmedSearch . '%';
+            $like = '%' . $trimmedSearch . '%';
+            $params['search_company'] = $like;
+            $params['search_code'] = $like;
+            $params['search_group'] = $like;
+            $params['search_fname'] = $like;
+            $params['search_lname'] = $like;
             $where[] = '('
-                . 'COALESCE(p.lcompany, "") LIKE :search '
-                . 'OR COALESCE(p.lpatient_code, "") LIKE :search '
-                . 'OR COALESCE(p.lgroup, "") LIKE :search '
-                . 'OR COALESCE(acc.lfname, "") LIKE :search '
-                . 'OR COALESCE(acc.llname, "") LIKE :search'
+                . 'COALESCE(p.lcompany, "") LIKE :search_company '
+                . 'OR COALESCE(p.lpatient_code, "") LIKE :search_code '
+                . 'OR COALESCE(p.lgroup, "") LIKE :search_group '
+                . 'OR COALESCE(acc.lfname, "") LIKE :search_fname '
+                . 'OR COALESCE(acc.llname, "") LIKE :search_lname'
                 . ')';
         }
 
