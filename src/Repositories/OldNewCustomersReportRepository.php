@@ -16,29 +16,51 @@ final class OldNewCustomersReportRepository
     public function report(int $mainId, string $status, string $search, int $page, int $perPage): array
     {
         $offset = ($page - 1) * $perPage;
-        $cutoffDateTime = date('Y-m-d H:i:s', strtotime('-1 year'));
-        $cutoffDate = date('Y-m-d', strtotime($cutoffDateTime));
+        $cutoffDate = date('Y-m-d', strtotime('-1 year'));
+        $effectiveSinceExpr = <<<SQL
+COALESCE(
+    CASE
+        WHEN p.lsince IS NULL
+          OR TRIM(COALESCE(p.lsince, '')) = ''
+          OR p.lsince IN ('0000-00-00', '0000-00-00 00:00:00')
+        THEN NULL
+        ELSE DATE(p.lsince)
+    END,
+    CASE
+        WHEN p.ldatereg IS NULL
+          OR TRIM(COALESCE(p.ldatereg, '')) = ''
+          OR p.ldatereg IN ('0000-00-00', '0000-00-00 00:00:00')
+        THEN NULL
+        ELSE DATE(p.ldatereg)
+    END,
+    (
+        SELECT MIN(DATE(l.ldatetime))
+        FROM tblledger l
+        WHERE l.lcustomerid = p.lsessionid
+    )
+)
+SQL;
 
         $params = [
             'main_id' => $mainId,
-            'cutoff_old_count' => $cutoffDateTime,
-            'cutoff_old_filter' => $cutoffDateTime,
-            'cutoff_new_count' => $cutoffDateTime,
-            'cutoff_new_filter' => $cutoffDateTime,
-            'cutoff_case_type' => $cutoffDateTime,
-            'cutoff_case_order' => $cutoffDateTime,
+            'cutoff_old_count' => $cutoffDate,
+            'cutoff_old_filter' => $cutoffDate,
+            'cutoff_new_count' => $cutoffDate,
+            'cutoff_new_filter' => $cutoffDate,
+            'cutoff_case_type' => $cutoffDate,
+            'cutoff_case_order' => $cutoffDate,
         ];
 
         $where = [
             '(CAST(COALESCE(p.lmain_id, 0) AS SIGNED) = :main_id)',
             'CAST(COALESCE(p.lstatus, 0) AS SIGNED) = 1',
-            'COALESCE(p.lsince, "") <> ""',
+            "({$effectiveSinceExpr}) IS NOT NULL",
         ];
 
         if ($status === 'old') {
-            $where[] = 'p.lsince < :cutoff_old_filter';
+            $where[] = "({$effectiveSinceExpr}) < :cutoff_old_filter";
         } elseif ($status === 'new') {
-            $where[] = 'p.lsince > :cutoff_new_filter';
+            $where[] = "({$effectiveSinceExpr}) > :cutoff_new_filter";
         }
 
         $trimmedSearch = trim($search);
@@ -62,8 +84,8 @@ final class OldNewCustomersReportRepository
 
         $countSql = <<<SQL
 SELECT
-    SUM(CASE WHEN p.lsince < :cutoff_old_count THEN 1 ELSE 0 END) AS old_count,
-    SUM(CASE WHEN p.lsince > :cutoff_new_count THEN 1 ELSE 0 END) AS new_count,
+    SUM(CASE WHEN ({$effectiveSinceExpr}) < :cutoff_old_count THEN 1 ELSE 0 END) AS old_count,
+    SUM(CASE WHEN ({$effectiveSinceExpr}) > :cutoff_new_count THEN 1 ELSE 0 END) AS new_count,
     COUNT(*) AS total_count
 FROM tblpatient p
 LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR)
@@ -82,16 +104,16 @@ SELECT
     COALESCE(p.lpatient_code, '') AS customer_code,
     COALESCE(p.lgroup, '') AS customer_group,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person,
-    DATE(p.lsince) AS customer_since,
+    {$effectiveSinceExpr} AS customer_since,
     CASE
-        WHEN p.lsince < :cutoff_case_type THEN 'old'
+        WHEN ({$effectiveSinceExpr}) < :cutoff_case_type THEN 'old'
         ELSE 'new'
     END AS customer_type
 FROM tblpatient p
 LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR)
 WHERE {$whereSql}
 ORDER BY
-    CASE WHEN p.lsince < :cutoff_case_order THEN 0 ELSE 1 END ASC,
+    CASE WHEN ({$effectiveSinceExpr}) < :cutoff_case_order THEN 0 ELSE 1 END ASC,
     p.lcompany ASC,
     p.lid ASC
 LIMIT :limit OFFSET :offset

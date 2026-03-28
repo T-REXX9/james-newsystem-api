@@ -1388,6 +1388,36 @@ SQL;
             'lref_name' => $referenceName,
             'ldebit_refno' => date('Ymd') . random_int(1, 1000000) . random_int(1, 1000000),
         ]);
+
+        $this->syncCustomerSalesActivity($mainId, $customerId, $salesDate);
+    }
+
+    private function syncCustomerSalesActivity(int $mainId, string $customerId, string $activityDate): void
+    {
+        $customerId = trim($customerId);
+        $activityDate = trim($activityDate);
+        if ($customerId === '' || $activityDate === '') {
+            return;
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'UPDATE tblpatient
+             SET llast_transaction = :activity_date,
+                 lsince = CASE
+                     WHEN lsince IS NULL
+                       OR TRIM(COALESCE(lsince, "")) = ""
+                       OR lsince IN ("0000-00-00", "0000-00-00 00:00:00")
+                     THEN :activity_date
+                     ELSE lsince
+                 END
+             WHERE lmain_id = :main_id
+               AND lsessionid = :customer_id'
+        );
+        $stmt->execute([
+            'activity_date' => $activityDate,
+            'main_id' => $mainId,
+            'customer_id' => $customerId,
+        ]);
     }
 
     /**

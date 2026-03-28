@@ -23,6 +23,22 @@ final class InactiveActiveCustomersReportRepository
     ): array {
         $offset = ($page - 1) * $perPage;
         $cutoffDate = date('Y-m-d', strtotime('-' . $cutoffMonths . ' month'));
+        $effectiveLastTransactionExpr = <<<SQL
+COALESCE(
+    CASE
+        WHEN p.llast_transaction IS NULL
+          OR TRIM(COALESCE(p.llast_transaction, '')) = ''
+          OR p.llast_transaction IN ('0000-00-00', '0000-00-00 00:00:00')
+        THEN NULL
+        ELSE DATE(p.llast_transaction)
+    END,
+    (
+        SELECT MAX(DATE(l.ldatetime))
+        FROM tblledger l
+        WHERE l.lcustomerid = p.lsessionid
+    )
+)
+SQL;
 
         $params = [
             'main_id' => $mainId,
@@ -34,13 +50,13 @@ final class InactiveActiveCustomersReportRepository
 
         $where = [
             '(CAST(COALESCE(p.lmain_id, 0) AS SIGNED) = :main_id)',
-            'COALESCE(p.llast_transaction, "") <> ""',
+            "({$effectiveLastTransactionExpr}) IS NOT NULL",
         ];
 
         if ($status === 'active') {
-            $where[] = 'DATE(p.llast_transaction) >= :cutoff_date';
+            $where[] = "({$effectiveLastTransactionExpr}) >= :cutoff_date";
         } elseif ($status === 'inactive') {
-            $where[] = 'DATE(p.llast_transaction) <= :cutoff_date';
+            $where[] = "({$effectiveLastTransactionExpr}) <= :cutoff_date";
         }
 
         $trimmedSearch = trim($search);
@@ -64,8 +80,8 @@ final class InactiveActiveCustomersReportRepository
 
         $countSql = <<<SQL
 SELECT
-    SUM(CASE WHEN DATE(p.llast_transaction) >= :cutoff_date_active THEN 1 ELSE 0 END) AS active_count,
-    SUM(CASE WHEN DATE(p.llast_transaction) <= :cutoff_date_inactive THEN 1 ELSE 0 END) AS inactive_count,
+    SUM(CASE WHEN ({$effectiveLastTransactionExpr}) >= :cutoff_date_active THEN 1 ELSE 0 END) AS active_count,
+    SUM(CASE WHEN ({$effectiveLastTransactionExpr}) <= :cutoff_date_inactive THEN 1 ELSE 0 END) AS inactive_count,
     COUNT(*) AS total_count
 FROM tblpatient p
 LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR)
@@ -83,15 +99,15 @@ SELECT
     COALESCE(p.lpatient_code, '') AS customer_code,
     COALESCE(p.lgroup, '') AS customer_group,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person,
-    DATE(p.llast_transaction) AS last_purchase,
+    {$effectiveLastTransactionExpr} AS last_purchase,
     CASE
-        WHEN DATE(p.llast_transaction) >= :cutoff_date_case THEN 'active'
+        WHEN ({$effectiveLastTransactionExpr}) >= :cutoff_date_case THEN 'active'
         ELSE 'inactive'
     END AS customer_status
 FROM tblpatient p
 LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR)
 WHERE {$whereSql}
-ORDER BY p.llast_transaction DESC, p.lid DESC
+ORDER BY ({$effectiveLastTransactionExpr}) DESC, p.lid DESC
 LIMIT :limit OFFSET :offset
 SQL;
 
