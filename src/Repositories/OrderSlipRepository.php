@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use PDO;
 use RuntimeException;
 
@@ -458,6 +459,7 @@ SQL;
             ]);
 
             $this->replaceItems($orderSlipRefno, $userId, $salesRefno, $payload['items'] ?? []);
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Order Slip', 'Create', $orderSlipRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
             $pdo->rollBack();
@@ -545,6 +547,8 @@ SQL;
                 $userId = (int) ($payload['user_id'] ?? 1);
                 $this->replaceItems($orderSlipRefno, $userId, $salesRefno, $payload['items']);
             }
+            $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
+            (new AuditTrailWriter($pdo))->write($mainId, $auditUserId, 'Order Slip', 'Update', $orderSlipRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
             $pdo->rollBack();

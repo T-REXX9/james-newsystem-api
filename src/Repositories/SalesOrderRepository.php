@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use PDO;
 use RuntimeException;
 
@@ -437,6 +438,7 @@ SQL;
                 $this->insertItem($pdo, $mainId, $userId, $salesRefno, $salesDate, $item);
             }
 
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Sales Order', 'Create', $salesRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
             $pdo->rollBack();
@@ -542,6 +544,9 @@ SQL;
                 $this->insertItem($this->db->pdo(), $mainId, $itemUserId, $salesRefno, $salesDate, $item);
             }
         }
+
+        $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
+        (new AuditTrailWriter($this->db->pdo()))->write($mainId, $auditUserId, 'Sales Order', 'Update', $salesRefno);
 
         return $this->getSalesOrder($mainId, $salesRefno);
     }

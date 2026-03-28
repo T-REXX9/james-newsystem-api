@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use PDO;
 use RuntimeException;
 
@@ -228,7 +229,13 @@ SELECT
     COALESCE(p.lcredit, 0) AS credit_limit,
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
     COALESCE(p.lnotes, '') AS notes,
-    COALESCE(p.ldatereg, '') AS date_registered
+    COALESCE(p.ldatereg, '') AS date_registered,
+    COALESCE(
+        (SELECT SUM(COALESCE(l.ldebit, 0)) - SUM(COALESCE(l.lcredit, 0))
+         FROM tblledger l
+         WHERE l.lcustomerid = p.lsessionid),
+        0
+    ) AS latest_balance
 FROM tblpatient p
 LEFT JOIN tblaccount acc
     ON acc.lid = p.lsales_person
@@ -326,6 +333,7 @@ SQL;
                 $this->insertContact($pdo, $mainId, $sessionId, $contact);
             }
 
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Customer Database', 'Create', $sessionId);
             $pdo->commit();
             return $this->getCustomer($mainId, $sessionId) ?? [];
         } catch (\Throwable $e) {
@@ -405,6 +413,9 @@ SQL;
             'main_id' => $mainId,
             'session_id' => $sessionId,
         ]);
+
+        $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
+        (new AuditTrailWriter($this->db->pdo()))->write($mainId, $auditUserId, 'Customer Database', 'Update', $sessionId);
 
         return $this->getCustomer($mainId, $sessionId);
     }

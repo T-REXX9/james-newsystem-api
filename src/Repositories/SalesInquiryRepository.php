@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use PDO;
 use RuntimeException;
 
@@ -325,6 +326,7 @@ SQL;
                 $this->insertItem($pdo, $inquiryRefno, $inquiryNo, $salesDate, $item);
             }
 
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Sales Inquiry', 'Create', $inquiryRefno);
             $pdo->commit();
             return $this->getInquiry($mainId, $inquiryRefno) ?? [];
         } catch (\Throwable $e) {
@@ -412,6 +414,8 @@ SQL;
             }
 
             $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, $inquiryRefno, true, $syncItems);
+            $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
+            (new AuditTrailWriter($pdo))->write($mainId, $auditUserId, 'Sales Inquiry', 'Update', $inquiryRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
             if ($pdo->inTransaction()) {

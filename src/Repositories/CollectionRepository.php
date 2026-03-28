@@ -386,10 +386,14 @@ SELECT
     COALESCE(dm.lcustomer_fname, '') AS lcustomer_code,
     COALESCE(dm.lcustomer_lname, '') AS lcustomer_name,
     COALESCE(dm.ldatetime, '') AS ldatetime,
-    (
-      SELECT COALESCE(SUM(COALESCE(dmi.lamount, 0)), 0)
-      FROM tbldebit_memo_items dmi
-      WHERE dmi.lrefno = dm.lrefno
+    GREATEST(
+      COALESCE(CAST(dm.lamt AS DECIMAL(15,2)), 0),
+      COALESCE(
+        (SELECT SUM(COALESCE(CAST(dmi.lamount AS DECIMAL(15,2)), 0))
+         FROM tbldebit_memo_items dmi
+         WHERE dmi.lrefno = dm.lrefno),
+        0
+      )
     ) AS lamount
 FROM tbldebit_memo dm
 WHERE %s
