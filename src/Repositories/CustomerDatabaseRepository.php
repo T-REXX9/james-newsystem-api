@@ -12,6 +12,7 @@ use RuntimeException;
 final class CustomerDatabaseRepository
 {
     private const DEFAULT_VAT_TYPE = 'Zero-Rated';
+    private const CUSTOMER_PHONE_MAX_LENGTH = 15;
 
     public function __construct(private readonly Database $db)
     {
@@ -265,6 +266,8 @@ SQL;
             throw new RuntimeException('company is required');
         }
 
+        $this->assertCustomerPhoneLengths($payload);
+
         $sessionId = trim((string) ($payload['session_id'] ?? ''));
         if ($sessionId === '') {
             $sessionId = $this->generateSessionId($mainId);
@@ -339,7 +342,7 @@ SQL;
             return $this->getCustomer($mainId, $sessionId) ?? [];
         } catch (\Throwable $e) {
             $pdo->rollBack();
-            throw $e;
+            $this->rethrowAsFriendlyValidation($e);
         }
     }
 
@@ -352,6 +355,11 @@ SQL;
         if ($existing === null) {
             return null;
         }
+
+        $this->assertCustomerPhoneLengths([
+            'phone' => (string) ($payload['phone'] ?? $existing['phone'] ?? ''),
+            'mobile' => (string) ($payload['mobile'] ?? $existing['mobile'] ?? ''),
+        ]);
 
         $sql = <<<SQL
 UPDATE tblpatient
@@ -385,35 +393,39 @@ WHERE lmain_id = :main_id
   AND lsessionid = :session_id
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute([
-            'company' => (string) ($payload['company'] ?? $existing['company'] ?? ''),
-            'email' => (string) ($payload['email'] ?? $existing['email'] ?? ''),
-            'phone' => (string) ($payload['phone'] ?? $existing['phone'] ?? ''),
-            'mobile' => (string) ($payload['mobile'] ?? $existing['mobile'] ?? ''),
-            'sales_person' => (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? ''),
-            'refer_by' => (string) ($payload['refer_by'] ?? $existing['refer_by'] ?? ''),
-            'address' => (string) ($payload['address'] ?? $existing['address'] ?? ''),
-            'delivery_address' => (string) ($payload['delivery_address'] ?? $existing['delivery_address'] ?? ''),
-            'area' => (string) ($payload['area'] ?? $existing['area'] ?? ''),
-            'tin' => (string) ($payload['tin'] ?? $existing['tin'] ?? ''),
-            'price_group' => (string) ($payload['price_group'] ?? $existing['price_group'] ?? ''),
-            'business_line' => (string) ($payload['business_line'] ?? $existing['business_line'] ?? ''),
-            'terms' => (string) ($payload['terms'] ?? $existing['terms'] ?? ''),
-            'transaction_type' => (string) ($payload['transaction_type'] ?? $existing['transaction_type'] ?? ''),
-            'vat_type' => (string) ($payload['vat_type'] ?? $existing['vat_type'] ?? ''),
-            'vat_percent' => isset($payload['vat_percent']) ? ((float) $payload['vat_percent']) : (float) ($existing['vat_percent'] ?? 0),
-            'dealer_since' => $this->normalizeDateNullable((string) ($payload['dealer_since'] ?? $existing['dealer_since'] ?? ''), 'dealer_since'),
-            'dealer_quota' => isset($payload['dealer_quota']) ? (float) $payload['dealer_quota'] : (float) ($existing['dealer_quota'] ?? 0),
-            'credit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($existing['credit_limit'] ?? 0),
-            'status' => isset($payload['status']) ? (int) $payload['status'] : (int) ($existing['status'] ?? 1),
-            'notes' => (string) ($payload['notes'] ?? $existing['notes'] ?? ''),
-            'province' => (string) ($payload['province'] ?? $existing['province'] ?? ''),
-            'city' => (string) ($payload['city'] ?? $existing['city'] ?? ''),
-            'debt_type' => (string) ($payload['debt_type'] ?? $existing['debt_type'] ?? 'Good'),
-            'profile_type' => (string) ($payload['profile_type'] ?? $existing['profile_type'] ?? 'Old'),
-            'main_id' => $mainId,
-            'session_id' => $sessionId,
-        ]);
+        try {
+            $stmt->execute([
+                'company' => (string) ($payload['company'] ?? $existing['company'] ?? ''),
+                'email' => (string) ($payload['email'] ?? $existing['email'] ?? ''),
+                'phone' => (string) ($payload['phone'] ?? $existing['phone'] ?? ''),
+                'mobile' => (string) ($payload['mobile'] ?? $existing['mobile'] ?? ''),
+                'sales_person' => (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? ''),
+                'refer_by' => (string) ($payload['refer_by'] ?? $existing['refer_by'] ?? ''),
+                'address' => (string) ($payload['address'] ?? $existing['address'] ?? ''),
+                'delivery_address' => (string) ($payload['delivery_address'] ?? $existing['delivery_address'] ?? ''),
+                'area' => (string) ($payload['area'] ?? $existing['area'] ?? ''),
+                'tin' => (string) ($payload['tin'] ?? $existing['tin'] ?? ''),
+                'price_group' => (string) ($payload['price_group'] ?? $existing['price_group'] ?? ''),
+                'business_line' => (string) ($payload['business_line'] ?? $existing['business_line'] ?? ''),
+                'terms' => (string) ($payload['terms'] ?? $existing['terms'] ?? ''),
+                'transaction_type' => (string) ($payload['transaction_type'] ?? $existing['transaction_type'] ?? ''),
+                'vat_type' => (string) ($payload['vat_type'] ?? $existing['vat_type'] ?? ''),
+                'vat_percent' => isset($payload['vat_percent']) ? ((float) $payload['vat_percent']) : (float) ($existing['vat_percent'] ?? 0),
+                'dealer_since' => $this->normalizeDateNullable((string) ($payload['dealer_since'] ?? $existing['dealer_since'] ?? ''), 'dealer_since'),
+                'dealer_quota' => isset($payload['dealer_quota']) ? (float) $payload['dealer_quota'] : (float) ($existing['dealer_quota'] ?? 0),
+                'credit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($existing['credit_limit'] ?? 0),
+                'status' => isset($payload['status']) ? (int) $payload['status'] : (int) ($existing['status'] ?? 1),
+                'notes' => (string) ($payload['notes'] ?? $existing['notes'] ?? ''),
+                'province' => (string) ($payload['province'] ?? $existing['province'] ?? ''),
+                'city' => (string) ($payload['city'] ?? $existing['city'] ?? ''),
+                'debt_type' => (string) ($payload['debt_type'] ?? $existing['debt_type'] ?? 'Good'),
+                'profile_type' => (string) ($payload['profile_type'] ?? $existing['profile_type'] ?? 'Old'),
+                'main_id' => $mainId,
+                'session_id' => $sessionId,
+            ]);
+        } catch (\Throwable $e) {
+            $this->rethrowAsFriendlyValidation($e);
+        }
 
         $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
         (new AuditTrailWriter($this->db->pdo()))->write($mainId, $auditUserId, 'Customer Database', 'Update', $sessionId);
@@ -477,6 +489,8 @@ SQL;
             throw new RuntimeException('No supported fields provided for bulk update');
         }
 
+        $this->assertCustomerPhoneLengths($payload);
+
         $sessionPlaceholders = [];
         foreach ($normalizedSessionIds as $index => $sessionId) {
             $paramKey = 'session_id_' . $index;
@@ -504,7 +518,11 @@ SQL;
 
             $stmt->bindValue($key, (string) $value, PDO::PARAM_STR);
         }
-        $stmt->execute();
+        try {
+            $stmt->execute();
+        } catch (\Throwable $e) {
+            $this->rethrowAsFriendlyValidation($e);
+        }
 
         return [
             'updated' => true,
@@ -827,6 +845,35 @@ SQL;
     private function generateSessionId(int $mainId): string
     {
         return (string) random_int(10, 15) . date('YmdHis') . (string) random_int(1, 10000) . (string) $mainId;
+    }
+
+    private function assertCustomerPhoneLengths(array $payload): void
+    {
+        $phone = trim((string) ($payload['phone'] ?? ''));
+        $mobile = trim((string) ($payload['mobile'] ?? ''));
+
+        if ($phone !== '' && mb_strlen($phone) > self::CUSTOMER_PHONE_MAX_LENGTH) {
+            throw new RuntimeException('Please enter a valid telephone number. The customer telephone field allows up to 15 characters only.');
+        }
+
+        if ($mobile !== '' && mb_strlen($mobile) > self::CUSTOMER_PHONE_MAX_LENGTH) {
+            throw new RuntimeException('Please enter a valid phone number. The customer mobile field allows up to 15 characters only.');
+        }
+    }
+
+    private function rethrowAsFriendlyValidation(\Throwable $e): never
+    {
+        $message = trim($e->getMessage());
+
+        if (stripos($message, "Data too long for column 'lphone'") !== false) {
+            throw new RuntimeException('Please enter a valid telephone number. The customer telephone field allows up to 15 characters only.', 0, $e);
+        }
+
+        if (stripos($message, "Data too long for column 'lmobile'") !== false) {
+            throw new RuntimeException('Please enter a valid phone number. The customer mobile field allows up to 15 characters only.', 0, $e);
+        }
+
+        throw $e;
     }
 
     private function normalizeDateNullable(string $value, string $fieldName = 'date'): ?string
