@@ -1403,13 +1403,12 @@ SQL;
         $stmt = $this->db->pdo()->prepare(
             'UPDATE tblpatient
              SET llast_transaction = :activity_date,
-                 lsince = CASE
-                     WHEN lsince IS NULL
-                       OR TRIM(COALESCE(lsince, "")) = ""
-                       OR lsince IN ("0000-00-00", "0000-00-00 00:00:00")
-                     THEN :activity_date
-                     ELSE lsince
-                 END
+                 lsince = COALESCE(
+                     NULLIF(CAST(lsince AS CHAR), "0000-00-00"),
+                     NULLIF(CAST(lsince AS CHAR), "0000-00-00 00:00:00"),
+                     NULLIF(CAST(lsince AS CHAR), ""),
+                     :activity_date
+                 )
              WHERE lmain_id = :main_id
                AND lsessionid = :customer_id'
         );
