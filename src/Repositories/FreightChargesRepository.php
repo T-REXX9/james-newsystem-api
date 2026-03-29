@@ -269,6 +269,15 @@ SQL;
                 'lstatus' => 'Pending',
             ]);
 
+            $this->syncLinkedDocumentHeader(
+                $pdo,
+                $transactionType,
+                $transRefno,
+                $refno,
+                $dmNo,
+                $trackingNo
+            );
+
             $pdo->commit();
         } catch (\Throwable $e) {
             $pdo->rollBack();
@@ -389,20 +398,52 @@ SQL;
                 throw new RuntimeException('Tracking number already exists for this courier/transaction');
             }
 
-            $sql = 'UPDATE tbldebit_memo SET ' . implode(', ', $fields) . ' WHERE lrefno = :refno';
-            $stmt = $this->db->pdo()->prepare($sql);
-            foreach ($params as $key => $value) {
-                if ($key === 'lamt') {
-                    $stmt->bindValue($key, (float) $value);
-                    continue;
+            $pdo = $this->db->pdo();
+            $pdo->beginTransaction();
+            try {
+                $sql = 'UPDATE tbldebit_memo SET ' . implode(', ', $fields) . ' WHERE lrefno = :refno';
+                $stmt = $pdo->prepare($sql);
+                foreach ($params as $key => $value) {
+                    if ($key === 'lamt') {
+                        $stmt->bindValue($key, (float) $value);
+                        continue;
+                    }
+                    if ($key === 'IsFreightCollect') {
+                        $stmt->bindValue($key, (int) $value, PDO::PARAM_INT);
+                        continue;
+                    }
+                    $stmt->bindValue($key, (string) $value, PDO::PARAM_STR);
                 }
-                if ($key === 'IsFreightCollect') {
-                    $stmt->bindValue($key, (int) $value, PDO::PARAM_INT);
-                    continue;
+                $stmt->execute();
+
+                $previousType = (string) ($existing['ltransaction_type'] ?? 'No Reference');
+                $previousRefno = (string) ($existing['ltrans_refno'] ?? '');
+                $nextType = (string) ($params['ltransaction_type'] ?? $previousType);
+                $nextDocumentRef = (string) ($params['ltrans_refno'] ?? $previousRefno);
+                $nextDmNo = (string) ($existing['ldm_no'] ?? '');
+                $nextTrackingNo = (string) ($params['ltrackingno'] ?? $existing['ltrackingno'] ?? '');
+
+                if (
+                    $previousRefno !== '' &&
+                    ($previousRefno !== $nextDocumentRef || strcasecmp($previousType, $nextType) !== 0)
+                ) {
+                    $this->syncLinkedDocumentHeader($pdo, $previousType, $previousRefno, '', '', '');
                 }
-                $stmt->bindValue($key, (string) $value, PDO::PARAM_STR);
+
+                $this->syncLinkedDocumentHeader(
+                    $pdo,
+                    $nextType,
+                    $nextDocumentRef,
+                    $refno,
+                    $nextDmNo,
+                    $nextTrackingNo
+                );
+
+                $pdo->commit();
+            } catch (\Throwable $e) {
+                $pdo->rollBack();
+                throw $e;
             }
-            $stmt->execute();
         }
 
         return $this->getByRefno($refno);
@@ -420,6 +461,15 @@ SQL;
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
+            $this->syncLinkedDocumentHeader(
+                $pdo,
+                (string) ($existing['ltransaction_type'] ?? 'No Reference'),
+                (string) ($existing['ltrans_refno'] ?? ''),
+                '',
+                '',
+                ''
+            );
+
             $stmtHeader = $pdo->prepare('DELETE FROM tbldebit_memo WHERE lrefno = :refno');
             $stmtHeader->execute(['refno' => $refno]);
 
@@ -622,5 +672,47 @@ SQL;
         $stmt->execute();
 
         return $stmt->fetch(PDO::FETCH_ASSOC) !== false;
+    }
+
+    private function syncLinkedDocumentHeader(
+        PDO $pdo,
+        string $transactionType,
+        string $documentRefno,
+        string $dmRefno,
+        string $dmNo,
+        string $trackingNo
+    ): void {
+        $documentRefno = trim($documentRefno);
+        if ($documentRefno === '') {
+            return;
+        }
+
+        $normalizedType = strtolower(trim($transactionType));
+        if ($normalizedType === 'invoice') {
+            $stmt = $pdo->prepare(
+                'UPDATE tblinvoice_list
+                 SET ldm_refno = :ldm_refno,
+                     ldm_no = :ldm_no,
+                     ldm_trackingno = :ldm_trackingno
+                 WHERE lrefno = :document_refno'
+            );
+        } elseif ($normalizedType === 'order slip') {
+            $stmt = $pdo->prepare(
+                'UPDATE tbldelivery_receipt
+                 SET ldm_refno = :ldm_refno,
+                     ldm_no = :ldm_no,
+                     ldm_trackingno = :ldm_trackingno
+                 WHERE lrefno = :document_refno'
+            );
+        } else {
+            return;
+        }
+
+        $stmt->execute([
+            'ldm_refno' => $dmRefno,
+            'ldm_no' => $dmNo,
+            'ldm_trackingno' => $trackingNo,
+            'document_refno' => $documentRefno,
+        ]);
     }
 }
