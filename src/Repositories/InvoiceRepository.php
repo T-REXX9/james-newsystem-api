@@ -500,19 +500,46 @@ SQL;
 
     public function cancelInvoice(int $mainId, string $invoiceRefno, string $reason = ''): bool
     {
-        $stmt = $this->db->pdo()->prepare(
-            'UPDATE tblinvoice_list
-             SET lcancel_invoice = 1, lstatus = :status, lcancel_reason = :reason
-             WHERE lmain_id = :main_id AND lrefno = :invoice_refno
-             LIMIT 1'
-        );
-        $stmt->execute([
-            'status' => 'Cancelled',
-            'reason' => trim($reason),
-            'main_id' => (string) $mainId,
-            'invoice_refno' => $invoiceRefno,
-        ]);
-        return $stmt->rowCount() > 0;
+        $existing = $this->getInvoice($mainId, $invoiceRefno);
+        if ($existing === null) {
+            return false;
+        }
+
+        $invoice = is_array($existing['invoice'] ?? null) ? $existing['invoice'] : [];
+        $items = is_array($existing['items'] ?? null) ? $existing['items'] : [];
+        if ((int) ($invoice['is_cancelled'] ?? 0) === 1 || strtolower(trim((string) ($invoice['status'] ?? ''))) === 'cancelled') {
+            return true;
+        }
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare(
+                'UPDATE tblinvoice_list
+                 SET lcancel_invoice = 1, lstatus = :status, lcancel_reason = :reason
+                 WHERE lmain_id = :main_id AND lrefno = :invoice_refno
+                 LIMIT 1'
+            );
+            $stmt->execute([
+                'status' => 'Cancelled',
+                'reason' => trim($reason),
+                'main_id' => (string) $mainId,
+                'invoice_refno' => $invoiceRefno,
+            ]);
+
+            if ($stmt->rowCount() === 0) {
+                $pdo->rollBack();
+                return false;
+            }
+
+            $this->syncLinkedSalesCancellation($pdo, (string) ($invoice['order_id'] ?? ''), trim($reason));
+            $this->insertCancellationInventoryRestoreLogs($pdo, $invoice, $items, trim($reason));
+            $pdo->commit();
+            return true;
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
     }
 
     /**
@@ -732,6 +759,114 @@ SQL;
         );
         $stmt->execute(['invoice_refno' => $invoiceRefno]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * @param array<string, mixed> $invoice
+     * @param array<int, array<string, mixed>> $items
+     */
+    private function insertCancellationInventoryRestoreLogs(PDO $pdo, array $invoice, array $items, string $reason = ''): void
+    {
+        if ($items === []) {
+            return;
+        }
+
+        $invoiceRefno = trim((string) ($invoice['invoice_refno'] ?? ''));
+        if ($invoiceRefno === '') {
+            return;
+        }
+
+        $check = $pdo->prepare(
+            'SELECT COUNT(*) FROM tblinventory_logs
+             WHERE lrefno = :refno
+               AND ltransaction_type = :transaction_type
+               AND lstatus_logs = "+"
+               AND lout = 0'
+        );
+        $check->execute([
+            'refno' => $invoiceRefno,
+            'transaction_type' => 'Invoice',
+        ]);
+        if ((int) ($check->fetchColumn() ?: 0) > 0) {
+            return;
+        }
+
+        $note = trim($reason) !== '' ? 'CANCELLED ' . trim($reason) : (string) ($invoice['customer_name'] ?? '');
+        $createdAt = trim((string) ($invoice['created_at'] ?? ''));
+        if ($createdAt === '') {
+            $createdAt = date('Y-m-d H:i:s');
+        }
+
+        $insert = $pdo->prepare(
+            'INSERT INTO tblinventory_logs
+            (linvent_id, lin, lout, ltotal, ldateadded, lprocess_by, lstatus_logs, lnote, linventory_id, lprice, lrefno, lcustomer_id, llocation, lwarehouse, ltransaction_type)
+            VALUES
+            (:linvent_id, :lin, :lout, :ltotal, :ldateadded, :lprocess_by, :lstatus_logs, :lnote, :linventory_id, :lprice, :lrefno, :lcustomer_id, :llocation, :lwarehouse, :ltransaction_type)'
+        );
+
+        foreach ($items as $item) {
+            if (strcasecmp(trim((string) ($item['remark'] ?? '')), 'OnStock') !== 0) {
+                continue;
+            }
+
+            $qty = max(0, (int) ($item['qty'] ?? 0));
+            if ($qty <= 0) {
+                continue;
+            }
+
+            $insert->execute([
+                'linvent_id' => (string) ($item['inv_refno'] ?? $item['item_refno'] ?? ''),
+                'lin' => $qty,
+                'lout' => 0,
+                'ltotal' => $qty,
+                'ldateadded' => $createdAt,
+                'lprocess_by' => 'INV ' . (string) ($invoice['invoice_no'] ?? ''),
+                'lstatus_logs' => '+',
+                'lnote' => $note,
+                'linventory_id' => (string) ($item['item_id'] ?? ''),
+                'lprice' => (float) ($item['unit_price'] ?? 0),
+                'lrefno' => $invoiceRefno,
+                'lcustomer_id' => (string) ($invoice['contact_id'] ?? ''),
+                'llocation' => (string) ($item['location'] ?? ''),
+                'lwarehouse' => 'WH1',
+                'ltransaction_type' => 'Invoice',
+            ]);
+        }
+    }
+
+    private function syncLinkedSalesCancellation(PDO $pdo, string $salesRefno, string $reason = ''): void
+    {
+        $salesRefno = trim($salesRefno);
+        if ($salesRefno === '') {
+            return;
+        }
+
+        $pdo->prepare(
+            'UPDATE tbltransaction
+             SET lcancel = 1,
+                 lsubmitstat = "Cancelled",
+                 ltransaction_status = "Cancelled",
+                 lcancel_reason = :reason
+             WHERE lrefno = :sales_refno'
+        )->execute([
+            'reason' => $reason,
+            'sales_refno' => $salesRefno,
+        ]);
+
+        $stmt = $pdo->prepare('SELECT linquiry_refno FROM tbltransaction WHERE lrefno = :sales_refno LIMIT 1');
+        $stmt->execute(['sales_refno' => $salesRefno]);
+        $inquiryRefno = trim((string) ($stmt->fetchColumn() ?: ''));
+        if ($inquiryRefno === '') {
+            return;
+        }
+
+        $pdo->prepare(
+            'UPDATE tblinquiry
+             SET IsCancel = 1, lsubmitstat = "Cancelled"
+             WHERE lrefno = :inquiry_refno'
+        )->execute([
+            'inquiry_refno' => $inquiryRefno,
+        ]);
     }
 
     /**
