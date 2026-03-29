@@ -87,7 +87,7 @@ final class SalesReturnRepository
             // If an invoice refno is provided, look up the source document
             if ($invoiceRefno !== '' && $invoiceNo === '') {
                 $srcStmt = $pdo->prepare(
-                    'SELECT COALESCE(linvoice_no, "") AS inv_no FROM tblinvoice WHERE lrefno = :ref LIMIT 1'
+                    'SELECT COALESCE(linvoice_no, "") AS inv_no FROM tblinvoice_list WHERE lrefno = :ref LIMIT 1'
                 );
                 $srcStmt->execute(['ref' => $invoiceRefno]);
                 $srcRow = $srcStmt->fetch(PDO::FETCH_ASSOC);
