@@ -459,6 +459,16 @@ SQL;
             ]);
 
             $this->replaceItems($orderSlipRefno, $userId, $salesRefno, $payload['items'] ?? []);
+            $this->syncInventoryStockLogs($pdo, [
+                'order_slip_refno' => $orderSlipRefno,
+                'slip_no' => $slipNo,
+                'sales_date' => $salesDate,
+                'created_at' => $salesDate . ' ' . date('H:i:s'),
+                'customer_name' => $customerName,
+                'contact_id' => $contactId,
+                'status' => $status,
+                'is_cancelled' => 0,
+            ], $payload['items'] ?? []);
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Order Slip', 'Create', $orderSlipRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
@@ -546,6 +556,13 @@ SQL;
                 $salesRefno = (string) ($payload['order_id'] ?? $existing['order_slip']['order_id'] ?? '');
                 $userId = (int) ($payload['user_id'] ?? 1);
                 $this->replaceItems($orderSlipRefno, $userId, $salesRefno, $payload['items']);
+            }
+
+            $reloaded = $this->getOrderSlip($mainId, $orderSlipRefno);
+            if ($reloaded !== null) {
+                $orderSlipRecord = is_array($reloaded['order_slip'] ?? null) ? $reloaded['order_slip'] : [];
+                $orderSlipItems = is_array($reloaded['items'] ?? null) ? $reloaded['items'] : [];
+                $this->syncInventoryStockLogs($pdo, $orderSlipRecord, $orderSlipItems);
             }
             $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
             (new AuditTrailWriter($pdo))->write($mainId, $auditUserId, 'Order Slip', 'Update', $orderSlipRefno);
@@ -1017,15 +1034,106 @@ SQL;
     }
 
     /**
+     * @param array<string, mixed> $orderSlip
+     * @param array<int, array<string, mixed>> $items
+     */
+    private function syncInventoryStockLogs(PDO $pdo, array $orderSlip, array $items): void
+    {
+        $orderSlipRefno = trim((string) ($orderSlip['order_slip_refno'] ?? ''));
+        if ($orderSlipRefno === '') {
+            return;
+        }
+
+        $delete = $pdo->prepare(
+            'DELETE FROM tblinventory_logs
+             WHERE lrefno = :refno
+               AND ltransaction_type = :transaction_type
+               AND lstatus_logs = "-"'
+        );
+        $delete->execute([
+            'refno' => $orderSlipRefno,
+            'transaction_type' => 'Order Slip',
+        ]);
+
+        if ($items === []) {
+            return;
+        }
+
+        if ((int) ($orderSlip['is_cancelled'] ?? 0) === 1) {
+            return;
+        }
+
+        $status = strtolower(trim((string) ($orderSlip['status'] ?? 'Posted')));
+        if ($status === 'cancelled' || $status === 'canceled') {
+            return;
+        }
+
+        $salesDate = trim((string) ($orderSlip['sales_date'] ?? ''));
+        if ($salesDate === '') {
+            $salesDate = date('Y-m-d');
+        }
+        $createdAt = trim((string) ($orderSlip['created_at'] ?? ''));
+        if ($createdAt === '') {
+            $createdAt = $salesDate . ' ' . date('H:i:s');
+        } elseif (strlen($createdAt) <= 10) {
+            $createdAt .= ' ' . date('H:i:s');
+        }
+
+        $insert = $pdo->prepare(
+            'INSERT INTO tblinventory_logs
+            (linvent_id, lin, lout, ltotal, ldateadded, lprocess_by, lstatus_logs, lnote, linventory_id, lprice, lrefno, lcustomer_id, llocation, lwarehouse, ltransaction_type)
+            VALUES
+            (:linvent_id, :lin, :lout, :ltotal, :ldateadded, :lprocess_by, :lstatus_logs, :lnote, :linventory_id, :lprice, :lrefno, :lcustomer_id, :llocation, :lwarehouse, :ltransaction_type)'
+        );
+
+        foreach ($items as $item) {
+            $inventoryLogRef = trim((string) ($item['inv_refno'] ?? ''));
+            if ($inventoryLogRef === '') {
+                $inventoryLogRef = trim((string) ($item['item_refno'] ?? ''));
+            }
+            $inventoryItemId = trim((string) ($item['item_id'] ?? ''));
+            $qty = max(0, (int) ($item['qty'] ?? 0));
+            if ($inventoryLogRef === '' || $inventoryItemId === '' || $qty <= 0) {
+                continue;
+            }
+
+            $insert->execute([
+                'linvent_id' => $inventoryLogRef,
+                'lin' => 0,
+                'lout' => $qty,
+                'ltotal' => $qty,
+                'ldateadded' => $createdAt,
+                'lprocess_by' => 'DR ' . (string) ($orderSlip['slip_no'] ?? ''),
+                'lstatus_logs' => '-',
+                'lnote' => (string) ($orderSlip['customer_name'] ?? ''),
+                'linventory_id' => $inventoryItemId,
+                'lprice' => (float) ($item['unit_price'] ?? 0),
+                'lrefno' => $orderSlipRefno,
+                'lcustomer_id' => (string) ($orderSlip['contact_id'] ?? ''),
+                'llocation' => (string) ($item['location'] ?? ''),
+                'lwarehouse' => 'WH1',
+                'ltransaction_type' => 'Order Slip',
+            ]);
+        }
+    }
+
+    /**
      * @return array{item_id:string,item_refno:string,inv_refno:string,item_code:string,part_no:string,description:string,location:string,qty:int,unit_price:float,remark:string}
      */
     private function normalizeItemPayload(array $payload): array
     {
-        $itemId = trim((string) ($payload['item_id'] ?? $payload['item_refno'] ?? $payload['inv_refno'] ?? ''));
+        $itemId = trim((string) ($payload['item_id'] ?? ''));
+        $itemRefno = trim((string) ($payload['item_refno'] ?? $payload['inv_refno'] ?? $itemId));
+        $invRefno = trim((string) ($payload['inv_refno'] ?? $payload['item_refno'] ?? $itemRefno));
+
+        if ($itemId === '') {
+            $itemId = $itemRefno !== '' ? $itemRefno : $invRefno;
+        }
+
         return [
             'item_id' => $itemId,
-            'item_refno' => $itemId,
-            'inv_refno' => $itemId,
+            'item_refno' => $itemRefno,
+            'inv_refno' => $invRefno,
             'item_code' => trim((string) ($payload['item_code'] ?? '')),
             'part_no' => trim((string) ($payload['part_no'] ?? '')),
             'description' => trim((string) ($payload['description'] ?? '')),
