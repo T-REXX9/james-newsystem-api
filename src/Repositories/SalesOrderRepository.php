@@ -1402,18 +1402,19 @@ SQL;
 
         $stmt = $this->db->pdo()->prepare(
             'UPDATE tblpatient
-             SET llast_transaction = :activity_date,
+             SET llast_transaction = :activity_date_tx,
                  lsince = COALESCE(
                      NULLIF(CAST(lsince AS CHAR), "0000-00-00"),
                      NULLIF(CAST(lsince AS CHAR), "0000-00-00 00:00:00"),
                      NULLIF(CAST(lsince AS CHAR), ""),
-                     :activity_date
+                     :activity_date_since
                  )
              WHERE lmain_id = :main_id
                AND lsessionid = :customer_id'
         );
         $stmt->execute([
-            'activity_date' => $activityDate,
+            'activity_date_tx' => $activityDate,
+            'activity_date_since' => $activityDate,
             'main_id' => $mainId,
             'customer_id' => $customerId,
         ]);
