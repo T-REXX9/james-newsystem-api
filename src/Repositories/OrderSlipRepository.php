@@ -866,7 +866,13 @@ SQL;
         );
 
         foreach ($items as $item) {
-            if (strcasecmp(trim((string) ($item['remark'] ?? '')), 'OnStock') !== 0) {
+            $inventoryLogRef = trim((string) ($item['inv_refno'] ?? ''));
+            if ($inventoryLogRef === '') {
+                $inventoryLogRef = trim((string) ($item['item_refno'] ?? ''));
+            }
+
+            $inventoryItemId = trim((string) ($item['item_id'] ?? ''));
+            if ($inventoryLogRef === '' || $inventoryItemId === '') {
                 continue;
             }
 
@@ -876,7 +882,7 @@ SQL;
             }
 
             $insert->execute([
-                'linvent_id' => (string) ($item['inv_refno'] ?? $item['item_refno'] ?? ''),
+                'linvent_id' => $inventoryLogRef,
                 'lin' => $qty,
                 'lout' => 0,
                 'ltotal' => $qty,
@@ -884,7 +890,7 @@ SQL;
                 'lprocess_by' => 'DR ' . (string) ($orderSlip['slip_no'] ?? ''),
                 'lstatus_logs' => '+',
                 'lnote' => $note,
-                'linventory_id' => (string) ($item['item_id'] ?? ''),
+                'linventory_id' => $inventoryItemId,
                 'lprice' => (float) ($item['unit_price'] ?? 0),
                 'lrefno' => $orderSlipRefno,
                 'lcustomer_id' => (string) ($orderSlip['contact_id'] ?? ''),
