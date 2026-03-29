@@ -47,14 +47,24 @@ final class FreightChargesRepository
 
         $trimmedSearch = trim($search);
         if ($trimmedSearch !== '') {
-            $params['search'] = '%' . $trimmedSearch . '%';
-            $where[] = '(
-                COALESCE(deb.ldm_no, "") LIKE :search OR
-                COALESCE(deb.ltrackingno, "") LIKE :search OR
-                COALESCE(deb.lcustomer_lname, "") LIKE :search OR
-                COALESCE(deb.lremarks, "") LIKE :search OR
-                COALESCE(deb.linvoice_no, "") LIKE :search
-            )';
+            $searchLike = '%' . $trimmedSearch . '%';
+            $isReferenceLike = preg_match('/[\d-]/', $trimmedSearch) === 1;
+
+            $params['search_dm'] = $searchLike;
+            $params['search_tracking'] = $searchLike;
+
+            $searchParts = [
+                'COALESCE(deb.ldm_no, "") LIKE :search_dm',
+                'COALESCE(deb.ltrackingno, "") LIKE :search_tracking',
+            ];
+
+            // Match customer names for text-based searches.
+            if (!$isReferenceLike) {
+                $params['search_customer'] = $searchLike;
+                $searchParts[] = 'COALESCE(deb.lcustomer_lname, "") LIKE :search_customer';
+            }
+
+            $where[] = '(' . implode(' OR ', $searchParts) . ')';
         }
 
         $trimmedStatus = trim($status);
