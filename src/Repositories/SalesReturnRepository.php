@@ -253,7 +253,7 @@ SQL);
 SELECT
     ii.lid AS source_item_id,
     COALESCE(ii.linv_refno, ii.litemid, '') AS linv_refno,
-    COALESCE(ii.lname, '') AS item_code,
+    COALESCE(ii.litemcode, '') AS item_code,
     COALESCE(inv_item.lpartno, '') AS part_no,
     COALESCE(inv_item.lbrand, '') AS brand,
     COALESCE(ii.ldesc, '') AS description,
@@ -280,7 +280,7 @@ SQL;
 SELECT
     dri.lid AS source_item_id,
     COALESCE(dri.linv_refno, dri.litemid, '') AS linv_refno,
-    COALESCE(dri.lname, '') AS item_code,
+    COALESCE(dri.litemcode, '') AS item_code,
     COALESCE(inv_item.lpartno, '') AS part_no,
     COALESCE(inv_item.lbrand, '') AS brand,
     COALESCE(dri.ldesc, '') AS description,
