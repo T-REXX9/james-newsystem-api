@@ -84,15 +84,37 @@ final class SalesReturnRepository
             $discountAmt = (float) ($payload['discount_amt'] ?? 0);
             $taxType = trim((string) ($payload['tax_type'] ?? 'Exclusive'));
 
-            // If an invoice refno is provided, look up the source document
-            if ($invoiceRefno !== '' && $invoiceNo === '') {
-                $srcStmt = $pdo->prepare(
-                    'SELECT COALESCE(linvoice_no, "") AS inv_no FROM tblinvoice_list WHERE lrefno = :ref LIMIT 1'
-                );
+            // If a source document refno is provided, resolve its display number and linked sales refno.
+            if ($invoiceRefno !== '') {
+                if (strcasecmp($type, 'OR') === 0) {
+                    $srcStmt = $pdo->prepare(
+                        'SELECT
+                            COALESCE(linvoice_no, "") AS doc_no,
+                            COALESCE(lsales_refno, "") AS sales_refno
+                         FROM tbldelivery_receipt
+                         WHERE lrefno = :ref
+                         LIMIT 1'
+                    );
+                } else {
+                    $srcStmt = $pdo->prepare(
+                        'SELECT
+                            COALESCE(linvoice_no, "") AS doc_no,
+                            COALESCE(lsales_refno, "") AS sales_refno
+                         FROM tblinvoice_list
+                         WHERE lrefno = :ref
+                         LIMIT 1'
+                    );
+                }
+
                 $srcStmt->execute(['ref' => $invoiceRefno]);
                 $srcRow = $srcStmt->fetch(PDO::FETCH_ASSOC);
                 if ($srcRow) {
-                    $invoiceNo = (string) $srcRow['inv_no'];
+                    if ($invoiceNo === '') {
+                        $invoiceNo = (string) ($srcRow['doc_no'] ?? '');
+                    }
+                    if ($transactionRefno === '') {
+                        $transactionRefno = (string) ($srcRow['sales_refno'] ?? '');
+                    }
                 }
             }
 
@@ -247,7 +269,7 @@ SELECT
     ) AS already_returned_qty
 FROM tblinvoice_itemrec ii
 LEFT JOIN tblinventory_item inv_item ON inv_item.lsession = COALESCE(ii.linv_refno, ii.litemid, '')
-WHERE ii.lrefno = :src_ref2
+WHERE ii.linvoice_refno = :src_ref2
 ORDER BY ii.lid ASC
 SQL;
             $stmt = $pdo->prepare($sql);
