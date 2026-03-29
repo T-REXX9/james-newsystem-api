@@ -14,7 +14,12 @@ final class Response
         header('Access-Control-Allow-Headers: Content-Type, Authorization');
         header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
 
-        echo json_encode($payload, JSON_UNESCAPED_SLASHES);
+        $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json === false) {
+            http_response_code(500);
+            $json = '{"ok":false,"error":"Failed to encode JSON response"}';
+        }
+
+        echo $json;
     }
 }
-

@@ -123,8 +123,16 @@ SELECT
     COALESCE(inv.lpromisorry_note, '') AS promise_to_pay,
     COALESCE(inv.lpo_no, '') AS po_number,
     COALESCE(inv.lnote, '') AS remarks,
-    COALESCE(inv.ldm_no, '') AS debit_memo_no,
-    COALESCE(inv.ldm_trackingno, '') AS tracking_no,
+    COALESCE(
+        NULLIF(inv.ldm_no, ''),
+        (SELECT dm.ldm_no FROM tbldebit_memo dm WHERE dm.ltrans_refno = inv.lrefno ORDER BY dm.lid DESC LIMIT 1),
+        ''
+    ) AS debit_memo_no,
+    COALESCE(
+        NULLIF(inv.ldm_trackingno, ''),
+        (SELECT dm.ltrackingno FROM tbldebit_memo dm WHERE dm.ltrans_refno = inv.lrefno ORDER BY dm.lid DESC LIMIT 1),
+        ''
+    ) AS tracking_no,
     COALESCE(inv.lstatus, 'Pending') AS status,
     COALESCE(inv.IsPrinted, 0) AS is_printed,
     COALESCE(inv.lcancel_invoice, 0) AS is_cancelled,
@@ -284,8 +292,16 @@ SELECT
     COALESCE(inv.lpromisorry_note, '') AS promise_to_pay,
     COALESCE(inv.lpo_no, '') AS po_number,
     COALESCE(inv.lnote, '') AS remarks,
-    COALESCE(inv.ldm_no, '') AS debit_memo_no,
-    COALESCE(inv.ldm_trackingno, '') AS tracking_no,
+    COALESCE(
+        NULLIF(inv.ldm_no, ''),
+        (SELECT dm.ldm_no FROM tbldebit_memo dm WHERE dm.ltrans_refno = inv.lrefno ORDER BY dm.lid DESC LIMIT 1),
+        ''
+    ) AS debit_memo_no,
+    COALESCE(
+        NULLIF(inv.ldm_trackingno, ''),
+        (SELECT dm.ltrackingno FROM tbldebit_memo dm WHERE dm.ltrans_refno = inv.lrefno ORDER BY dm.lid DESC LIMIT 1),
+        ''
+    ) AS tracking_no,
     COALESCE(inv.lstatus, 'Pending') AS status,
     COALESCE(inv.IsPrinted, 0) AS is_printed,
     COALESCE(inv.lcancel_invoice, 0) AS is_cancelled,
