@@ -105,7 +105,19 @@ SELECT
     COALESCE(iq.lso_no, '') AS so_no,
     COALESCE(iq.lso_refno, '') AS so_refno,
     (SELECT COALESCE(t.invoice_no, '') FROM tbltransaction t WHERE t.lrefno = iq.lso_refno LIMIT 1) AS invoice_no,
-    (SELECT COALESCE(t.ldr_no, '') FROM tbltransaction t WHERE t.lrefno = iq.lso_refno LIMIT 1) AS dr_no
+    (SELECT COALESCE(t.ldr_no, '') FROM tbltransaction t WHERE t.lrefno = iq.lso_refno LIMIT 1) AS dr_no,
+    CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM tbltransaction t
+            WHERE t.lmain_id = iq.lmain_id
+              AND t.linquiry_refno = iq.lrefno
+              AND COALESCE(t.lcancel, 0) = 0
+              AND (COALESCE(t.invoice_refno, '') <> '' OR COALESCE(t.ldr_refno, '') <> '')
+            LIMIT 1
+        ) THEN 0
+        ELSE 1
+    END AS is_editable
 FROM tblinquiry iq
 WHERE {$whereSql}
 ORDER BY iq.lid DESC
@@ -228,7 +240,23 @@ SELECT
     COALESCE(iq.IsCancel, 0) AS is_cancelled,
     COALESCE(iq.ltransaction_status, '') AS transaction_status,
     COALESCE(iq.lvat_type, '') AS vat_type,
-    COALESCE(iq.lvat_percent, 0) AS vat_percent
+    COALESCE(iq.lvat_percent, 0) AS vat_percent,
+    COALESCE(iq.lso_no, '') AS so_no,
+    COALESCE(iq.lso_refno, '') AS so_refno,
+    (SELECT COALESCE(t.invoice_no, '') FROM tbltransaction t WHERE t.lrefno = iq.lso_refno LIMIT 1) AS invoice_no,
+    (SELECT COALESCE(t.ldr_no, '') FROM tbltransaction t WHERE t.lrefno = iq.lso_refno LIMIT 1) AS dr_no,
+    CASE
+        WHEN EXISTS (
+            SELECT 1
+            FROM tbltransaction t
+            WHERE t.lmain_id = iq.lmain_id
+              AND t.linquiry_refno = iq.lrefno
+              AND COALESCE(t.lcancel, 0) = 0
+              AND (COALESCE(t.invoice_refno, '') <> '' OR COALESCE(t.ldr_refno, '') <> '')
+            LIMIT 1
+        ) THEN 0
+        ELSE 1
+    END AS is_editable
 FROM tblinquiry iq
 WHERE iq.lmain_id = :main_id
   AND iq.lrefno = :inquiry_refno
@@ -344,6 +372,7 @@ SQL;
         if ($existing === null) {
             return null;
         }
+        $this->assertInquiryEditable($mainId, $inquiryRefno);
 
         $salesDate = $this->normalizeDate((string) ($payload['sales_date'] ?? (string) ($existing['sales_date'] ?? date('Y-m-d'))));
         $status = $this->normalizeStatus((string) ($payload['status'] ?? (string) ($existing['status'] ?? 'Pending')));
@@ -449,6 +478,7 @@ SQL;
         if ($inquiry === null) {
             throw new RuntimeException('Sales inquiry not found');
         }
+        $this->assertInquiryEditable($mainId, $inquiryRefno);
 
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -487,6 +517,7 @@ SQL;
         if ($existing === null || !$this->itemBelongsToMain($mainId, $itemId)) {
             return null;
         }
+        $this->assertInquiryEditable($mainId, (string) ($existing['inquiry_refno'] ?? ''));
 
         $fields = [];
         $params = ['item_id' => $itemId];
@@ -563,6 +594,7 @@ SQL;
         if ($existing === null || !$this->itemBelongsToMain($mainId, $itemId)) {
             return false;
         }
+        $this->assertInquiryEditable($mainId, (string) ($existing['inquiry_refno'] ?? ''));
 
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -827,6 +859,30 @@ SQL;
         }
 
         return trim((string) ($salesOrder['ldr_refno'] ?? '')) === '';
+    }
+
+    private function isInquiryEditable(int $mainId, string $inquiryRefno): bool
+    {
+        $inquiryRefno = trim($inquiryRefno);
+        if ($inquiryRefno === '') {
+            return false;
+        }
+
+        $salesOrder = $this->getLinkedSalesOrderRow($this->db->pdo(), $mainId, $inquiryRefno);
+        if ($salesOrder === null) {
+            return true;
+        }
+
+        return $this->canSyncLinkedSalesOrder($salesOrder);
+    }
+
+    private function assertInquiryEditable(int $mainId, string $inquiryRefno): void
+    {
+        if ($this->isInquiryEditable($mainId, $inquiryRefno)) {
+            return;
+        }
+
+        throw new RuntimeException('Sales inquiry can no longer be edited after it has been converted to an invoice or order slip');
     }
 
     private function syncLinkedSalesOrderFromInquiry(PDO $pdo, int $mainId, string $inquiryRefno, bool $syncHeader, bool $syncItems): void
