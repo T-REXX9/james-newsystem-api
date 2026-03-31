@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\Exceptions\HttpException;
 use DateTimeImmutable;
 use PDO;
-use RuntimeException;
 
 final class AccountsReceivableRepository
 {
@@ -84,7 +84,7 @@ final class AccountsReceivableRepository
             $stmt->execute();
             $customer = $stmt->fetch(PDO::FETCH_ASSOC);
             if (!$customer) {
-                throw new RuntimeException('Customer not found');
+                return [$normalizedDebtType, []];
             }
 
             return [$normalizedDebtType, [$customer]];
@@ -135,9 +135,9 @@ SQL;
 
         $dateWhere = '';
         if ($fromDate !== null && $toDate !== null) {
-            $dateWhere = ' AND DATE(l.ldatetime) >= :date_from AND DATE(l.ldatetime) <= :date_to';
-            $params['date_from'] = $fromDate;
-            $params['date_to'] = $toDate;
+            $dateWhere = ' AND l.ldatetime >= :date_from_start AND l.ldatetime < :date_to_end';
+            $params['date_from_start'] = $fromDate . ' 00:00:00';
+            $params['date_to_end'] = date('Y-m-d 00:00:00', strtotime($toDate . ' +1 day'));
         }
         $customerWhere = implode(', ', $placeholders);
 
@@ -262,12 +262,33 @@ SQL;
             return [];
         }
 
-        $stmt = $this->db->pdo()->query(
+        $refnos = array_keys($neededRefnos);
+        $invoicePlaceholders = [];
+        $deliveryPlaceholders = [];
+        $params = [];
+        foreach ($refnos as $index => $refno) {
+            $invoiceKey = 'invoice_refno_' . $index;
+            $deliveryKey = 'delivery_refno_' . $index;
+            $invoicePlaceholders[] = ':' . $invoiceKey;
+            $deliveryPlaceholders[] = ':' . $deliveryKey;
+            $params[$invoiceKey] = $refno;
+            $params[$deliveryKey] = $refno;
+        }
+
+        $sql = sprintf(
             "SELECT lid, COALESCE(invoice_refno, '') AS invoice_refno, COALESCE(ldr_refno, '') AS ldr_refno, COALESCE(lterms, '') AS lterms
              FROM tbltransaction
-             WHERE COALESCE(invoice_refno, '') <> '' OR COALESCE(ldr_refno, '') <> ''
-             ORDER BY lid DESC"
+             WHERE invoice_refno IN (%s) OR ldr_refno IN (%s)
+             ORDER BY lid DESC",
+            implode(', ', $invoicePlaceholders),
+            implode(', ', $deliveryPlaceholders)
         );
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value, PDO::PARAM_STR);
+        }
+        $stmt->execute();
 
         $termsByRefno = [];
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
