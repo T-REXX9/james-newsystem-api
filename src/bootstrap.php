@@ -57,6 +57,7 @@ use App\Controllers\TransferStockController;
 use App\Controllers\CampaignController;
 use App\Controllers\CategoryController;
 use App\Controllers\PromotionController;
+use App\Controllers\LoyaltyDiscountController;
 use App\Controllers\RolePermissionController;
 use App\Http\Router;
 use App\Middleware\PermissionMiddleware;
@@ -126,6 +127,7 @@ require __DIR__ . '/Repositories/MessageTemplateRepository.php';
 require __DIR__ . '/Repositories/PromotionRepository.php';
 require __DIR__ . '/Repositories/PromotionProductRepository.php';
 require __DIR__ . '/Repositories/PromotionPostingRepository.php';
+require __DIR__ . '/Repositories/LoyaltyDiscountRepository.php';
 require __DIR__ . '/Repositories/RolePermissionRepository.php';
 require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Middleware/PermissionMiddleware.php';
@@ -183,6 +185,7 @@ require __DIR__ . '/Controllers/TransferStockController.php';
 require __DIR__ . '/Controllers/CampaignController.php';
 require __DIR__ . '/Controllers/CategoryController.php';
 require __DIR__ . '/Controllers/PromotionController.php';
+require __DIR__ . '/Controllers/LoyaltyDiscountController.php';
 require __DIR__ . '/Controllers/RolePermissionController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
@@ -308,6 +311,7 @@ function app_router(): Router
         new App\Repositories\PromotionProductRepository($db),
         new App\Repositories\PromotionPostingRepository($db)
     );
+    $loyaltyDiscountController = new LoyaltyDiscountController(new App\Repositories\LoyaltyDiscountRepository($db));
 
     $requireBearerAuth = static function (callable $handler) use ($tokenService): callable {
         return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService) {
@@ -429,6 +433,7 @@ function app_router(): Router
     $router->post('/api/v1/daily-call-monitoring/call-logs', [$dailyCallMonitoringController, 'createCallLog']);
     $router->get('/api/v1/fast-slow-inventory-report', [$fastSlowInventoryReportController, 'report']);
     $router->get('/api/v1/freight-charges', [$freightChargesController, 'list']);
+    $router->get('/api/v1/freight-charges/report', [$freightChargesController, 'report']);
     $router->get('/api/v1/freight-charges/{refno}', [$freightChargesController, 'show']);
     $router->post('/api/v1/freight-charges', [$freightChargesController, 'create']);
     $router->patch('/api/v1/freight-charges/{refno}', [$freightChargesController, 'update']);
@@ -691,6 +696,14 @@ function app_router(): Router
     $router->post('/api/v1/promotions/{promotionId}/products/batch', [$promotionController, 'batchAddProducts']);
     $router->delete('/api/v1/promotions/{promotionId}/products/by-product/{productId}', [$promotionController, 'removeProductByProductId']);
     $router->post('/api/v1/promotions/upload-screenshot', [$promotionController, 'uploadScreenshot']);
+    // Loyalty Discounts
+    $router->get('/api/v1/loyalty-discounts', [$loyaltyDiscountController, 'list']);
+    $router->get('/api/v1/loyalty-discounts/stats', [$loyaltyDiscountController, 'stats']);
+    $router->get('/api/v1/loyalty-discounts/customer/{customerId}/active-discount', [$loyaltyDiscountController, 'customerActiveDiscount']);
+    $router->post('/api/v1/loyalty-discounts', [$loyaltyDiscountController, 'create']);
+    $router->patch('/api/v1/loyalty-discounts/{ruleId}', [$loyaltyDiscountController, 'update']);
+    $router->patch('/api/v1/loyalty-discounts/{ruleId}/status', [$loyaltyDiscountController, 'updateStatus']);
+    $router->delete('/api/v1/loyalty-discounts/{ruleId}', [$loyaltyDiscountController, 'delete']);
 
     return $router;
 }

@@ -412,28 +412,9 @@ SQL;
 
     private function buildLedgerMetrics(string $sessionId, array $customer): array
     {
-        $monthlySalesStmt = $this->db->pdo()->prepare(
-            'SELECT
-                COALESCE(SUM(COALESCE(it.lqty, 0) * COALESCE(it.lprice, 0)), 0) AS amount
-             FROM tbltransaction tr
-             INNER JOIN tbltransaction_item it ON it.lrefno = tr.lrefno
-             WHERE tr.lcustomerid = :customer_id
-               AND COALESCE(tr.lcancel, 0) = 0
-               AND DATE_FORMAT(tr.ldate, "%Y-%m") = DATE_FORMAT(CURDATE(), "%Y-%m")'
-        );
-        $monthlySalesStmt->execute(['customer_id' => $sessionId]);
-        $monthlySales = (float) ($monthlySalesStmt->fetchColumn() ?: 0);
-
-        $dealershipSalesStmt = $this->db->pdo()->prepare(
-            'SELECT
-                COALESCE(SUM(COALESCE(it.lqty, 0) * COALESCE(it.lprice, 0)), 0) AS amount
-             FROM tbltransaction tr
-             INNER JOIN tbltransaction_item it ON it.lrefno = tr.lrefno
-             WHERE tr.lcustomerid = :customer_id
-               AND COALESCE(tr.lcancel, 0) = 0'
-        );
-        $dealershipSalesStmt->execute(['customer_id' => $sessionId]);
-        $dealershipSales = (float) ($dealershipSalesStmt->fetchColumn() ?: 0);
+        $salesTotals = $this->loadCustomerSalesTotals($sessionId);
+        $monthlySales = (float) ($salesTotals['monthly_sales'] ?? 0);
+        $dealershipSales = (float) ($salesTotals['dealership_sales'] ?? 0);
 
         $balanceStmt = $this->db->pdo()->prepare(
             'SELECT COALESCE(SUM(COALESCE(ldebit, 0) - COALESCE(lcredit, 0)), 0)
@@ -462,6 +443,97 @@ SQL;
             'credit_limit' => (float) ($customer['lcredit'] ?? 0),
             'terms' => $terms,
             'balance' => $balance,
+        ];
+    }
+
+    /**
+     * @return array{dealership_sales:float,monthly_sales:float}
+     */
+    private function loadCustomerSalesTotals(string $sessionId): array
+    {
+        $sql = <<<'SQL'
+SELECT
+    COALESCE(SUM(doc.amount), 0) AS dealership_sales,
+    COALESCE(SUM(
+        CASE
+            WHEN DATE_FORMAT(doc.doc_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+            THEN doc.amount
+            ELSE 0
+        END
+    ), 0) AS monthly_sales
+FROM (
+    SELECT
+        inv.lrefno AS document_refno,
+        COALESCE(NULLIF(inv.lsales_refno, ''), CONCAT('INV:', inv.lrefno)) AS sales_refno,
+        COALESCE(inv.ldate, DATE(inv.ldatetime), CURDATE()) AS doc_date,
+        SUM(COALESCE(ii.lqty, 0) * COALESCE(ii.lprice, 0)) AS amount,
+        2 AS priority
+    FROM tblinvoice_list inv
+    INNER JOIN tblinvoice_itemrec ii ON ii.linvoice_refno = inv.lrefno
+    WHERE inv.lcustomerid = :customer_id_invoice
+      AND COALESCE(inv.lcancel_invoice, 0) = 0
+      AND LOWER(COALESCE(inv.lstatus, '')) <> 'cancelled'
+    GROUP BY inv.lrefno, sales_refno, doc_date
+
+    UNION ALL
+
+    SELECT
+        dr.lrefno AS document_refno,
+        COALESCE(NULLIF(dr.lsales_refno, ''), CONCAT('DR:', dr.lrefno)) AS sales_refno,
+        COALESCE(dr.ldate, DATE(dr.ldatetime), CURDATE()) AS doc_date,
+        SUM(COALESCE(dri.lqty, 0) * COALESCE(dri.lprice, 0)) AS amount,
+        1 AS priority
+    FROM tbldelivery_receipt dr
+    INNER JOIN tbldelivery_receipt_items dri ON dri.lor_refno = dr.lrefno
+    WHERE dr.lcustomerid = :customer_id_order_slip
+      AND COALESCE(dr.lcancel, 0) = 0
+      AND LOWER(COALESCE(dr.lstatus, '')) <> 'cancelled'
+    GROUP BY dr.lrefno, sales_refno, doc_date
+) doc
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM (
+        SELECT
+            inv2.lrefno AS document_refno,
+            COALESCE(NULLIF(inv2.lsales_refno, ''), CONCAT('INV:', inv2.lrefno)) AS sales_refno,
+            2 AS priority
+        FROM tblinvoice_list inv2
+        WHERE inv2.lcustomerid = :customer_id_invoice_shadow
+          AND COALESCE(inv2.lcancel_invoice, 0) = 0
+          AND LOWER(COALESCE(inv2.lstatus, '')) <> 'cancelled'
+
+        UNION ALL
+
+        SELECT
+            dr2.lrefno AS document_refno,
+            COALESCE(NULLIF(dr2.lsales_refno, ''), CONCAT('DR:', dr2.lrefno)) AS sales_refno,
+            1 AS priority
+        FROM tbldelivery_receipt dr2
+        WHERE dr2.lcustomerid = :customer_id_order_slip_shadow
+          AND COALESCE(dr2.lcancel, 0) = 0
+          AND LOWER(COALESCE(dr2.lstatus, '')) <> 'cancelled'
+    ) ranked
+    WHERE ranked.sales_refno = doc.sales_refno
+      AND (
+          ranked.priority > doc.priority
+          OR (ranked.priority = doc.priority AND ranked.document_refno > doc.document_refno)
+      )
+)
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([
+            'customer_id_invoice' => $sessionId,
+            'customer_id_order_slip' => $sessionId,
+            'customer_id_invoice_shadow' => $sessionId,
+            'customer_id_order_slip_shadow' => $sessionId,
+        ]);
+
+        $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        return [
+            'dealership_sales' => (float) ($row['dealership_sales'] ?? 0),
+            'monthly_sales' => (float) ($row['monthly_sales'] ?? 0),
         ];
     }
 

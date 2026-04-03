@@ -11,6 +11,8 @@ use PDO;
 
 final class AccountsReceivableRepository
 {
+    private const TIMING_LOG_LABEL = 'AccountsReceivableRepository';
+
     public function __construct(private readonly Database $db)
     {
     }
@@ -23,9 +25,16 @@ final class AccountsReceivableRepository
         ?string $dateFrom,
         ?string $dateTo
     ): array {
-        [$normalizedDebtType, $customers] = $this->resolveCustomers($mainId, $customerId, $debtType);
+        $requestStartedAt = microtime(true);
+        $stageTimings = [];
+
+        [$normalizedDebtType, $customers] = $this->timeStage(
+            $stageTimings,
+            'resolve_customers_ms',
+            fn (): array => $this->resolveCustomers($mainId, $customerId, $debtType)
+        );
         [$normalizedDateType, $fromDate, $toDate] = $this->resolveDateRange($dateType, $dateFrom, $dateTo);
-        $reportsByCustomer = $this->buildCustomerReports($customers, $fromDate, $toDate);
+        $reportsByCustomer = $this->buildCustomerReports($customers, $fromDate, $toDate, $stageTimings);
 
         $items = [];
         $grandTotalBalance = 0.0;
@@ -54,7 +63,7 @@ final class AccountsReceivableRepository
             $grandTotalBalance += $customerBalance;
         }
 
-        return [
+        $response = [
             'customers' => $items,
             'grand_total_balance' => $grandTotalBalance,
             'date_type' => $normalizedDateType,
@@ -62,6 +71,21 @@ final class AccountsReceivableRepository
             'date_to' => $toDate,
             'debt_type' => $normalizedDebtType,
         ];
+
+        $stageTimings['total_ms'] = $this->elapsedMilliseconds($requestStartedAt);
+        $this->logTimings($stageTimings, [
+            'customer_scope' => trim($customerId) !== '' ? 'single' : 'multi',
+            'requested_customers' => count($customers),
+            'returned_customers' => count($items),
+            'returned_rows' => array_sum(array_map(
+                static fn (array $customer): int => count($customer['rows'] ?? []),
+                $items
+            )),
+            'date_type' => $normalizedDateType,
+            'debt_type' => $normalizedDebtType,
+        ]);
+
+        return $response;
     }
 
     /**
@@ -77,7 +101,11 @@ final class AccountsReceivableRepository
 
         if (trim($customerId) !== '') {
             $stmt = $this->db->pdo()->prepare(
-                'SELECT * FROM tblpatient WHERE lmain_id = :main_id AND lsessionid = :session_id ORDER BY lid DESC LIMIT 1'
+                'SELECT lsessionid, lpatient_code, lcompany
+                 FROM tblpatient
+                 WHERE lmain_id = :main_id AND lsessionid = :session_id
+                 ORDER BY lid DESC
+                 LIMIT 1'
             );
             $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
             $stmt->bindValue('session_id', trim($customerId), PDO::PARAM_STR);
@@ -91,13 +119,13 @@ final class AccountsReceivableRepository
         }
 
         $sql = <<<SQL
-SELECT *
+SELECT lsessionid, lpatient_code, lcompany
 FROM tblpatient
 WHERE lmain_id = :main_id
-  AND COALESCE(lstatus, 0) = 1
+  AND lstatus = 1
 SQL;
         if ($normalizedDebtType !== 'All') {
-            $sql .= ' AND COALESCE(ldebt_type, \'\') = :debt_type';
+            $sql .= ' AND ldebt_type = :debt_type';
         }
         $sql .= ' ORDER BY lcompany ASC, lid DESC LIMIT 200';
 
@@ -115,7 +143,7 @@ SQL;
      * @param list<array<string,mixed>> $customers
      * @return array<string,array{rows:list<array<string,mixed>>}>
      */
-    private function buildCustomerReports(array $customers, ?string $fromDate, ?string $toDate): array
+    private function buildCustomerReports(array $customers, ?string $fromDate, ?string $toDate, array &$stageTimings): array
     {
         $customerIds = array_values(array_filter(array_map(
             static fn (array $customer): string => (string) ($customer['lsessionid'] ?? ''),
@@ -150,61 +178,59 @@ SQL;
 SELECT
     l.lid,
     l.lcustomerid AS customer_id,
-    COALESCE(l.lrefno, '') AS refno,
-    COALESCE(l.lmesssage, '') AS reference,
-    COALESCE(l.ldebit, 0) AS amount,
-    COALESCE(l.ldatetime, '') AS ldatetime
+    l.lrefno AS refno,
+    l.lmesssage AS reference,
+    l.ldebit AS amount,
+    l.ldatetime AS ldatetime
 FROM tblledger l
 WHERE l.lcustomerid IN ({$customerWhere})
   AND l.ltype = 'Debit'
-  AND COALESCE(l.lref_name, '') <> 'Debit Memo'
+  AND (l.lref_name IS NULL OR l.lref_name <> 'Debit Memo')
 {$dateWhere}
 ORDER BY l.lcustomerid ASC, l.ldatetime ASC, l.lid ASC
 SQL;
 
-        $rowsStmt = $this->db->pdo()->prepare($rowsSql);
-        foreach ($params as $key => $value) {
-            $rowsStmt->bindValue($key, (string) $value, PDO::PARAM_STR);
-        }
-        $rowsStmt->execute();
-        $rawRows = $rowsStmt->fetchAll(PDO::FETCH_ASSOC);
-        $termsByRefno = $this->buildTermsMap($rawRows);
+        $rawRows = $this->timeStage(
+            $stageTimings,
+            'debit_rows_fetch_ms',
+            fn (): array => $this->fetchAllAssoc($rowsSql, $params)
+        );
+        $termsByRefno = $this->timeStage(
+            $stageTimings,
+            'terms_lookup_ms',
+            fn (): array => $this->buildTermsMap($rawRows)
+        );
 
-        $creditSql = <<<SQL
-SELECT l.lcustomerid AS customer_id, COALESCE(SUM(l.lcredit), 0) AS credit_sum
+        $aggregateSql = <<<SQL
+SELECT
+    l.lcustomerid AS customer_id,
+    SUM(CASE WHEN l.ltype = 'Credit' THEN l.lcredit ELSE 0 END) AS credit_sum,
+    SUM(CASE WHEN l.ltype = 'Debit' AND l.lref_name = 'Debit Memo' THEN l.ldebit ELSE 0 END) AS freight_sum
 FROM tblledger l
 WHERE l.lcustomerid IN ({$customerWhere})
-  AND l.ltype = 'Credit'
+  AND (
+    l.ltype = 'Credit'
+    OR (l.ltype = 'Debit' AND l.lref_name = 'Debit Memo')
+  )
 {$dateWhere}
 GROUP BY l.lcustomerid
 SQL;
-        $creditStmt = $this->db->pdo()->prepare($creditSql);
-        foreach ($params as $key => $value) {
-            $creditStmt->bindValue($key, (string) $value, PDO::PARAM_STR);
-        }
-        $creditStmt->execute();
+
+        $aggregateRows = $this->timeStage(
+            $stageTimings,
+            'credit_and_freight_fetch_ms',
+            fn (): array => $this->fetchAllAssoc($aggregateSql, $params)
+        );
         $creditSums = [];
-        foreach ($creditStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $creditSums[(string) ($row['customer_id'] ?? '')] = (float) ($row['credit_sum'] ?? 0);
-        }
-
-        $freightSql = <<<SQL
-SELECT l.lcustomerid AS customer_id, COALESCE(SUM(l.ldebit), 0) AS freight_sum
-FROM tblledger l
-WHERE l.lcustomerid IN ({$customerWhere})
-  AND l.ltype = 'Debit'
-  AND l.lref_name = 'Debit Memo'
-{$dateWhere}
-GROUP BY l.lcustomerid
-SQL;
-        $freightStmt = $this->db->pdo()->prepare($freightSql);
-        foreach ($params as $key => $value) {
-            $freightStmt->bindValue($key, (string) $value, PDO::PARAM_STR);
-        }
-        $freightStmt->execute();
         $freightSums = [];
-        foreach ($freightStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $freightSums[(string) ($row['customer_id'] ?? '')] = (float) ($row['freight_sum'] ?? 0);
+        foreach ($aggregateRows as $row) {
+            $customerId = (string) ($row['customer_id'] ?? '');
+            if ($customerId === '') {
+                continue;
+            }
+
+            $creditSums[$customerId] = (float) ($row['credit_sum'] ?? 0);
+            $freightSums[$customerId] = (float) ($row['freight_sum'] ?? 0);
         }
 
         $creditPools = [];
@@ -276,10 +302,13 @@ SQL;
         }
 
         $sql = sprintf(
-            "SELECT lid, COALESCE(invoice_refno, '') AS invoice_refno, COALESCE(ldr_refno, '') AS ldr_refno, COALESCE(lterms, '') AS lterms
+            "SELECT lid, invoice_refno, '' AS ldr_refno, lterms
              FROM tbltransaction
-             WHERE invoice_refno IN (%s) OR ldr_refno IN (%s)
-             ORDER BY lid DESC",
+             WHERE invoice_refno IN (%s)
+             UNION ALL
+             SELECT lid, '' AS invoice_refno, ldr_refno, lterms
+             FROM tbltransaction
+             WHERE ldr_refno IN (%s)",
             implode(', ', $invoicePlaceholders),
             implode(', ', $deliveryPlaceholders)
         );
@@ -291,23 +320,93 @@ SQL;
         $stmt->execute();
 
         $termsByRefno = [];
+        $latestTermIdsByRefno = [];
         while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $lid = (int) ($row['lid'] ?? 0);
             $invoiceRefno = trim((string) ($row['invoice_refno'] ?? ''));
-            if ($invoiceRefno !== '' && isset($neededRefnos[$invoiceRefno]) && !isset($termsByRefno[$invoiceRefno])) {
+            if (
+                $invoiceRefno !== ''
+                && isset($neededRefnos[$invoiceRefno])
+                && $lid >= (int) ($latestTermIdsByRefno[$invoiceRefno] ?? 0)
+            ) {
                 $termsByRefno[$invoiceRefno] = (string) ($row['lterms'] ?? '');
+                $latestTermIdsByRefno[$invoiceRefno] = $lid;
             }
 
             $ldrRefno = trim((string) ($row['ldr_refno'] ?? ''));
-            if ($ldrRefno !== '' && isset($neededRefnos[$ldrRefno]) && !isset($termsByRefno[$ldrRefno])) {
+            if (
+                $ldrRefno !== ''
+                && isset($neededRefnos[$ldrRefno])
+                && $lid >= (int) ($latestTermIdsByRefno[$ldrRefno] ?? 0)
+            ) {
                 $termsByRefno[$ldrRefno] = (string) ($row['lterms'] ?? '');
-            }
-
-            if (count($termsByRefno) === count($neededRefnos)) {
-                break;
+                $latestTermIdsByRefno[$ldrRefno] = $lid;
             }
         }
 
         return $termsByRefno;
+    }
+
+    /**
+     * @param array<string,scalar|null> $params
+     * @return list<array<string,mixed>>
+     */
+    private function fetchAllAssoc(string $sql, array $params): array
+    {
+        $stmt = $this->db->pdo()->prepare($sql);
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value === null ? null : (string) $value, $value === null ? PDO::PARAM_NULL : PDO::PARAM_STR);
+        }
+        $stmt->execute();
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * @template T
+     * @param array<string,float> $stageTimings
+     * @param callable():T $callback
+     * @return T
+     */
+    private function timeStage(array &$stageTimings, string $label, callable $callback): mixed
+    {
+        $startedAt = microtime(true);
+        $result = $callback();
+        $stageTimings[$label] = $this->elapsedMilliseconds($startedAt);
+
+        return $result;
+    }
+
+    private function elapsedMilliseconds(float $startedAt): float
+    {
+        return round((microtime(true) - $startedAt) * 1000, 3);
+    }
+
+    /**
+     * @param array<string,float> $stageTimings
+     * @param array<string,int|string> $context
+     */
+    private function logTimings(array $stageTimings, array $context): void
+    {
+        if (!$this->shouldLogTimings()) {
+            return;
+        }
+
+        $parts = [];
+        foreach ($stageTimings as $label => $value) {
+            $parts[] = $label . '=' . number_format($value, 3, '.', '') . 'ms';
+        }
+        foreach ($context as $label => $value) {
+            $parts[] = $label . '=' . $value;
+        }
+
+        error_log(self::TIMING_LOG_LABEL . ' ' . implode(' ', $parts));
+    }
+
+    private function shouldLogTimings(): bool
+    {
+        $debugValue = $_ENV['APP_DEBUG'] ?? getenv('APP_DEBUG') ?? 'false';
+        return filter_var($debugValue, FILTER_VALIDATE_BOOL);
     }
 
     /**

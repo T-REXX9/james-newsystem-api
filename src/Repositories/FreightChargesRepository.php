@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use DateTimeImmutable;
 use PDO;
 use RuntimeException;
 
@@ -154,6 +155,77 @@ SQL;
                     'year' => $year,
                 ],
             ],
+        ];
+    }
+
+    public function report(int $mainId, string $dateType, string $dateFrom = '', string $dateTo = ''): array
+    {
+        [$normalizedDateType, $normalizedDateFrom, $normalizedDateTo] = $this->resolveReportDateRange(
+            $dateType,
+            $dateFrom,
+            $dateTo
+        );
+
+        $sql = <<<SQL
+SELECT
+    COALESCE(deb.lid, 0) AS lid,
+    COALESCE(deb.lrefno, '') AS lrefno,
+    COALESCE(deb.ldm_no, '') AS ldm_no,
+    COALESCE(deb.lcustomer, '') AS lcustomer,
+    COALESCE(NULLIF(deb.lcustomer_lname, ''), pat.lcompany, '') AS lcustomer_lname,
+    COALESCE(deb.ldate, '') AS ldate,
+    COALESCE(deb.lcurier_name, '') AS lcurier_name,
+    COALESCE(deb.ltrackingno, '') AS ltrackingno,
+    COALESCE(deb.lamt, 0) AS lamt,
+    COALESCE(deb.lstatus, 'Pending') AS lstatus,
+    COALESCE(deb.ltransaction_type, 'No Reference') AS ltransaction_type,
+    COALESCE(deb.linvoice_no, '') AS linvoice_no
+FROM tbldebit_memo deb
+LEFT JOIN tblpatient pat
+  ON pat.lsessionid = deb.lcustomer
+ AND CAST(COALESCE(pat.lmain_id, 0) AS SIGNED) = :patient_main_id
+WHERE CAST(COALESCE(deb.lmain_id, 0) AS SIGNED) = :debit_main_id
+  AND DATE(COALESCE(deb.ldate, deb.ldatetime)) >= :date_from
+  AND DATE(COALESCE(deb.ldate, deb.ldatetime)) <= :date_to
+ORDER BY COALESCE(deb.ldate, deb.ldatetime) ASC, deb.lid ASC
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->bindValue('patient_main_id', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('debit_main_id', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('date_from', $normalizedDateFrom, PDO::PARAM_STR);
+        $stmt->bindValue('date_to', $normalizedDateTo, PDO::PARAM_STR);
+        $stmt->execute();
+
+        $rows = [];
+        $totalAmount = 0.0;
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $amount = (float) ($row['lamt'] ?? 0);
+            $rows[] = [
+                'id' => (int) ($row['lid'] ?? 0),
+                'refno' => (string) ($row['lrefno'] ?? ''),
+                'dm_no' => (string) ($row['ldm_no'] ?? ''),
+                'customer_id' => (string) ($row['lcustomer'] ?? ''),
+                'customer' => (string) ($row['lcustomer_lname'] ?? ''),
+                'transaction' => $this->resolveReportTransactionLabel(
+                    (string) ($row['ltransaction_type'] ?? ''),
+                    (string) ($row['linvoice_no'] ?? '')
+                ),
+                'tracking_no' => (string) ($row['ltrackingno'] ?? ''),
+                'courier' => (string) ($row['lcurier_name'] ?? ''),
+                'date' => $this->normalizeReportDate((string) ($row['ldate'] ?? '')),
+                'status' => (string) ($row['lstatus'] ?? 'Pending'),
+                'amount' => $amount,
+            ];
+            $totalAmount += $amount;
+        }
+
+        return [
+            'date_type' => $normalizedDateType,
+            'date_from' => $normalizedDateFrom,
+            'date_to' => $normalizedDateTo,
+            'rows' => $rows,
+            'total_amount' => $totalAmount,
         ];
     }
 
@@ -724,5 +796,48 @@ SQL;
             'ldm_trackingno' => $trackingNo,
             'document_refno' => $documentRefno,
         ]);
+    }
+
+    /**
+     * @return array{0:string,1:string,2:string}
+     */
+    private function resolveReportDateRange(string $dateType, string $dateFrom, string $dateTo): array
+    {
+        $today = new DateTimeImmutable('today');
+        $normalizedType = strtolower(trim($dateType));
+
+        return match ($normalizedType) {
+            'today' => ['Today', $today->format('Y-m-d'), $today->format('Y-m-d')],
+            'week' => ['Week', $today->modify('-1 week')->format('Y-m-d'), $today->format('Y-m-d')],
+            'month' => ['Month', $today->modify('-1 month')->format('Y-m-d'), $today->format('Y-m-d')],
+            'year' => ['Year', $today->modify('-1 year')->format('Y-m-d'), $today->format('Y-m-d')],
+            'custom' => ['Custom', $this->normalizeReportDate($dateFrom), $this->normalizeReportDate($dateTo)],
+            default => ['Today', $today->format('Y-m-d'), $today->format('Y-m-d')],
+        };
+    }
+
+    private function normalizeReportDate(string $value): string
+    {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return date('Y-m-d');
+        }
+
+        $timestamp = strtotime($trimmed);
+        if ($timestamp === false) {
+            return date('Y-m-d');
+        }
+
+        return date('Y-m-d', $timestamp);
+    }
+
+    private function resolveReportTransactionLabel(string $transactionType, string $invoiceNo): string
+    {
+        if (trim($transactionType) === 'No Reference') {
+            return 'No Reference';
+        }
+
+        $value = trim($invoiceNo);
+        return $value !== '' ? $value : trim($transactionType);
     }
 }

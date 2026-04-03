@@ -43,6 +43,80 @@ final class SalesReturnRepository
         return (string) ($stmt->fetchColumn() ?: 'Unknown Customer');
     }
 
+    /**
+     * @return array{type:string,refno:string,doc_no:string,sales_refno:string,is_cancelled:bool,status:string}|null
+     */
+    private function getSourceDocumentState(\PDO $pdo, int $mainId, string $type, string $refno): ?array
+    {
+        $normalizedType = strtoupper(trim($type));
+        $refno = trim($refno);
+        if ($refno === '') {
+            return null;
+        }
+
+        if ($normalizedType === 'OR') {
+            $stmt = $pdo->prepare(
+                'SELECT
+                    COALESCE(lrefno, "") AS refno,
+                    COALESCE(linvoice_no, "") AS doc_no,
+                    COALESCE(lsales_refno, "") AS sales_refno,
+                    COALESCE(lcancel, 0) AS cancel_flag,
+                    COALESCE(lstatus, "") AS status
+                 FROM tbldelivery_receipt
+                 WHERE lrefno = :refno
+                   AND lmain_id = :main_id
+                 LIMIT 1'
+            );
+        } else {
+            $stmt = $pdo->prepare(
+                'SELECT
+                    COALESCE(lrefno, "") AS refno,
+                    COALESCE(linvoice_no, "") AS doc_no,
+                    COALESCE(lsales_refno, "") AS sales_refno,
+                    COALESCE(lcancel_invoice, 0) AS cancel_flag,
+                    COALESCE(lstatus, "") AS status
+                 FROM tblinvoice_list
+                 WHERE lrefno = :refno
+                   AND lmain_id = :main_id
+                 LIMIT 1'
+            );
+        }
+
+        $stmt->bindValue('refno', $refno, PDO::PARAM_STR);
+        $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) {
+            return null;
+        }
+
+        $status = trim((string) ($row['status'] ?? ''));
+
+        return [
+            'type' => $normalizedType === 'OR' ? 'OR' : 'INVOICE',
+            'refno' => (string) ($row['refno'] ?? ''),
+            'doc_no' => (string) ($row['doc_no'] ?? ''),
+            'sales_refno' => (string) ($row['sales_refno'] ?? ''),
+            'is_cancelled' => (int) ($row['cancel_flag'] ?? 0) === 1 || strtolower($status) === 'cancelled',
+            'status' => $status,
+        ];
+    }
+
+    private function assertSourceDocumentAllowsStockReturn(\PDO $pdo, int $mainId, string $type, string $refno): void
+    {
+        $source = $this->getSourceDocumentState($pdo, $mainId, $type, $refno);
+        if ($source === null) {
+            throw new RuntimeException('Linked source document was not found');
+        }
+
+        if ($source['is_cancelled']) {
+            $label = $source['type'] === 'OR' ? 'order slip' : 'invoice';
+            throw new RuntimeException(
+                'Cannot process a sales return from a cancelled ' . $label . ' because its stock was already restored during cancellation.'
+            );
+        }
+    }
+
     private function ensurePendingStatus(int $mainId, string $refno): array
     {
         $pdo = $this->db->pdo();
@@ -86,34 +160,20 @@ final class SalesReturnRepository
 
             // If a source document refno is provided, resolve its display number and linked sales refno.
             if ($invoiceRefno !== '') {
-                if (strcasecmp($type, 'OR') === 0) {
-                    $srcStmt = $pdo->prepare(
-                        'SELECT
-                            COALESCE(linvoice_no, "") AS doc_no,
-                            COALESCE(lsales_refno, "") AS sales_refno
-                         FROM tbldelivery_receipt
-                         WHERE lrefno = :ref
-                         LIMIT 1'
-                    );
-                } else {
-                    $srcStmt = $pdo->prepare(
-                        'SELECT
-                            COALESCE(linvoice_no, "") AS doc_no,
-                            COALESCE(lsales_refno, "") AS sales_refno
-                         FROM tblinvoice_list
-                         WHERE lrefno = :ref
-                         LIMIT 1'
-                    );
-                }
+                $source = $this->getSourceDocumentState($pdo, $mainId, $type, $invoiceRefno);
+                if ($source !== null) {
+                    if ($source['is_cancelled']) {
+                        $label = $source['type'] === 'OR' ? 'order slip' : 'invoice';
+                        throw new RuntimeException(
+                            'Cannot create a sales return from a cancelled ' . $label . ' because its stock was already restored during cancellation.'
+                        );
+                    }
 
-                $srcStmt->execute(['ref' => $invoiceRefno]);
-                $srcRow = $srcStmt->fetch(PDO::FETCH_ASSOC);
-                if ($srcRow) {
                     if ($invoiceNo === '') {
-                        $invoiceNo = (string) ($srcRow['doc_no'] ?? '');
+                        $invoiceNo = $source['doc_no'];
                     }
                     if ($transactionRefno === '') {
-                        $transactionRefno = (string) ($srcRow['sales_refno'] ?? '');
+                        $transactionRefno = $source['sales_refno'];
                     }
                 }
             }
@@ -247,6 +307,11 @@ SQL);
             return ['items' => []];
         }
 
+        $sourceType = $type === 'OR' ? 'OR' : 'INVOICE';
+        if ($invoiceRefno !== '') {
+            $this->assertSourceDocumentAllowsStockReturn($pdo, $mainId, $sourceType, $invoiceRefno);
+        }
+
         // Get source items depending on type
         if ($type === 'INVOICE' || $type === '') {
             $sql = <<<'SQL'
@@ -338,6 +403,12 @@ SQL;
     {
         $cm = $this->ensurePendingStatus($mainId, $refno);
         $pdo = $this->db->pdo();
+
+        $sourceType = strtoupper(trim((string) ($cm['ltype'] ?? ''))) === 'OR' ? 'OR' : 'INVOICE';
+        $sourceRefno = trim((string) ($cm['linvoice_refno'] ?? ''));
+        if ($sourceRefno !== '') {
+            $this->assertSourceDocumentAllowsStockReturn($pdo, $mainId, $sourceType, $sourceRefno);
+        }
 
         $itemCode = trim((string) ($payload['item_code'] ?? ''));
         $partNo = trim((string) ($payload['part_no'] ?? ''));
@@ -453,6 +524,12 @@ SQL);
             }
             if (strtolower(trim((string) ($cm['lstatus'] ?? ''))) === 'posted') {
                 throw new RuntimeException('Credit memo is already posted');
+            }
+
+            $sourceType = strtoupper(trim((string) ($cm['ltype'] ?? ''))) === 'OR' ? 'OR' : 'INVOICE';
+            $sourceRefno = trim((string) ($cm['linvoice_refno'] ?? ''));
+            if ($sourceRefno !== '') {
+                $this->assertSourceDocumentAllowsStockReturn($pdo, $mainId, $sourceType, $sourceRefno);
             }
 
             // 2. Load items

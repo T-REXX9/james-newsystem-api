@@ -62,10 +62,11 @@ SQL;
     ): array {
         [$normalizedDateType, $fromDate, $toDate] = $this->resolveDateRange($dateType, $dateFrom, $dateTo);
 
+        $salesOrderRows = $this->fetchSalesOrderRows($mainId, $fromDate, $toDate, $customerId, $limit);
         $invoiceRows = $this->fetchInvoiceRows($mainId, $fromDate, $toDate, $customerId, $limit);
         $drRows = $this->fetchDrRows($mainId, $fromDate, $toDate, $customerId, $limit);
 
-        $transactions = array_merge($invoiceRows, $drRows);
+        $transactions = array_merge($salesOrderRows, $invoiceRows, $drRows);
         usort(
             $transactions,
             static fn(array $a, array $b): int => strcmp(
@@ -113,7 +114,7 @@ WHERE d.lmain_id = :main_id
   AND COALESCE(d.lcancel, '') = ''
 ORDER BY i.lid ASC
 SQL;
-        } else {
+        } elseif ($type === 'dr') {
             $sql = <<<SQL
 SELECT
     CONCAT('dr-', i.lid) AS id,
@@ -130,6 +131,26 @@ INNER JOIN tbldelivery_receipt_items i ON i.lor_refno = d.lrefno
 WHERE d.lmain_id = :main_id
   AND d.lrefno = :refno
   AND COALESCE(d.lcancel, '') = ''
+ORDER BY i.lid ASC
+SQL;
+        } else {
+            $sql = <<<SQL
+SELECT
+    CONCAT('so-', i.lid) AS id,
+    COALESCE(i.lqty, 0) AS qty,
+    COALESCE(i.litemcode, '') AS item_code,
+    COALESCE(i.lpartno, '') AS part_no,
+    COALESCE(i.lbrand, '') AS brand,
+    COALESCE(i.ldesc, '') AS description,
+    COALESCE(i.lprice, 0) AS unit_price,
+    COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0) AS amount,
+    COALESCE(i.ltype, 'Sales Order') AS category
+FROM tbltransaction t
+INNER JOIN tbltransaction_item i ON i.lrefno = t.lrefno
+WHERE t.lmain_id = :main_id
+  AND t.lrefno = :refno
+  AND COALESCE(t.lcancel, 0) = 0
+  AND COALESCE(i.lcancel, 0) = 0
 ORDER BY i.lid ASC
 SQL;
         }
@@ -155,6 +176,101 @@ SQL;
             ],
             $rows
         );
+    }
+
+    private function fetchSalesOrderRows(
+        int $mainId,
+        ?string $fromDate,
+        ?string $toDate,
+        ?string $customerId,
+        int $limit
+    ): array {
+        $where = [
+            't.lmain_id = :main_id',
+            'COALESCE(t.lcancel, 0) = 0',
+            "LOWER(COALESCE(t.lsubmitstat, '')) IN ('submitted', 'approved', 'posted')",
+            "COALESCE(t.invoice_refno, '') = ''",
+            "COALESCE(t.ldr_refno, '') = ''",
+        ];
+
+        $params = ['main_id' => $mainId];
+
+        if ($fromDate !== null && $toDate !== null) {
+            $where[] = 't.ldate >= :date_from';
+            $where[] = 't.ldate <= :date_to';
+            $params['date_from'] = $fromDate;
+            $params['date_to'] = $toDate;
+        }
+
+        $trimmedCustomerId = trim((string) $customerId);
+        if ($trimmedCustomerId !== '' && strtolower($trimmedCustomerId) !== 'all') {
+            $where[] = 't.lcustomerid = :customer_id';
+            $params['customer_id'] = $trimmedCustomerId;
+        }
+
+        $sql = sprintf(
+            <<<SQL
+SELECT
+    COALESCE(t.lrefno, '') AS id,
+    COALESCE(t.ldate, '') AS `date`,
+    TRIM(COALESCE(t.lcompany, '')) AS customer,
+    COALESCE(t.lcustomerid, '') AS customer_id,
+    COALESCE(t.lterms, '') AS terms,
+    COALESCE(t.lsaleno, '') AS ref_no,
+    COALESCE(t.lsaleno, '') AS so_no,
+    COALESCE(t.lsales_person, '') AS salesperson,
+    t.lid AS sort_id
+FROM tbltransaction t
+WHERE %s
+ORDER BY t.ldate DESC, t.lid DESC
+LIMIT :limit
+SQL,
+            implode(' AND ', $where)
+        );
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        foreach ($params as $key => $value) {
+            if ($key === 'main_id') {
+                $stmt->bindValue($key, (int) $value, PDO::PARAM_INT);
+            } else {
+                $stmt->bindValue($key, (string) $value, PDO::PARAM_STR);
+            }
+        }
+        $stmt->bindValue('limit', max(1, min(5000, $limit)), PDO::PARAM_INT);
+        $stmt->execute();
+        $docs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if ($docs === []) {
+            return [];
+        }
+
+        $refnos = array_values(array_unique(array_filter(array_map(static fn(array $r): string => (string) ($r['id'] ?? ''), $docs))));
+        $soAgg = $this->fetchSoAgg($refnos);
+
+        $rows = [];
+        foreach ($docs as $doc) {
+            $id = (string) ($doc['id'] ?? '');
+            $so = $soAgg[$id] ?? ['so_no' => (string) ($doc['so_no'] ?? ''), 'so_amount' => 0.0, 'category' => 'Uncategorized'];
+
+            $rows[] = [
+                'id' => $id,
+                'date' => (string) ($doc['date'] ?? ''),
+                'customer' => (string) ($doc['customer'] ?? ''),
+                'customer_id' => (string) ($doc['customer_id'] ?? ''),
+                'terms' => (string) ($doc['terms'] ?? ''),
+                'ref_no' => (string) ($doc['ref_no'] ?? ''),
+                'so_no' => (string) ($so['so_no'] ?? $doc['so_no'] ?? ''),
+                'so_amount' => (float) ($so['so_amount'] ?? 0),
+                'dr_amount' => 0.0,
+                'invoice_amount' => 0.0,
+                'salesperson' => (string) ($doc['salesperson'] ?? ''),
+                'category' => (string) ($so['category'] ?? 'Uncategorized'),
+                'vat_type' => null,
+                'type' => 'so',
+                '_sort_id' => (int) ($doc['sort_id'] ?? 0),
+            ];
+        }
+
+        return $rows;
     }
 
     private function fetchInvoiceRows(
@@ -436,7 +552,8 @@ SQL,
 SELECT
     t.lrefno,
     MAX(COALESCE(t.lsaleno, '')) AS so_no,
-    SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)) AS so_amount
+    SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)) AS so_amount,
+    GROUP_CONCAT(DISTINCT NULLIF(TRIM(COALESCE(i.ltype, '')), '') SEPARATOR '|') AS categories
 FROM tbltransaction t
 LEFT JOIN tbltransaction_item i
   ON i.lrefno = t.lrefno
@@ -459,9 +576,15 @@ SQL;
             if ($ref === '') {
                 continue;
             }
+            $categories = (string) ($row['categories'] ?? '');
+            $category = 'Uncategorized';
+            if ($categories !== '') {
+                $category = str_contains($categories, '|') ? 'Mixed' : $categories;
+            }
             $mapped[$ref] = [
                 'so_no' => (string) ($row['so_no'] ?? ''),
                 'so_amount' => (float) ($row['so_amount'] ?? 0),
+                'category' => $category,
             ];
         }
 

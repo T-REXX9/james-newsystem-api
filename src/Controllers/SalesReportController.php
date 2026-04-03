@@ -73,8 +73,8 @@ final class SalesReportController
         }
 
         $type = strtolower(trim((string) ($query['type'] ?? 'invoice')));
-        if ($type !== 'invoice' && $type !== 'dr') {
-            throw new HttpException(422, 'type must be invoice or dr');
+        if ($type !== 'invoice' && $type !== 'dr' && $type !== 'so') {
+            throw new HttpException(422, 'type must be invoice, dr, or so');
         }
 
         return [

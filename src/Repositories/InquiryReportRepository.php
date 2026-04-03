@@ -73,10 +73,10 @@ SQL;
         $normalizedMode = strtolower(trim($mode)) === 'detailed' ? 'detailed' : 'summary';
 
         $where = [
-            'tr.lmain_id = :main_id',
-            'COALESCE(tr.IsInquiry, 0) = 1',
-            'tr.ldate >= :date_from',
-            'tr.ldate <= :date_to',
+            'iq.lmain_id = :main_id',
+            'COALESCE(iq.IsCancel, 0) = 0',
+            'iq.ldate >= :date_from',
+            'iq.ldate <= :date_to',
         ];
         $params = [
             'main_id' => (string) $mainId,
@@ -86,29 +86,28 @@ SQL;
 
         $trimmedCustomerId = trim((string) $customerId);
         if ($trimmedCustomerId !== '' && strtolower($trimmedCustomerId) !== 'all') {
-            $where[] = 'tr.lcustomerid = :customer_id';
+            $where[] = 'iq.lcustomerid = :customer_id';
             $params['customer_id'] = $trimmedCustomerId;
         }
 
         $sql = sprintf(
             'SELECT
-                tr.lid,
-                COALESCE(tr.lrefno, \'\') AS inquiry_refno,
-                COALESCE(tr.lsaleno, \'\') AS inquiry_no,
-                COALESCE(tr.lcustomerid, \'\') AS customer_id,
-                TRIM(COALESCE(tr.lcompany, \'\')) AS customer_company,
-                COALESCE(tr.ldate, \'\') AS sales_date,
-                COALESCE(tr.ltime, \'\') AS sales_time,
-                COALESCE(MAX(it.ldatetime), CONCAT(tr.ldate, \' 00:00:00\')) AS created_at,
+                iq.lid,
+                COALESCE(iq.lrefno, \'\') AS inquiry_refno,
+                COALESCE(iq.linqno, \'\') AS inquiry_no,
+                COALESCE(iq.lcustomerid, \'\') AS customer_id,
+                TRIM(COALESCE(iq.lcompany, \'\')) AS customer_company,
+                COALESCE(iq.ldate, \'\') AS sales_date,
+                COALESCE(iq.ltime, \'\') AS sales_time,
+                CONCAT(COALESCE(iq.ldate, \'\'), \' \', COALESCE(NULLIF(iq.ltime, \'\'), \'00:00:00\')) AS created_at,
                 COALESCE(SUM(COALESCE(it.lqty, 0) * COALESCE(it.lprice, 0)), 0) AS grand_total,
                 COUNT(it.lid) AS item_count
-             FROM tbltransaction tr
-             LEFT JOIN tbltransaction_item it
-                ON it.lrefno = tr.lrefno
-               AND COALESCE(it.lcancel, 0) = 0
+             FROM tblinquiry iq
+             LEFT JOIN tblinquiry_item it
+                ON it.linq_refno = iq.lrefno
              WHERE %s
-             GROUP BY tr.lid, tr.lrefno, tr.lsaleno, tr.lcustomerid, tr.lcompany, tr.ldate, tr.ltime
-             ORDER BY tr.ldate DESC, tr.lid DESC
+             GROUP BY iq.lid, iq.lrefno, iq.linqno, iq.lcustomerid, iq.lcompany, iq.ldate, iq.ltime
+             ORDER BY iq.ldate DESC, iq.lid DESC
              LIMIT :limit',
             implode(' AND ', $where)
         );
@@ -195,7 +194,7 @@ SQL;
 
         $sql = sprintf(
             'SELECT
-                i.lrefno AS inquiry_refno,
+                i.linq_refno AS inquiry_refno,
                 COALESCE(i.lqty, 0) AS qty,
                 COALESCE(i.litemcode, \'\') AS item_code,
                 COALESCE(i.lpartno, \'\') AS part_no,
@@ -203,9 +202,8 @@ SQL;
                 COALESCE(i.ldesc, \'\') AS description,
                 COALESCE(i.lprice, 0) AS unit_price,
                 COALESCE(i.lremark, \'\') AS remark
-             FROM tbltransaction_item i
-             WHERE i.lrefno IN (%s)
-               AND COALESCE(i.lcancel, 0) = 0
+             FROM tblinquiry_item i
+             WHERE i.linq_refno IN (%s)
              ORDER BY i.lid ASC',
             implode(', ', $placeholders)
         );

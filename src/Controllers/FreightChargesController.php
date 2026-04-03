@@ -33,6 +33,24 @@ final class FreightChargesController
         );
     }
 
+    public function report(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $dateType = trim((string) ($query['date_type'] ?? 'today'));
+        $dateFrom = trim((string) ($query['date_from'] ?? ''));
+        $dateTo = trim((string) ($query['date_to'] ?? ''));
+
+        if (strcasecmp($dateType, 'Custom') === 0 && ($dateFrom === '' || $dateTo === '')) {
+            throw new HttpException(422, 'date_from and date_to are required for custom report');
+        }
+
+        return $this->repo->report($mainId, $dateType, $dateFrom, $dateTo);
+    }
+
     public function show(array $params = [], array $query = [], array $body = []): array
     {
         $refno = trim((string) ($params['refno'] ?? ''));
