@@ -429,8 +429,10 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-reports', [$dailyCallMonitoringController, 'customerSalesReports']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/incident-reports', [$dailyCallMonitoringController, 'customerIncidentReports']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/call-logs', [$dailyCallMonitoringController, 'callLogs']);
+    $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/customer-logs', [$dailyCallMonitoringController, 'customerLogs']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/returns', [$dailyCallMonitoringController, 'returnRecords']);
     $router->post('/api/v1/daily-call-monitoring/call-logs', [$dailyCallMonitoringController, 'createCallLog']);
+    $router->post('/api/v1/daily-call-monitoring/customer-logs', [$dailyCallMonitoringController, 'createCustomerLog']);
     $router->get('/api/v1/fast-slow-inventory-report', [$fastSlowInventoryReportController, 'report']);
     $router->get('/api/v1/freight-charges', [$freightChargesController, 'list']);
     $router->get('/api/v1/freight-charges/report', [$freightChargesController, 'report']);

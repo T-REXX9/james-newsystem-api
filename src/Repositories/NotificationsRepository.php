@@ -16,7 +16,15 @@ final class NotificationsRepository
     public function listByUser(string $userId, int $limit = 50): array
     {
         $stmt = $this->db->pdo()->prepare(
-            'SELECT * FROM tblnotifications WHERE luserid = :user_id AND COALESCE(lstatus, 0) != -1 ORDER BY ldatetime DESC, lid DESC LIMIT :limit'
+            'SELECT *
+             FROM tblnotifications
+             WHERE luserid = :user_id
+               AND COALESCE(lstatus, 0) != -1
+             ORDER BY
+               CASE WHEN COALESCE(lstatus, 0) = 1 THEN 0 ELSE 1 END ASC,
+               ldatetime DESC,
+               lid DESC
+             LIMIT :limit'
         );
         $stmt->bindValue(':user_id', $userId, PDO::PARAM_STR);
         $stmt->bindValue(':limit', max(1, min(500, $limit)), PDO::PARAM_INT);

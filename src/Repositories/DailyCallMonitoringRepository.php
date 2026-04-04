@@ -198,6 +198,110 @@ SQL;
         return $created;
     }
 
+    public function getCustomerLogs(int $mainId, string $contactId): array
+    {
+        $sql = <<<SQL
+SELECT
+    CAST(cl.lid AS CHAR) AS id,
+    CAST(cl.lcustomer_id AS CHAR) AS contact_id,
+    CASE
+        WHEN LOWER(COALESCE(cl.ltype, 'note')) = 'status' THEN 'Status'
+        ELSE 'Note'
+    END AS entry_type,
+    CASE
+        WHEN TRIM(COALESCE(cl.ltopic, '')) = '' THEN 'Sales'
+        ELSE cl.ltopic
+    END AS topic,
+    COALESCE(NULLIF(cl.lstatus, ''), 'Note') AS status,
+    cl.lnotes AS note,
+    cl.promisetopay AS promise_to_pay,
+    cl.comments AS comments,
+    NULLIF(cl.lfile, '') AS attachment,
+    cl.ldatetime AS occurred_at,
+    CAST(cl.luser AS CHAR) AS created_by,
+    COALESCE(
+        NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
+        CAST(cl.luser AS CHAR)
+    ) AS created_by_name
+FROM tblcustomer_logs cl
+LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.luser AS CHAR)
+WHERE cl.lmain_id = :main_id
+  AND CAST(cl.lcustomer_id AS CHAR) = :contact_id
+ORDER BY cl.ldatetime DESC, cl.lid DESC
+LIMIT 150
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([
+            'main_id' => $mainId,
+            'contact_id' => $contactId,
+        ]);
+
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function createCustomerLog(int $mainId, array $data): array
+    {
+        $entryType = (string) ($data['entry_type'] ?? 'Note');
+        $occurredAt = (string) ($data['occurred_at'] ?? date('Y-m-d H:i:s'));
+        $topic = $entryType === 'Status'
+            ? 'Status'
+            : (trim((string) ($data['topic'] ?? '')) ?: 'Sales');
+
+        $sql = <<<SQL
+INSERT INTO tblcustomer_logs (
+    ltype,
+    lmain_id,
+    luser,
+    lnotes,
+    ldatetime,
+    lcustomer_id,
+    lcustomer_lastnote,
+    lstatus,
+    lfile,
+    ltopic,
+    promisetopay,
+    comments
+) VALUES (
+    :entry_type,
+    :main_id,
+    :user_id,
+    :note,
+    :occurred_at,
+    :contact_id,
+    0,
+    :status,
+    :attachment,
+    :topic,
+    :promise_to_pay,
+    :comments
+)
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([
+            'entry_type' => $entryType,
+            'main_id' => $mainId,
+            'user_id' => (string) ($data['user_id'] ?? ''),
+            'note' => (string) ($data['note'] ?? ''),
+            'occurred_at' => $occurredAt,
+            'contact_id' => (string) ($data['contact_id'] ?? ''),
+            'status' => (string) ($data['status'] ?? 'Note'),
+            'attachment' => (string) ($data['attachment'] ?? ''),
+            'topic' => $topic,
+            'promise_to_pay' => (string) ($data['promise_to_pay'] ?? ''),
+            'comments' => (string) ($data['comments'] ?? ''),
+        ]);
+
+        $id = (int) $this->db->pdo()->lastInsertId();
+        $created = $this->getCustomerLogById($mainId, $id);
+        if ($created === null) {
+            throw new \RuntimeException('Failed to load created customer log');
+        }
+
+        return $created;
+    }
+
     public function getCustomerPurchaseHistory(int $mainId, string $contactId): array
     {
         $sql = <<<SQL
@@ -1159,6 +1263,48 @@ SQL;
         ]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
+        return $row ?: null;
+    }
+
+    private function getCustomerLogById(int $mainId, int $logId): ?array
+    {
+        $sql = <<<SQL
+SELECT
+    CAST(cl.lid AS CHAR) AS id,
+    CAST(cl.lcustomer_id AS CHAR) AS contact_id,
+    CASE
+        WHEN LOWER(COALESCE(cl.ltype, 'note')) = 'status' THEN 'Status'
+        ELSE 'Note'
+    END AS entry_type,
+    CASE
+        WHEN TRIM(COALESCE(cl.ltopic, '')) = '' THEN 'Sales'
+        ELSE cl.ltopic
+    END AS topic,
+    COALESCE(NULLIF(cl.lstatus, ''), 'Note') AS status,
+    cl.lnotes AS note,
+    cl.promisetopay AS promise_to_pay,
+    cl.comments AS comments,
+    NULLIF(cl.lfile, '') AS attachment,
+    cl.ldatetime AS occurred_at,
+    CAST(cl.luser AS CHAR) AS created_by,
+    COALESCE(
+        NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
+        CAST(cl.luser AS CHAR)
+    ) AS created_by_name
+FROM tblcustomer_logs cl
+LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.luser AS CHAR)
+WHERE cl.lmain_id = :main_id
+  AND cl.lid = :log_id
+LIMIT 1
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([
+            'main_id' => $mainId,
+            'log_id' => $logId,
+        ]);
+
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
     }
 
