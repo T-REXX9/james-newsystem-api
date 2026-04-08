@@ -64,6 +64,7 @@ use App\Controllers\RolePermissionController;
 use App\Http\Router;
 use App\Middleware\PermissionMiddleware;
 use App\Security\TokenService;
+use App\Services\InternalChatRealtimeNotifier;
 use App\Support\Exceptions\HttpException;
 use App\Support\Env;
 
@@ -133,6 +134,7 @@ require __DIR__ . '/Repositories/PromotionPostingRepository.php';
 require __DIR__ . '/Repositories/LoyaltyDiscountRepository.php';
 require __DIR__ . '/Repositories/ProfitProtectionRepository.php';
 require __DIR__ . '/Repositories/RolePermissionRepository.php';
+require __DIR__ . '/Services/InternalChatRealtimeNotifier.php';
 require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Middleware/PermissionMiddleware.php';
 require __DIR__ . '/Controllers/HealthController.php';
@@ -251,6 +253,10 @@ function app_router(): Router
     $approverController = new ApproverController(new App\Repositories\ApproverRepository($db));
     $activityLogController = new ActivityLogController(new App\Repositories\ActivityLogRepository($db));
     $tokenService = new TokenService($config->authSecret, $config->authTokenTtlSeconds);
+    $internalChatRealtimeNotifier = new InternalChatRealtimeNotifier(
+        (string) Env::get('INTERNAL_CHAT_SOCKET_NOTIFY_URL', 'http://127.0.0.1:8082/internal-chat/events'),
+        (string) Env::get('INTERNAL_CHAT_SOCKET_SECRET', $config->authSecret)
+    );
     $rolePermissionRepo = new App\Repositories\RolePermissionRepository($db);
     $authRepo = new App\Repositories\AuthRepository($db);
     $permissionMiddleware = new PermissionMiddleware($tokenService, $rolePermissionRepo);
@@ -264,7 +270,11 @@ function app_router(): Router
     $messagesController = new MessagesController(new App\Repositories\MessagesRepository($db));
     $notificationsController = new NotificationsController(new App\Repositories\NotificationsRepository($db));
     $profilesController = new ProfilesController(new App\Repositories\ProfilesRepository($db));
-    $internalChatController = new InternalChatController(new App\Repositories\InternalChatRepository($db), $tokenService);
+    $internalChatController = new InternalChatController(
+        new App\Repositories\InternalChatRepository($db),
+        $tokenService,
+        $internalChatRealtimeNotifier
+    );
     $dailyCallMonitoringController = new DailyCallMonitoringController(new App\Repositories\DailyCallMonitoringRepository($db));
     $fastSlowInventoryReportController = new FastSlowInventoryReportController(new App\Repositories\FastSlowInventoryReportRepository($db));
     $freightChargesController = new FreightChargesController(new App\Repositories\FreightChargesRepository($db));

@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace App\Controllers;
 
-use App\Http\Response;
 use App\Repositories\InternalChatRepository;
 use App\Security\TokenService;
+use App\Services\InternalChatRealtimeNotifier;
 use App\Support\Exceptions\HttpException;
 use RuntimeException;
 
@@ -14,7 +14,8 @@ final class InternalChatController
 {
     public function __construct(
         private readonly InternalChatRepository $repo,
-        private readonly TokenService $tokens
+        private readonly TokenService $tokens,
+        private readonly InternalChatRealtimeNotifier $realtimeNotifier
     ) {
     }
 
@@ -94,8 +95,11 @@ final class InternalChatController
         }
 
         try {
+            $items = $this->repo->sendMessage($mainId, $userId, $message, $recipientIds);
+            $this->realtimeNotifier->notifyMessagesCreated($items);
+
             return [
-                'items' => $this->repo->sendMessage($mainId, $userId, $message, $recipientIds),
+                'items' => $items,
             ];
         } catch (RuntimeException $error) {
             throw new HttpException(422, $error->getMessage());
@@ -112,7 +116,14 @@ final class InternalChatController
             throw new HttpException(422, 'conversationKey is required');
         }
 
-        return $this->repo->markConversationRead($userId, $conversationKey);
+        $result = $this->repo->markConversationRead($userId, $conversationKey);
+        $this->realtimeNotifier->notifyConversationRead(
+            $userId,
+            $conversationKey,
+            (int) ($result['updated_count'] ?? 0)
+        );
+
+        return $result;
     }
 
     public function unreadCount(array $params = [], array $query = [], array $body = []): array
