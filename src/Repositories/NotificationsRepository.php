@@ -10,6 +10,19 @@ use PDO;
 final class NotificationsRepository
 {
     private const DEFAULT_MAX_AGE_DAYS = 10;
+    private const LEGACY_METADATA_MAX_BYTES = 225;
+    private const LEGACY_METADATA_VALUE_LIMITS = [
+        'e' => 24,
+        'i' => 64,
+        'a' => 32,
+        's' => 16,
+        'u' => 64,
+        't' => 16,
+        'c' => 16,
+        'ai' => 16,
+        'ar' => 24,
+        'at' => 24,
+    ];
 
     public function __construct(private readonly Database $db)
     {
@@ -83,21 +96,23 @@ final class NotificationsRepository
 
     public function create(array $input): ?array
     {
+        $rawMetadata = is_array($input['metadata'] ?? null) ? $input['metadata'] : [];
+        $referenceKey = $this->resolveReferenceKey($rawMetadata);
         $metadata = $this->compactMetadata($input);
-        $metadataJson = json_encode($metadata, JSON_UNESCAPED_SLASHES);
+        $metadataJson = $this->encodeMetadataForStorage($metadata);
         $recipientId = trim((string) ($input['recipient_id'] ?? ''));
         $title = trim((string) ($input['title'] ?? ''));
         $message = trim((string) ($input['message'] ?? ''));
-        $idempotencyKey = trim((string) ($metadata['k'] ?? ''));
+        $idempotencyKey = trim((string) ($rawMetadata['idempotency_key'] ?? $referenceKey));
 
         if ($recipientId === '' || $title === '' || $message === '') {
             return null;
         }
 
-        if ($idempotencyKey !== '' && $metadataJson !== false) {
+        if ($idempotencyKey !== '' && $referenceKey !== '') {
             $existing = $this->findExistingByRecipientAndMetadata(
                 $recipientId,
-                trim((string) ($metadata['rk'] ?? $metadata['r'] ?? ''))
+                $referenceKey
             );
             if ($existing !== null) {
                 return $existing;
@@ -115,10 +130,10 @@ final class NotificationsRepository
             ':title' => $title,
             ':message' => $message,
             ':main_id' => trim((string) ($input['main_id'] ?? '')),
-            ':metadata' => $metadataJson !== false ? $metadataJson : null,
-            ':category' => $this->toDatabaseCategory((string) ($metadata['c'] ?? 'notification')),
+            ':metadata' => $metadataJson,
+            ':category' => $this->toDatabaseCategory((string) ($metadata['c'] ?? $input['category'] ?? 'notification')),
             ':recipient_id' => $recipientId,
-            ':refno' => trim((string) ($metadata['rk'] ?? $metadata['r'] ?? '')),
+            ':refno' => $referenceKey,
         ]);
 
         return $this->findById((string) $this->db->pdo()->lastInsertId());
@@ -379,7 +394,7 @@ final class NotificationsRepository
             'message' => (string) ($row['lmessage'] ?? ''),
             'type' => $type,
             'category' => $category,
-            'action_url' => $metadata['u'] ?? null,
+            'action_url' => $this->resolveActionUrl($metadata),
             'metadata' => [
                 'actor_id' => (string) ($metadata['ai'] ?? 'system'),
                 'actor_role' => (string) ($metadata['ar'] ?? 'system'),
@@ -389,8 +404,8 @@ final class NotificationsRepository
                 'category' => $category,
                 'action' => (string) ($metadata['a'] ?? 'notify'),
                 'status' => (string) ($metadata['s'] ?? (((int) ($row['lstatus'] ?? 0)) === 1 ? 'unread' : 'read')),
-                'action_url' => $metadata['u'] ?? null,
-                'idempotency_key' => (string) ($metadata['k'] ?? $referenceKey),
+                'action_url' => $this->resolveActionUrl($metadata),
+                'idempotency_key' => $referenceKey,
                 'refno' => $referenceKey,
                 'alert_type' => $metadata['at'] ?? null,
             ],
@@ -405,8 +420,6 @@ final class NotificationsRepository
         $metadata = is_array($input['metadata'] ?? null) ? $input['metadata'] : [];
         $entityType = trim((string) ($metadata['entity_type'] ?? ''));
         $entityId = trim((string) ($metadata['entity_id'] ?? ''));
-        $refno = trim((string) ($metadata['refno'] ?? ''));
-        $referenceKey = $refno !== '' ? $refno : ($entityType !== '' && $entityId !== '' ? $this->buildReferenceKey($entityType, $entityId) : '');
 
         $compact = [
             'e' => $entityType,
@@ -418,13 +431,85 @@ final class NotificationsRepository
             'c' => trim((string) ($input['category'] ?? $metadata['category'] ?? 'notification')),
             'ai' => trim((string) ($metadata['actor_id'] ?? 'system')),
             'ar' => trim((string) ($metadata['actor_role'] ?? 'system')),
-            'k' => trim((string) ($metadata['idempotency_key'] ?? $referenceKey)),
-            'r' => $referenceKey,
-            'rk' => $referenceKey,
             'at' => trim((string) ($metadata['alert_type'] ?? '')),
         ];
 
         return array_filter($compact, static fn (mixed $value): bool => $value !== '');
+    }
+
+    private function resolveReferenceKey(array $metadata): string
+    {
+        $refno = trim((string) ($metadata['refno'] ?? ''));
+        if ($refno !== '') {
+            return $refno;
+        }
+
+        $entityType = trim((string) ($metadata['entity_type'] ?? ''));
+        $entityId = trim((string) ($metadata['entity_id'] ?? ''));
+        if ($entityType === '' || $entityId === '') {
+            return '';
+        }
+
+        return $this->buildReferenceKey($entityType, $entityId);
+    }
+
+    private function encodeMetadataForStorage(array $metadata): ?string
+    {
+        if ($metadata === []) {
+            return null;
+        }
+
+        $normalized = [];
+        foreach ($metadata as $key => $value) {
+            if (!is_string($key) || !is_scalar($value)) {
+                continue;
+            }
+
+            $trimmed = trim((string) $value);
+            if ($trimmed === '') {
+                continue;
+            }
+
+            $maxLength = self::LEGACY_METADATA_VALUE_LIMITS[$key] ?? 64;
+            $normalized[$key] = substr($trimmed, 0, $maxLength);
+        }
+
+        if ($normalized === []) {
+            return null;
+        }
+
+        $dropOrder = ['ar', 'ai', 'c', 'u', 'at', 's', 'a', 't', 'i', 'e'];
+        $current = $normalized;
+
+        while ($current !== []) {
+            $json = json_encode($current, JSON_UNESCAPED_SLASHES);
+            if (is_string($json) && strlen($json) <= self::LEGACY_METADATA_MAX_BYTES) {
+                return $json;
+            }
+
+            $keyToDrop = array_shift($dropOrder);
+            if ($keyToDrop === null) {
+                break;
+            }
+
+            unset($current[$keyToDrop]);
+        }
+
+        return null;
+    }
+
+    private function resolveActionUrl(array $metadata): ?string
+    {
+        $actionUrl = trim((string) ($metadata['u'] ?? ''));
+        if ($actionUrl !== '') {
+            return $actionUrl;
+        }
+
+        if (trim((string) ($metadata['e'] ?? '')) === 'inventory') {
+            return 'warehouse-inventory-product-database';
+        }
+
+        return null;
     }
 
     private function decodeMetadata(mixed $raw): array
