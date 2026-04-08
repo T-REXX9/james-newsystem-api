@@ -23,6 +23,7 @@ use App\Controllers\FreightChargesController;
 use App\Controllers\HealthController;
 use App\Controllers\InvoiceController;
 use App\Controllers\InactiveActiveCustomersReportController;
+use App\Controllers\InternalChatController;
 use App\Controllers\InquiryReportController;
 use App\Controllers\InventoryAuditController;
 use App\Controllers\InventoryReportController;
@@ -58,6 +59,7 @@ use App\Controllers\CampaignController;
 use App\Controllers\CategoryController;
 use App\Controllers\PromotionController;
 use App\Controllers\LoyaltyDiscountController;
+use App\Controllers\ProfitProtectionController;
 use App\Controllers\RolePermissionController;
 use App\Http\Router;
 use App\Middleware\PermissionMiddleware;
@@ -91,6 +93,7 @@ require __DIR__ . '/Repositories/DailyCallMonitoringRepository.php';
 require __DIR__ . '/Repositories/FastSlowInventoryReportRepository.php';
 require __DIR__ . '/Repositories/FreightChargesRepository.php';
 require __DIR__ . '/Repositories/AuthRepository.php';
+require __DIR__ . '/Repositories/InternalChatRepository.php';
 require __DIR__ . '/Repositories/ProductRepository.php';
 require __DIR__ . '/Repositories/PurchaseRequestRepository.php';
 require __DIR__ . '/Repositories/PurchaseOrderRepository.php';
@@ -128,6 +131,7 @@ require __DIR__ . '/Repositories/PromotionRepository.php';
 require __DIR__ . '/Repositories/PromotionProductRepository.php';
 require __DIR__ . '/Repositories/PromotionPostingRepository.php';
 require __DIR__ . '/Repositories/LoyaltyDiscountRepository.php';
+require __DIR__ . '/Repositories/ProfitProtectionRepository.php';
 require __DIR__ . '/Repositories/RolePermissionRepository.php';
 require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Middleware/PermissionMiddleware.php';
@@ -152,6 +156,7 @@ require __DIR__ . '/Controllers/DailyCallMonitoringController.php';
 require __DIR__ . '/Controllers/FastSlowInventoryReportController.php';
 require __DIR__ . '/Controllers/FreightChargesController.php';
 require __DIR__ . '/Controllers/AuthController.php';
+require __DIR__ . '/Controllers/InternalChatController.php';
 require __DIR__ . '/Controllers/ProductController.php';
 require __DIR__ . '/Controllers/PurchaseRequestController.php';
 require __DIR__ . '/Controllers/PurchaseOrderController.php';
@@ -186,6 +191,7 @@ require __DIR__ . '/Controllers/CampaignController.php';
 require __DIR__ . '/Controllers/CategoryController.php';
 require __DIR__ . '/Controllers/PromotionController.php';
 require __DIR__ . '/Controllers/LoyaltyDiscountController.php';
+require __DIR__ . '/Controllers/ProfitProtectionController.php';
 require __DIR__ . '/Controllers/RolePermissionController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
@@ -258,6 +264,7 @@ function app_router(): Router
     $messagesController = new MessagesController(new App\Repositories\MessagesRepository($db));
     $notificationsController = new NotificationsController(new App\Repositories\NotificationsRepository($db));
     $profilesController = new ProfilesController(new App\Repositories\ProfilesRepository($db));
+    $internalChatController = new InternalChatController(new App\Repositories\InternalChatRepository($db), $tokenService);
     $dailyCallMonitoringController = new DailyCallMonitoringController(new App\Repositories\DailyCallMonitoringRepository($db));
     $fastSlowInventoryReportController = new FastSlowInventoryReportController(new App\Repositories\FastSlowInventoryReportRepository($db));
     $freightChargesController = new FreightChargesController(new App\Repositories\FreightChargesRepository($db));
@@ -312,6 +319,7 @@ function app_router(): Router
         new App\Repositories\PromotionPostingRepository($db)
     );
     $loyaltyDiscountController = new LoyaltyDiscountController(new App\Repositories\LoyaltyDiscountRepository($db));
+    $profitProtectionController = new ProfitProtectionController(new App\Repositories\ProfitProtectionRepository($db));
 
     $requireBearerAuth = static function (callable $handler) use ($tokenService): callable {
         return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService) {
@@ -406,6 +414,12 @@ function app_router(): Router
     $router->patch('/api/v1/messages/{id}', [$messagesController, 'update']);
     $router->delete('/api/v1/messages/{id}', [$messagesController, 'delete']);
     $router->get('/api/v1/teams/{teamId}/messages/sender/{senderId}', [$messagesController, 'getBySender']);
+    $router->get('/api/v1/internal-chat/participants', [$internalChatController, 'participants']);
+    $router->get('/api/v1/internal-chat/conversations', [$internalChatController, 'conversations']);
+    $router->get('/api/v1/internal-chat/conversations/{conversationKey}/messages', [$internalChatController, 'messages']);
+    $router->post('/api/v1/internal-chat/messages', [$internalChatController, 'send']);
+    $router->post('/api/v1/internal-chat/conversations/{conversationKey}/read', [$internalChatController, 'markConversationRead']);
+    $router->get('/api/v1/internal-chat/unread-count', [$internalChatController, 'unreadCount']);
     $router->get('/api/v1/notifications', $requireBearerAuth([$notificationsController, 'list']));
     $router->get('/api/v1/notifications/unread-count', $requireBearerAuth([$notificationsController, 'unreadCount']));
     $router->post('/api/v1/notifications', $requireBearerAuth([$notificationsController, 'create']));
@@ -706,6 +720,15 @@ function app_router(): Router
     $router->patch('/api/v1/loyalty-discounts/{ruleId}', [$loyaltyDiscountController, 'update']);
     $router->patch('/api/v1/loyalty-discounts/{ruleId}/status', [$loyaltyDiscountController, 'updateStatus']);
     $router->delete('/api/v1/loyalty-discounts/{ruleId}', [$loyaltyDiscountController, 'delete']);
+    // Profit Protection
+    $router->get('/api/v1/profit-protection/threshold', [$profitProtectionController, 'threshold']);
+    $router->patch('/api/v1/profit-protection/threshold', [$profitProtectionController, 'updateThreshold']);
+    $router->post('/api/v1/profit-protection/validate-items', [$profitProtectionController, 'validateItems']);
+    $router->post('/api/v1/profit-protection/overrides', [$profitProtectionController, 'createOverride']);
+    $router->get('/api/v1/profit-protection/overrides', [$profitProtectionController, 'listOverrides']);
+    $router->get('/api/v1/profit-protection/override-stats', [$profitProtectionController, 'overrideStats']);
+    $router->post('/api/v1/profit-protection/admin-overrides', [$profitProtectionController, 'createAdminOverride']);
+    $router->get('/api/v1/profit-protection/admin-overrides', [$profitProtectionController, 'listAdminOverrides']);
 
     return $router;
 }

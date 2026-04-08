@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\LegacyPermissionMapper;
+use App\Support\Exceptions\HttpException;
 use PDO;
 
 final class StaffRepository
@@ -84,10 +85,7 @@ SQL;
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Normalize rows
-        foreach ($rows as &$row) {
-            $row = $this->normalizeStaffRow($row);
-        }
+        $rows = $this->dedupeStaffRows(array_map(fn (array $row): array => $this->normalizeStaffRow($row), $rows));
 
         $countSql = "SELECT COUNT(*) AS total FROM tblaccount a WHERE {$whereSql}";
         $countStmt = $this->db->pdo()->prepare($countSql);
@@ -292,6 +290,11 @@ SQL;
         $nameParts = preg_split('/\s+/', trim((string) ($data['full_name'] ?? '')), 2) ?: [];
         $firstName = trim((string) ($nameParts[0] ?? ''));
         $lastName = trim((string) ($nameParts[1] ?? ''));
+        $email = $this->normalizeEmail((string) ($data['email'] ?? ''));
+        if ($email === '') {
+            throw new HttpException(422, 'email is required');
+        }
+        $this->assertEmailAvailable($email);
         $roleId = $this->findOrCreateUserType($mainId, (string) $data['role']);
         $password = (string) ($data['password'] ?? '');
         $recode = md5($password);
@@ -325,7 +328,7 @@ SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->bindValue('first_name', $firstName, PDO::PARAM_STR);
         $stmt->bindValue('last_name', $lastName, PDO::PARAM_STR);
-        $stmt->bindValue('email', trim((string) ($data['email'] ?? '')), PDO::PARAM_STR);
+        $stmt->bindValue('email', $email, PDO::PARAM_STR);
         $stmt->bindValue('password', $hashedPassword, PDO::PARAM_STR);
         $stmt->bindValue('mobile', (string) ($data['mobile'] ?? ''), PDO::PARAM_STR);
         $birthday = trim((string) ($data['birthday'] ?? ''));
@@ -458,5 +461,58 @@ SQL;
             : ['home'];
 
         return $row;
+    }
+
+    private function normalizeEmail(string $email): string
+    {
+        return strtolower(trim($email));
+    }
+
+    private function dedupeStaffRows(array $rows): array
+    {
+        $seen = [];
+        $deduped = [];
+
+        foreach ($rows as $row) {
+            $emailKey = $this->normalizeEmail((string) ($row['email'] ?? ''));
+            $nameKey = strtolower(trim((string) ($row['full_name'] ?? '')));
+            $key = $emailKey !== '' ? 'email:' . $emailKey : 'name:' . $nameKey;
+
+            if ($key !== 'name:' && isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $deduped[] = $row;
+        }
+
+        return $deduped;
+    }
+
+    private function assertEmailAvailable(string $email, ?int $excludeStaffId = null): void
+    {
+        $sql = <<<SQL
+SELECT CAST(lid AS SIGNED) AS id
+FROM tblaccount
+WHERE LOWER(TRIM(COALESCE(lemail, ''))) = :email
+  AND COALESCE(lstatus, 0) = 1
+  AND (:exclude_staff_id IS NULL OR lid <> :exclude_staff_id_match)
+LIMIT 1
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->bindValue('email', $email, PDO::PARAM_STR);
+        if ($excludeStaffId === null) {
+            $stmt->bindValue('exclude_staff_id', null, PDO::PARAM_NULL);
+            $stmt->bindValue('exclude_staff_id_match', null, PDO::PARAM_NULL);
+        } else {
+            $stmt->bindValue('exclude_staff_id', $excludeStaffId, PDO::PARAM_INT);
+            $stmt->bindValue('exclude_staff_id_match', $excludeStaffId, PDO::PARAM_INT);
+        }
+        $stmt->execute();
+
+        if ($stmt->fetch(PDO::FETCH_ASSOC)) {
+            throw new HttpException(422, 'An active account with this email already exists');
+        }
     }
 }

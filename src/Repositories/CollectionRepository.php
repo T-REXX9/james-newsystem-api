@@ -807,7 +807,10 @@ SQL;
         $remarks = (string) ($payload['remarks'] ?? $item['lremarks']);
         $userId = (string) ($payload['user_id'] ?? $item['luserid']);
         $mainId = (string) ($payload['main_id'] ?? $item['lmainid']);
-        $transactions = is_array($payload['transactions'] ?? null) ? $payload['transactions'] : [];
+        $hasTransactionsPayload = array_key_exists('transactions', $payload);
+        $transactions = $hasTransactionsPayload
+            ? (is_array($payload['transactions'] ?? null) ? $payload['transactions'] : [])
+            : $this->getCollectionItemTransactions($itemId);
 
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -1031,6 +1034,18 @@ SQL;
         $stmt->execute(['lid' => $itemId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
+    }
+
+    private function getCollectionItemTransactions(int $itemId): array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT ltransaction_type, ltransaction_refno, ltransaction_no, ltransaction_amount
+             FROM tblcollection_item_transactions
+             WHERE lcollection_itemid = :item_id
+             ORDER BY lid ASC'
+        );
+        $stmt->execute(['item_id' => $itemId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     private function checkApproverLogExists(string $staffId, string $refno): bool

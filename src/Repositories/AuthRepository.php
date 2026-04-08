@@ -23,7 +23,7 @@ final class AuthRepository
         $stmt = $this->db->pdo()->prepare(
             'SELECT *
              FROM tblaccount
-             WHERE lemail = :email
+             WHERE LOWER(TRIM(COALESCE(lemail, \'\'))) = LOWER(TRIM(:email))
                AND COALESCE(lstatus, 0) = 1
              LIMIT 1'
         );
