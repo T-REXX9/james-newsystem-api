@@ -420,6 +420,7 @@ function app_router(): Router
     $router->post('/api/v1/internal-chat/messages', [$internalChatController, 'send']);
     $router->post('/api/v1/internal-chat/conversations/{conversationKey}/read', [$internalChatController, 'markConversationRead']);
     $router->get('/api/v1/internal-chat/unread-count', [$internalChatController, 'unreadCount']);
+    $router->get('/api/v1/internal-chat/stream', [$internalChatController, 'stream']);
     $router->get('/api/v1/notifications', $requireBearerAuth([$notificationsController, 'list']));
     $router->get('/api/v1/notifications/unread-count', $requireBearerAuth([$notificationsController, 'unreadCount']));
     $router->post('/api/v1/notifications', $requireBearerAuth([$notificationsController, 'create']));

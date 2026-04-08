@@ -356,6 +356,62 @@ SQL;
         return (int) ($stmt->fetchColumn() ?: 0);
     }
 
+    public function getRealtimeSnapshot(int $mainId, int $currentUserId): array
+    {
+        $participantMap = $this->participantMapForMain($mainId);
+
+        $latestMessageStmt = $this->db->pdo()->prepare(
+            'SELECT
+                CAST(lid AS CHAR) AS id,
+                COALESCE(lsource, \'\') AS conversation_key,
+                COALESCE(lmessage, \'\') AS message,
+                COALESCE(DATE_FORMAT(ldatetime, \'%Y-%m-%d %H:%i:%s\'), \'\') AS created_at,
+                CAST(COALESCE(lsendfrom, \'\') AS CHAR) AS sender_id,
+                CAST(COALESCE(lsendto, \'\') AS CHAR) AS recipient_id
+             FROM tblsms
+             WHERE COALESCE(ltype, \'\') = :chat_type
+               AND (
+                 CAST(COALESCE(lsendfrom, \'\') AS CHAR) = :current_user_id_sender
+                 OR CAST(COALESCE(lsendto, \'\') AS CHAR) = :current_user_id_recipient
+               )
+             ORDER BY ldatetime DESC, lid DESC
+             LIMIT 1'
+        );
+        $latestMessageStmt->execute([
+            ':chat_type' => self::CHAT_TYPE,
+            ':current_user_id_sender' => (string) $currentUserId,
+            ':current_user_id_recipient' => (string) $currentUserId,
+        ]);
+        $latestMessage = $latestMessageStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+
+        $latestAlertStmt = $this->db->pdo()->prepare(
+            'SELECT
+                CAST(COALESCE(MAX(lid), 0) AS CHAR) AS latest_alert_id
+             FROM tblusers_alerts
+             WHERE COALESCE(ltype, \'\') = :chat_type
+               AND COALESCE(luserid, \'\') = :current_user_id'
+        );
+        $latestAlertStmt->execute([
+            ':chat_type' => self::CHAT_TYPE,
+            ':current_user_id' => (string) $currentUserId,
+        ]);
+        $latestAlertId = (string) ($latestAlertStmt->fetchColumn() ?: '0');
+
+        $senderId = trim((string) ($latestMessage['sender_id'] ?? ''));
+        $sender = $senderId !== '' ? ($participantMap[$senderId] ?? $this->fallbackParticipant($senderId)) : null;
+
+        return [
+            'latest_message_id' => (string) ($latestMessage['id'] ?? '0'),
+            'latest_message_at' => (string) ($latestMessage['created_at'] ?? ''),
+            'latest_message_preview' => $this->buildPreview((string) ($latestMessage['message'] ?? '')),
+            'latest_conversation_key' => (string) ($latestMessage['conversation_key'] ?? ''),
+            'latest_sender_id' => $senderId,
+            'latest_sender_name' => (string) ($sender['full_name'] ?? ''),
+            'latest_alert_id' => $latestAlertId,
+            'unread_count' => $this->getUnreadCount($currentUserId),
+        ];
+    }
+
     public static function buildConversationKey(int $firstUserId, int $secondUserId): string
     {
         $users = [$firstUserId, $secondUserId];

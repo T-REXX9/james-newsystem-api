@@ -24,7 +24,7 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
      `tblusertype`/`tblweb_permission` data. Idempotent; safe to run multiple times.
      Reads DB credentials from `.env`.)*
 4. Run local server:
-   - `php -S 127.0.0.1:8081 -t public`
+   - `PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8081 -t public`
 
 If you use the combined launcher, API URL/port come from:
 - `/Volumes/ORICO/james-system/.env.shared`

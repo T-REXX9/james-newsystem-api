@@ -62,6 +62,9 @@ final class Router
 
                 $query = $_GET ?? [];
                 $result = ($route['handler'])($params, $query, $body);
+                if ($result === null && headers_sent()) {
+                    return;
+                }
                 Response::json(['ok' => true, 'data' => $result], 200);
                 return;
             }
