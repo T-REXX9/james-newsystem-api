@@ -1075,7 +1075,8 @@ SQL;
         $status = strtolower(trim((string) ($inquiry['status'] ?? 'Pending')));
         $linkedSalesOrder = $this->getLinkedSalesOrderRow($pdo, $mainId, $inquiryRefno);
         $hasActiveSalesOrder = $linkedSalesOrder !== null && (int) ($linkedSalesOrder['lcancel'] ?? 0) === 0;
-        if ($status !== 'submitted' && !$hasActiveSalesOrder) {
+        $shouldDeductForInquiry = in_array($status, ['pending', 'submitted'], true);
+        if (!$shouldDeductForInquiry && !$hasActiveSalesOrder) {
             return;
         }
 
