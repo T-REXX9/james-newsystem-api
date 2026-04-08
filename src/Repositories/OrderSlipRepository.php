@@ -459,16 +459,6 @@ SQL;
             ]);
 
             $this->replaceItems($orderSlipRefno, $userId, $salesRefno, $payload['items'] ?? []);
-            $this->syncInventoryStockLogs($pdo, [
-                'order_slip_refno' => $orderSlipRefno,
-                'slip_no' => $slipNo,
-                'sales_date' => $salesDate,
-                'created_at' => $salesDate . ' ' . date('H:i:s'),
-                'customer_name' => $customerName,
-                'contact_id' => $contactId,
-                'status' => $status,
-                'is_cancelled' => 0,
-            ], $payload['items'] ?? []);
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Order Slip', 'Create', $orderSlipRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
@@ -557,13 +547,6 @@ SQL;
                 $userId = (int) ($payload['user_id'] ?? 1);
                 $this->replaceItems($orderSlipRefno, $userId, $salesRefno, $payload['items']);
             }
-
-            $reloaded = $this->getOrderSlip($mainId, $orderSlipRefno);
-            if ($reloaded !== null) {
-                $orderSlipRecord = is_array($reloaded['order_slip'] ?? null) ? $reloaded['order_slip'] : [];
-                $orderSlipItems = is_array($reloaded['items'] ?? null) ? $reloaded['items'] : [];
-                $this->syncInventoryStockLogs($pdo, $orderSlipRecord, $orderSlipItems);
-            }
             $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
             (new AuditTrailWriter($pdo))->write($mainId, $auditUserId, 'Order Slip', 'Update', $orderSlipRefno);
             $pdo->commit();
@@ -583,7 +566,6 @@ SQL;
         }
 
         $orderSlip = is_array($existing['order_slip'] ?? null) ? $existing['order_slip'] : [];
-        $items = is_array($existing['items'] ?? null) ? $existing['items'] : [];
         if ((int) ($orderSlip['is_cancelled'] ?? 0) === 1 || strtolower(trim((string) ($orderSlip['status'] ?? ''))) === 'cancelled') {
             return true;
         }
@@ -609,8 +591,7 @@ SQL;
                 return false;
             }
 
-            $this->syncLinkedSalesCancellation($pdo, (string) ($orderSlip['order_id'] ?? ''), trim($reason));
-            $this->insertCancellationInventoryRestoreLogs($pdo, $orderSlip, $items, trim($reason));
+            $this->syncLinkedSalesCancellation($pdo, $mainId, (string) ($orderSlip['order_id'] ?? ''), trim($reason));
             $pdo->commit();
             return true;
         } catch (\Throwable $e) {
@@ -918,7 +899,7 @@ SQL;
         }
     }
 
-    private function syncLinkedSalesCancellation(PDO $pdo, string $salesRefno, string $reason = ''): void
+    private function syncLinkedSalesCancellation(PDO $pdo, int $mainId, string $salesRefno, string $reason = ''): void
     {
         $salesRefno = trim($salesRefno);
         if ($salesRefno === '') {
@@ -951,6 +932,8 @@ SQL;
         )->execute([
             'inquiry_refno' => $inquiryRefno,
         ]);
+
+        (new SalesInquiryRepository($this->db))->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
     }
 
     /**

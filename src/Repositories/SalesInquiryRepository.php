@@ -354,6 +354,7 @@ SQL;
                 $this->insertItem($pdo, $inquiryRefno, $inquiryNo, $salesDate, $item);
             }
 
+            $this->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Sales Inquiry', 'Create', $inquiryRefno);
             $pdo->commit();
             return $this->getInquiry($mainId, $inquiryRefno) ?? [];
@@ -443,6 +444,7 @@ SQL;
             }
 
             $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, $inquiryRefno, true, $syncItems);
+            $this->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
             $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
             (new AuditTrailWriter($pdo))->write($mainId, $auditUserId, 'Sales Inquiry', 'Update', $inquiryRefno);
             $pdo->commit();
@@ -458,18 +460,52 @@ SQL;
 
     public function cancelInquiry(int $mainId, string $inquiryRefno): bool
     {
-        $stmt = $this->db->pdo()->prepare(
-            'UPDATE tblinquiry
-             SET IsCancel = 1, lsubmitstat = "Cancelled"
-             WHERE lmain_id = :lmain_id
-               AND lrefno = :lrefno'
-        );
-        $stmt->execute([
-            'lmain_id' => (string) $mainId,
-            'lrefno' => $inquiryRefno,
-        ]);
+        $linkedSalesOrder = $this->getLinkedSalesOrderRow($this->db->pdo(), $mainId, $inquiryRefno);
+        if ($linkedSalesOrder !== null && !$this->canSyncLinkedSalesOrder($linkedSalesOrder)) {
+            return false;
+        }
 
-        return $stmt->rowCount() > 0;
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare(
+                'UPDATE tblinquiry
+                 SET IsCancel = 1, lsubmitstat = "Cancelled"
+                 WHERE lmain_id = :lmain_id
+                   AND lrefno = :lrefno'
+            );
+            $stmt->execute([
+                'lmain_id' => (string) $mainId,
+                'lrefno' => $inquiryRefno,
+            ]);
+
+            $updated = $stmt->rowCount() > 0;
+            if ($updated) {
+                $linkedSalesOrder = $this->getLinkedSalesOrderRow($pdo, $mainId, $inquiryRefno);
+                if ($linkedSalesOrder !== null && $this->canSyncLinkedSalesOrder($linkedSalesOrder)) {
+                    $pdo->prepare(
+                        'UPDATE tbltransaction
+                         SET lcancel = 1,
+                             lsubmitstat = "Cancelled",
+                             ltransaction_status = "Cancelled"
+                         WHERE lmain_id = :main_id
+                           AND lrefno = :sales_refno'
+                    )->execute([
+                        'main_id' => (string) $mainId,
+                        'sales_refno' => (string) ($linkedSalesOrder['lrefno'] ?? ''),
+                    ]);
+                }
+                $this->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
+            }
+
+            $pdo->commit();
+            return $updated;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
     }
 
     public function addItem(int $mainId, string $inquiryRefno, array $payload): array
@@ -492,6 +528,7 @@ SQL;
             );
             $itemId = (int) $pdo->lastInsertId();
             $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, $inquiryRefno, false, true);
+            $this->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -576,7 +613,9 @@ SQL;
             $sql = 'UPDATE tblinquiry_item SET ' . implode(', ', $fields) . ' WHERE lid = :item_id';
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
-            $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, (string) ($existing['inquiry_refno'] ?? ''), false, true);
+            $inquiryRefno = (string) ($existing['inquiry_refno'] ?? '');
+            $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, $inquiryRefno, false, true);
+            $this->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -603,7 +642,9 @@ SQL;
             $stmt->execute(['item_id' => $itemId]);
             $deleted = $stmt->rowCount() > 0;
             if ($deleted) {
-                $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, (string) ($existing['inquiry_refno'] ?? ''), false, true);
+                $inquiryRefno = (string) ($existing['inquiry_refno'] ?? '');
+                $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, $inquiryRefno, false, true);
+                $this->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
             }
             $pdo->commit();
             return $deleted;
@@ -1003,6 +1044,84 @@ SQL;
         }
 
         return strcasecmp(trim((string) ($item['remark'] ?? '')), 'NotListed') !== 0;
+    }
+
+    public function syncInquiryInventoryLogs(PDO $pdo, int $mainId, string $inquiryRefno): void
+    {
+        $inquiryRefno = trim($inquiryRefno);
+        if ($inquiryRefno === '') {
+            return;
+        }
+
+        $delete = $pdo->prepare(
+            'DELETE FROM tblinventory_logs
+             WHERE lrefno = :refno
+               AND ltransaction_type = :transaction_type'
+        );
+        $delete->execute([
+            'refno' => $inquiryRefno,
+            'transaction_type' => 'Inquiry',
+        ]);
+
+        $inquiry = $this->getInquiry($mainId, $inquiryRefno);
+        if ($inquiry === null) {
+            return;
+        }
+
+        if ((int) ($inquiry['is_cancelled'] ?? 0) === 1) {
+            return;
+        }
+
+        $status = strtolower(trim((string) ($inquiry['status'] ?? 'Pending')));
+        $linkedSalesOrder = $this->getLinkedSalesOrderRow($pdo, $mainId, $inquiryRefno);
+        $hasActiveSalesOrder = $linkedSalesOrder !== null && (int) ($linkedSalesOrder['lcancel'] ?? 0) === 0;
+        if ($status !== 'submitted' && !$hasActiveSalesOrder) {
+            return;
+        }
+
+        $items = array_values(array_filter(
+            $this->listItems($inquiryRefno),
+            fn(array $item): bool => $this->isConvertibleInquiryItem($item)
+        ));
+        if ($items === []) {
+            return;
+        }
+
+        $salesDate = $this->normalizeDate((string) ($inquiry['sales_date'] ?? date('Y-m-d')));
+        $salesTime = $this->normalizeTime((string) ($inquiry['sales_time'] ?? date('H:i:s')));
+        $insert = $pdo->prepare(
+            'INSERT INTO tblinventory_logs
+            (linvent_id, lin, lout, ltotal, ldateadded, lprocess_by, lstatus_logs, lnote, linventory_id, lprice, lrefno, lcustomer_id, llocation, lwarehouse, ltransaction_type)
+            VALUES
+            (:linvent_id, :lin, :lout, :ltotal, :ldateadded, :lprocess_by, :lstatus_logs, :lnote, :linventory_id, :lprice, :lrefno, :lcustomer_id, :llocation, :lwarehouse, :ltransaction_type)'
+        );
+
+        foreach ($items as $item) {
+            $inventoryLogRef = trim((string) ($item['item_refno'] ?? ''));
+            $inventoryItemId = trim((string) ($item['item_id'] ?? $inventoryLogRef));
+            $qty = max(0, (int) ($item['qty'] ?? 0));
+            if ($inventoryLogRef === '' || $inventoryItemId === '' || $qty <= 0) {
+                continue;
+            }
+
+            $insert->execute([
+                'linvent_id' => $inventoryLogRef,
+                'lin' => 0,
+                'lout' => $qty,
+                'ltotal' => $qty,
+                'ldateadded' => $salesDate . ' ' . $salesTime,
+                'lprocess_by' => 'INQ ' . (string) ($inquiry['inquiry_no'] ?? ''),
+                'lstatus_logs' => '-',
+                'lnote' => (string) ($inquiry['customer_company'] ?? ''),
+                'linventory_id' => $inventoryItemId,
+                'lprice' => (float) ($item['unit_price'] ?? 0),
+                'lrefno' => $inquiryRefno,
+                'lcustomer_id' => (string) ($inquiry['contact_id'] ?? ''),
+                'llocation' => (string) ($item['location'] ?? ''),
+                'lwarehouse' => 'WH1',
+                'ltransaction_type' => 'Inquiry',
+            ]);
+        }
     }
 
     private function generateSalesNumber(PDO $pdo): string

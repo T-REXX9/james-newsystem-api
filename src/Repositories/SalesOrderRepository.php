@@ -569,7 +569,7 @@ SQL;
             return false;
         }
 
-        $this->syncInquiryOnSalesCancel($salesRefno);
+        $this->syncInquiryOnSalesCancel($mainId, $salesRefno);
         return true;
     }
 
@@ -700,7 +700,7 @@ SQL;
             $set[] = 'ldr_no = NULL';
             $set[] = 'llast_refno = :last_refno';
             $params['last_refno'] = $lastLinkedDocumentNo !== '' ? $lastLinkedDocumentNo : null;
-            $this->syncInquiryOnSalesUnpost($salesRefno);
+            $this->syncInquiryOnSalesUnpost($mainId, $salesRefno);
         } elseif ($normalizedAction === 'cancel' || $normalizedAction === 'cancel_so' || $normalizedAction === 'cancelled' || $normalizedAction === 'canceled') {
             $this->cleanupLinkedDocumentsForSalesOrder($salesRefno);
             $set[] = "lsubmitstat = 'Cancelled'";
@@ -712,7 +712,7 @@ SQL;
             $set[] = 'ldr_refno = NULL';
             $set[] = 'ldr_no = NULL';
             $params['cancel_reason'] = trim((string) ($payload['reason'] ?? ''));
-            $this->syncInquiryOnSalesCancel($salesRefno);
+            $this->syncInquiryOnSalesCancel($mainId, $salesRefno);
         } else {
             throw new RuntimeException('Unsupported action: ' . $action);
         }
@@ -864,14 +864,6 @@ SQL;
         $doc = $created['order_slip'] ?? [];
         $docRef = (string) ($doc['order_slip_refno'] ?? '');
         $docNo = (string) ($doc['slip_no'] ?? '');
-        $this->insertDocumentStockLogs(
-            $salesRefno,
-            $order,
-            $items,
-            $docRef,
-            $docNo,
-            'Order Slip'
-        );
         $this->insertDocumentLedgerDebit(
             $mainId,
             $userId,
@@ -971,14 +963,6 @@ SQL;
         $doc = $created['invoice'] ?? [];
         $docRef = (string) ($doc['invoice_refno'] ?? '');
         $docNo = (string) ($doc['invoice_no'] ?? '');
-        $this->insertDocumentStockLogs(
-            $salesRefno,
-            $order,
-            $items,
-            $docRef,
-            $docNo,
-            'Invoice'
-        );
         $this->insertDocumentLedgerDebit(
             $mainId,
             $userId,
@@ -1014,7 +998,7 @@ SQL;
         ];
     }
 
-    private function syncInquiryOnSalesCancel(string $salesRefno): void
+    private function syncInquiryOnSalesCancel(int $mainId, string $salesRefno): void
     {
         $stmt = $this->db->pdo()->prepare('SELECT linquiry_refno FROM tbltransaction WHERE lrefno = :refno LIMIT 1');
         $stmt->execute(['refno' => $salesRefno]);
@@ -1029,9 +1013,11 @@ SQL;
              WHERE lrefno = :refno'
         );
         $update->execute(['refno' => $inquiryRefno]);
+
+        (new SalesInquiryRepository($this->db))->syncInquiryInventoryLogs($this->db->pdo(), $mainId, $inquiryRefno);
     }
 
-    private function syncInquiryOnSalesUnpost(string $salesRefno): void
+    private function syncInquiryOnSalesUnpost(int $mainId, string $salesRefno): void
     {
         $stmt = $this->db->pdo()->prepare('SELECT linquiry_refno FROM tbltransaction WHERE lrefno = :refno LIMIT 1');
         $stmt->execute(['refno' => $salesRefno]);
@@ -1046,6 +1032,8 @@ SQL;
              WHERE lrefno = :refno'
         );
         $update->execute(['refno' => $inquiryRefno]);
+
+        (new SalesInquiryRepository($this->db))->syncInquiryInventoryLogs($this->db->pdo(), $mainId, $inquiryRefno);
     }
 
     /**
