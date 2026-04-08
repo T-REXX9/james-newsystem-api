@@ -127,43 +127,7 @@ final class InternalChatController
 
     public function stream(array $params = [], array $query = [], array $body = []): ?array
     {
-        $claims = $this->requireStreamAuthClaims($query);
-        [$userId, $mainId] = $this->resolveIdentity($claims);
-
-        ignore_user_abort(true);
-        set_time_limit(0);
-
-        if (function_exists('apache_setenv')) {
-            @apache_setenv('no-gzip', '1');
-        }
-        @ini_set('zlib.output_compression', '0');
-        @ini_set('output_buffering', 'off');
-
-        Response::eventStream();
-        echo "retry: 2000\n\n";
-        Response::flush();
-
-        $startedAt = time();
-        $lastSignature = '';
-        $lastHeartbeatAt = 0;
-
-        while (!connection_aborted() && (time() - $startedAt) < 55) {
-            $snapshot = $this->repo->getRealtimeSnapshot($mainId, $userId);
-            $signature = hash('sha256', json_encode($snapshot, JSON_UNESCAPED_SLASHES) ?: '');
-
-            if ($signature !== $lastSignature) {
-                Response::sseEvent('chat_state', $snapshot, (string) time());
-                $lastSignature = $signature;
-                $lastHeartbeatAt = time();
-            } elseif ((time() - $lastHeartbeatAt) >= 15) {
-                Response::sseComment('heartbeat');
-                $lastHeartbeatAt = time();
-            }
-
-            usleep(1000000);
-        }
-
-        return null;
+        throw new HttpException(503, 'Internal chat live updates are temporarily disabled.');
     }
 
     private function requireAuthClaims(): array
