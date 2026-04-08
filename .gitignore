@@ -1,3 +1,4 @@
 .env
 ._*
 **/._*
+data/loyalty_discount_rules.json
