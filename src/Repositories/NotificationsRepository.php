@@ -9,38 +9,76 @@ use PDO;
 
 final class NotificationsRepository
 {
+    private const DEFAULT_MAX_AGE_DAYS = 10;
+
     public function __construct(private readonly Database $db)
     {
     }
 
-    public function listByUser(string $userId, int $limit = 50): array
+    public function listByUser(string $userId, int $limit = 50, ?int $maxAgeDays = self::DEFAULT_MAX_AGE_DAYS): array
     {
-        $stmt = $this->db->pdo()->prepare(
-            'SELECT *
-             FROM tblnotifications
-             WHERE luserid = :user_id
-               AND COALESCE(lstatus, 0) != -1
+        $cutoff = $this->resolveCutoffDate($maxAgeDays);
+        $sql = 'SELECT *
+                FROM tblnotifications
+                WHERE luserid = :user_id
+                  AND COALESCE(lstatus, 0) != -1';
+
+        if ($cutoff !== null) {
+            $sql .= ' AND COALESCE(ldatetime, NOW()) >= :cutoff';
+        }
+
+        $sql .= '
              ORDER BY
                CASE WHEN COALESCE(lstatus, 0) = 1 THEN 0 ELSE 1 END ASC,
                ldatetime DESC,
                lid DESC
-             LIMIT :limit'
-        );
+             LIMIT :limit';
+
+        $stmt = $this->db->pdo()->prepare($sql);
         $stmt->bindValue(':user_id', $userId, PDO::PARAM_STR);
+        if ($cutoff !== null) {
+            $stmt->bindValue(':cutoff', $cutoff, PDO::PARAM_STR);
+        }
         $stmt->bindValue(':limit', max(1, min(500, $limit)), PDO::PARAM_INT);
         $stmt->execute();
 
         return array_map(fn (array $row): array => $this->normalizeNotification($row), $stmt->fetchAll(PDO::FETCH_ASSOC));
     }
 
-    public function getUnreadCount(string $userId): int
+    public function getUnreadCount(string $userId, ?int $maxAgeDays = self::DEFAULT_MAX_AGE_DAYS): int
     {
-        $stmt = $this->db->pdo()->prepare(
-            'SELECT COUNT(*) FROM tblnotifications WHERE luserid = :user_id AND COALESCE(lstatus, 0) = 1'
-        );
-        $stmt->execute([':user_id' => $userId]);
+        $cutoff = $this->resolveCutoffDate($maxAgeDays);
+        $sql = 'SELECT COUNT(*)
+                FROM tblnotifications
+                WHERE luserid = :user_id
+                  AND COALESCE(lstatus, 0) = 1';
+
+        if ($cutoff !== null) {
+            $sql .= ' AND COALESCE(ldatetime, NOW()) >= :cutoff';
+        }
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->bindValue(':user_id', $userId, PDO::PARAM_STR);
+        if ($cutoff !== null) {
+            $stmt->bindValue(':cutoff', $cutoff, PDO::PARAM_STR);
+        }
+        $stmt->execute();
 
         return (int) ($stmt->fetchColumn() ?: 0);
+    }
+
+    private function resolveCutoffDate(?int $maxAgeDays): ?string
+    {
+        if ($maxAgeDays === null) {
+            $maxAgeDays = self::DEFAULT_MAX_AGE_DAYS;
+        }
+
+        if ($maxAgeDays <= 0) {
+            return null;
+        }
+
+        $boundedDays = min(365, max(1, $maxAgeDays));
+        return date('Y-m-d H:i:s', strtotime(sprintf('-%d days', $boundedDays)));
     }
 
     public function create(array $input): ?array

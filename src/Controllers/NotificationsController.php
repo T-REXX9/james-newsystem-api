@@ -9,6 +9,8 @@ use App\Support\Exceptions\HttpException;
 
 final class NotificationsController
 {
+    private const DEFAULT_MAX_AGE_DAYS = 10;
+
     public function __construct(private readonly NotificationsRepository $repo)
     {
     }
@@ -21,8 +23,9 @@ final class NotificationsController
         }
 
         $limit = max(1, min(500, (int) ($query['limit'] ?? 50)));
+        $maxAgeDays = $this->resolveMaxAgeDays($query['max_age_days'] ?? null);
         return [
-            'data' => $this->repo->listByUser($userId, $limit),
+            'data' => $this->repo->listByUser($userId, $limit, $maxAgeDays),
         ];
     }
 
@@ -34,7 +37,7 @@ final class NotificationsController
         }
 
         return [
-            'count' => $this->repo->getUnreadCount($userId),
+            'count' => $this->repo->getUnreadCount($userId, $this->resolveMaxAgeDays($query['max_age_days'] ?? null)),
         ];
     }
 
@@ -132,5 +135,19 @@ final class NotificationsController
         return [
             'data' => $this->repo->scanInventoryAlerts($mainId),
         ];
+    }
+
+    private function resolveMaxAgeDays(mixed $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return self::DEFAULT_MAX_AGE_DAYS;
+        }
+
+        $days = (int) $value;
+        if ($days <= 0) {
+            return null;
+        }
+
+        return min(365, max(1, $days));
     }
 }

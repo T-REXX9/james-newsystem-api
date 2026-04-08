@@ -358,23 +358,24 @@ SQL;
 
     public function getRealtimeSnapshot(int $mainId, int $currentUserId): array
     {
-        $participantMap = $this->participantMapForMain($mainId);
-
         $latestMessageStmt = $this->db->pdo()->prepare(
             'SELECT
-                CAST(lid AS CHAR) AS id,
-                COALESCE(lsource, \'\') AS conversation_key,
-                COALESCE(lmessage, \'\') AS message,
-                COALESCE(DATE_FORMAT(ldatetime, \'%Y-%m-%d %H:%i:%s\'), \'\') AS created_at,
-                CAST(COALESCE(lsendfrom, \'\') AS CHAR) AS sender_id,
-                CAST(COALESCE(lsendto, \'\') AS CHAR) AS recipient_id
-             FROM tblsms
-             WHERE COALESCE(ltype, \'\') = :chat_type
+                CAST(s.lid AS CHAR) AS id,
+                COALESCE(s.lsource, \'\') AS conversation_key,
+                COALESCE(s.lmessage, \'\') AS message,
+                COALESCE(DATE_FORMAT(s.ldatetime, \'%Y-%m-%d %H:%i:%s\'), \'\') AS created_at,
+                CAST(COALESCE(s.lsendfrom, \'\') AS CHAR) AS sender_id,
+                CAST(COALESCE(s.lsendto, \'\') AS CHAR) AS recipient_id,
+                TRIM(CONCAT_WS(\' \', COALESCE(a.lfname, \'\'), COALESCE(a.llname, \'\'))) AS sender_name
+             FROM tblsms s
+             LEFT JOIN tblaccount a
+               ON CAST(a.lid AS CHAR) = CAST(COALESCE(s.lsendfrom, \'\') AS CHAR)
+             WHERE COALESCE(s.ltype, \'\') = :chat_type
                AND (
-                 CAST(COALESCE(lsendfrom, \'\') AS CHAR) = :current_user_id_sender
-                 OR CAST(COALESCE(lsendto, \'\') AS CHAR) = :current_user_id_recipient
+                 CAST(COALESCE(s.lsendfrom, \'\') AS CHAR) = :current_user_id_sender
+                 OR CAST(COALESCE(s.lsendto, \'\') AS CHAR) = :current_user_id_recipient
                )
-             ORDER BY ldatetime DESC, lid DESC
+             ORDER BY s.ldatetime DESC, s.lid DESC
              LIMIT 1'
         );
         $latestMessageStmt->execute([
@@ -384,31 +385,30 @@ SQL;
         ]);
         $latestMessage = $latestMessageStmt->fetch(PDO::FETCH_ASSOC) ?: null;
 
-        $latestAlertStmt = $this->db->pdo()->prepare(
+        $alertStatsStmt = $this->db->pdo()->prepare(
             'SELECT
-                CAST(COALESCE(MAX(lid), 0) AS CHAR) AS latest_alert_id
+                CAST(COALESCE(MAX(lid), 0) AS CHAR) AS latest_alert_id,
+                SUM(CASE WHEN COALESCE(lstatus, 0) = :unread_status THEN 1 ELSE 0 END) AS unread_count
              FROM tblusers_alerts
              WHERE COALESCE(ltype, \'\') = :chat_type
                AND COALESCE(luserid, \'\') = :current_user_id'
         );
-        $latestAlertStmt->execute([
+        $alertStatsStmt->execute([
             ':chat_type' => self::CHAT_TYPE,
             ':current_user_id' => (string) $currentUserId,
+            ':unread_status' => self::STATUS_UNREAD,
         ]);
-        $latestAlertId = (string) ($latestAlertStmt->fetchColumn() ?: '0');
-
-        $senderId = trim((string) ($latestMessage['sender_id'] ?? ''));
-        $sender = $senderId !== '' ? ($participantMap[$senderId] ?? $this->fallbackParticipant($senderId)) : null;
+        $alertStats = $alertStatsStmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
         return [
             'latest_message_id' => (string) ($latestMessage['id'] ?? '0'),
             'latest_message_at' => (string) ($latestMessage['created_at'] ?? ''),
             'latest_message_preview' => $this->buildPreview((string) ($latestMessage['message'] ?? '')),
             'latest_conversation_key' => (string) ($latestMessage['conversation_key'] ?? ''),
-            'latest_sender_id' => $senderId,
-            'latest_sender_name' => (string) ($sender['full_name'] ?? ''),
-            'latest_alert_id' => $latestAlertId,
-            'unread_count' => $this->getUnreadCount($currentUserId),
+            'latest_sender_id' => trim((string) ($latestMessage['sender_id'] ?? '')),
+            'latest_sender_name' => trim((string) ($latestMessage['sender_name'] ?? '')),
+            'latest_alert_id' => (string) ($alertStats['latest_alert_id'] ?? '0'),
+            'unread_count' => (int) ($alertStats['unread_count'] ?? 0),
         ];
     }
 
