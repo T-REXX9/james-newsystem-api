@@ -41,15 +41,17 @@ final class InternalChatTypingStore
     /**
      * @return string[]
      */
-    public function setTyping(string $conversationKey, string $userId, bool $isTyping, int $ttlSeconds = 8): array
+    public function setTyping(string $conversationKey, string $userId, bool $isTyping, int $ttlMilliseconds = 3500): array
     {
-        return $this->withLockedStore(function (array &$store) use ($conversationKey, $userId, $isTyping, $ttlSeconds): array {
+        return $this->withLockedStore(function (array &$store) use ($conversationKey, $userId, $isTyping, $ttlMilliseconds): array {
             $this->prune($store);
 
             $conversation = $store['conversations'][$conversationKey] ?? [];
             if ($isTyping) {
+                $expiresAtMs = $this->nowMs() + max(250, $ttlMilliseconds);
                 $conversation[$userId] = [
-                    'expires_at' => time() + max(3, $ttlSeconds),
+                    'expires_at' => (int) floor($expiresAtMs / 1000),
+                    'expires_at_ms' => $expiresAtMs,
                 ];
             } else {
                 unset($conversation[$userId]);
@@ -117,7 +119,7 @@ final class InternalChatTypingStore
 
     private function prune(array &$store): void
     {
-        $now = time();
+        $nowMs = $this->nowMs();
 
         foreach ($store['conversations'] as $conversationKey => $conversation) {
             if (!is_array($conversation)) {
@@ -126,8 +128,7 @@ final class InternalChatTypingStore
             }
 
             foreach ($conversation as $userId => $payload) {
-                $expiresAt = (int) ($payload['expires_at'] ?? 0);
-                if ($expiresAt <= $now) {
+                if ($this->resolveExpiresAtMs($payload) <= $nowMs) {
                     unset($store['conversations'][$conversationKey][$userId]);
                 }
             }
@@ -136,5 +137,29 @@ final class InternalChatTypingStore
                 unset($store['conversations'][$conversationKey]);
             }
         }
+    }
+
+    private function nowMs(): int
+    {
+        return (int) floor(microtime(true) * 1000);
+    }
+
+    private function resolveExpiresAtMs(mixed $payload): int
+    {
+        if (!is_array($payload)) {
+            return 0;
+        }
+
+        $expiresAtMs = (int) ($payload['expires_at_ms'] ?? 0);
+        if ($expiresAtMs > 0) {
+            return $expiresAtMs;
+        }
+
+        $expiresAtSeconds = (int) ($payload['expires_at'] ?? 0);
+        if ($expiresAtSeconds > 0) {
+            return $expiresAtSeconds * 1000;
+        }
+
+        return 0;
     }
 }
