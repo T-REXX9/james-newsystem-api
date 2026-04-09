@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\InternalChatReactionStore;
 use PDO;
 use RuntimeException;
 
@@ -14,7 +15,10 @@ final class InternalChatRepository
     private const STATUS_UNREAD = 1;
     private const STATUS_READ = 0;
 
-    public function __construct(private readonly Database $db)
+    public function __construct(
+        private readonly Database $db,
+        private readonly ?InternalChatReactionStore $reactionStore = null
+    )
     {
     }
 
@@ -122,38 +126,35 @@ SQL;
 
     public function listMessages(int $mainId, int $currentUserId, string $conversationKey): array
     {
-        $participantIds = $this->participantIdsForConversationKey($conversationKey);
-        if ($participantIds === null || !in_array((string) $currentUserId, $participantIds, true)) {
-            throw new RuntimeException('Conversation not found');
-        }
-
-        $allowedParticipants = array_fill_keys(array_map('strval', $this->participantIdsForMain($mainId)), true);
-        foreach ($participantIds as $participantId) {
-            if (!isset($allowedParticipants[$participantId]) && $participantId !== (string) $currentUserId) {
-                throw new RuntimeException('Conversation not found');
-            }
-        }
+        $this->assertConversationAccess($mainId, $currentUserId, $conversationKey);
 
         $participantMap = $this->participantMapForMain($mainId);
 
         $stmt = $this->db->pdo()->prepare(
             'SELECT
-                CAST(lid AS CHAR) AS id,
-                COALESCE(lsource, \'\') AS conversation_key,
-                COALESCE(lmessage, \'\') AS message,
-                COALESCE(DATE_FORMAT(ldatetime, \'%Y-%m-%d %H:%i:%s\'), \'\') AS created_at,
-                CAST(COALESCE(lsendfrom, \'\') AS CHAR) AS sender_id,
-                CAST(COALESCE(lsendto, \'\') AS CHAR) AS recipient_id
-             FROM tblsms
-             WHERE COALESCE(ltype, \'\') = :chat_type
-               AND COALESCE(lsource, \'\') = :conversation_key
+                CAST(s.lid AS CHAR) AS id,
+                COALESCE(s.lsource, \'\') AS conversation_key,
+                COALESCE(s.lmessage, \'\') AS message,
+                COALESCE(DATE_FORMAT(s.ldatetime, \'%Y-%m-%d %H:%i:%s\'), \'\') AS created_at,
+                CAST(COALESCE(s.lsendfrom, \'\') AS CHAR) AS sender_id,
+                CAST(COALESCE(s.lsendto, \'\') AS CHAR) AS recipient_id,
+                CAST(COALESCE(ua.lstatus, -1) AS SIGNED) AS recipient_alert_status,
+                CAST(COALESCE(ua.lid, 0) AS SIGNED) AS recipient_alert_id
+             FROM tblsms s
+             LEFT JOIN tblusers_alerts ua
+               ON COALESCE(ua.ltype, \'\') = :alert_chat_type
+              AND COALESCE(ua.lgenrefno, \'\') = CAST(s.lid AS CHAR)
+              AND COALESCE(ua.luserid, \'\') = CAST(COALESCE(s.lsendto, \'\') AS CHAR)
+             WHERE COALESCE(s.ltype, \'\') = :chat_type
+               AND COALESCE(s.lsource, \'\') = :conversation_key
                AND (
-                 CAST(COALESCE(lsendfrom, \'\') AS CHAR) = :current_user_id_sender
-                 OR CAST(COALESCE(lsendto, \'\') AS CHAR) = :current_user_id_recipient
+                 CAST(COALESCE(s.lsendfrom, \'\') AS CHAR) = :current_user_id_sender
+                 OR CAST(COALESCE(s.lsendto, \'\') AS CHAR) = :current_user_id_recipient
                )
-             ORDER BY ldatetime ASC, lid ASC'
+             ORDER BY s.ldatetime ASC, s.lid ASC'
         );
         $stmt->execute([
+            ':alert_chat_type' => self::CHAT_TYPE,
             ':chat_type' => self::CHAT_TYPE,
             ':conversation_key' => $conversationKey,
             ':current_user_id_sender' => (string) $currentUserId,
@@ -161,12 +162,19 @@ SQL;
         ]);
 
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        return array_map(function (array $row) use ($currentUserId, $participantMap): array {
+        $messages = array_map(function (array $row) use ($currentUserId, $participantMap): array {
             $senderId = trim((string) ($row['sender_id'] ?? ''));
             $recipientId = trim((string) ($row['recipient_id'] ?? ''));
             $sender = $participantMap[$senderId] ?? $this->fallbackParticipant($senderId);
             $recipient = $participantMap[$recipientId] ?? $this->fallbackParticipant($recipientId);
+            $alertStatus = (int) ($row['recipient_alert_status'] ?? -1);
+            $alertExists = (int) ($row['recipient_alert_id'] ?? 0) > 0;
+            $isReadByRecipient = $alertExists && $alertStatus === self::STATUS_READ;
+            $deliveryStatus = 'sent';
+
+            if ($alertExists) {
+                $deliveryStatus = $isReadByRecipient ? 'read' : 'delivered';
+            }
 
             return [
                 'id' => (string) ($row['id'] ?? ''),
@@ -180,8 +188,28 @@ SQL;
                 'recipient_name' => (string) ($recipient['full_name'] ?? ''),
                 'sender_avatar_url' => (string) ($sender['avatar_url'] ?? ''),
                 'recipient_avatar_url' => (string) ($recipient['avatar_url'] ?? ''),
+                'delivery_status' => $deliveryStatus,
+                'is_read_by_recipient' => $isReadByRecipient,
+                'reactions' => [],
+                'current_user_reaction' => null,
             ];
         }, $rows);
+
+        if ($this->reactionStore !== null && $messages !== []) {
+            $reactionSummaries = $this->reactionStore->summarizeMessages($messages, (string) $currentUserId);
+            foreach ($messages as &$message) {
+                $summary = $reactionSummaries[(string) ($message['id'] ?? '')] ?? null;
+                if (!is_array($summary)) {
+                    continue;
+                }
+
+                $message['reactions'] = array_values($summary['reactions'] ?? []);
+                $message['current_user_reaction'] = $summary['current_user_reaction'] ?? null;
+            }
+            unset($message);
+        }
+
+        return $messages;
     }
 
     public function sendMessage(
@@ -277,6 +305,10 @@ SQL;
                     'recipient_name' => (string) (($participantMap[$recipientId]['full_name'] ?? $recipientId)),
                     'sender_avatar_url' => (string) ($sender['avatar_url'] ?? ''),
                     'recipient_avatar_url' => (string) (($participantMap[$recipientId]['avatar_url'] ?? '')),
+                    'delivery_status' => 'delivered',
+                    'is_read_by_recipient' => false,
+                    'reactions' => [],
+                    'current_user_reaction' => null,
                 ];
             }
 
@@ -335,6 +367,66 @@ SQL;
             'updated_count' => count($ids),
             'conversation_key' => $conversationKey,
             'updated_ids' => $ids,
+        ];
+    }
+
+    public function assertConversationAccess(int $mainId, int $currentUserId, string $conversationKey): void
+    {
+        $participantIds = $this->participantIdsForConversationKey($conversationKey);
+        if ($participantIds === null || !in_array((string) $currentUserId, $participantIds, true)) {
+            throw new RuntimeException('Conversation not found');
+        }
+
+        $allowedParticipants = array_fill_keys(array_map('strval', $this->participantIdsForMain($mainId)), true);
+        foreach ($participantIds as $participantId) {
+            if (!isset($allowedParticipants[$participantId]) && $participantId !== (string) $currentUserId) {
+                throw new RuntimeException('Conversation not found');
+            }
+        }
+    }
+
+    public function getMessageForUser(int $mainId, int $currentUserId, string $messageId): array
+    {
+        $normalizedId = trim($messageId);
+        if ($normalizedId === '' || !ctype_digit($normalizedId)) {
+            throw new RuntimeException('Message not found');
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT
+                CAST(s.lid AS CHAR) AS id,
+                COALESCE(s.lsource, \'\') AS conversation_key,
+                CAST(COALESCE(s.lsendfrom, \'\') AS CHAR) AS sender_id,
+                CAST(COALESCE(s.lsendto, \'\') AS CHAR) AS recipient_id
+             FROM tblsms s
+             WHERE COALESCE(s.ltype, \'\') = :chat_type
+               AND s.lid = :message_id
+               AND (
+                 CAST(COALESCE(s.lsendfrom, \'\') AS CHAR) = :current_user_id_sender
+                 OR CAST(COALESCE(s.lsendto, \'\') AS CHAR) = :current_user_id_recipient
+               )
+             LIMIT 1'
+        );
+        $stmt->execute([
+            ':chat_type' => self::CHAT_TYPE,
+            ':message_id' => (int) $normalizedId,
+            ':current_user_id_sender' => (string) $currentUserId,
+            ':current_user_id_recipient' => (string) $currentUserId,
+        ]);
+
+        $message = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($message)) {
+            throw new RuntimeException('Message not found');
+        }
+
+        $conversationKey = trim((string) ($message['conversation_key'] ?? ''));
+        $this->assertConversationAccess($mainId, $currentUserId, $conversationKey);
+
+        return [
+            'id' => (string) ($message['id'] ?? ''),
+            'conversation_key' => $conversationKey,
+            'sender_id' => trim((string) ($message['sender_id'] ?? '')),
+            'recipient_id' => trim((string) ($message['recipient_id'] ?? '')),
         ];
     }
 

@@ -1062,67 +1062,6 @@ SQL;
             'refno' => $inquiryRefno,
             'transaction_type' => 'Inquiry',
         ]);
-
-        $inquiry = $this->getInquiry($mainId, $inquiryRefno);
-        if ($inquiry === null) {
-            return;
-        }
-
-        if ((int) ($inquiry['is_cancelled'] ?? 0) === 1) {
-            return;
-        }
-
-        $status = strtolower(trim((string) ($inquiry['status'] ?? 'Pending')));
-        $linkedSalesOrder = $this->getLinkedSalesOrderRow($pdo, $mainId, $inquiryRefno);
-        $hasActiveSalesOrder = $linkedSalesOrder !== null && (int) ($linkedSalesOrder['lcancel'] ?? 0) === 0;
-        $shouldDeductForInquiry = in_array($status, ['pending', 'submitted'], true);
-        if (!$shouldDeductForInquiry && !$hasActiveSalesOrder) {
-            return;
-        }
-
-        $items = array_values(array_filter(
-            $this->listItems($inquiryRefno),
-            fn(array $item): bool => $this->isConvertibleInquiryItem($item)
-        ));
-        if ($items === []) {
-            return;
-        }
-
-        $salesDate = $this->normalizeDate((string) ($inquiry['sales_date'] ?? date('Y-m-d')));
-        $salesTime = $this->normalizeTime((string) ($inquiry['sales_time'] ?? date('H:i:s')));
-        $insert = $pdo->prepare(
-            'INSERT INTO tblinventory_logs
-            (linvent_id, lin, lout, ltotal, ldateadded, lprocess_by, lstatus_logs, lnote, linventory_id, lprice, lrefno, lcustomer_id, llocation, lwarehouse, ltransaction_type)
-            VALUES
-            (:linvent_id, :lin, :lout, :ltotal, :ldateadded, :lprocess_by, :lstatus_logs, :lnote, :linventory_id, :lprice, :lrefno, :lcustomer_id, :llocation, :lwarehouse, :ltransaction_type)'
-        );
-
-        foreach ($items as $item) {
-            $inventoryLogRef = trim((string) ($item['item_refno'] ?? ''));
-            $inventoryItemId = trim((string) ($item['item_id'] ?? $inventoryLogRef));
-            $qty = max(0, (int) ($item['qty'] ?? 0));
-            if ($inventoryLogRef === '' || $inventoryItemId === '' || $qty <= 0) {
-                continue;
-            }
-
-            $insert->execute([
-                'linvent_id' => $inventoryLogRef,
-                'lin' => 0,
-                'lout' => $qty,
-                'ltotal' => $qty,
-                'ldateadded' => $salesDate . ' ' . $salesTime,
-                'lprocess_by' => 'INQ ' . (string) ($inquiry['inquiry_no'] ?? ''),
-                'lstatus_logs' => '-',
-                'lnote' => (string) ($inquiry['customer_company'] ?? ''),
-                'linventory_id' => $inventoryItemId,
-                'lprice' => (float) ($item['unit_price'] ?? 0),
-                'lrefno' => $inquiryRefno,
-                'lcustomer_id' => (string) ($inquiry['contact_id'] ?? ''),
-                'llocation' => (string) ($item['location'] ?? ''),
-                'lwarehouse' => 'WH1',
-                'ltransaction_type' => 'Inquiry',
-            ]);
-        }
     }
 
     private function generateSalesNumber(PDO $pdo): string

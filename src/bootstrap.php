@@ -67,9 +67,13 @@ use App\Security\TokenService;
 use App\Services\InternalChatRealtimeNotifier;
 use App\Support\Exceptions\HttpException;
 use App\Support\Env;
+use App\Support\InternalChatReactionStore;
+use App\Support\InternalChatTypingStore;
 
 require __DIR__ . '/Support/Env.php';
 require __DIR__ . '/Support/Exceptions/HttpException.php';
+require __DIR__ . '/Support/InternalChatReactionStore.php';
+require __DIR__ . '/Support/InternalChatTypingStore.php';
 require __DIR__ . '/Config.php';
 require __DIR__ . '/Database.php';
 require __DIR__ . '/Http/Response.php';
@@ -257,6 +261,9 @@ function app_router(): Router
         (string) Env::get('INTERNAL_CHAT_SOCKET_NOTIFY_URL', 'http://127.0.0.1:8082/internal-chat/events'),
         (string) Env::get('INTERNAL_CHAT_SOCKET_SECRET', $config->authSecret)
     );
+    $internalChatStorageDir = app_internal_chat_storage_dir();
+    $internalChatReactionStore = new InternalChatReactionStore($internalChatStorageDir . '/reactions.json');
+    $internalChatTypingStore = new InternalChatTypingStore($internalChatStorageDir . '/typing.json');
     $rolePermissionRepo = new App\Repositories\RolePermissionRepository($db);
     $authRepo = new App\Repositories\AuthRepository($db);
     $permissionMiddleware = new PermissionMiddleware($tokenService, $rolePermissionRepo);
@@ -271,9 +278,11 @@ function app_router(): Router
     $notificationsController = new NotificationsController(new App\Repositories\NotificationsRepository($db));
     $profilesController = new ProfilesController(new App\Repositories\ProfilesRepository($db));
     $internalChatController = new InternalChatController(
-        new App\Repositories\InternalChatRepository($db),
+        new App\Repositories\InternalChatRepository($db, $internalChatReactionStore),
         $tokenService,
-        $internalChatRealtimeNotifier
+        $internalChatRealtimeNotifier,
+        $internalChatReactionStore,
+        $internalChatTypingStore
     );
     $dailyCallMonitoringController = new DailyCallMonitoringController(new App\Repositories\DailyCallMonitoringRepository($db));
     $fastSlowInventoryReportController = new FastSlowInventoryReportController(new App\Repositories\FastSlowInventoryReportRepository($db));
@@ -427,8 +436,11 @@ function app_router(): Router
     $router->get('/api/v1/internal-chat/participants', [$internalChatController, 'participants']);
     $router->get('/api/v1/internal-chat/conversations', [$internalChatController, 'conversations']);
     $router->get('/api/v1/internal-chat/conversations/{conversationKey}/messages', [$internalChatController, 'messages']);
+    $router->get('/api/v1/internal-chat/conversations/{conversationKey}/typing', [$internalChatController, 'typingState']);
     $router->post('/api/v1/internal-chat/messages', [$internalChatController, 'send']);
+    $router->post('/api/v1/internal-chat/messages/{messageId}/reaction', [$internalChatController, 'toggleReaction']);
     $router->post('/api/v1/internal-chat/conversations/{conversationKey}/read', [$internalChatController, 'markConversationRead']);
+    $router->post('/api/v1/internal-chat/conversations/{conversationKey}/typing', [$internalChatController, 'updateTyping']);
     $router->get('/api/v1/internal-chat/unread-count', [$internalChatController, 'unreadCount']);
     $router->get('/api/v1/internal-chat/stream', [$internalChatController, 'stream']);
     $router->get('/api/v1/notifications', $requireBearerAuth([$notificationsController, 'list']));
@@ -742,4 +754,31 @@ function app_router(): Router
     $router->get('/api/v1/profit-protection/admin-overrides', [$profitProtectionController, 'listAdminOverrides']);
 
     return $router;
+}
+
+function app_internal_chat_storage_dir(): string
+{
+    $rootDir = dirname(__DIR__);
+    $candidates = [
+        $rootDir . '/storage/internal-chat',
+        dirname($rootDir) . '/.runtime/internal-chat',
+        rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'james-system-internal-chat',
+    ];
+
+    foreach ($candidates as $dir) {
+        if ($dir === '') {
+            continue;
+        }
+
+        if (is_dir($dir) && is_writable($dir)) {
+            return $dir;
+        }
+
+        $parent = dirname($dir);
+        if ($parent !== '' && is_dir($parent) && is_writable($parent)) {
+            return $dir;
+        }
+    }
+
+    return $candidates[0];
 }

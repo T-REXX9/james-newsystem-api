@@ -33,8 +33,43 @@ final class InternalChatRealtimeNotifier
         $this->post([
             'type' => 'conversation.read',
             'user_id' => (string) $userId,
+            'read_by_user_id' => (string) $userId,
             'conversation_key' => $conversationKey,
             'updated_count' => $updatedCount,
+        ]);
+    }
+
+    public function notifyReactionUpdated(array $payload): void
+    {
+        $conversationKey = trim((string) ($payload['conversation_key'] ?? ''));
+        $messageId = trim((string) ($payload['message_id'] ?? ''));
+        if ($conversationKey === '' || $messageId === '') {
+            return;
+        }
+
+        $this->post([
+            'type' => 'reaction.updated',
+            'conversation_key' => $conversationKey,
+            'message_id' => $messageId,
+            'reactions' => array_values($payload['reactions'] ?? []),
+            'current_user_reaction' => $payload['current_user_reaction'] ?? null,
+            'actor_user_id' => trim((string) ($payload['actor_user_id'] ?? '')),
+        ]);
+    }
+
+    public function notifyTypingUpdated(array $payload): void
+    {
+        $conversationKey = trim((string) ($payload['conversation_key'] ?? ''));
+        if ($conversationKey === '') {
+            return;
+        }
+
+        $this->post([
+            'type' => 'typing.updated',
+            'conversation_key' => $conversationKey,
+            'user_id' => trim((string) ($payload['user_id'] ?? '')),
+            'is_typing' => (bool) ($payload['is_typing'] ?? false),
+            'typing_user_ids' => array_values($payload['typing_user_ids'] ?? []),
         ]);
     }
 

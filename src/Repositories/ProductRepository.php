@@ -57,7 +57,7 @@ final class ProductRepository
         $trimmedSearch = trim($search);
         if ($trimmedSearch !== '') {
             $params['search'] = '%' . $trimmedSearch . '%';
-            $where[] = "CONCAT_WS(' ', itm.lsession, itm.litemcode, itm.lpartno, itm.ldescription, itm.lbrand, itm.lnickname) LIKE :search";
+            $where[] = "CONCAT_WS(' ', itm.lsession, itm.litemcode, itm.lpartno, itm.ldescription, itm.lbrand, itm.lnickname, itm.loem_number, itm.lopn_number, itm.lapplication, itm.lbarcode) LIKE :search";
         }
 
         $whereSql = implode(' AND ', $where);
