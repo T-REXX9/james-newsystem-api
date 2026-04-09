@@ -113,7 +113,6 @@ final class InternalChatRealtimeNotifier
         ]);
 
         curl_exec($handle);
-        curl_close($handle);
     }
 
     private function postWithStream(string $json): void
