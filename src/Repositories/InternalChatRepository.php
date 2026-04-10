@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\InternalChatReactionStore;
+use App\Support\InternalChatReplyStore;
 use PDO;
 use RuntimeException;
 
@@ -17,7 +18,8 @@ final class InternalChatRepository
 
     public function __construct(
         private readonly Database $db,
-        private readonly ?InternalChatReactionStore $reactionStore = null
+        private readonly ?InternalChatReactionStore $reactionStore = null,
+        private readonly ?InternalChatReplyStore $replyStore = null
     )
     {
     }
@@ -192,6 +194,8 @@ SQL;
                 'is_read_by_recipient' => $isReadByRecipient,
                 'reactions' => [],
                 'current_user_reaction' => null,
+                'reply_to_message_id' => null,
+                'reply_preview' => null,
             ];
         }, $rows);
 
@@ -209,14 +213,15 @@ SQL;
             unset($message);
         }
 
-        return $messages;
+        return $this->attachReplyMetadata($messages, $currentUserId, $participantMap);
     }
 
     public function sendMessage(
         int $mainId,
         int $senderUserId,
         string $message,
-        array $recipientIds
+        array $recipientIds,
+        ?string $replyToMessageId = null
     ): array {
         $cleanMessage = trim($message);
         if ($cleanMessage === '') {
@@ -242,11 +247,26 @@ SQL;
             throw new RuntimeException('At least one valid recipient is required');
         }
 
+        $normalizedReplyToMessageId = trim((string) ($replyToMessageId ?? ''));
+        if ($normalizedReplyToMessageId !== '') {
+            if (count($normalizedRecipients) !== 1) {
+                throw new RuntimeException('Replies are only supported in a single direct conversation');
+            }
+
+            $replyRecipientId = (string) array_key_first($normalizedRecipients);
+            $replyConversationKey = self::buildConversationKey($senderUserId, (int) $replyRecipientId);
+            $replyTarget = $this->getMessageForUser($mainId, $senderUserId, $normalizedReplyToMessageId);
+            if ((string) ($replyTarget['conversation_key'] ?? '') !== $replyConversationKey) {
+                throw new RuntimeException('Reply target must belong to the same conversation');
+            }
+        }
+
         $participantMap = $this->participantMapForMain($mainId);
         $sender = $participantMap[(string) $senderUserId] ?? $this->fallbackParticipant((string) $senderUserId);
         $sentAt = date('Y-m-d H:i:s');
         $preview = $this->buildPreview($cleanMessage);
         $created = [];
+        $replyWrites = [];
 
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -309,14 +329,32 @@ SQL;
                     'is_read_by_recipient' => false,
                     'reactions' => [],
                     'current_user_reaction' => null,
+                    'reply_to_message_id' => null,
+                    'reply_preview' => null,
                 ];
+
+                if ($normalizedReplyToMessageId !== '' && $this->replyStore !== null) {
+                    $this->replyStore->saveReply($conversationKey, $messageId, $normalizedReplyToMessageId);
+                    $replyWrites[] = [
+                        'conversation_key' => $conversationKey,
+                        'message_id' => $messageId,
+                    ];
+                }
             }
 
             $pdo->commit();
-            return $created;
+            return $this->attachReplyMetadata($created, $senderUserId, $participantMap, true);
         } catch (\Throwable $error) {
             if ($pdo->inTransaction()) {
                 $pdo->rollBack();
+            }
+            if ($replyWrites !== [] && $this->replyStore !== null) {
+                foreach ($replyWrites as $replyWrite) {
+                    $this->replyStore->deleteReplies(
+                        (string) ($replyWrite['conversation_key'] ?? ''),
+                        [(string) ($replyWrite['message_id'] ?? '')]
+                    );
+                }
             }
             throw $error;
         }
@@ -509,6 +547,176 @@ SQL;
         $users = [$firstUserId, $secondUserId];
         sort($users, SORT_NUMERIC);
         return sprintf('dm:%d:%d', $users[0], $users[1]);
+    }
+
+    private function attachReplyMetadata(
+        array $messages,
+        int $currentUserId,
+        array $participantMap,
+        bool $allowDatabaseLookup = true
+    ): array {
+        foreach ($messages as &$message) {
+            $message['reply_to_message_id'] = $message['reply_to_message_id'] ?? null;
+            $message['reply_preview'] = $message['reply_preview'] ?? null;
+        }
+        unset($message);
+
+        if ($this->replyStore === null || $messages === []) {
+            return $messages;
+        }
+
+        $messagePositions = [];
+        $messageIndex = [];
+        $messageIdsByConversation = [];
+        foreach ($messages as $index => $message) {
+            $conversationKey = trim((string) ($message['conversation_key'] ?? ''));
+            $messageId = trim((string) ($message['id'] ?? ''));
+            if ($conversationKey === '' || $messageId === '') {
+                continue;
+            }
+
+            $messagePositions[$conversationKey][$messageId] = $index;
+            $messageIndex[$conversationKey][$messageId] = $message;
+            $messageIdsByConversation[$conversationKey][] = $messageId;
+        }
+
+        foreach ($messageIdsByConversation as $conversationKey => $messageIds) {
+            $replyLinks = $this->replyStore->listReplies($conversationKey, $messageIds);
+            $emptyReplyIds = [];
+
+            foreach ($replyLinks as $messageId => $replyLink) {
+                $position = $messagePositions[$conversationKey][$messageId] ?? null;
+                if (!is_int($position)) {
+                    continue;
+                }
+
+                $replyToMessageId = trim((string) ($replyLink['reply_to_message_id'] ?? ''));
+                if ($replyToMessageId === '') {
+                    $emptyReplyIds[] = $messageId;
+                    continue;
+                }
+
+                $messages[$position]['reply_to_message_id'] = $replyToMessageId;
+                $replySource = $messageIndex[$conversationKey][$replyToMessageId] ?? null;
+                if (!is_array($replySource) && $allowDatabaseLookup) {
+                    $replySource = $this->findReplySourceMessage(
+                        $conversationKey,
+                        $replyToMessageId,
+                        $participantMap,
+                        $currentUserId
+                    );
+                }
+
+                $messages[$position]['reply_preview'] = is_array($replySource)
+                    ? $this->buildReplyPreview($replySource, $currentUserId)
+                    : $this->buildUnavailableReplyPreview($replyToMessageId);
+            }
+
+            if ($emptyReplyIds !== []) {
+                $this->replyStore->deleteReplies($conversationKey, $emptyReplyIds);
+            }
+        }
+
+        return $messages;
+    }
+
+    private function findReplySourceMessage(
+        string $conversationKey,
+        string $messageId,
+        array $participantMap,
+        int $currentUserId
+    ): ?array {
+        $normalizedMessageId = trim($messageId);
+        if ($conversationKey === '' || $normalizedMessageId === '' || !ctype_digit($normalizedMessageId)) {
+            return null;
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT
+                CAST(s.lid AS CHAR) AS id,
+                COALESCE(s.lsource, \'\') AS conversation_key,
+                COALESCE(s.lmessage, \'\') AS message,
+                CAST(COALESCE(s.lsendfrom, \'\') AS CHAR) AS sender_id,
+                CAST(COALESCE(s.lsendto, \'\') AS CHAR) AS recipient_id
+             FROM tblsms s
+             WHERE COALESCE(s.ltype, \'\') = :chat_type
+               AND COALESCE(s.lsource, \'\') = :conversation_key
+               AND s.lid = :message_id
+             LIMIT 1'
+        );
+        $stmt->execute([
+            ':chat_type' => self::CHAT_TYPE,
+            ':conversation_key' => $conversationKey,
+            ':message_id' => (int) $normalizedMessageId,
+        ]);
+
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!is_array($row)) {
+            return null;
+        }
+
+        $senderId = trim((string) ($row['sender_id'] ?? ''));
+        $recipientId = trim((string) ($row['recipient_id'] ?? ''));
+        $sender = $participantMap[$senderId] ?? $this->fallbackParticipant($senderId);
+        $recipient = $participantMap[$recipientId] ?? $this->fallbackParticipant($recipientId);
+
+        return [
+            'id' => (string) ($row['id'] ?? ''),
+            'conversation_key' => (string) ($row['conversation_key'] ?? ''),
+            'sender_id' => $senderId,
+            'recipient_id' => $recipientId,
+            'message' => (string) ($row['message'] ?? ''),
+            'created_at' => '',
+            'is_from_current_user' => $senderId === (string) $currentUserId,
+            'sender_name' => (string) ($sender['full_name'] ?? ''),
+            'recipient_name' => (string) ($recipient['full_name'] ?? ''),
+            'sender_avatar_url' => (string) ($sender['avatar_url'] ?? ''),
+            'recipient_avatar_url' => (string) ($recipient['avatar_url'] ?? ''),
+            'delivery_status' => 'sent',
+            'is_read_by_recipient' => false,
+            'reactions' => [],
+            'current_user_reaction' => null,
+            'reply_to_message_id' => null,
+            'reply_preview' => null,
+        ];
+    }
+
+    private function buildReplyPreview(array $message, int $currentUserId): array
+    {
+        $senderId = trim((string) ($message['sender_id'] ?? ''));
+
+        return [
+            'message_id' => trim((string) ($message['id'] ?? '')),
+            'sender_id' => $senderId,
+            'sender_name' => trim((string) ($message['sender_name'] ?? '')) ?: ($senderId !== '' ? sprintf('User %s', $senderId) : 'Unknown User'),
+            'message' => $this->buildReplySnippet((string) ($message['message'] ?? '')),
+            'is_from_current_user' => $senderId === (string) $currentUserId,
+            'is_available' => true,
+        ];
+    }
+
+    private function buildUnavailableReplyPreview(string $messageId): array
+    {
+        return [
+            'message_id' => trim($messageId),
+            'sender_id' => '',
+            'sender_name' => '',
+            'message' => 'Original message unavailable',
+            'is_from_current_user' => false,
+            'is_available' => false,
+        ];
+    }
+
+    private function buildReplySnippet(string $message): string
+    {
+        $preview = preg_replace('/\s+/', ' ', trim($message)) ?? '';
+        if (function_exists('mb_substr')) {
+            $snippet = (string) mb_substr($preview, 0, 140);
+            return mb_strlen($preview) > 140 ? rtrim($snippet) . '…' : $snippet;
+        }
+
+        $snippet = substr($preview, 0, 140);
+        return strlen($preview) > 140 ? rtrim($snippet) . '…' : $snippet;
     }
 
     private function participantIdsForMain(int $mainId): array

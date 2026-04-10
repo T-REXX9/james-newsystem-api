@@ -78,6 +78,7 @@ final class InternalChatController
         }
 
         $conversationKey = trim((string) ($body['conversation_key'] ?? ''));
+        $replyToMessageId = trim((string) ($body['reply_to_message_id'] ?? ''));
         if ($recipientIds === [] && $conversationKey !== '') {
             if (!preg_match('/^dm:(\d+):(\d+)$/', $conversationKey, $matches)) {
                 throw new HttpException(422, 'Invalid conversation_key');
@@ -99,7 +100,13 @@ final class InternalChatController
         }
 
         try {
-            $items = $this->repo->sendMessage($mainId, $userId, $message, $recipientIds);
+            $items = $this->repo->sendMessage(
+                $mainId,
+                $userId,
+                $message,
+                $recipientIds,
+                $replyToMessageId !== '' ? $replyToMessageId : null
+            );
             $this->realtimeNotifier->notifyMessagesCreated($items);
 
             return [

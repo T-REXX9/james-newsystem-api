@@ -68,11 +68,13 @@ use App\Services\InternalChatRealtimeNotifier;
 use App\Support\Exceptions\HttpException;
 use App\Support\Env;
 use App\Support\InternalChatReactionStore;
+use App\Support\InternalChatReplyStore;
 use App\Support\InternalChatTypingStore;
 
 require __DIR__ . '/Support/Env.php';
 require __DIR__ . '/Support/Exceptions/HttpException.php';
 require __DIR__ . '/Support/InternalChatReactionStore.php';
+require __DIR__ . '/Support/InternalChatReplyStore.php';
 require __DIR__ . '/Support/InternalChatTypingStore.php';
 require __DIR__ . '/Config.php';
 require __DIR__ . '/Database.php';
@@ -263,6 +265,7 @@ function app_router(): Router
     );
     $internalChatStorageDir = app_internal_chat_storage_dir();
     $internalChatReactionStore = new InternalChatReactionStore($internalChatStorageDir . '/reactions.json');
+    $internalChatReplyStore = new InternalChatReplyStore($internalChatStorageDir . '/replies.json');
     $internalChatTypingStore = new InternalChatTypingStore($internalChatStorageDir . '/typing.json');
     $rolePermissionRepo = new App\Repositories\RolePermissionRepository($db);
     $authRepo = new App\Repositories\AuthRepository($db);
@@ -278,7 +281,7 @@ function app_router(): Router
     $notificationsController = new NotificationsController(new App\Repositories\NotificationsRepository($db));
     $profilesController = new ProfilesController(new App\Repositories\ProfilesRepository($db));
     $internalChatController = new InternalChatController(
-        new App\Repositories\InternalChatRepository($db, $internalChatReactionStore),
+        new App\Repositories\InternalChatRepository($db, $internalChatReactionStore, $internalChatReplyStore),
         $tokenService,
         $internalChatRealtimeNotifier,
         $internalChatReactionStore,

@@ -1,0 +1,28 @@
+{
+    "messages": {
+        "dm:1:23": {
+            "1886": {
+                "message_id": "1886",
+                "reply_to_message_id": "1883",
+                "updated_at": "2026-04-10T00:35:31+08:00"
+            },
+            "1887": {
+                "message_id": "1887",
+                "reply_to_message_id": "1884",
+                "updated_at": "2026-04-10T00:38:43+08:00"
+            },
+            "1888": {
+                "message_id": "1888",
+                "reply_to_message_id": "1887",
+                "updated_at": "2026-04-10T00:38:48+08:00"
+            }
+        },
+        "dm:1:69": {
+            "1889": {
+                "message_id": "1889",
+                "reply_to_message_id": "1876",
+                "updated_at": "2026-04-10T00:40:07+08:00"
+            }
+        }
+    }
+}
