@@ -43,6 +43,99 @@ final class InternalChatController
         ];
     }
 
+    public function createGroup(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = $this->requireAuthClaims();
+        [$userId, $mainId] = $this->resolveIdentity($claims);
+
+        $name = trim((string) ($body['name'] ?? ''));
+        $memberIds = is_array($body['member_ids'] ?? null)
+            ? array_map(static fn (mixed $value): string => trim((string) $value), $body['member_ids'])
+            : [];
+
+        try {
+            return $this->repo->createGroup($mainId, $userId, $name, $memberIds);
+        } catch (RuntimeException $error) {
+            throw new HttpException(422, $error->getMessage());
+        }
+    }
+
+    public function groupDetails(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = $this->requireAuthClaims();
+        [$userId, $mainId] = $this->resolveIdentity($claims);
+
+        $groupId = (int) ($params['groupId'] ?? 0);
+        if ($groupId <= 0) {
+            throw new HttpException(422, 'groupId is required');
+        }
+
+        try {
+            return $this->repo->getGroupDetails($mainId, $userId, $groupId);
+        } catch (RuntimeException $error) {
+            throw new HttpException(404, $error->getMessage());
+        }
+    }
+
+    public function renameGroup(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = $this->requireAuthClaims();
+        [$userId, $mainId] = $this->resolveIdentity($claims);
+
+        $groupId = (int) ($params['groupId'] ?? 0);
+        $name = trim((string) ($body['name'] ?? ''));
+        if ($groupId <= 0) {
+            throw new HttpException(422, 'groupId is required');
+        }
+
+        try {
+            return $this->repo->renameGroup($mainId, $userId, $groupId, $name);
+        } catch (RuntimeException $error) {
+            $status = str_contains(strtolower($error->getMessage()), 'not found') ? 404 : 422;
+            throw new HttpException($status, $error->getMessage());
+        }
+    }
+
+    public function addGroupMembers(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = $this->requireAuthClaims();
+        [$userId, $mainId] = $this->resolveIdentity($claims);
+
+        $groupId = (int) ($params['groupId'] ?? 0);
+        $memberIds = is_array($body['member_ids'] ?? null)
+            ? array_map(static fn (mixed $value): string => trim((string) $value), $body['member_ids'])
+            : [];
+        if ($groupId <= 0) {
+            throw new HttpException(422, 'groupId is required');
+        }
+
+        try {
+            return $this->repo->addGroupMembers($mainId, $userId, $groupId, $memberIds);
+        } catch (RuntimeException $error) {
+            $status = str_contains(strtolower($error->getMessage()), 'not found') ? 404 : 422;
+            throw new HttpException($status, $error->getMessage());
+        }
+    }
+
+    public function removeGroupMember(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = $this->requireAuthClaims();
+        [$userId, $mainId] = $this->resolveIdentity($claims);
+
+        $groupId = (int) ($params['groupId'] ?? 0);
+        $memberUserId = trim((string) ($params['userId'] ?? ''));
+        if ($groupId <= 0 || $memberUserId === '') {
+            throw new HttpException(422, 'groupId and userId are required');
+        }
+
+        try {
+            return $this->repo->removeGroupMember($mainId, $userId, $groupId, $memberUserId);
+        } catch (RuntimeException $error) {
+            $status = str_contains(strtolower($error->getMessage()), 'not found') ? 404 : 422;
+            throw new HttpException($status, $error->getMessage());
+        }
+    }
+
     public function messages(array $params = [], array $query = [], array $body = []): array
     {
         $claims = $this->requireAuthClaims();
@@ -80,22 +173,22 @@ final class InternalChatController
         $conversationKey = trim((string) ($body['conversation_key'] ?? ''));
         $replyToMessageId = trim((string) ($body['reply_to_message_id'] ?? ''));
         if ($recipientIds === [] && $conversationKey !== '') {
-            if (!preg_match('/^dm:(\d+):(\d+)$/', $conversationKey, $matches)) {
+            if (preg_match('/^dm:(\d+):(\d+)$/', $conversationKey, $matches)) {
+                $participants = [(string) $matches[1], (string) $matches[2]];
+                if (!in_array((string) $userId, $participants, true)) {
+                    throw new HttpException(403, 'You do not have access to this conversation');
+                }
+
+                $recipientIds = array_values(array_filter(
+                    $participants,
+                    static fn (string $participantId): bool => $participantId !== (string) $userId
+                ));
+            } elseif (!preg_match('/^grp:\d+$/', $conversationKey)) {
                 throw new HttpException(422, 'Invalid conversation_key');
             }
-
-            $participants = [(string) $matches[1], (string) $matches[2]];
-            if (!in_array((string) $userId, $participants, true)) {
-                throw new HttpException(403, 'You do not have access to this conversation');
-            }
-
-            $recipientIds = array_values(array_filter(
-                $participants,
-                static fn (string $participantId): bool => $participantId !== (string) $userId
-            ));
         }
 
-        if ($recipientIds === []) {
+        if ($recipientIds === [] && $conversationKey === '') {
             throw new HttpException(422, 'recipient_ids or conversation_key is required');
         }
 
@@ -105,7 +198,8 @@ final class InternalChatController
                 $userId,
                 $message,
                 $recipientIds,
-                $replyToMessageId !== '' ? $replyToMessageId : null
+                $replyToMessageId !== '' ? $replyToMessageId : null,
+                $conversationKey !== '' ? $conversationKey : null
             );
             $this->realtimeNotifier->notifyMessagesCreated($items);
 
@@ -134,10 +228,12 @@ final class InternalChatController
         }
 
         $result = $this->repo->markConversationRead($userId, $conversationKey);
+        $targetUserIds = $this->repo->conversationParticipantIds($mainId, $userId, $conversationKey);
         $this->realtimeNotifier->notifyConversationRead(
             $userId,
             $conversationKey,
-            (int) ($result['updated_count'] ?? 0)
+            (int) ($result['updated_count'] ?? 0),
+            $targetUserIds
         );
 
         return $result;
@@ -181,13 +277,18 @@ final class InternalChatController
             throw new HttpException($status, $error->getMessage());
         }
 
-        $payload = [
-            'message_id' => (string) ($message['id'] ?? ''),
-            'conversation_key' => (string) ($message['conversation_key'] ?? ''),
-            'reactions' => array_values($reactionState['reactions'] ?? []),
-            'current_user_reaction' => $reactionState['current_user_reaction'] ?? null,
-            'actor_user_id' => (string) $userId,
-        ];
+            $payload = [
+                'message_id' => (string) ($message['id'] ?? ''),
+                'conversation_key' => (string) ($message['conversation_key'] ?? ''),
+                'reactions' => array_values($reactionState['reactions'] ?? []),
+                'current_user_reaction' => $reactionState['current_user_reaction'] ?? null,
+                'actor_user_id' => (string) $userId,
+                'target_user_ids' => $this->repo->conversationParticipantIds(
+                    $mainId,
+                    $userId,
+                    (string) ($message['conversation_key'] ?? '')
+                ),
+            ];
 
         $this->realtimeNotifier->notifyReactionUpdated($payload);
 
@@ -244,6 +345,7 @@ final class InternalChatController
             'user_id' => (string) $userId,
             'is_typing' => $isTyping,
             'typing_user_ids' => $typingUserIds,
+            'target_user_ids' => $this->repo->conversationParticipantIds($mainId, $userId, $conversationKey),
         ];
 
         $this->realtimeNotifier->notifyTypingUpdated($payload);

@@ -442,6 +442,11 @@ function app_router(): Router
     $router->get('/api/v1/teams/{teamId}/messages/sender/{senderId}', [$messagesController, 'getBySender']);
     $router->get('/api/v1/internal-chat/participants', [$internalChatController, 'participants']);
     $router->get('/api/v1/internal-chat/conversations', [$internalChatController, 'conversations']);
+    $router->post('/api/v1/internal-chat/groups', [$internalChatController, 'createGroup']);
+    $router->get('/api/v1/internal-chat/groups/{groupId}', [$internalChatController, 'groupDetails']);
+    $router->patch('/api/v1/internal-chat/groups/{groupId}', [$internalChatController, 'renameGroup']);
+    $router->post('/api/v1/internal-chat/groups/{groupId}/members', [$internalChatController, 'addGroupMembers']);
+    $router->delete('/api/v1/internal-chat/groups/{groupId}/members/{userId}', [$internalChatController, 'removeGroupMember']);
     $router->get('/api/v1/internal-chat/conversations/{conversationKey}/messages', [$internalChatController, 'messages']);
     $router->get('/api/v1/internal-chat/conversations/{conversationKey}/typing', [$internalChatController, 'typingState']);
     $router->post('/api/v1/internal-chat/messages', [$internalChatController, 'send']);

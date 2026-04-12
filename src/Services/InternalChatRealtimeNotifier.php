@@ -24,7 +24,7 @@ final class InternalChatRealtimeNotifier
         ]);
     }
 
-    public function notifyConversationRead(int $userId, string $conversationKey, int $updatedCount): void
+    public function notifyConversationRead(int $userId, string $conversationKey, int $updatedCount, array $targetUserIds = []): void
     {
         if ($conversationKey === '') {
             return;
@@ -36,6 +36,7 @@ final class InternalChatRealtimeNotifier
             'read_by_user_id' => (string) $userId,
             'conversation_key' => $conversationKey,
             'updated_count' => $updatedCount,
+            'target_user_ids' => array_values($targetUserIds),
         ]);
     }
 
@@ -54,6 +55,7 @@ final class InternalChatRealtimeNotifier
             'reactions' => array_values($payload['reactions'] ?? []),
             'current_user_reaction' => $payload['current_user_reaction'] ?? null,
             'actor_user_id' => trim((string) ($payload['actor_user_id'] ?? '')),
+            'target_user_ids' => array_values($payload['target_user_ids'] ?? []),
         ]);
     }
 
@@ -70,6 +72,7 @@ final class InternalChatRealtimeNotifier
             'user_id' => trim((string) ($payload['user_id'] ?? '')),
             'is_typing' => (bool) ($payload['is_typing'] ?? false),
             'typing_user_ids' => array_values($payload['typing_user_ids'] ?? []),
+            'target_user_ids' => array_values($payload['target_user_ids'] ?? []),
         ]);
     }
 
