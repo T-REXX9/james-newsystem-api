@@ -60,6 +60,7 @@ use App\Controllers\CategoryController;
 use App\Controllers\PromotionController;
 use App\Controllers\LoyaltyDiscountController;
 use App\Controllers\ProfitProtectionController;
+use App\Controllers\VipTierSettingsController;
 use App\Controllers\RolePermissionController;
 use App\Http\Router;
 use App\Middleware\PermissionMiddleware;
@@ -139,6 +140,7 @@ require __DIR__ . '/Repositories/PromotionProductRepository.php';
 require __DIR__ . '/Repositories/PromotionPostingRepository.php';
 require __DIR__ . '/Repositories/LoyaltyDiscountRepository.php';
 require __DIR__ . '/Repositories/ProfitProtectionRepository.php';
+require __DIR__ . '/Repositories/VipTierSettingsRepository.php';
 require __DIR__ . '/Repositories/RolePermissionRepository.php';
 require __DIR__ . '/Services/InternalChatRealtimeNotifier.php';
 require __DIR__ . '/Security/TokenService.php';
@@ -200,6 +202,7 @@ require __DIR__ . '/Controllers/CategoryController.php';
 require __DIR__ . '/Controllers/PromotionController.php';
 require __DIR__ . '/Controllers/LoyaltyDiscountController.php';
 require __DIR__ . '/Controllers/ProfitProtectionController.php';
+require __DIR__ . '/Controllers/VipTierSettingsController.php';
 require __DIR__ . '/Controllers/RolePermissionController.php';
 
 Env::load(dirname(__DIR__) . '/.env');
@@ -342,6 +345,7 @@ function app_router(): Router
     );
     $loyaltyDiscountController = new LoyaltyDiscountController(new App\Repositories\LoyaltyDiscountRepository($db));
     $profitProtectionController = new ProfitProtectionController(new App\Repositories\ProfitProtectionRepository($db));
+    $vipTierSettingsController = new VipTierSettingsController(new App\Repositories\VipTierSettingsRepository($db));
 
     $requireBearerAuth = static function (callable $handler) use ($tokenService): callable {
         return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService) {
@@ -749,6 +753,9 @@ function app_router(): Router
     // Profit Protection
     $router->get('/api/v1/profit-protection/threshold', [$profitProtectionController, 'threshold']);
     $router->patch('/api/v1/profit-protection/threshold', [$profitProtectionController, 'updateThreshold']);
+    // VIP Tier Settings
+    $router->get('/api/v1/vip-tier-settings', [$vipTierSettingsController, 'index']);
+    $router->patch('/api/v1/vip-tier-settings', [$vipTierSettingsController, 'update']);
     $router->post('/api/v1/profit-protection/validate-items', [$profitProtectionController, 'validateItems']);
     $router->post('/api/v1/profit-protection/overrides', [$profitProtectionController, 'createOverride']);
     $router->get('/api/v1/profit-protection/overrides', [$profitProtectionController, 'listOverrides']);

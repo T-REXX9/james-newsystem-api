@@ -398,6 +398,10 @@ SQL;
                     'name' => (string) ($item['name'] ?? ''),
                     'quantity' => (float) ($item['quantity'] ?? 0),
                     'price' => (float) ($item['price'] ?? 0),
+                    'remark' => (string) ($item['remark'] ?? ''),
+                    'partNo' => (string) ($item['partNo'] ?? ''),
+                    'itemCode' => (string) ($item['itemCode'] ?? ''),
+                    'description' => (string) ($item['description'] ?? ''),
                 ],
                 $items
             );
@@ -1094,7 +1098,11 @@ SELECT
     ii.linq_refno AS refno,
     COALESCE(NULLIF(ii.ldesc, ''), NULLIF(ii.lpartno, ''), NULLIF(ii.litem_code, ''), 'Item') AS item_name,
     COALESCE(ii.lqty, 0) AS qty,
-    COALESCE(ii.lprice, 0) AS price
+    COALESCE(ii.lprice, 0) AS price,
+    COALESCE(ii.lremark, '') AS remark,
+    COALESCE(ii.lpartno, '') AS part_no,
+    COALESCE(ii.litem_code, '') AS item_code,
+    COALESCE(ii.ldesc, '') AS description
 FROM tblinquiry_item ii
 WHERE ii.linq_refno IN ({$placeholders})
 ORDER BY ii.lid ASC
@@ -1116,6 +1124,10 @@ SQL;
                 'name' => (string) ($row['item_name'] ?? 'Item'),
                 'quantity' => (float) ($row['qty'] ?? 0),
                 'price' => (float) ($row['price'] ?? 0),
+                'remark' => (string) ($row['remark'] ?? ''),
+                'partNo' => (string) ($row['part_no'] ?? ''),
+                'itemCode' => (string) ($row['item_code'] ?? ''),
+                'description' => (string) ($row['description'] ?? ''),
             ];
         }
 
