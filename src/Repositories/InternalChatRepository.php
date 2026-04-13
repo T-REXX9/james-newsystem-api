@@ -671,6 +671,10 @@ SQL;
             throw new RuntimeException('Member not found in this group');
         }
 
+        $this->clearConversationAlertsForUser(
+            self::buildGroupConversationKey($groupId),
+            $normalizedMemberUserId
+        );
         $this->touchGroupUpdatedAt((int) ($groupMeta['id'] ?? $groupId));
         return $this->getGroupDetails($mainId, $currentUserId, $groupId);
     }
@@ -794,15 +798,27 @@ SQL;
     {
         $stmt = $this->db->pdo()->prepare(
             'SELECT COUNT(*)
-             FROM tblusers_alerts
-             WHERE COALESCE(ltype, \'\') = :chat_type
-               AND COALESCE(luserid, \'\') = :current_user_id
-               AND COALESCE(lstatus, 0) = :unread_status'
+             FROM tblusers_alerts ua
+             WHERE COALESCE(ua.ltype, \'\') = :chat_type
+               AND COALESCE(ua.luserid, \'\') = :current_user_id
+               AND COALESCE(ua.lstatus, 0) = :unread_status
+               AND (
+                 COALESCE(ua.lrefno, \'\') NOT REGEXP :group_key_pattern
+                 OR EXISTS (
+                   SELECT 1
+                   FROM internal_chat_group_members gm
+                   WHERE gm.group_id = CAST(SUBSTRING_INDEX(COALESCE(ua.lrefno, \'\'), \':\', -1) AS UNSIGNED)
+                     AND gm.user_id = :current_user_id_int
+                     AND gm.removed_at IS NULL
+                 )
+               )'
         );
         $stmt->execute([
             ':chat_type' => self::CHAT_TYPE,
             ':current_user_id' => (string) $currentUserId,
             ':unread_status' => self::STATUS_UNREAD,
+            ':group_key_pattern' => '^grp:[0-9]+$',
+            ':current_user_id_int' => $currentUserId,
         ]);
 
         return (int) ($stmt->fetchColumn() ?: 0);
@@ -1287,18 +1303,30 @@ SQL;
     {
         $stmt = $this->db->pdo()->prepare(
             'SELECT
-                COALESCE(lrefno, \'\') AS conversation_key,
+                COALESCE(ua.lrefno, \'\') AS conversation_key,
                 COUNT(*) AS unread_count
-             FROM tblusers_alerts
-             WHERE COALESCE(ltype, \'\') = :chat_type
-               AND COALESCE(luserid, \'\') = :current_user_id
-               AND COALESCE(lstatus, 0) = :unread_status
-             GROUP BY COALESCE(lrefno, \'\')'
+             FROM tblusers_alerts ua
+             WHERE COALESCE(ua.ltype, \'\') = :chat_type
+               AND COALESCE(ua.luserid, \'\') = :current_user_id
+               AND COALESCE(ua.lstatus, 0) = :unread_status
+               AND (
+                 COALESCE(ua.lrefno, \'\') NOT REGEXP :group_key_pattern
+                 OR EXISTS (
+                   SELECT 1
+                   FROM internal_chat_group_members gm
+                   WHERE gm.group_id = CAST(SUBSTRING_INDEX(COALESCE(ua.lrefno, \'\'), \':\', -1) AS UNSIGNED)
+                     AND gm.user_id = :current_user_id_int
+                     AND gm.removed_at IS NULL
+                 )
+               )
+             GROUP BY COALESCE(ua.lrefno, \'\')'
         );
         $stmt->execute([
             ':chat_type' => self::CHAT_TYPE,
             ':current_user_id' => (string) $currentUserId,
             ':unread_status' => self::STATUS_UNREAD,
+            ':group_key_pattern' => '^grp:[0-9]+$',
+            ':current_user_id_int' => $currentUserId,
         ]);
 
         $result = [];
@@ -1447,6 +1475,26 @@ SQL;
         )->execute([
             ':updated_at' => date('Y-m-d H:i:s'),
             ':group_id' => $groupId,
+        ]);
+    }
+
+    private function clearConversationAlertsForUser(string $conversationKey, string $userId): void
+    {
+        $normalizedConversationKey = trim($conversationKey);
+        $normalizedUserId = trim($userId);
+        if ($normalizedConversationKey === '' || $normalizedUserId === '' || !ctype_digit($normalizedUserId)) {
+            return;
+        }
+
+        $this->db->pdo()->prepare(
+            'DELETE FROM tblusers_alerts
+             WHERE COALESCE(ltype, \'\') = :chat_type
+               AND COALESCE(lrefno, \'\') = :conversation_key
+               AND COALESCE(luserid, \'\') = :user_id'
+        )->execute([
+            ':chat_type' => self::CHAT_TYPE,
+            ':conversation_key' => $normalizedConversationKey,
+            ':user_id' => $normalizedUserId,
         ]);
     }
 

@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace App\Support;
 
-use RuntimeException;
+use App\Database;
+use DateInterval;
+use DateTimeImmutable;
+use PDO;
 
 final class InternalChatTypingStore
 {
-    public function __construct(private readonly string $path)
+    public function __construct(private readonly Database $db)
     {
     }
 
@@ -17,25 +20,41 @@ final class InternalChatTypingStore
      */
     public function listTypingUserIds(string $conversationKey, ?string $excludeUserId = null): array
     {
-        return $this->withLockedStore(function (array &$store) use ($conversationKey, $excludeUserId): array {
-            $this->prune($store);
-            $conversation = $store['conversations'][$conversationKey] ?? [];
-            $userIds = [];
+        $normalizedConversationKey = trim($conversationKey);
+        if ($normalizedConversationKey === '') {
+            return [];
+        }
 
-            foreach ($conversation as $userId => $payload) {
-                $normalizedUserId = trim((string) $userId);
-                if ($normalizedUserId === '') {
-                    continue;
-                }
-                if ($excludeUserId !== null && $normalizedUserId === $excludeUserId) {
-                    continue;
-                }
-                $userIds[] = $normalizedUserId;
-            }
+        $this->pruneExpiredEntries();
 
-            sort($userIds, SORT_NATURAL);
-            return array_values(array_unique($userIds));
-        });
+        $sql = 'SELECT CAST(user_id AS CHAR) AS user_id
+                FROM internal_chat_typing_states
+                WHERE conversation_key = :conversation_key
+                  AND expires_at > :now';
+        $params = [
+            ':conversation_key' => $normalizedConversationKey,
+            ':now' => $this->currentTimestamp(),
+        ];
+
+        $normalizedExcludeUserId = trim((string) ($excludeUserId ?? ''));
+        if ($normalizedExcludeUserId !== '' && ctype_digit($normalizedExcludeUserId)) {
+            $sql .= ' AND user_id <> :exclude_user_id';
+            $params[':exclude_user_id'] = (int) $normalizedExcludeUserId;
+        }
+
+        $sql .= ' ORDER BY user_id ASC';
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute($params);
+
+        $userIds = array_map(
+            static fn (array $row): string => trim((string) ($row['user_id'] ?? '')),
+            $stmt->fetchAll(PDO::FETCH_ASSOC)
+        );
+        $userIds = array_values(array_filter($userIds, static fn (string $value): bool => $value !== ''));
+        sort($userIds, SORT_NATURAL);
+
+        return array_values(array_unique($userIds));
     }
 
     /**
@@ -43,123 +62,64 @@ final class InternalChatTypingStore
      */
     public function setTyping(string $conversationKey, string $userId, bool $isTyping, int $ttlMilliseconds = 3500): array
     {
-        return $this->withLockedStore(function (array &$store) use ($conversationKey, $userId, $isTyping, $ttlMilliseconds): array {
-            $this->prune($store);
+        $normalizedConversationKey = trim($conversationKey);
+        $normalizedUserId = trim($userId);
+        if ($normalizedConversationKey === '' || $normalizedUserId === '' || !ctype_digit($normalizedUserId)) {
+            return [];
+        }
 
-            $conversation = $store['conversations'][$conversationKey] ?? [];
-            if ($isTyping) {
-                $expiresAtMs = $this->nowMs() + max(250, $ttlMilliseconds);
-                $conversation[$userId] = [
-                    'expires_at' => (int) floor($expiresAtMs / 1000),
-                    'expires_at_ms' => $expiresAtMs,
-                ];
-            } else {
-                unset($conversation[$userId]);
-            }
+        $this->pruneExpiredEntries();
 
-            if ($conversation === []) {
-                unset($store['conversations'][$conversationKey]);
-            } else {
-                $store['conversations'][$conversationKey] = $conversation;
-            }
+        if ($isTyping) {
+            $this->db->pdo()->prepare(
+                'INSERT INTO internal_chat_typing_states
+                    (conversation_key, user_id, expires_at)
+                 VALUES
+                    (:conversation_key, :user_id, :expires_at)
+                 ON DUPLICATE KEY UPDATE
+                    expires_at = VALUES(expires_at),
+                    updated_at = CURRENT_TIMESTAMP(3)'
+            )->execute([
+                ':conversation_key' => $normalizedConversationKey,
+                ':user_id' => (int) $normalizedUserId,
+                ':expires_at' => $this->futureTimestamp(max(250, $ttlMilliseconds)),
+            ]);
+        } else {
+            $this->db->pdo()->prepare(
+                'DELETE FROM internal_chat_typing_states
+                 WHERE conversation_key = :conversation_key
+                   AND user_id = :user_id'
+            )->execute([
+                ':conversation_key' => $normalizedConversationKey,
+                ':user_id' => (int) $normalizedUserId,
+            ]);
+        }
 
-            $activeIds = [];
-            foreach ($store['conversations'][$conversationKey] ?? [] as $activeUserId => $payload) {
-                $normalizedUserId = trim((string) $activeUserId);
-                if ($normalizedUserId !== '') {
-                    $activeIds[] = $normalizedUserId;
-                }
-            }
-
-            sort($activeIds, SORT_NATURAL);
-            return array_values(array_unique($activeIds));
-        });
+        return $this->listTypingUserIds($normalizedConversationKey);
     }
 
-    /**
-     * @template T
-     * @param callable(array):T $callback
-     * @return T
-     */
-    private function withLockedStore(callable $callback): mixed
+    private function pruneExpiredEntries(): void
     {
-        $dir = dirname($this->path);
-        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
-            throw new RuntimeException('Unable to prepare internal chat typing storage');
-        }
-
-        $handle = @fopen($this->path, 'c+');
-        if ($handle === false) {
-            throw new RuntimeException('Unable to open internal chat typing storage');
-        }
-
-        try {
-            if (!@flock($handle, LOCK_EX)) {
-                throw new RuntimeException('Unable to lock internal chat typing storage');
-            }
-
-            $contents = stream_get_contents($handle);
-            $decoded = is_string($contents) && trim($contents) !== '' ? json_decode($contents, true) : null;
-            $store = is_array($decoded) ? $decoded : ['conversations' => []];
-            $store['conversations'] = is_array($store['conversations'] ?? null) ? $store['conversations'] : [];
-
-            $result = $callback($store);
-
-            rewind($handle);
-            ftruncate($handle, 0);
-            @fwrite($handle, (string) json_encode($store, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-            @fflush($handle);
-            @flock($handle, LOCK_UN);
-
-            return $result;
-        } finally {
-            fclose($handle);
-        }
+        $this->db->pdo()->prepare(
+            'DELETE FROM internal_chat_typing_states
+             WHERE expires_at <= :now'
+        )->execute([
+            ':now' => $this->currentTimestamp(),
+        ]);
     }
 
-    private function prune(array &$store): void
+    private function currentTimestamp(): string
     {
-        $nowMs = $this->nowMs();
-
-        foreach ($store['conversations'] as $conversationKey => $conversation) {
-            if (!is_array($conversation)) {
-                unset($store['conversations'][$conversationKey]);
-                continue;
-            }
-
-            foreach ($conversation as $userId => $payload) {
-                if ($this->resolveExpiresAtMs($payload) <= $nowMs) {
-                    unset($store['conversations'][$conversationKey][$userId]);
-                }
-            }
-
-            if (($store['conversations'][$conversationKey] ?? []) === []) {
-                unset($store['conversations'][$conversationKey]);
-            }
-        }
+        return (new DateTimeImmutable())->format('Y-m-d H:i:s.v');
     }
 
-    private function nowMs(): int
+    private function futureTimestamp(int $ttlMilliseconds): string
     {
-        return (int) floor(microtime(true) * 1000);
-    }
+        $interval = DateInterval::createFromDateString(sprintf('%d milliseconds', max(250, $ttlMilliseconds)));
+        $expiresAt = $interval instanceof DateInterval
+            ? (new DateTimeImmutable())->add($interval)
+            : (new DateTimeImmutable())->modify('+1 second');
 
-    private function resolveExpiresAtMs(mixed $payload): int
-    {
-        if (!is_array($payload)) {
-            return 0;
-        }
-
-        $expiresAtMs = (int) ($payload['expires_at_ms'] ?? 0);
-        if ($expiresAtMs > 0) {
-            return $expiresAtMs;
-        }
-
-        $expiresAtSeconds = (int) ($payload['expires_at'] ?? 0);
-        if ($expiresAtSeconds > 0) {
-            return $expiresAtSeconds * 1000;
-        }
-
-        return 0;
+        return ($expiresAt ?: new DateTimeImmutable())->format('Y-m-d H:i:s.v');
     }
 }

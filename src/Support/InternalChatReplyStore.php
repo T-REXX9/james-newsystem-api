@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace App\Support;
 
+use App\Database;
+use PDO;
 use RuntimeException;
 
 final class InternalChatReplyStore
 {
-    public function __construct(private readonly string $path)
+    public function __construct(private readonly Database $db)
     {
     }
 
@@ -17,41 +19,43 @@ final class InternalChatReplyStore
         $normalizedMessageIds = array_values(array_filter(array_map(
             static fn (mixed $value): string => trim((string) $value),
             $messageIds
-        )));
+        ), static fn (string $value): bool => $value !== '' && ctype_digit($value)));
 
         if ($conversationKey === '' || $normalizedMessageIds === []) {
             return [];
         }
 
-        return $this->withLockedStore(function (array &$store) use ($conversationKey, $normalizedMessageIds): array {
-            $this->prune($store);
-            $result = [];
+        $placeholders = implode(', ', array_fill(0, count($normalizedMessageIds), '?'));
+        $sql = sprintf(
+            'SELECT
+                CAST(message_id AS CHAR) AS message_id,
+                CAST(reply_to_message_id AS CHAR) AS reply_to_message_id,
+                COALESCE(DATE_FORMAT(updated_at, \'%%Y-%%m-%%d %%H:%%i:%%s\'), \'\') AS updated_at
+             FROM internal_chat_message_replies
+             WHERE conversation_key = ?
+               AND message_id IN (%s)',
+            $placeholders
+        );
 
-            foreach ($normalizedMessageIds as $messageId) {
-                $payload = $store['messages'][$conversationKey][$messageId] ?? null;
-                if (!is_array($payload)) {
-                    continue;
-                }
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([$conversationKey, ...array_map('intval', $normalizedMessageIds)]);
 
-                $replyToMessageId = trim((string) ($payload['reply_to_message_id'] ?? ''));
-                if ($replyToMessageId === '') {
-                    unset($store['messages'][$conversationKey][$messageId]);
-                    continue;
-                }
-
-                $result[$messageId] = [
-                    'message_id' => $messageId,
-                    'reply_to_message_id' => $replyToMessageId,
-                    'updated_at' => (string) ($payload['updated_at'] ?? ''),
-                ];
+        $result = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $messageId = trim((string) ($row['message_id'] ?? ''));
+            $replyToMessageId = trim((string) ($row['reply_to_message_id'] ?? ''));
+            if ($messageId === '' || $replyToMessageId === '') {
+                continue;
             }
 
-            if (($store['messages'][$conversationKey] ?? []) === []) {
-                unset($store['messages'][$conversationKey]);
-            }
+            $result[$messageId] = [
+                'message_id' => $messageId,
+                'reply_to_message_id' => $replyToMessageId,
+                'updated_at' => (string) ($row['updated_at'] ?? ''),
+            ];
+        }
 
-            return $result;
-        });
+        return $result;
     }
 
     public function saveReply(string $conversationKey, string $messageId, string $replyToMessageId): array
@@ -60,25 +64,36 @@ final class InternalChatReplyStore
         $normalizedMessageId = trim($messageId);
         $normalizedReplyToMessageId = trim($replyToMessageId);
 
-        if ($normalizedConversationKey === '' || $normalizedMessageId === '' || $normalizedReplyToMessageId === '') {
+        if (
+            $normalizedConversationKey === ''
+            || $normalizedMessageId === ''
+            || !ctype_digit($normalizedMessageId)
+            || $normalizedReplyToMessageId === ''
+            || !ctype_digit($normalizedReplyToMessageId)
+        ) {
             throw new RuntimeException('Reply metadata is invalid');
         }
 
-        return $this->withLockedStore(function (array &$store) use (
-            $normalizedConversationKey,
-            $normalizedMessageId,
-            $normalizedReplyToMessageId
-        ): array {
-            $this->prune($store);
+        $this->db->pdo()->prepare(
+            'INSERT INTO internal_chat_message_replies
+                (conversation_key, message_id, reply_to_message_id)
+             VALUES
+                (:conversation_key, :message_id, :reply_to_message_id)
+             ON DUPLICATE KEY UPDATE
+                conversation_key = VALUES(conversation_key),
+                reply_to_message_id = VALUES(reply_to_message_id),
+                updated_at = CURRENT_TIMESTAMP(3)'
+        )->execute([
+            ':conversation_key' => $normalizedConversationKey,
+            ':message_id' => (int) $normalizedMessageId,
+            ':reply_to_message_id' => (int) $normalizedReplyToMessageId,
+        ]);
 
-            $store['messages'][$normalizedConversationKey][$normalizedMessageId] = [
-                'message_id' => $normalizedMessageId,
-                'reply_to_message_id' => $normalizedReplyToMessageId,
-                'updated_at' => date('c'),
-            ];
-
-            return $store['messages'][$normalizedConversationKey][$normalizedMessageId];
-        });
+        return [
+            'message_id' => $normalizedMessageId,
+            'reply_to_message_id' => $normalizedReplyToMessageId,
+            'updated_at' => date('c'),
+        ];
     }
 
     public function deleteReplies(string $conversationKey, array $messageIds): void
@@ -87,99 +102,21 @@ final class InternalChatReplyStore
         $normalizedMessageIds = array_values(array_filter(array_map(
             static fn (mixed $value): string => trim((string) $value),
             $messageIds
-        )));
+        ), static fn (string $value): bool => $value !== '' && ctype_digit($value)));
 
         if ($normalizedConversationKey === '' || $normalizedMessageIds === []) {
             return;
         }
 
-        $this->withLockedStore(function (array &$store) use ($normalizedConversationKey, $normalizedMessageIds): bool {
-            $this->prune($store);
+        $placeholders = implode(', ', array_fill(0, count($normalizedMessageIds), '?'));
+        $sql = sprintf(
+            'DELETE FROM internal_chat_message_replies
+             WHERE conversation_key = ?
+               AND message_id IN (%s)',
+            $placeholders
+        );
 
-            foreach ($normalizedMessageIds as $messageId) {
-                unset($store['messages'][$normalizedConversationKey][$messageId]);
-            }
-
-            if (($store['messages'][$normalizedConversationKey] ?? []) === []) {
-                unset($store['messages'][$normalizedConversationKey]);
-            }
-
-            return true;
-        });
-    }
-
-    /**
-     * @template T
-     * @param callable(array):T $callback
-     * @return T
-     */
-    private function withLockedStore(callable $callback): mixed
-    {
-        $dir = dirname($this->path);
-        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
-            throw new RuntimeException('Unable to prepare internal chat reply storage');
-        }
-
-        $handle = @fopen($this->path, 'c+');
-        if ($handle === false) {
-            throw new RuntimeException('Unable to open internal chat reply storage');
-        }
-
-        try {
-            if (!@flock($handle, LOCK_EX)) {
-                throw new RuntimeException('Unable to lock internal chat reply storage');
-            }
-
-            $contents = stream_get_contents($handle);
-            $decoded = is_string($contents) && trim($contents) !== '' ? json_decode($contents, true) : null;
-            $store = is_array($decoded) ? $decoded : ['messages' => []];
-            $store['messages'] = is_array($store['messages'] ?? null) ? $store['messages'] : [];
-
-            $result = $callback($store);
-
-            rewind($handle);
-            ftruncate($handle, 0);
-            @fwrite($handle, (string) json_encode($store, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-            @fflush($handle);
-            @flock($handle, LOCK_UN);
-
-            return $result;
-        } finally {
-            fclose($handle);
-        }
-    }
-
-    private function prune(array &$store): void
-    {
-        foreach ($store['messages'] as $conversationKey => $conversation) {
-            if (!is_array($conversation)) {
-                unset($store['messages'][$conversationKey]);
-                continue;
-            }
-
-            foreach ($conversation as $messageId => $payload) {
-                if (!is_array($payload)) {
-                    unset($store['messages'][$conversationKey][$messageId]);
-                    continue;
-                }
-
-                $normalizedMessageId = trim((string) ($payload['message_id'] ?? $messageId));
-                $normalizedReplyToMessageId = trim((string) ($payload['reply_to_message_id'] ?? ''));
-                if ($normalizedMessageId === '' || $normalizedReplyToMessageId === '') {
-                    unset($store['messages'][$conversationKey][$messageId]);
-                    continue;
-                }
-
-                $store['messages'][$conversationKey][$messageId] = [
-                    'message_id' => $normalizedMessageId,
-                    'reply_to_message_id' => $normalizedReplyToMessageId,
-                    'updated_at' => (string) ($payload['updated_at'] ?? ''),
-                ];
-            }
-
-            if (($store['messages'][$conversationKey] ?? []) === []) {
-                unset($store['messages'][$conversationKey]);
-            }
-        }
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([$normalizedConversationKey, ...array_map('intval', $normalizedMessageIds)]);
     }
 }

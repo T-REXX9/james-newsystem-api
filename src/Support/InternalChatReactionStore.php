@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Support;
 
+use App\Database;
+use PDO;
 use RuntimeException;
 
 final class InternalChatReactionStore
@@ -13,7 +15,7 @@ final class InternalChatReactionStore
      */
     private const ALLOWED_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '👀'];
 
-    public function __construct(private readonly string $path)
+    public function __construct(private readonly Database $db)
     {
     }
 
@@ -27,66 +29,109 @@ final class InternalChatReactionStore
         foreach ($messages as $message) {
             $conversationKey = trim((string) ($message['conversation_key'] ?? ''));
             $messageId = trim((string) ($message['id'] ?? ''));
-            if ($conversationKey === '' || $messageId === '') {
+            if ($conversationKey === '' || $messageId === '' || !ctype_digit($messageId)) {
                 continue;
             }
 
             $messageIndex[$conversationKey][$messageId] = true;
         }
 
-        return $this->withLockedStore(function (array &$store) use ($messageIndex, $currentUserId): array {
-            $this->prune($store);
-            $result = [];
+        $result = [];
+        foreach ($messageIndex as $conversationKey => $messageIds) {
+            $result += $this->summarizeConversationMessages($conversationKey, array_keys($messageIds), $currentUserId);
+        }
 
-            foreach ($messageIndex as $conversationKey => $messageIds) {
-                $conversation = $store['messages'][$conversationKey] ?? [];
-                foreach (array_keys($messageIds) as $messageId) {
-                    $messageReactions = $conversation[$messageId] ?? [];
-                    $result[$messageId] = $this->formatReactionSummary($messageReactions, $currentUserId);
-                }
-            }
-
-            return $result;
-        });
+        return $result;
     }
 
     public function toggleReaction(string $conversationKey, string $messageId, string $userId, string $emoji): array
     {
+        $normalizedConversationKey = trim($conversationKey);
+        $normalizedMessageId = trim($messageId);
+        $normalizedUserId = trim($userId);
         $normalizedEmoji = $this->normalizeReaction($emoji);
-        if ($normalizedEmoji === null) {
+        if (
+            $normalizedConversationKey === ''
+            || $normalizedMessageId === ''
+            || !ctype_digit($normalizedMessageId)
+            || $normalizedUserId === ''
+            || !ctype_digit($normalizedUserId)
+            || $normalizedEmoji === null
+        ) {
             throw new RuntimeException('Unsupported reaction');
         }
 
-        return $this->withLockedStore(function (array &$store) use ($conversationKey, $messageId, $userId, $normalizedEmoji): array {
-            $this->prune($store);
+        $pdo = $this->db->pdo();
+        $startedTransaction = false;
 
-            $conversation = $store['messages'][$conversationKey] ?? [];
-            $message = $conversation[$messageId] ?? [];
-            $existing = $message[$userId]['emoji'] ?? null;
+        if (!$pdo->inTransaction()) {
+            $pdo->beginTransaction();
+            $startedTransaction = true;
+        }
 
-            if ($existing === $normalizedEmoji) {
-                unset($message[$userId]);
+        try {
+            $existingStmt = $pdo->prepare(
+                'SELECT emoji
+                 FROM internal_chat_message_reactions
+                 WHERE message_id = :message_id
+                   AND user_id = :user_id
+                 LIMIT 1
+                 FOR UPDATE'
+            );
+            $existingStmt->execute([
+                ':message_id' => (int) $normalizedMessageId,
+                ':user_id' => (int) $normalizedUserId,
+            ]);
+
+            $existingEmoji = trim((string) ($existingStmt->fetchColumn() ?: ''));
+            if ($existingEmoji === $normalizedEmoji) {
+                $pdo->prepare(
+                    'DELETE FROM internal_chat_message_reactions
+                     WHERE message_id = :message_id
+                       AND user_id = :user_id'
+                )->execute([
+                    ':message_id' => (int) $normalizedMessageId,
+                    ':user_id' => (int) $normalizedUserId,
+                ]);
             } else {
-                $message[$userId] = [
-                    'emoji' => $normalizedEmoji,
-                    'updated_at' => date('c'),
-                ];
+                $pdo->prepare(
+                    'INSERT INTO internal_chat_message_reactions
+                        (conversation_key, message_id, user_id, emoji)
+                     VALUES
+                        (:conversation_key, :message_id, :user_id, :emoji)
+                     ON DUPLICATE KEY UPDATE
+                        conversation_key = VALUES(conversation_key),
+                        emoji = VALUES(emoji),
+                        updated_at = CURRENT_TIMESTAMP(3)'
+                )->execute([
+                    ':conversation_key' => $normalizedConversationKey,
+                    ':message_id' => (int) $normalizedMessageId,
+                    ':user_id' => (int) $normalizedUserId,
+                    ':emoji' => $normalizedEmoji,
+                ]);
             }
 
-            if ($message === []) {
-                unset($conversation[$messageId]);
-            } else {
-                $conversation[$messageId] = $message;
+            $summary = $this->summarizeConversationMessages(
+                $normalizedConversationKey,
+                [$normalizedMessageId],
+                $normalizedUserId
+            )[$normalizedMessageId] ?? [
+                'reactions' => [],
+                'current_user_reaction' => null,
+            ];
+
+            if ($startedTransaction && $pdo->inTransaction()) {
+                $pdo->commit();
             }
 
-            if ($conversation === []) {
-                unset($store['messages'][$conversationKey]);
-            } else {
-                $store['messages'][$conversationKey] = $conversation;
+            return $summary;
+        } catch (\Throwable $error) {
+            if ($startedTransaction && $pdo->inTransaction()) {
+                $pdo->rollBack();
             }
 
-            return $this->formatReactionSummary($message, $userId);
-        });
+            throw $error;
+        }
     }
 
     /**
@@ -147,64 +192,56 @@ final class InternalChatReactionStore
         ];
     }
 
-    /**
-     * @template T
-     * @param callable(array):T $callback
-     * @return T
-     */
-    private function withLockedStore(callable $callback): mixed
+    private function summarizeConversationMessages(string $conversationKey, array $messageIds, string $currentUserId): array
     {
-        $dir = dirname($this->path);
-        if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
-            throw new RuntimeException('Unable to prepare internal chat reaction storage');
+        $normalizedMessageIds = array_values(array_filter(array_map(
+            static fn (mixed $value): string => trim((string) $value),
+            $messageIds
+        ), static fn (string $value): bool => $value !== '' && ctype_digit($value)));
+
+        if ($conversationKey === '' || $normalizedMessageIds === []) {
+            return [];
         }
 
-        $handle = @fopen($this->path, 'c+');
-        if ($handle === false) {
-            throw new RuntimeException('Unable to open internal chat reaction storage');
+        $result = [];
+        foreach ($normalizedMessageIds as $messageId) {
+            $result[$messageId] = [
+                'reactions' => [],
+                'current_user_reaction' => null,
+            ];
         }
 
-        try {
-            if (!@flock($handle, LOCK_EX)) {
-                throw new RuntimeException('Unable to lock internal chat reaction storage');
-            }
+        $placeholders = implode(', ', array_fill(0, count($normalizedMessageIds), '?'));
+        $sql = sprintf(
+            'SELECT
+                CAST(message_id AS CHAR) AS message_id,
+                CAST(user_id AS CHAR) AS user_id,
+                emoji
+             FROM internal_chat_message_reactions
+             WHERE conversation_key = ?
+               AND message_id IN (%s)',
+            $placeholders
+        );
 
-            $contents = stream_get_contents($handle);
-            $decoded = is_string($contents) && trim($contents) !== '' ? json_decode($contents, true) : null;
-            $store = is_array($decoded) ? $decoded : ['messages' => []];
-            $store['messages'] = is_array($store['messages'] ?? null) ? $store['messages'] : [];
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([$conversationKey, ...array_map('intval', $normalizedMessageIds)]);
 
-            $result = $callback($store);
-
-            rewind($handle);
-            ftruncate($handle, 0);
-            @fwrite($handle, (string) json_encode($store, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-            @fflush($handle);
-            @flock($handle, LOCK_UN);
-
-            return $result;
-        } finally {
-            fclose($handle);
-        }
-    }
-
-    private function prune(array &$store): void
-    {
-        foreach ($store['messages'] as $conversationKey => $conversation) {
-            if (!is_array($conversation)) {
-                unset($store['messages'][$conversationKey]);
+        $grouped = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $messageId = trim((string) ($row['message_id'] ?? ''));
+            $userId = trim((string) ($row['user_id'] ?? ''));
+            $emoji = trim((string) ($row['emoji'] ?? ''));
+            if ($messageId === '' || $userId === '' || $emoji === '') {
                 continue;
             }
 
-            foreach ($conversation as $messageId => $message) {
-                if (!is_array($message) || $message === []) {
-                    unset($store['messages'][$conversationKey][$messageId]);
-                }
-            }
-
-            if (($store['messages'][$conversationKey] ?? []) === []) {
-                unset($store['messages'][$conversationKey]);
-            }
+            $grouped[$messageId][$userId] = ['emoji' => $emoji];
         }
+
+        foreach ($grouped as $messageId => $messageReactions) {
+            $result[$messageId] = $this->formatReactionSummary($messageReactions, $currentUserId);
+        }
+
+        return $result;
     }
 }

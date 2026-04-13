@@ -266,10 +266,9 @@ function app_router(): Router
         (string) Env::get('INTERNAL_CHAT_SOCKET_NOTIFY_URL', 'http://127.0.0.1:8082/internal-chat/events'),
         (string) Env::get('INTERNAL_CHAT_SOCKET_SECRET', $config->authSecret)
     );
-    $internalChatStorageDir = app_internal_chat_storage_dir();
-    $internalChatReactionStore = new InternalChatReactionStore($internalChatStorageDir . '/reactions.json');
-    $internalChatReplyStore = new InternalChatReplyStore($internalChatStorageDir . '/replies.json');
-    $internalChatTypingStore = new InternalChatTypingStore($internalChatStorageDir . '/typing.json');
+    $internalChatReactionStore = new InternalChatReactionStore($db);
+    $internalChatReplyStore = new InternalChatReplyStore($db);
+    $internalChatTypingStore = new InternalChatTypingStore($db);
     $rolePermissionRepo = new App\Repositories\RolePermissionRepository($db);
     $authRepo = new App\Repositories\AuthRepository($db);
     $permissionMiddleware = new PermissionMiddleware($tokenService, $rolePermissionRepo);
@@ -769,31 +768,4 @@ function app_router(): Router
     $router->get('/api/v1/profit-protection/admin-overrides', [$profitProtectionController, 'listAdminOverrides']);
 
     return $router;
-}
-
-function app_internal_chat_storage_dir(): string
-{
-    $rootDir = dirname(__DIR__);
-    $candidates = [
-        $rootDir . '/storage/internal-chat',
-        dirname($rootDir) . '/.runtime/internal-chat',
-        rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'james-system-internal-chat',
-    ];
-
-    foreach ($candidates as $dir) {
-        if ($dir === '') {
-            continue;
-        }
-
-        if (is_dir($dir) && is_writable($dir)) {
-            return $dir;
-        }
-
-        $parent = dirname($dir);
-        if ($parent !== '' && is_dir($parent) && is_writable($parent)) {
-            return $dir;
-        }
-    }
-
-    return $candidates[0];
 }
