@@ -191,6 +191,7 @@ SQL;
         $stmt->bindValue('offset', $params['offset'], PDO::PARAM_INT);
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $rows = $this->attachSalesByYear($rows);
 
         $countSql = <<<SQL
 SELECT COUNT(*) AS total
@@ -355,7 +356,12 @@ SQL;
         $stmt->execute();
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        return $row ?: null;
+        if (!$row) {
+            return null;
+        }
+
+        $items = $this->attachSalesByYear([$row]);
+        return $items[0] ?? null;
     }
 
     public function createProduct(int $mainId, int $userId, array $payload): array
@@ -543,6 +549,107 @@ SQL;
             $labels[] = $names[$i] ?? $defaults[$i];
         }
         return $labels;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function attachSalesByYear(array $rows): array
+    {
+        if (count($rows) === 0) {
+            return $rows;
+        }
+
+        $sessions = [];
+        foreach ($rows as $row) {
+            $session = trim((string) ($row['legacy_session'] ?? $row['id'] ?? ''));
+            if ($session !== '') {
+                $sessions[] = $session;
+            }
+        }
+
+        if (count($sessions) === 0) {
+            return $rows;
+        }
+
+        $salesMap = $this->getSalesByYearForSessions(array_values(array_unique($sessions)));
+        foreach ($rows as &$row) {
+            $session = trim((string) ($row['legacy_session'] ?? $row['id'] ?? ''));
+            $row['sales_by_year'] = $salesMap[$session] ?? [];
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /**
+     * @param array<int, string> $itemSessions
+     * @return array<string, array<string, int>>
+     */
+    private function getSalesByYearForSessions(array $itemSessions): array
+    {
+        if (count($itemSessions) === 0) {
+            return [];
+        }
+
+        $years = $this->getFiveYearWindow();
+        $emptyYearMap = array_fill_keys($years, 0);
+        $map = [];
+        foreach ($itemSessions as $session) {
+            $trimmed = trim((string) $session);
+            if ($trimmed === '') {
+                continue;
+            }
+            $map[$trimmed] = $emptyYearMap;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($itemSessions), '?'));
+        $sql = <<<SQL
+SELECT
+    lg.linvent_id AS item_session,
+    YEAR(lg.ldateadded) AS sales_year,
+    SUM(COALESCE(lg.lout, 0)) AS total_sold
+FROM tblinventory_logs lg
+WHERE lg.linvent_id IN ({$placeholders})
+  AND lg.ltransaction_type IN ('Invoice', 'Order Slip')
+  AND lg.lstatus_logs = '-'
+  AND COALESCE(lg.lout, 0) > 0
+  AND lg.ldateadded IS NOT NULL
+GROUP BY lg.linvent_id, YEAR(lg.ldateadded)
+ORDER BY sales_year DESC
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute(array_values($itemSessions));
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($rows as $row) {
+            $session = trim((string) ($row['item_session'] ?? ''));
+            $year = trim((string) ($row['sales_year'] ?? ''));
+            if ($session === '' || $year === '' || $year === '0' || !isset($map[$session][$year])) {
+                continue;
+            }
+
+            $map[$session][$year] = (int) ($row['total_sold'] ?? 0);
+        }
+
+        return $map;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function getFiveYearWindow(): array
+    {
+        $currentYear = (int) date('Y');
+        $years = [];
+
+        for ($offset = 0; $offset < 5; $offset++) {
+            $years[] = (string) ($currentYear - $offset);
+        }
+
+        return $years;
     }
 
     private function mapStatusToLegacy(mixed $status): int
