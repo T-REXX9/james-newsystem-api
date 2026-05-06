@@ -717,9 +717,6 @@ SQL;
                 'main_id' => (string) $mainId,
                 'invoice_refno' => $invoiceRefno,
             ]);
-            if ($stmt->rowCount() === 0) {
-                return null;
-            }
             return $this->getInvoice($mainId, $invoiceRefno);
         }
 
