@@ -24,7 +24,8 @@ final class ProductRepository
         string $search = '',
         string $status = 'all',
         int $page = 1,
-        int $perPage = 100
+        int $perPage = 100,
+        array $fieldFilters = []
     ): array {
         $page = max(1, $page);
         $perPage = min(500, max(1, $perPage));
@@ -58,6 +59,23 @@ final class ProductRepository
         if ($trimmedSearch !== '') {
             $params['search'] = '%' . $trimmedSearch . '%';
             $where[] = "CONCAT_WS(' ', itm.lsession, itm.litemcode, itm.lpartno, itm.ldescription, itm.lbrand, itm.lnickname, itm.loem_number, itm.lopn_number, itm.lapplication, itm.lbarcode) LIKE :search";
+        }
+
+        $legacyFieldMap = [
+            'part_no' => 'itm.lpartno',
+            'item_code' => 'itm.litemcode',
+            'description' => 'itm.ldescription',
+            'application' => 'itm.lapplication',
+            'original_pn' => 'itm.lopn_number',
+        ];
+        foreach ($legacyFieldMap as $filterName => $column) {
+            $value = trim((string) ($fieldFilters[$filterName] ?? ''));
+            if ($value === '') {
+                continue;
+            }
+            $paramName = 'filter_' . $filterName;
+            $params[$paramName] = '%' . $value . '%';
+            $where[] = "{$column} LIKE :{$paramName}";
         }
 
         $whereSql = implode(' AND ', $where);
@@ -131,6 +149,34 @@ SELECT
         LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_vip2,
     CAST(COALESCE((
+        SELECT ip.lprice_amt
+        FROM tblinventory_price ip
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'BAA'
+        ORDER BY ip.lid DESC
+        LIMIT 1
+    ), 0) AS DECIMAL(15,2)) AS price_baa,
+    CAST(COALESCE((
+        SELECT ip.lprice_amt
+        FROM tblinventory_price ip
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'BBB'
+        ORDER BY ip.lid DESC
+        LIMIT 1
+    ), 0) AS DECIMAL(15,2)) AS price_bbb,
+    CAST(COALESCE((
+        SELECT ip.lprice_amt
+        FROM tblinventory_price ip
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'BCC'
+        ORDER BY ip.lid DESC
+        LIMIT 1
+    ), 0) AS DECIMAL(15,2)) AS price_bcc,
+    CAST(COALESCE((
+        SELECT ip.lprice_amt
+        FROM tblinventory_price ip
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'BDD'
+        ORDER BY ip.lid DESC
+        LIMIT 1
+    ), 0) AS DECIMAL(15,2)) AS price_bdd,
+    CAST(COALESCE((
         SELECT SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0))
         FROM tblinventory_logs lg
         WHERE lg.linvent_id = itm.lsession
@@ -187,6 +233,12 @@ SQL;
         if (isset($params['search'])) {
             $stmt->bindValue('search', $params['search'], PDO::PARAM_STR);
         }
+        foreach ($legacyFieldMap as $filterName => $_column) {
+            $paramName = 'filter_' . $filterName;
+            if (isset($params[$paramName])) {
+                $stmt->bindValue($paramName, $params[$paramName], PDO::PARAM_STR);
+            }
+        }
         $stmt->bindValue('limit', $params['limit'], PDO::PARAM_INT);
         $stmt->bindValue('offset', $params['offset'], PDO::PARAM_INT);
         $stmt->execute();
@@ -202,6 +254,12 @@ SQL;
         $countStmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
         if (isset($params['search'])) {
             $countStmt->bindValue('search', $params['search'], PDO::PARAM_STR);
+        }
+        foreach ($legacyFieldMap as $filterName => $_column) {
+            $paramName = 'filter_' . $filterName;
+            if (isset($params[$paramName])) {
+                $countStmt->bindValue($paramName, $params[$paramName], PDO::PARAM_STR);
+            }
         }
         $countStmt->execute();
         $total = (int) ($countStmt->fetchColumn() ?: 0);
@@ -297,6 +355,34 @@ SELECT
         ORDER BY ip.lid DESC
         LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_vip2,
+    CAST(COALESCE((
+        SELECT ip.lprice_amt
+        FROM tblinventory_price ip
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'BAA'
+        ORDER BY ip.lid DESC
+        LIMIT 1
+    ), 0) AS DECIMAL(15,2)) AS price_baa,
+    CAST(COALESCE((
+        SELECT ip.lprice_amt
+        FROM tblinventory_price ip
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'BBB'
+        ORDER BY ip.lid DESC
+        LIMIT 1
+    ), 0) AS DECIMAL(15,2)) AS price_bbb,
+    CAST(COALESCE((
+        SELECT ip.lprice_amt
+        FROM tblinventory_price ip
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'BCC'
+        ORDER BY ip.lid DESC
+        LIMIT 1
+    ), 0) AS DECIMAL(15,2)) AS price_bcc,
+    CAST(COALESCE((
+        SELECT ip.lprice_amt
+        FROM tblinventory_price ip
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'BDD'
+        ORDER BY ip.lid DESC
+        LIMIT 1
+    ), 0) AS DECIMAL(15,2)) AS price_bdd,
     CAST(COALESCE((
         SELECT SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0))
         FROM tblinventory_logs lg

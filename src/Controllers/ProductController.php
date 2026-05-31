@@ -21,6 +21,13 @@ final class ProductController
         }
 
         $search = trim((string) ($query['search'] ?? ''));
+        $fieldFilters = [
+            'part_no' => trim((string) ($query['part_no'] ?? '')),
+            'item_code' => trim((string) ($query['item_code'] ?? '')),
+            'description' => trim((string) ($query['description'] ?? '')),
+            'application' => trim((string) ($query['application'] ?? '')),
+            'original_pn' => trim((string) ($query['original_pn'] ?? '')),
+        ];
         $status = strtolower(trim((string) ($query['status'] ?? 'all')));
         if (!in_array($status, ['all', 'active', 'inactive'], true)) {
             throw new HttpException(422, 'status must be one of: all, active, inactive');
@@ -29,7 +36,7 @@ final class ProductController
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, (int) ($query['per_page'] ?? 100));
 
-        return $this->repo->listProducts($mainId, $search, $status, $page, $perPage);
+        return $this->repo->listProducts($mainId, $search, $status, $page, $perPage, $fieldFilters);
     }
 
     public function show(array $params = [], array $query = [], array $body = []): array
