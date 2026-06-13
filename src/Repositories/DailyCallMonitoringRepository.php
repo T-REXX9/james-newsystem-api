@@ -15,7 +15,7 @@ final class DailyCallMonitoringRepository
 
     public function getExcelRows(int $mainId, string $status = 'all', string $search = '', ?int $viewerUserId = null): array
     {
-        $customers = $this->getCustomerBaseRows($mainId, $status, $search, $viewerUserId);
+        $customers = $this->getCustomerBaseRows($mainId, 'all', $search, $viewerUserId);
         if (count($customers) === 0) {
             return [];
         }
@@ -63,6 +63,7 @@ final class DailyCallMonitoringRepository
             $dailyActivity = $this->buildDailyActivity($logsByCustomer[$cid] ?? []);
 
             $metricsRow = $metrics[$cid] ?? null;
+            $statusLabel = $this->resolveDailyCallStatus($monthlyOrder, (string) ($customer['status_label'] ?? ''));
 
             $rows[] = [
                 'id' => $cid,
@@ -83,7 +84,7 @@ final class DailyCallMonitoringRepository
                 'terms' => $customer['mode_of_payment'] ?: '—',
                 'modeOfPayment' => $customer['mode_of_payment'] ?: '—',
                 'courier' => $customer['courier'] ?: '—',
-                'status' => $customer['status_label'] ?: 'active',
+                'status' => $statusLabel,
                 'statusDate' => $this->formatDateText($customer['status_date']),
                 'outstandingBalance' => (float) ($metricsRow['outstanding_balance'] ?? 0),
                 'averageMonthlyOrder' => (float) ($metricsRow['average_monthly_purchase'] ?? 0),
@@ -91,6 +92,14 @@ final class DailyCallMonitoringRepository
                 'weeklyRangeTotals' => $weeklyTotals,
                 'dailyActivity' => $dailyActivity,
             ];
+        }
+
+        $statusLower = strtolower(trim($status));
+        if ($statusLower !== '' && $statusLower !== 'all') {
+            $rows = array_values(array_filter(
+                $rows,
+                static fn(array $row): bool => strtolower((string) ($row['status'] ?? '')) === $statusLower
+            ));
         }
 
         usort($rows, static fn(array $a, array $b) => strcmp((string) $a['shopName'], (string) $b['shopName']));
@@ -901,6 +910,15 @@ SQL;
         return $sum;
     }
 
+    private function resolveDailyCallStatus(float $monthlyOrder, string $legacyStatus): string
+    {
+        if ($monthlyOrder > 0) {
+            return 'active';
+        }
+
+        return strtolower(trim($legacyStatus)) === 'prospective' ? 'prospective' : 'inactive';
+    }
+
     private function computeWeeklyRangeTotals(array $purchaseRows): array
     {
         $buckets = $this->getWeeklyRangeBuckets();
@@ -1018,10 +1036,11 @@ SQL;
 
     private function formatDateText(?string $value): string
     {
-        if ($value === null || trim($value) === '') {
+        $trimmed = trim((string) $value);
+        if ($trimmed === '' || $trimmed === '0000-00-00' || $trimmed === '1970-01-01') {
             return '—';
         }
-        $ts = strtotime($value);
+        $ts = strtotime($trimmed);
         if ($ts === false) {
             return '—';
         }
