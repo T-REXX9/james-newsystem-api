@@ -104,6 +104,12 @@ SELECT
     CAST(COALESCE(itm.lreplenish, 0) AS SIGNED) AS replenish_quantity,
     COALESCE(itm.lopn_number, '') AS original_pn_no,
     COALESCE(itm.lapplication, '') AS application,
+    COALESCE((
+        SELECT loc.lname
+        FROM tblitem_location loc
+        WHERE loc.lid = itm.llocation
+        LIMIT 1
+    ), '') AS location,
     COALESCE(itm.lcylinder, '') AS no_of_cylinder,
     CAST(COALESCE(itm.lcost, 0) AS DECIMAL(15,2)) AS cost,
     CAST(COALESCE((
@@ -311,6 +317,12 @@ SELECT
     CAST(COALESCE(itm.lreplenish, 0) AS SIGNED) AS replenish_quantity,
     COALESCE(itm.lopn_number, '') AS original_pn_no,
     COALESCE(itm.lapplication, '') AS application,
+    COALESCE((
+        SELECT loc.lname
+        FROM tblitem_location loc
+        WHERE loc.lid = itm.llocation
+        LIMIT 1
+    ), '') AS location,
     COALESCE(itm.lcylinder, '') AS no_of_cylinder,
     CAST(COALESCE(itm.lcost, 0) AS DECIMAL(15,2)) AS cost,
     CAST(COALESCE((

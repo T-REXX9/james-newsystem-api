@@ -471,6 +471,7 @@ function app_router(): Router
     $router->post('/api/v1/profiles/{id}/activate', [$profilesController, 'activate']);
     $router->post('/api/v1/profiles/{id}/role', [$profilesController, 'updateRole']);
     $router->get('/api/v1/daily-call-monitoring/excel', [$dailyCallMonitoringController, 'excelRows']);
+    $router->get('/api/v1/daily-call-monitoring/master-list', [$dailyCallMonitoringController, 'masterList']);
     $router->get('/api/v1/daily-call-monitoring/owner-snapshot', [$dailyCallMonitoringController, 'ownerSnapshot']);
     $router->get('/api/v1/daily-call-monitoring/agent-snapshot', [$dailyCallMonitoringController, 'agentSnapshot']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/purchase-history', [$dailyCallMonitoringController, 'customerPurchaseHistory']);

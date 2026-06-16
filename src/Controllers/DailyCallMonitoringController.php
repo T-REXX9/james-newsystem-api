@@ -27,6 +27,19 @@ final class DailyCallMonitoringController
         return $this->repo->getExcelRows($mainId, $status, $search, $viewerUserId);
     }
 
+    public function masterList(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $fromDate = trim((string) ($query['from_date'] ?? '2025-10-01'));
+        $search = trim((string) ($query['search'] ?? ''));
+
+        return $this->repo->getPurchaseMasterList($mainId, $fromDate, $search);
+    }
+
     public function ownerSnapshot(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);

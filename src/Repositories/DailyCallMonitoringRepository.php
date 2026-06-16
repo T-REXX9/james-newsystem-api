@@ -126,6 +126,134 @@ final class DailyCallMonitoringRepository
         ];
     }
 
+    public function getPurchaseMasterList(int $mainId, string $fromDate = '2025-10-01', string $search = ''): array
+    {
+        $effectiveFromDate = $this->normalizeDateOrDefault($fromDate, '2025-10-01');
+        $amountExpr = "COALESCE(NULLIF(tr.lamount, 0), (
+            SELECT SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0))
+            FROM tbltransaction_item it
+            WHERE it.lrefno = tr.lrefno AND COALESCE(it.lcancel, 0) = 0
+        ), 0)";
+
+        $where = [
+            'tr.lmain_id = :main_id',
+            'tr.ldate >= :from_date',
+            'tr.ldate <= CURDATE()',
+            'COALESCE(tr.lcancel, 0) = 0',
+            "COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')",
+            "COALESCE(tr.lcustomerid, '') <> ''",
+        ];
+        $params = [
+            'main_id' => $mainId,
+            'from_date' => $effectiveFromDate,
+        ];
+
+        if (trim($search) !== '') {
+            $where[] = "(
+                p.lcompany LIKE :search_company
+                OR p.lcity LIKE :search_city
+                OR p.lprovince LIKE :search_province
+                OR p.lmobile LIKE :search_mobile
+                OR p.lphone LIKE :search_phone
+                OR p.lpatient_code LIKE :search_code
+            )";
+            $searchValue = '%' . trim($search) . '%';
+            $params['search_company'] = $searchValue;
+            $params['search_city'] = $searchValue;
+            $params['search_province'] = $searchValue;
+            $params['search_mobile'] = $searchValue;
+            $params['search_phone'] = $searchValue;
+            $params['search_code'] = $searchValue;
+        }
+
+        $whereSql = implode(' AND ', $where);
+        $currentMonth = date('Y-m');
+        $sql = <<<SQL
+SELECT
+    tr.lcustomerid AS id,
+    COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Shop') AS shop_name,
+    COALESCE(p.lprovince, '') AS province,
+    COALESCE(p.lcity, '') AS city,
+    COALESCE(p.lmobile, p.lphone, '') AS contact_number,
+    TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))) AS assigned_to,
+    DATE(MAX(tr.ldate)) AS last_purchase_date_raw,
+    COUNT(DISTINCT tr.lrefno) AS purchase_count,
+    SUM({$amountExpr}) AS total_sales,
+    SUM(CASE WHEN DATE_FORMAT(tr.ldate, '%Y-%m') = :current_month THEN {$amountExpr} ELSE 0 END) AS current_month_sales,
+    DATEDIFF(CURDATE(), DATE(MAX(tr.ldate))) AS days_since_last_purchase,
+    TIMESTAMPDIFF(MONTH, DATE(MAX(tr.ldate)), CURDATE()) AS months_since_last_purchase
+FROM tbltransaction tr
+INNER JOIN tblpatient p
+    ON p.lsessionid = tr.lcustomerid
+   AND p.lmain_id = tr.lmain_id
+LEFT JOIN tblaccount a
+    ON a.lid = p.lsales_person
+WHERE {$whereSql}
+GROUP BY
+    tr.lcustomerid,
+    p.lcompany,
+    p.lprovince,
+    p.lcity,
+    p.lmobile,
+    p.lphone,
+    a.lfname,
+    a.llname
+ORDER BY last_purchase_date_raw DESC, total_sales DESC, shop_name ASC
+LIMIT 1000
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute(array_merge(['current_month' => $currentMonth], $params));
+
+        $items = array_map(function (array $row): array {
+            $rawDate = (string) ($row['last_purchase_date_raw'] ?? '');
+            $daysSinceLastPurchase = max(0, (int) ($row['days_since_last_purchase'] ?? 0));
+            return [
+                'id' => (string) ($row['id'] ?? ''),
+                'shopName' => (string) ($row['shop_name'] ?? 'Unnamed Shop'),
+                'province' => $this->cleanDisplayText($row['province'] ?? '', '—'),
+                'city' => $this->cleanDisplayText($row['city'] ?? '', '—'),
+                'contactNumber' => $this->cleanDisplayText($row['contact_number'] ?? '', '—'),
+                'assignedTo' => $this->cleanDisplayText($row['assigned_to'] ?? '', 'Unassigned'),
+                'lastPurchaseDate' => $this->formatDateText($rawDate),
+                'last_purchase_date_raw' => $rawDate,
+                'purchaseCount' => (int) ($row['purchase_count'] ?? 0),
+                'purchase_count' => (int) ($row['purchase_count'] ?? 0),
+                'totalSales' => (float) ($row['total_sales'] ?? 0),
+                'total_sales' => (float) ($row['total_sales'] ?? 0),
+                'currentMonthSales' => (float) ($row['current_month_sales'] ?? 0),
+                'current_month_sales' => (float) ($row['current_month_sales'] ?? 0),
+                'daysSinceLastPurchase' => $daysSinceLastPurchase,
+                'days_since_last_purchase' => $daysSinceLastPurchase,
+                'monthsSinceLastPurchase' => max(0, (int) ($row['months_since_last_purchase'] ?? 0)),
+                'months_since_last_purchase' => max(0, (int) ($row['months_since_last_purchase'] ?? 0)),
+                'purchaseAgeGroup' => $this->purchaseAgeGroup($daysSinceLastPurchase),
+                'purchase_age_group' => $this->purchaseAgeGroup($daysSinceLastPurchase),
+            ];
+        }, $stmt->fetchAll(PDO::FETCH_ASSOC));
+
+        return [
+            'items' => $items,
+            'meta' => [
+                'from_date' => $effectiveFromDate,
+                'to_date' => date('Y-m-d'),
+                'count' => count($items),
+            ],
+        ];
+    }
+
+    private function purchaseAgeGroup(int $daysSinceLastPurchase): string
+    {
+        if ($daysSinceLastPurchase < 14) {
+            return 'recent';
+        }
+
+        if ($daysSinceLastPurchase <= 30) {
+            return 'two_weeks_to_one_month';
+        }
+
+        return 'over_one_month';
+    }
+
     public function getAgentSnapshot(int $mainId, int $viewerUserId): array
     {
         $customers = $this->getCustomerBaseRows($mainId, 'all', '', $viewerUserId);
@@ -917,6 +1045,25 @@ SQL;
         }
 
         return strtolower(trim($legacyStatus)) === 'prospective' ? 'prospective' : 'inactive';
+    }
+
+    private function normalizeDateOrDefault(string $value, string $fallback): string
+    {
+        $trimmed = trim($value);
+        $ts = strtotime($trimmed);
+        if ($trimmed === '' || $ts === false) {
+            return $fallback;
+        }
+        return date('Y-m-d', $ts);
+    }
+
+    private function cleanDisplayText(mixed $value, string $fallback = ''): string
+    {
+        $trimmed = trim((string) $value);
+        if ($trimmed === '' || strtolower($trimmed) === 'null' || strtolower($trimmed) === 'undefined') {
+            return $fallback;
+        }
+        return $trimmed;
     }
 
     private function computeWeeklyRangeTotals(array $purchaseRows): array
