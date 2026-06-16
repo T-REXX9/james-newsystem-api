@@ -113,11 +113,10 @@ SELECT
     COALESCE(itm.lcylinder, '') AS no_of_cylinder,
     CAST(COALESCE(itm.lcost, 0) AS DECIMAL(15,2)) AS cost,
     CAST(COALESCE((
-        SELECT ip.lprice_amt
+        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'AAA'
-        ORDER BY ip.lid DESC
-        LIMIT 1
+        WHERE ip.linv_refno = itm.lsession
+          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
     ), 0) AS DECIMAL(15,2)) AS price_aa,
     CAST(COALESCE((
         SELECT ip.lprice_amt
@@ -141,18 +140,16 @@ SELECT
         LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_dd,
     CAST(COALESCE((
-        SELECT ip.lprice_amt
+        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'VIP 1'
-        ORDER BY ip.lid DESC
-        LIMIT 1
+        WHERE ip.linv_refno = itm.lsession
+          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
     ), 0) AS DECIMAL(15,2)) AS price_vip1,
     CAST(COALESCE((
-        SELECT ip.lprice_amt
+        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'VIP2'
-        ORDER BY ip.lid DESC
-        LIMIT 1
+        WHERE ip.linv_refno = itm.lsession
+          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
     ), 0) AS DECIMAL(15,2)) AS price_vip2,
     CAST(COALESCE((
         SELECT ip.lprice_amt
@@ -326,11 +323,10 @@ SELECT
     COALESCE(itm.lcylinder, '') AS no_of_cylinder,
     CAST(COALESCE(itm.lcost, 0) AS DECIMAL(15,2)) AS cost,
     CAST(COALESCE((
-        SELECT ip.lprice_amt
+        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'AAA'
-        ORDER BY ip.lid DESC
-        LIMIT 1
+        WHERE ip.linv_refno = itm.lsession
+          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
     ), 0) AS DECIMAL(15,2)) AS price_aa,
     CAST(COALESCE((
         SELECT ip.lprice_amt
@@ -354,18 +350,16 @@ SELECT
         LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_dd,
     CAST(COALESCE((
-        SELECT ip.lprice_amt
+        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'VIP 1'
-        ORDER BY ip.lid DESC
-        LIMIT 1
+        WHERE ip.linv_refno = itm.lsession
+          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
     ), 0) AS DECIMAL(15,2)) AS price_vip1,
     CAST(COALESCE((
-        SELECT ip.lprice_amt
+        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'VIP2'
-        ORDER BY ip.lid DESC
-        LIMIT 1
+        WHERE ip.linv_refno = itm.lsession
+          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
     ), 0) AS DECIMAL(15,2)) AS price_vip2,
     CAST(COALESCE((
         SELECT ip.lprice_amt
