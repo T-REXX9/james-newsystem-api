@@ -25,6 +25,8 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
      Reads DB credentials from `.env`.)*
    - `mysql -u root topnotch < migrations/009_create_internal_chat_group_tables.sql`
    - `mysql -u root topnotch < migrations/010_create_internal_chat_metadata_tables.sql`
+   - `mysql -u root topnotch < migrations/011_create_incident_report_items.sql`
+   - `mysql -u root topnotch < migrations/012_seed_incident_report_items_demo.sql`
 4. Run local server:
    - `PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8081 -t public`
 
