@@ -937,6 +937,7 @@ SELECT
         WHEN LOWER(COALESCE(cl.lcall_type, '')) LIKE '%text%' OR LOWER(COALESCE(cl.lcall_type, '')) LIKE '%sms%' THEN 'text'
         ELSE 'call'
     END AS channel,
+    cle.lnotes AS notes,
     COALESCE(NULLIF(cle.lstatus, ''), NULLIF(cle.lremarks, ''), 'logged') AS outcome,
     CONCAT(cl.lcall_date, ' 00:00:00') AS occurred_at
 FROM tblcall_logs_entry cle
