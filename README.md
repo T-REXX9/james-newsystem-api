@@ -27,6 +27,7 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
    - `mysql -u root topnotch < migrations/010_create_internal_chat_metadata_tables.sql`
    - `mysql -u root topnotch < migrations/011_create_incident_report_items.sql`
    - `mysql -u root topnotch < migrations/012_seed_incident_report_items_demo.sql`
+   - `mysql -u root topnotch < migrations/013_create_daily_call_claims.sql`
 4. Run local server:
    - `PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8081 -t public`
 

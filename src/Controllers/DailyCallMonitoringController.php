@@ -19,7 +19,6 @@ final class DailyCallMonitoringController
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
-
         $status = (string) ($query['status'] ?? 'all');
         $search = (string) ($query['search'] ?? '');
         $viewerUserId = isset($query['viewer_user_id']) ? (int) $query['viewer_user_id'] : null;
@@ -168,9 +167,17 @@ final class DailyCallMonitoringController
 
     public function createCallLog(array $params = [], array $query = [], array $body = []): array
     {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $authenticatedUserId = (int) ($claims['sub'] ?? 0);
+        if ($authenticatedUserId <= 0) {
+            throw new HttpException(401, 'Invalid authenticated account');
+        }
         $mainId = (int) ($body['main_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
         }
 
         $contactId = trim((string) ($body['contact_id'] ?? ''));
@@ -185,13 +192,45 @@ final class DailyCallMonitoringController
 
         return $this->repo->createCallLog($mainId, [
             'contact_id' => $contactId,
-            'user_id' => $body['user_id'] ?? null,
+            'user_id' => $authenticatedUserId,
             'agent_name' => $body['agent_name'] ?? null,
             'channel' => $body['channel'] ?? 'call',
             'outcome' => $body['outcome'] ?? 'logged',
             'notes' => $notes,
             'occurred_at' => $body['occurred_at'] ?? null,
         ]);
+    }
+
+    public function claimCall(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $userId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $contactId = trim((string) ($body['contact_id'] ?? ''));
+        if ($userId <= 0 || $mainId <= 0 || $contactId === '') {
+            throw new HttpException(422, 'main_id, contact_id, and authenticated agent are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+
+        return $this->repo->claimCustomerCall($mainId, $contactId, $userId);
+    }
+
+    public function releaseCallClaim(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $userId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $contactId = trim((string) ($params['contactId'] ?? ''));
+        if ($userId <= 0 || $mainId <= 0 || $contactId === '') {
+            throw new HttpException(422, 'main_id, contactId, and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+
+        return ['released' => $this->repo->releaseCustomerCall($mainId, $contactId, $userId)];
     }
 
     public function createCustomerLog(array $params = [], array $query = [], array $body = []): array

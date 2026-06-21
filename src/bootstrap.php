@@ -78,6 +78,7 @@ require __DIR__ . '/Support/Exceptions/HttpException.php';
 require __DIR__ . '/Support/InternalChatReactionStore.php';
 require __DIR__ . '/Support/InternalChatReplyStore.php';
 require __DIR__ . '/Support/InternalChatTypingStore.php';
+require __DIR__ . '/Support/DailyCallClaimPolicy.php';
 require __DIR__ . '/Config.php';
 require __DIR__ . '/Database.php';
 require __DIR__ . '/Http/Response.php';
@@ -366,6 +367,17 @@ function app_router(): Router
         };
     };
 
+    $requireBearerAuthWithClaims = static function (callable $handler) use ($tokenService): callable {
+        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService) {
+            $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['Authorization'] ?? '';
+            if (!is_string($header) || !preg_match('/^Bearer\s+(.+)$/i', trim($header), $matches)) {
+                throw new HttpException(401, 'Bearer token is required');
+            }
+            $body['__auth_claims'] = $tokenService->verify((string) $matches[1]);
+            return $handler($params, $query, $body);
+        };
+    };
+
     $router = new Router();
     $router->get('/api/v1/health', [$healthController, 'index']);
     $router->get('/api/v1/customers/{sessionId}', [$customerController, 'show']);
@@ -484,7 +496,9 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/call-logs', [$dailyCallMonitoringController, 'callLogs']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/customer-logs', [$dailyCallMonitoringController, 'customerLogs']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/returns', [$dailyCallMonitoringController, 'returnRecords']);
-    $router->post('/api/v1/daily-call-monitoring/call-logs', [$dailyCallMonitoringController, 'createCallLog']);
+    $router->post('/api/v1/daily-call-monitoring/call-claims', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'claimCall']));
+    $router->post('/api/v1/daily-call-monitoring/call-claims/{contactId}/release', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'releaseCallClaim']));
+    $router->post('/api/v1/daily-call-monitoring/call-logs', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createCallLog']));
     $router->post('/api/v1/daily-call-monitoring/customer-logs', [$dailyCallMonitoringController, 'createCustomerLog']);
     $router->get('/api/v1/fast-slow-inventory-report', [$fastSlowInventoryReportController, 'report']);
     $router->get('/api/v1/incident-items-report', [$incidentItemsReportController, 'report']);

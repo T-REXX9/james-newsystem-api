@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\DailyCallClaimPolicy;
+use App\Support\Exceptions\HttpException;
+use DateTimeImmutable;
 use PDO;
 
 final class DailyCallMonitoringRepository
@@ -293,7 +296,29 @@ INSERT INTO tblcall_logs (
     :call_type
 )
 SQL;
-        $headerStmt = $this->db->pdo()->prepare($headerSql);
+        $pdo = $this->db->pdo();
+        $isSalesAgentReport = str_starts_with(trim((string) ($data['notes'] ?? '')), '[Sales Agent Report]');
+        if ($isSalesAgentReport) {
+            $pdo->beginTransaction();
+            $claimStmt = $pdo->prepare(
+                'SELECT * FROM daily_call_claims
+                 WHERE main_id = :main_id AND contact_id = :contact_id AND claim_date = CURDATE()
+                 FOR UPDATE'
+            );
+            $claimStmt->execute(['main_id' => $mainId, 'contact_id' => (string) ($data['contact_id'] ?? '')]);
+            $claim = $claimStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+            $validClaim = $claim !== null
+                && ($claim['status'] ?? '') === 'in_progress'
+                && (int) ($claim['agent_user_id'] ?? 0) === (int) ($data['user_id'] ?? 0)
+                && new DateTimeImmutable((string) $claim['expires_at']) > new DateTimeImmutable();
+            if (!$validClaim) {
+                $pdo->rollBack();
+                throw new HttpException(409, 'This customer is not reserved for your account. Refresh the list and try again.');
+            }
+        }
+
+        try {
+        $headerStmt = $pdo->prepare($headerSql);
         $headerStmt->execute([
             'main_id' => (string) $mainId,
             'refno' => $refno,
@@ -317,7 +342,7 @@ INSERT INTO tblcall_logs_entry (
     :notes
 )
 SQL;
-        $entryStmt = $this->db->pdo()->prepare($entrySql);
+        $entryStmt = $pdo->prepare($entrySql);
         $entryStmt->execute([
             'refno' => $refno,
             'status' => (string) ($data['outcome'] ?? 'logged'),
@@ -326,13 +351,106 @@ SQL;
             'notes' => (string) ($data['notes'] ?? ''),
         ]);
 
-        $id = (int) $this->db->pdo()->lastInsertId();
+        $id = (int) $pdo->lastInsertId();
+        if ($isSalesAgentReport) {
+            $completeStmt = $pdo->prepare(
+                "UPDATE daily_call_claims SET status = 'completed', completed_at = NOW(), expires_at = NOW()
+                 WHERE main_id = :main_id AND contact_id = :contact_id AND claim_date = CURDATE() AND agent_user_id = :agent_user_id"
+            );
+            $completeStmt->execute([
+                'main_id' => $mainId,
+                'contact_id' => (string) ($data['contact_id'] ?? ''),
+                'agent_user_id' => (int) ($data['user_id'] ?? 0),
+            ]);
+            $pdo->commit();
+        }
+        } catch (\Throwable $error) {
+            if ($isSalesAgentReport && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
         $created = $this->getCallLogById($mainId, $id);
         if ($created === null) {
             throw new \RuntimeException('Failed to load created call log');
         }
 
         return $created;
+    }
+
+    public function claimCustomerCall(int $mainId, string $contactId, int $agentUserId): array
+    {
+        $pdo = $this->db->pdo();
+        $agentStmt = $pdo->prepare(
+            "SELECT COALESCE(NULLIF(TRIM(CONCAT(COALESCE(lfname, ''), ' ', COALESCE(llname, ''))), ''), lemail, CONCAT('User ', lid))
+             FROM tblaccount WHERE lid = :agent_user_id LIMIT 1"
+        );
+        $agentStmt->execute(['agent_user_id' => $agentUserId]);
+        $agentName = trim((string) $agentStmt->fetchColumn());
+        if ($agentName === '') {
+            throw new HttpException(403, 'Authenticated account was not found');
+        }
+        $pdo->beginTransaction();
+        try {
+            $insert = $pdo->prepare(
+                "INSERT IGNORE INTO daily_call_claims
+                 (main_id, contact_id, claim_date, agent_user_id, agent_name, status, claimed_at, expires_at)
+                 VALUES (:main_id, :contact_id, CURDATE(), :agent_user_id, :agent_name, 'in_progress', NOW(), DATE_ADD(NOW(), INTERVAL 20 MINUTE))"
+            );
+            $insert->execute([
+                'main_id' => $mainId,
+                'contact_id' => $contactId,
+                'agent_user_id' => $agentUserId,
+                'agent_name' => $agentName,
+            ]);
+
+            $select = $pdo->prepare(
+                'SELECT * FROM daily_call_claims
+                 WHERE main_id = :main_id AND contact_id = :contact_id AND claim_date = CURDATE()
+                 FOR UPDATE'
+            );
+            $select->execute(['main_id' => $mainId, 'contact_id' => $contactId]);
+            $claim = $select->fetch(PDO::FETCH_ASSOC) ?: null;
+            if (!DailyCallClaimPolicy::canAcquire($claim, $agentUserId, new DateTimeImmutable())) {
+                $pdo->rollBack();
+                $owner = trim((string) ($claim['agent_name'] ?? 'another sales agent')) ?: 'another sales agent';
+                $action = ($claim['status'] ?? '') === 'completed' ? 'was already called today by' : 'is already being called by';
+                throw new HttpException(409, "This customer {$action} {$owner}.");
+            }
+
+            $update = $pdo->prepare(
+                "UPDATE daily_call_claims
+                 SET agent_user_id = :agent_user_id, agent_name = :agent_name, status = 'in_progress',
+                     claimed_at = NOW(), expires_at = DATE_ADD(NOW(), INTERVAL 20 MINUTE), completed_at = NULL
+                 WHERE main_id = :main_id AND contact_id = :contact_id AND claim_date = CURDATE()"
+            );
+            $update->execute([
+                'agent_user_id' => $agentUserId,
+                'agent_name' => $agentName,
+                'main_id' => $mainId,
+                'contact_id' => $contactId,
+            ]);
+            $select->execute(['main_id' => $mainId, 'contact_id' => $contactId]);
+            $result = $select->fetch(PDO::FETCH_ASSOC) ?: [];
+            $pdo->commit();
+            return $result;
+        } catch (\Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
+    }
+
+    public function releaseCustomerCall(int $mainId, string $contactId, int $agentUserId): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            "DELETE FROM daily_call_claims
+             WHERE main_id = :main_id AND contact_id = :contact_id AND claim_date = CURDATE()
+               AND agent_user_id = :agent_user_id AND status = 'in_progress'"
+        );
+        $stmt->execute(['main_id' => $mainId, 'contact_id' => $contactId, 'agent_user_id' => $agentUserId]);
+        return $stmt->rowCount() > 0;
     }
 
     public function getCustomerLogs(int $mainId, string $contactId): array
@@ -1114,21 +1232,33 @@ SQL;
             $key = date('Y-m-d', $ts);
             $channel = strtolower((string) ($log['channel'] ?? 'call'));
             $activityType = $channel === 'text' ? 'text' : 'call';
+            $notes = trim((string) ($log['notes'] ?? ''));
+            $isSalesAgentReport = str_starts_with($notes, '[Sales Agent Report]');
+            $mapKey = $isSalesAgentReport
+                ? $key . '-report-' . (string) ($log['id'] ?? count($map))
+                : $key;
 
-            if (!isset($map[$key])) {
-                $map[$key] = [
+            if (!isset($map[$mapKey])) {
+                $map[$mapKey] = [
                     'id' => (string) ($log['id'] ?? '') . '-' . $key,
                     'contact_id' => (string) ($log['contact_id'] ?? ''),
                     'activity_date' => $key,
                     'activity_type' => $activityType,
                     'activity_count' => 1,
-                    'notes' => null,
+                    'notes' => $notes !== '' ? $notes : null,
+                    'agent_name' => trim((string) ($log['agent_name'] ?? '')),
                 ];
                 continue;
             }
 
-            $map[$key]['activity_count'] = ((int) $map[$key]['activity_count']) + 1;
-            $map[$key]['activity_type'] = ($map[$key]['activity_type'] === 'call' || $activityType === 'call') ? 'call' : 'text';
+            $map[$mapKey]['activity_count'] = ((int) $map[$mapKey]['activity_count']) + 1;
+            $map[$mapKey]['activity_type'] = ($map[$mapKey]['activity_type'] === 'call' || $activityType === 'call') ? 'call' : 'text';
+            if (($map[$mapKey]['notes'] ?? null) === null && $notes !== '') {
+                $map[$mapKey]['notes'] = $notes;
+            }
+            if (($map[$mapKey]['agent_name'] ?? '') === '') {
+                $map[$mapKey]['agent_name'] = trim((string) ($log['agent_name'] ?? ''));
+            }
         }
 
         $rows = array_values($map);
