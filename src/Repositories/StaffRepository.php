@@ -12,6 +12,7 @@ use PDO;
 final class StaffRepository
 {
     private LegacyPermissionMapper $legacyPermissions;
+    private ?bool $hasAccountAccessRightsColumn = null;
 
     public function __construct(private readonly Database $db)
     {
@@ -43,6 +44,9 @@ final class StaffRepository
         }
 
         $whereSql = implode(' AND ', $where);
+        $accountAccessRightsSelect = $this->accountAccessRightsColumnExists()
+            ? "COALESCE(a.laccess_rights, '[]') AS laccess_rights"
+            : "'[]' AS laccess_rights";
 
         $sql = <<<SQL
 SELECT
@@ -67,7 +71,7 @@ SELECT
     CAST(COALESCE(a.lsales_quota, 0) AS DECIMAL(15,2)) AS monthly_quota,
     CAST(COALESCE(a.lcommission, 0) AS DECIMAL(10,2)) AS commission,
     COALESCE(a.ldatereg, NOW()) AS created_at,
-    '[]' AS laccess_rights,
+    {$accountAccessRightsSelect},
     0 AS access_override
 FROM tblaccount a
 WHERE {$whereSql}
@@ -109,6 +113,10 @@ SQL;
 
     public function getStaffById(int $mainId, int $staffId): ?array
     {
+        $accountAccessRightsSelect = $this->accountAccessRightsColumnExists()
+            ? "COALESCE(a.laccess_rights, '[]') AS laccess_rights"
+            : "'[]' AS laccess_rights";
+
         $sql = <<<SQL
 SELECT
     CAST(a.lid AS SIGNED) AS id,
@@ -140,7 +148,7 @@ SELECT
     CAST(COALESCE(a.lprospect_quota, 0) AS DECIMAL(15,2)) AS prospect_quota,
     CAST(COALESCE(a.lcommission, 0) AS DECIMAL(10,2)) AS commission,
     COALESCE(a.ldatereg, NOW()) AS created_at,
-    '[]' AS laccess_rights,
+    {$accountAccessRightsSelect},
     0 AS access_override
 FROM tblaccount a
 WHERE a.lid = :staff_id
@@ -255,11 +263,16 @@ SQL;
             : (int) ($existing['role_id'] ?? 0);
 
         if (array_key_exists('access_rights', $data) && is_array($data['access_rights'])) {
-            $this->legacyPermissions->syncGroupPermissions(
-                $mainId,
-                $effectiveGroupId,
-                array_values($data['access_rights'])
-            );
+            if ($this->accountAccessRightsColumnExists()) {
+                $updates[] = 'laccess_rights = :access_rights';
+                $params['access_rights'] = json_encode(array_values($data['access_rights']));
+            } elseif (array_key_exists('group_id', $data)) {
+                $this->legacyPermissions->syncGroupPermissions(
+                    $mainId,
+                    $effectiveGroupId,
+                    array_values($data['access_rights'])
+                );
+            }
         }
 
         if (empty($updates)) {
@@ -456,11 +469,46 @@ SQL;
         if ($mainId <= 0) {
             $mainId = (int) ($row['resolved_main_id'] ?? 0);
         }
-        $row['access_rights'] = $mainId > 0 && $groupId > 0
+        $groupRights = $mainId > 0 && $groupId > 0
             ? $this->legacyPermissions->getAccessRightsForGroup($mainId, $groupId)
             : ['home'];
+        $storedRights = $this->parseAccessRights($row['laccess_rights'] ?? []);
+        $hasStoredRights = $storedRights !== [];
+
+        $row['access_rights'] = $hasStoredRights ? $storedRights : $groupRights;
+        $row['access_override'] = $hasStoredRights && $this->rightsDiffer($storedRights, $groupRights);
 
         return $row;
+    }
+
+    private function rightsDiffer(array $left, array $right): bool
+    {
+        $normalize = static function (array $rights): array {
+            $filtered = array_values(array_unique(array_filter($rights, 'is_string')));
+            sort($filtered);
+            return $filtered;
+        };
+
+        return $normalize($left) !== $normalize($right);
+    }
+
+    private function accountAccessRightsColumnExists(): bool
+    {
+        if ($this->hasAccountAccessRightsColumn !== null) {
+            return $this->hasAccountAccessRightsColumn;
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT COUNT(*)
+             FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'tblaccount'
+               AND COLUMN_NAME = 'laccess_rights'"
+        );
+        $stmt->execute();
+
+        $this->hasAccountAccessRightsColumn = (int) $stmt->fetchColumn() > 0;
+        return $this->hasAccountAccessRightsColumn;
     }
 
     private function normalizeEmail(string $email): string

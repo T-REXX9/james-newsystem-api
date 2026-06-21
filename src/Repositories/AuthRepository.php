@@ -99,6 +99,11 @@ final class AuthRepository
      */
     public function getDerivedAccessRights(array $user): array
     {
+        $storedRights = $this->decodeAccessRights($user['laccess_rights'] ?? null);
+        if ($storedRights !== []) {
+            return $storedRights;
+        }
+
         $mainUserId = $this->resolveMainUserId($user);
         $groupId = (int) ($user['ltype'] ?? 0);
         if ($mainUserId <= 0 || $groupId <= 0) {
@@ -214,5 +219,27 @@ final class AuthRepository
 
         $this->hasAccountAccessRightsColumn = (int) $stmt->fetchColumn() > 0;
         return $this->hasAccountAccessRightsColumn;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function decodeAccessRights($value): array
+    {
+        if (is_array($value)) {
+            return array_values(array_filter($value, 'is_string'));
+        }
+
+        if (!is_string($value) || trim($value) === '') {
+            return [];
+        }
+
+        try {
+            $decoded = json_decode($value, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            return [];
+        }
+
+        return is_array($decoded) ? array_values(array_filter($decoded, 'is_string')) : [];
     }
 }
