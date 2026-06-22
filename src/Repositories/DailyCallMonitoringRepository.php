@@ -246,7 +246,7 @@ SQL;
 
     private function purchaseAgeGroup(int $daysSinceLastPurchase): string
     {
-        if ($daysSinceLastPurchase < 14) {
+        if ($daysSinceLastPurchase < 15) {
             return 'recent';
         }
 
