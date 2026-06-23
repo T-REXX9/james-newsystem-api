@@ -131,7 +131,6 @@ final class DailyCallMonitoringRepository
 
     public function getPurchaseMasterList(int $mainId, string $fromDate = '2025-10-01', string $search = ''): array
     {
-        $effectiveFromDate = $this->normalizeDateOrDefault($fromDate, '2025-10-01');
         $amountExpr = "COALESCE(NULLIF(tr.lamount, 0), (
             SELECT SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0))
             FROM tbltransaction_item it
@@ -139,16 +138,10 @@ final class DailyCallMonitoringRepository
         ), 0)";
 
         $where = [
-            'tr.lmain_id = :main_id',
-            'tr.ldate >= :from_date',
-            'tr.ldate <= CURDATE()',
-            'COALESCE(tr.lcancel, 0) = 0',
-            "COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')",
-            "COALESCE(tr.lcustomerid, '') <> ''",
+            'p.lmain_id = :main_id',
         ];
         $params = [
             'main_id' => $mainId,
-            'from_date' => $effectiveFromDate,
         ];
 
         if (trim($search) !== '') {
@@ -173,7 +166,7 @@ final class DailyCallMonitoringRepository
         $currentMonth = date('Y-m');
         $sql = <<<SQL
 SELECT
-    tr.lcustomerid AS id,
+    p.lsessionid AS id,
     COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Shop') AS shop_name,
     COALESCE(p.lprovince, '') AS province,
     COALESCE(p.lcity, '') AS city,
@@ -181,19 +174,29 @@ SELECT
     TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))) AS assigned_to,
     DATE(MAX(tr.ldate)) AS last_purchase_date_raw,
     COUNT(DISTINCT tr.lrefno) AS purchase_count,
-    SUM({$amountExpr}) AS total_sales,
-    SUM(CASE WHEN DATE_FORMAT(tr.ldate, '%Y-%m') = :current_month THEN {$amountExpr} ELSE 0 END) AS current_month_sales,
-    DATEDIFF(CURDATE(), DATE(MAX(tr.ldate))) AS days_since_last_purchase,
-    TIMESTAMPDIFF(MONTH, DATE(MAX(tr.ldate)), CURDATE()) AS months_since_last_purchase
-FROM tbltransaction tr
-INNER JOIN tblpatient p
-    ON p.lsessionid = tr.lcustomerid
-   AND p.lmain_id = tr.lmain_id
+    COALESCE(SUM({$amountExpr}), 0) AS total_sales,
+    COALESCE(SUM(CASE WHEN DATE_FORMAT(tr.ldate, '%Y-%m') = :current_month THEN {$amountExpr} ELSE 0 END), 0) AS current_month_sales,
+    CASE
+        WHEN MAX(tr.ldate) IS NULL THEN NULL
+        ELSE DATEDIFF(CURDATE(), DATE(MAX(tr.ldate)))
+    END AS days_since_last_purchase,
+    CASE
+        WHEN MAX(tr.ldate) IS NULL THEN NULL
+        ELSE TIMESTAMPDIFF(MONTH, DATE(MAX(tr.ldate)), CURDATE())
+    END AS months_since_last_purchase
+FROM tblpatient p
 LEFT JOIN tblaccount a
     ON a.lid = p.lsales_person
+LEFT JOIN tbltransaction tr
+    ON tr.lcustomerid = p.lsessionid
+   AND tr.lmain_id = p.lmain_id
+   AND tr.ldate <= CURDATE()
+   AND COALESCE(tr.lcancel, 0) = 0
+   AND COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+   AND COALESCE(tr.lcustomerid, '') <> ''
 WHERE {$whereSql}
 GROUP BY
-    tr.lcustomerid,
+    p.lsessionid,
     p.lcompany,
     p.lprovince,
     p.lcity,
@@ -201,8 +204,11 @@ GROUP BY
     p.lphone,
     a.lfname,
     a.llname
-ORDER BY last_purchase_date_raw DESC, total_sales DESC, shop_name ASC
-LIMIT 1000
+ORDER BY
+    CASE WHEN MAX(tr.ldate) IS NULL THEN 1 ELSE 0 END ASC,
+    last_purchase_date_raw DESC,
+    total_sales DESC,
+    shop_name ASC
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute(array_merge(['current_month' => $currentMonth], $params));
@@ -225,19 +231,23 @@ SQL;
                 'total_sales' => (float) ($row['total_sales'] ?? 0),
                 'currentMonthSales' => (float) ($row['current_month_sales'] ?? 0),
                 'current_month_sales' => (float) ($row['current_month_sales'] ?? 0),
-                'daysSinceLastPurchase' => $daysSinceLastPurchase,
-                'days_since_last_purchase' => $daysSinceLastPurchase,
-                'monthsSinceLastPurchase' => max(0, (int) ($row['months_since_last_purchase'] ?? 0)),
-                'months_since_last_purchase' => max(0, (int) ($row['months_since_last_purchase'] ?? 0)),
-                'purchaseAgeGroup' => $this->purchaseAgeGroup($daysSinceLastPurchase),
-                'purchase_age_group' => $this->purchaseAgeGroup($daysSinceLastPurchase),
+                'daysSinceLastPurchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? $daysSinceLastPurchase : 0,
+                'days_since_last_purchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? $daysSinceLastPurchase : 0,
+                'monthsSinceLastPurchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? max(0, (int) ($row['months_since_last_purchase'] ?? 0)) : 0,
+                'months_since_last_purchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? max(0, (int) ($row['months_since_last_purchase'] ?? 0)) : 0,
+                'purchaseAgeGroup' => (int) ($row['purchase_count'] ?? 0) > 0
+                    ? $this->purchaseAgeGroup($daysSinceLastPurchase)
+                    : 'over_one_month',
+                'purchase_age_group' => (int) ($row['purchase_count'] ?? 0) > 0
+                    ? $this->purchaseAgeGroup($daysSinceLastPurchase)
+                    : 'over_one_month',
             ];
         }, $stmt->fetchAll(PDO::FETCH_ASSOC));
 
         return [
             'items' => $items,
             'meta' => [
-                'from_date' => $effectiveFromDate,
+                'from_date' => $this->normalizeDateOrDefault($fromDate, '2025-10-01'),
                 'to_date' => date('Y-m-d'),
                 'count' => count($items),
             ],
