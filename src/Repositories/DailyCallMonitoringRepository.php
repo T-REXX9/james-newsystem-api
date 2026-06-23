@@ -131,6 +131,7 @@ final class DailyCallMonitoringRepository
 
     public function getPurchaseMasterList(int $mainId, string $fromDate = '2025-10-01', string $search = ''): array
     {
+        $normalizedFromDate = $this->normalizeDateOrDefault($fromDate, '2025-10-01');
         $amountExpr = "COALESCE(NULLIF(tr.lamount, 0), (
             SELECT SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0))
             FROM tbltransaction_item it
@@ -142,6 +143,7 @@ final class DailyCallMonitoringRepository
         ];
         $params = [
             'main_id' => $mainId,
+            'from_date' => $normalizedFromDate,
         ];
 
         if (trim($search) !== '') {
@@ -191,6 +193,7 @@ LEFT JOIN tbltransaction tr
     ON tr.lcustomerid = p.lsessionid
    AND tr.lmain_id = p.lmain_id
    AND tr.ldate <= CURDATE()
+   AND tr.ldate >= :from_date
    AND COALESCE(tr.lcancel, 0) = 0
    AND COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
    AND COALESCE(tr.lcustomerid, '') <> ''
@@ -204,6 +207,9 @@ GROUP BY
     p.lphone,
     a.lfname,
     a.llname
+HAVING
+    purchase_count > 0
+    AND total_sales > 0
 ORDER BY
     CASE WHEN MAX(tr.ldate) IS NULL THEN 1 ELSE 0 END ASC,
     last_purchase_date_raw DESC,

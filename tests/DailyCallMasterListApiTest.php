@@ -80,7 +80,7 @@ $badAgeGroupRows = array_values(array_filter($rows, static function (array $row)
     if ($days < 0 || !in_array($group, $validAgeGroups, true)) {
         return true;
     }
-    if ($days < 14) {
+    if ($days < 15) {
         return $group !== 'recent';
     }
     if ($days <= 30) {

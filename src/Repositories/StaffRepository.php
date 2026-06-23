@@ -13,6 +13,7 @@ final class StaffRepository
 {
     private LegacyPermissionMapper $legacyPermissions;
     private ?bool $hasAccountAccessRightsColumn = null;
+    private const SALES_AGENT_NAME = 'Sales Agent';
 
     public function __construct(private readonly Database $db)
     {
@@ -28,6 +29,8 @@ final class StaffRepository
         int $page = 1,
         int $perPage = 100
     ): array {
+        $this->consolidateSalesPersonIntoSalesAgent($mainId);
+
         $page = max(1, $page);
         $perPage = min(500, max(1, $perPage));
         $offset = ($page - 1) * $perPage;
@@ -113,6 +116,8 @@ SQL;
 
     public function getStaffById(int $mainId, int $staffId): ?array
     {
+        $this->consolidateSalesPersonIntoSalesAgent($mainId);
+
         $accountAccessRightsSelect = $this->accountAccessRightsColumnExists()
             ? "COALESCE(a.laccess_rights, '[]') AS laccess_rights"
             : "'[]' AS laccess_rights";
@@ -392,6 +397,8 @@ SQL;
      */
     private function findOrCreateUserType(int $mainId, string $roleName): int
     {
+        $roleName = $this->canonicalizeRoleName($roleName);
+
         // First try to find existing
         $sql = "SELECT lid FROM tblusertype WHERE ltype_name = :name AND (lmain_id = :main_id OR ldefault = 0) LIMIT 1";
         $stmt = $this->db->pdo()->prepare($sql);
@@ -420,6 +427,8 @@ SQL;
      */
     public function getUserTypes(int $mainId): array
     {
+        $this->consolidateSalesPersonIntoSalesAgent($mainId);
+
         $sql = <<<SQL
 SELECT
     CAST(lid AS SIGNED) AS id,
@@ -433,7 +442,31 @@ SQL;
         $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
         $stmt->execute();
 
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+        $deduped = [];
+        $seen = [];
+
+        foreach ($rows as $row) {
+            if ($this->isSalesPersonName((string) ($row['name'] ?? ''))) {
+                continue;
+            }
+
+            $name = $this->canonicalizeRoleName((string) ($row['name'] ?? ''));
+            if ($name === '') {
+                continue;
+            }
+
+            $normalized = strtolower($name);
+            if (isset($seen[$normalized])) {
+                continue;
+            }
+
+            $row['name'] = $name;
+            $seen[$normalized] = true;
+            $deduped[] = $row;
+        }
+
+        return $deduped;
     }
 
     private function parseAccessRights($value): array
@@ -456,6 +489,7 @@ SQL;
     {
         $row['id'] = (string) ($row['id'] ?? '');
         $row['full_name'] = trim((string) ($row['full_name'] ?? ''));
+        $row['role'] = $this->canonicalizeRoleName((string) ($row['role'] ?? self::SALES_AGENT_NAME));
         if (array_key_exists('team_id', $row)) {
             $row['team_id'] = ($row['team_id'] ?? '') === '0' ? '' : (string) $row['team_id'];
         }
@@ -561,6 +595,94 @@ SQL;
 
         if ($stmt->fetch(PDO::FETCH_ASSOC)) {
             throw new HttpException(422, 'An active account with this email already exists');
+        }
+    }
+
+    private function canonicalizeRoleName(string $name): string
+    {
+        return $this->isSalesPersonName($name) ? self::SALES_AGENT_NAME : trim($name);
+    }
+
+    private function isSalesPersonName(string $name): bool
+    {
+        $normalized = strtolower(trim(preg_replace('/\s+/', ' ', $name)));
+        return $normalized === 'sales person' || $normalized === 'salesperson';
+    }
+
+    private function isSalesAgentName(string $name): bool
+    {
+        return strtolower(trim(preg_replace('/\s+/', ' ', $name))) === 'sales agent';
+    }
+
+    private function consolidateSalesPersonIntoSalesAgent(int $mainId): void
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT CAST(lid AS SIGNED) AS id,
+                    CAST(COALESCE(lmain_id, 0) AS SIGNED) AS main_id,
+                    COALESCE(ltype_name, \'\') AS name
+               FROM tblusertype
+              WHERE lmain_id = :main_id OR COALESCE(lmain_id, 0) = 0'
+        );
+        $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        $targetGroupId = 0;
+        foreach ($rows as $row) {
+            if (!$this->isSalesAgentName((string) ($row['name'] ?? ''))) {
+                continue;
+            }
+
+            $candidateId = (int) ($row['id'] ?? 0);
+            $candidateMainId = (int) ($row['main_id'] ?? 0);
+            if ($candidateId <= 0) {
+                continue;
+            }
+
+            if ($candidateMainId === $mainId) {
+                $targetGroupId = $candidateId;
+                break;
+            }
+
+            if ($targetGroupId === 0) {
+                $targetGroupId = $candidateId;
+            }
+        }
+
+        if ($targetGroupId === 0) {
+            $insertStmt = $this->db->pdo()->prepare(
+                'INSERT INTO tblusertype (ltype_name, lmain_id, ldefault)
+                 VALUES (:name, :main_id, 0)'
+            );
+            $insertStmt->execute([
+                'name' => self::SALES_AGENT_NAME,
+                'main_id' => $mainId,
+            ]);
+            $targetGroupId = (int) $this->db->pdo()->lastInsertId();
+        }
+
+        foreach ($rows as $row) {
+            $sourceGroupId = (int) ($row['id'] ?? 0);
+            if ($sourceGroupId <= 0 || $sourceGroupId === $targetGroupId) {
+                continue;
+            }
+
+            if (!$this->isSalesPersonName((string) ($row['name'] ?? ''))) {
+                continue;
+            }
+
+            $reassignStmt = $this->db->pdo()->prepare(
+                'UPDATE tblaccount
+                    SET ltype = :target_group_id
+                  WHERE lmother_id = :main_id
+                    AND lstatus = 1
+                    AND ltype = :source_group_id'
+            );
+            $reassignStmt->execute([
+                'target_group_id' => $targetGroupId,
+                'main_id' => $mainId,
+                'source_group_id' => $sourceGroupId,
+            ]);
         }
     }
 }
