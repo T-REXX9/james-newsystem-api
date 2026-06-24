@@ -125,6 +125,7 @@ SELECT
     COALESCE(p.lphone, '') AS phone,
     COALESCE(p.lmobile, '') AS mobile,
     COALESCE(p.lprofile_type, 'Old') AS profile_type,
+    COALESCE(p.lverification, '') AS verification,
     COALESCE(p.lstatus, 1) AS status,
     COALESCE(p.ltransaction_type, '') AS transaction_type,
     COALESCE(p.lsales_person, '') AS sales_person_id,
@@ -209,6 +210,7 @@ SELECT
     COALESCE(p.lphone, '') AS phone,
     COALESCE(p.lmobile, '') AS mobile,
     COALESCE(p.lprofile_type, 'Old') AS profile_type,
+    COALESCE(p.lverification, '') AS verification,
     COALESCE(p.lstatus, 1) AS status,
     COALESCE(p.ltransaction_type, '') AS transaction_type,
     COALESCE(p.lsales_person, '') AS sales_person_id,
@@ -278,9 +280,9 @@ SQL;
         try {
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group, lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lprovince, lcity, ldebt_type, lprofile_type, lsince)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group, lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lprovince, lcity, ldebt_type, lprofile_type, lverification, lsince)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group, :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :province, :city, :debt_type, :profile_type, :since_date)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group, :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :province, :city, :debt_type, :profile_type, :verification, :since_date)'
             );
             $insert->execute([
                 'main_id' => $mainId,
@@ -312,6 +314,7 @@ SQL;
                 'city' => (string) ($payload['city'] ?? ''),
                 'debt_type' => (string) (($payload['debt_type'] ?? '') !== '' ? $payload['debt_type'] : 'Good'),
                 'profile_type' => (string) (($payload['profile_type'] ?? '') !== '' ? $payload['profile_type'] : 'Old'),
+                'verification' => (string) ($payload['verification'] ?? ''),
                 'since_date' => $this->normalizeDateNullable((string) ($payload['since'] ?? ''), 'since_date') ?? date('Y-m-d'),
             ]);
 
@@ -388,7 +391,8 @@ SET
     lprovince = :province,
     lcity = :city,
     ldebt_type = :debt_type,
-    lprofile_type = :profile_type
+    lprofile_type = :profile_type,
+    lverification = :verification
 WHERE lmain_id = :main_id
   AND lsessionid = :session_id
 SQL;
@@ -420,6 +424,7 @@ SQL;
                 'city' => (string) ($payload['city'] ?? $existing['city'] ?? ''),
                 'debt_type' => (string) ($payload['debt_type'] ?? $existing['debt_type'] ?? 'Good'),
                 'profile_type' => (string) ($payload['profile_type'] ?? $existing['profile_type'] ?? 'Old'),
+                'verification' => (string) ($payload['verification'] ?? $existing['verification'] ?? ''),
                 'main_id' => $mainId,
                 'session_id' => $sessionId,
             ]);

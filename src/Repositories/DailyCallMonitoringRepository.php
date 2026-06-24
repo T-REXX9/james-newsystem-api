@@ -174,6 +174,8 @@ SELECT
     COALESCE(p.lcity, '') AS city,
     COALESCE(p.lmobile, p.lphone, '') AS contact_number,
     TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))) AS assigned_to,
+    COALESCE(p.lprofile_type, '') AS profile_type,
+    COALESCE(p.lverification, '') AS verification,
     DATE(MAX(tr.ldate)) AS last_purchase_date_raw,
     COUNT(DISTINCT tr.lrefno) AS purchase_count,
     COALESCE(SUM({$amountExpr}), 0) AS total_sales,
@@ -206,10 +208,9 @@ GROUP BY
     p.lmobile,
     p.lphone,
     a.lfname,
-    a.llname
-HAVING
-    purchase_count > 0
-    AND total_sales > 0
+    a.llname,
+    p.lprofile_type,
+    p.lverification
 ORDER BY
     CASE WHEN MAX(tr.ldate) IS NULL THEN 1 ELSE 0 END ASC,
     last_purchase_date_raw DESC,
@@ -229,6 +230,9 @@ SQL;
                 'city' => $this->cleanDisplayText($row['city'] ?? '', '—'),
                 'contactNumber' => $this->cleanDisplayText($row['contact_number'] ?? '', '—'),
                 'assignedTo' => $this->cleanDisplayText($row['assigned_to'] ?? '', 'Unassigned'),
+                'profileType' => (string) ($row['profile_type'] ?? ''),
+                'profile_type' => (string) ($row['profile_type'] ?? ''),
+                'verification' => (string) ($row['verification'] ?? ''),
                 'lastPurchaseDate' => $this->formatDateText($rawDate),
                 'last_purchase_date_raw' => $rawDate,
                 'purchaseCount' => (int) ($row['purchase_count'] ?? 0),
@@ -243,10 +247,10 @@ SQL;
                 'months_since_last_purchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? max(0, (int) ($row['months_since_last_purchase'] ?? 0)) : 0,
                 'purchaseAgeGroup' => (int) ($row['purchase_count'] ?? 0) > 0
                     ? $this->purchaseAgeGroup($daysSinceLastPurchase)
-                    : 'over_one_month',
+                    : 'no_purchase',
                 'purchase_age_group' => (int) ($row['purchase_count'] ?? 0) > 0
                     ? $this->purchaseAgeGroup($daysSinceLastPurchase)
-                    : 'over_one_month',
+                    : 'no_purchase',
             ];
         }, $stmt->fetchAll(PDO::FETCH_ASSOC));
 
