@@ -738,8 +738,10 @@ SELECT
     p.lcity AS city,
     CAST(p.lsales_person AS CHAR) AS assignedAgent,
     CAST(p.lsales_person AS CHAR) AS salesman,
+    COALESCE(p.lverification, '') AS verification,
     CASE
-        WHEN LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' THEN 'prospective'
+        WHEN (LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' OR COALESCE(p.lstatus, 1) = 3) AND COALESCE(p.lverification, '') = 'Verified' THEN 'verified_prospect'
+        WHEN LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' OR COALESCE(p.lstatus, 1) = 3 THEN 'prospective'
         WHEN LOWER(COALESCE(p.lactive, '')) LIKE '%inactive%' OR COALESCE(p.lstatus, 1) = 0 THEN 'inactive'
         ELSE 'active'
     END AS status,
@@ -793,8 +795,10 @@ SELECT
     p.lsince AS client_since,
     p.llast_transaction AS last_transaction_date,
     p.ldatetime AS status_date,
+    COALESCE(p.lverification, '') AS verification,
     CASE
-        WHEN LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' THEN 'prospective'
+        WHEN (LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' OR COALESCE(p.lstatus, 1) = 3) AND COALESCE(p.lverification, '') = 'Verified' THEN 'verified_prospect'
+        WHEN LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' OR COALESCE(p.lstatus, 1) = 3 THEN 'prospective'
         WHEN LOWER(COALESCE(p.lactive, '')) LIKE '%inactive%' OR COALESCE(p.lstatus, 1) = 0 THEN 'inactive'
         ELSE 'active'
     END AS status_label
@@ -1183,7 +1187,11 @@ SQL;
             return 'active';
         }
 
-        return strtolower(trim($legacyStatus)) === 'prospective' ? 'prospective' : 'inactive';
+        $status = strtolower(trim($legacyStatus));
+        if ($status === 'prospective' || $status === 'verified_prospect') {
+            return $status;
+        }
+        return 'inactive';
     }
 
     private function normalizeDateOrDefault(string $value, string $fallback): string
