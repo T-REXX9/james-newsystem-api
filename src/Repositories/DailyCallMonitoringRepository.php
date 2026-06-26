@@ -132,12 +132,6 @@ final class DailyCallMonitoringRepository
     public function getPurchaseMasterList(int $mainId, string $fromDate = '2025-10-01', string $search = ''): array
     {
         $normalizedFromDate = $this->normalizeDateOrDefault($fromDate, '2025-10-01');
-        $amountExpr = "COALESCE(NULLIF(tr.lamount, 0), (
-            SELECT SUM(COALESCE(it.lprice, 0) * COALESCE(it.lqty, 0))
-            FROM tbltransaction_item it
-            WHERE it.lrefno = tr.lrefno AND COALESCE(it.lcancel, 0) = 0
-        ), 0)";
-
         $where = [
             'p.lmain_id = :main_id',
         ];
@@ -176,29 +170,27 @@ SELECT
     TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))) AS assigned_to,
     COALESCE(p.lprofile_type, '') AS profile_type,
     COALESCE(p.lverification, '') AS verification,
-    DATE(MAX(tr.ldate)) AS last_purchase_date_raw,
-    COUNT(DISTINCT tr.lrefno) AS purchase_count,
-    COALESCE(SUM({$amountExpr}), 0) AS total_sales,
-    COALESCE(SUM(CASE WHEN DATE_FORMAT(tr.ldate, '%Y-%m') = :current_month THEN {$amountExpr} ELSE 0 END), 0) AS current_month_sales,
+    DATE(MAX(lg.ldatetime)) AS last_purchase_date_raw,
+    COUNT(DISTINCT lg.lrefno) AS purchase_count,
+    COALESCE(SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS total_sales,
+    COALESCE(SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :current_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS current_month_sales,
     CASE
-        WHEN MAX(tr.ldate) IS NULL THEN NULL
-        ELSE DATEDIFF(CURDATE(), DATE(MAX(tr.ldate)))
+        WHEN MAX(lg.ldatetime) IS NULL THEN NULL
+        ELSE DATEDIFF(CURDATE(), DATE(MAX(lg.ldatetime)))
     END AS days_since_last_purchase,
     CASE
-        WHEN MAX(tr.ldate) IS NULL THEN NULL
-        ELSE TIMESTAMPDIFF(MONTH, DATE(MAX(tr.ldate)), CURDATE())
+        WHEN MAX(lg.ldatetime) IS NULL THEN NULL
+        ELSE TIMESTAMPDIFF(MONTH, DATE(MAX(lg.ldatetime)), CURDATE())
     END AS months_since_last_purchase
 FROM tblpatient p
 LEFT JOIN tblaccount a
     ON a.lid = p.lsales_person
-LEFT JOIN tbltransaction tr
-    ON tr.lcustomerid = p.lsessionid
-   AND tr.lmain_id = p.lmain_id
-   AND tr.ldate <= CURDATE()
-   AND tr.ldate >= :from_date
-   AND COALESCE(tr.lcancel, 0) = 0
-   AND COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
-   AND COALESCE(tr.lcustomerid, '') <> ''
+LEFT JOIN tblledger lg
+    ON lg.lcustomerid = p.lsessionid
+   AND COALESCE(lg.lmainid, '') = CAST(p.lmain_id AS CHAR)
+   AND DATE(lg.ldatetime) <= CURDATE()
+   AND DATE(lg.ldatetime) >= :from_date
+   AND COALESCE(lg.lcustomerid, '') <> ''
 WHERE {$whereSql}
 GROUP BY
     p.lsessionid,
@@ -212,7 +204,7 @@ GROUP BY
     p.lprofile_type,
     p.lverification
 ORDER BY
-    CASE WHEN MAX(tr.ldate) IS NULL THEN 1 ELSE 0 END ASC,
+    CASE WHEN MAX(lg.ldatetime) IS NULL THEN 1 ELSE 0 END ASC,
     last_purchase_date_raw DESC,
     total_sales DESC,
     shop_name ASC
