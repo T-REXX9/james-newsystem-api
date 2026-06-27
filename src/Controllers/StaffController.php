@@ -129,10 +129,6 @@ final class StaffController
             throw new HttpException(422, 'password is required');
         }
 
-        if (strlen($password) < 8) {
-            throw new HttpException(422, 'password must be at least 8 characters');
-        }
-
         $role = trim((string) ($body['role'] ?? ''));
         if ($role === '') {
             throw new HttpException(422, 'role is required');
