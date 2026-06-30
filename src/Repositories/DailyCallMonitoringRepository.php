@@ -147,6 +147,8 @@ final class DailyCallMonitoringRepository
                 OR p.lprovince LIKE :search_province
                 OR p.lmobile LIKE :search_mobile
                 OR p.lphone LIKE :search_phone
+                OR cp_first.lc_mobile LIKE :search_contact_mobile
+                OR cp_first.lc_phone LIKE :search_contact_phone
                 OR p.lpatient_code LIKE :search_code
             )";
             $searchValue = '%' . trim($search) . '%';
@@ -155,6 +157,8 @@ final class DailyCallMonitoringRepository
             $params['search_province'] = $searchValue;
             $params['search_mobile'] = $searchValue;
             $params['search_phone'] = $searchValue;
+            $params['search_contact_mobile'] = $searchValue;
+            $params['search_contact_phone'] = $searchValue;
             $params['search_code'] = $searchValue;
         }
 
@@ -166,14 +170,24 @@ SELECT
     COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Shop') AS shop_name,
     COALESCE(p.lprovince, '') AS province,
     COALESCE(p.lcity, '') AS city,
-    COALESCE(p.lmobile, p.lphone, '') AS contact_number,
+    COALESCE(
+        NULLIF(TRIM(p.lmobile), ''),
+        NULLIF(TRIM(p.lphone), ''),
+        NULLIF(TRIM(cp_first.lc_mobile), ''),
+        NULLIF(TRIM(cp_first.lc_phone), ''),
+        ''
+    ) AS contact_number,
     TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))) AS assigned_to,
     COALESCE(p.lprofile_type, '') AS profile_type,
     COALESCE(p.lverification, '') AS verification,
+    COALESCE(p.lprice_group, '') AS price_group,
     DATE(MAX(lg.ldatetime)) AS last_purchase_date_raw,
     COUNT(DISTINCT lg.lrefno) AS purchase_count,
+    COUNT(DISTINCT DATE_FORMAT(lg.ldatetime, '%Y-%m')) AS active_purchase_month_count,
     COALESCE(SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS total_sales,
     COALESCE(SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :current_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS current_month_sales,
+    COALESCE(SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS recent_three_month_sales,
+    COALESCE(SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) AND lg.ldatetime < DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS previous_three_month_sales,
     CASE
         WHEN MAX(lg.ldatetime) IS NULL THEN NULL
         ELSE DATEDIFF(CURDATE(), DATE(MAX(lg.ldatetime)))
@@ -185,6 +199,13 @@ SELECT
 FROM tblpatient p
 LEFT JOIN tblaccount a
     ON a.lid = p.lsales_person
+LEFT JOIN (
+    SELECT cp.lrefno, cp.lc_mobile, cp.lc_phone
+    FROM tblcontact_person cp
+    INNER JOIN (
+        SELECT lrefno, MIN(lid) AS min_lid FROM tblcontact_person GROUP BY lrefno
+    ) cp_min ON cp_min.lrefno = cp.lrefno AND cp_min.min_lid = cp.lid
+) cp_first ON cp_first.lrefno = p.lsessionid
 LEFT JOIN tblledger lg
     ON lg.lcustomerid = p.lsessionid
    AND COALESCE(lg.lmainid, '') = CAST(p.lmain_id AS CHAR)
@@ -199,10 +220,13 @@ GROUP BY
     p.lcity,
     p.lmobile,
     p.lphone,
+    cp_first.lc_mobile,
+    cp_first.lc_phone,
     a.lfname,
     a.llname,
     p.lprofile_type,
-    p.lverification
+    p.lverification,
+    p.lprice_group
 ORDER BY
     CASE WHEN MAX(lg.ldatetime) IS NULL THEN 1 ELSE 0 END ASC,
     last_purchase_date_raw DESC,
@@ -215,6 +239,14 @@ SQL;
         $items = array_map(function (array $row): array {
             $rawDate = (string) ($row['last_purchase_date_raw'] ?? '');
             $daysSinceLastPurchase = max(0, (int) ($row['days_since_last_purchase'] ?? 0));
+            $totalSales = (float) ($row['total_sales'] ?? 0);
+            $purchaseCount = (int) ($row['purchase_count'] ?? 0);
+            $activePurchaseMonthCount = max(0, (int) ($row['active_purchase_month_count'] ?? 0));
+            $recentThreeMonthSales = (float) ($row['recent_three_month_sales'] ?? 0);
+            $previousThreeMonthSales = (float) ($row['previous_three_month_sales'] ?? 0);
+            $salesTrendPercent = $previousThreeMonthSales > 0
+                ? (($recentThreeMonthSales - $previousThreeMonthSales) / $previousThreeMonthSales) * 100
+                : ($recentThreeMonthSales > 0 ? 100 : 0);
             return [
                 'id' => (string) ($row['id'] ?? ''),
                 'shopName' => (string) ($row['shop_name'] ?? 'Unnamed Shop'),
@@ -225,14 +257,26 @@ SQL;
                 'profileType' => (string) ($row['profile_type'] ?? ''),
                 'profile_type' => (string) ($row['profile_type'] ?? ''),
                 'verification' => (string) ($row['verification'] ?? ''),
+                'priceGroup' => (string) ($row['price_group'] ?? ''),
+                'price_group' => (string) ($row['price_group'] ?? ''),
                 'lastPurchaseDate' => $this->formatDateText($rawDate),
                 'last_purchase_date_raw' => $rawDate,
-                'purchaseCount' => (int) ($row['purchase_count'] ?? 0),
-                'purchase_count' => (int) ($row['purchase_count'] ?? 0),
-                'totalSales' => (float) ($row['total_sales'] ?? 0),
-                'total_sales' => (float) ($row['total_sales'] ?? 0),
+                'purchaseCount' => $purchaseCount,
+                'purchase_count' => $purchaseCount,
+                'averageMonthlySalesMonthCount' => $activePurchaseMonthCount,
+                'average_monthly_sales_month_count' => $activePurchaseMonthCount,
+                'totalSales' => $totalSales,
+                'total_sales' => $totalSales,
                 'currentMonthSales' => (float) ($row['current_month_sales'] ?? 0),
                 'current_month_sales' => (float) ($row['current_month_sales'] ?? 0),
+                'averageMonthlySales' => $activePurchaseMonthCount > 0 ? $totalSales / $activePurchaseMonthCount : 0,
+                'average_monthly_sales' => $activePurchaseMonthCount > 0 ? $totalSales / $activePurchaseMonthCount : 0,
+                'recentThreeMonthSales' => $recentThreeMonthSales,
+                'recent_three_month_sales' => $recentThreeMonthSales,
+                'previousThreeMonthSales' => $previousThreeMonthSales,
+                'previous_three_month_sales' => $previousThreeMonthSales,
+                'salesTrendPercent' => $salesTrendPercent,
+                'sales_trend_percent' => $salesTrendPercent,
                 'daysSinceLastPurchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? $daysSinceLastPurchase : 0,
                 'days_since_last_purchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? $daysSinceLastPurchase : 0,
                 'monthsSinceLastPurchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? max(0, (int) ($row['months_since_last_purchase'] ?? 0)) : 0,
