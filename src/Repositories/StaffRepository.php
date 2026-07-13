@@ -14,6 +14,8 @@ final class StaffRepository
     private LegacyPermissionMapper $legacyPermissions;
     private ?bool $hasAccountAccessRightsColumn = null;
     private const SALES_AGENT_NAME = 'Sales Agent';
+    private const WAREHOUSE_PERSONNEL_NAME = 'Warehouse Personnel';
+    private const COMPANY_OWNER_NAME = 'Company Owner';
 
     public function __construct(private readonly Database $db)
     {
@@ -428,14 +430,16 @@ SQL;
     public function getUserTypes(int $mainId): array
     {
         $this->consolidateSalesPersonIntoSalesAgent($mainId);
+        $this->ensureCoreUserTypes($mainId);
 
         $sql = <<<SQL
 SELECT
     CAST(lid AS SIGNED) AS id,
     COALESCE(ltype_name, '') AS name
 FROM tblusertype
-WHERE lmain_id = :main_id OR ldefault = 0
-ORDER BY ltype_name ASC
+WHERE (lmain_id = :main_id OR ldefault = 0)
+  AND LOWER(TRIM(COALESCE(ltype_name, ''))) IN ('sales agent', 'warehouse personnel', 'company owner', 'warehouse', 'owner')
+ORDER BY FIELD(LOWER(TRIM(COALESCE(ltype_name, ''))), 'sales agent', 'warehouse personnel', 'company owner', 'warehouse', 'owner'), ltype_name ASC
 SQL;
 
         $stmt = $this->db->pdo()->prepare($sql);
@@ -600,7 +604,19 @@ SQL;
 
     private function canonicalizeRoleName(string $name): string
     {
-        return $this->isSalesPersonName($name) ? self::SALES_AGENT_NAME : trim($name);
+        if ($this->isSalesPersonName($name)) {
+            return self::SALES_AGENT_NAME;
+        }
+
+        $normalized = strtolower(trim(preg_replace('/\s+/', ' ', $name)));
+        if (in_array($normalized, ['warehouse', 'warehouse staff', 'warehouse personnel'], true)) {
+            return self::WAREHOUSE_PERSONNEL_NAME;
+        }
+        if (in_array($normalized, ['owner', 'company owner'], true)) {
+            return self::COMPANY_OWNER_NAME;
+        }
+
+        return trim($name);
     }
 
     private function isSalesPersonName(string $name): bool
@@ -683,6 +699,13 @@ SQL;
                 'main_id' => $mainId,
                 'source_group_id' => $sourceGroupId,
             ]);
+        }
+    }
+
+    private function ensureCoreUserTypes(int $mainId): void
+    {
+        foreach ([self::SALES_AGENT_NAME, self::WAREHOUSE_PERSONNEL_NAME, self::COMPANY_OWNER_NAME] as $roleName) {
+            $this->findOrCreateUserType($mainId, $roleName);
         }
     }
 }

@@ -137,7 +137,8 @@ final class DailyCallMonitoringRepository
         ];
         $params = [
             'main_id' => $mainId,
-            'from_date' => $normalizedFromDate,
+            'priority_from_date' => $normalizedFromDate,
+            'historical_before_date' => $normalizedFromDate,
         ];
 
         if (trim($search) !== '') {
@@ -183,6 +184,9 @@ SELECT
     COALESCE(p.lprice_group, '') AS price_group,
     DATE(MAX(lg.ldatetime)) AS last_purchase_date_raw,
     COUNT(DISTINCT lg.lrefno) AS purchase_count,
+    COUNT(CASE WHEN DATE(lg.ldatetime) >= :priority_from_date THEN lg.lid END) AS priority_transaction_count,
+    COUNT(lg.lid) AS ledger_transaction_count,
+    COUNT(CASE WHEN DATE(lg.ldatetime) < :historical_before_date THEN lg.lid END) AS historical_transaction_count,
     COUNT(DISTINCT DATE_FORMAT(lg.ldatetime, '%Y-%m')) AS active_purchase_month_count,
     COALESCE(SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS total_sales,
     COALESCE(SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :current_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS current_month_sales,
@@ -210,7 +214,6 @@ LEFT JOIN tblledger lg
     ON lg.lcustomerid = p.lsessionid
    AND COALESCE(lg.lmainid, '') = CAST(p.lmain_id AS CHAR)
    AND DATE(lg.ldatetime) <= CURDATE()
-   AND DATE(lg.ldatetime) >= :from_date
    AND COALESCE(lg.lcustomerid, '') <> ''
 WHERE {$whereSql}
 GROUP BY
@@ -241,6 +244,12 @@ SQL;
             $daysSinceLastPurchase = max(0, (int) ($row['days_since_last_purchase'] ?? 0));
             $totalSales = (float) ($row['total_sales'] ?? 0);
             $purchaseCount = (int) ($row['purchase_count'] ?? 0);
+            $priorityTransactionCount = (int) ($row['priority_transaction_count'] ?? 0);
+            $ledgerTransactionCount = (int) ($row['ledger_transaction_count'] ?? 0);
+            $historicalTransactionCount = (int) ($row['historical_transaction_count'] ?? 0);
+            $listCategory = $priorityTransactionCount > 0
+                ? 'priority'
+                : ($ledgerTransactionCount > 0 ? 'recovery' : 'no_purchase');
             $activePurchaseMonthCount = max(0, (int) ($row['active_purchase_month_count'] ?? 0));
             $recentThreeMonthSales = (float) ($row['recent_three_month_sales'] ?? 0);
             $previousThreeMonthSales = (float) ($row['previous_three_month_sales'] ?? 0);
@@ -263,6 +272,14 @@ SQL;
                 'last_purchase_date_raw' => $rawDate,
                 'purchaseCount' => $purchaseCount,
                 'purchase_count' => $purchaseCount,
+                'priorityTransactionCount' => $priorityTransactionCount,
+                'priority_transaction_count' => $priorityTransactionCount,
+                'ledgerTransactionCount' => $ledgerTransactionCount,
+                'ledger_transaction_count' => $ledgerTransactionCount,
+                'historicalTransactionCount' => $historicalTransactionCount,
+                'historical_transaction_count' => $historicalTransactionCount,
+                'listCategory' => $listCategory,
+                'list_category' => $listCategory,
                 'averageMonthlySalesMonthCount' => $activePurchaseMonthCount,
                 'average_monthly_sales_month_count' => $activePurchaseMonthCount,
                 'totalSales' => $totalSales,
@@ -277,14 +294,14 @@ SQL;
                 'previous_three_month_sales' => $previousThreeMonthSales,
                 'salesTrendPercent' => $salesTrendPercent,
                 'sales_trend_percent' => $salesTrendPercent,
-                'daysSinceLastPurchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? $daysSinceLastPurchase : 0,
-                'days_since_last_purchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? $daysSinceLastPurchase : 0,
-                'monthsSinceLastPurchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? max(0, (int) ($row['months_since_last_purchase'] ?? 0)) : 0,
-                'months_since_last_purchase' => (int) ($row['purchase_count'] ?? 0) > 0 ? max(0, (int) ($row['months_since_last_purchase'] ?? 0)) : 0,
-                'purchaseAgeGroup' => (int) ($row['purchase_count'] ?? 0) > 0
+                'daysSinceLastPurchase' => $ledgerTransactionCount > 0 ? $daysSinceLastPurchase : 0,
+                'days_since_last_purchase' => $ledgerTransactionCount > 0 ? $daysSinceLastPurchase : 0,
+                'monthsSinceLastPurchase' => $ledgerTransactionCount > 0 ? max(0, (int) ($row['months_since_last_purchase'] ?? 0)) : 0,
+                'months_since_last_purchase' => $ledgerTransactionCount > 0 ? max(0, (int) ($row['months_since_last_purchase'] ?? 0)) : 0,
+                'purchaseAgeGroup' => $ledgerTransactionCount > 0
                     ? $this->purchaseAgeGroup($daysSinceLastPurchase)
                     : 'no_purchase',
-                'purchase_age_group' => (int) ($row['purchase_count'] ?? 0) > 0
+                'purchase_age_group' => $ledgerTransactionCount > 0
                     ? $this->purchaseAgeGroup($daysSinceLastPurchase)
                     : 'no_purchase',
             ];

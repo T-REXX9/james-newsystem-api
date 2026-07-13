@@ -65,20 +65,33 @@ $meta = is_array($res['body']['data']['meta'] ?? null) ? $res['body']['data']['m
 
 assert_true(($meta['from_date'] ?? '') === '2025-10-01', 'Master list uses October 2025 start date', $passed, $failed, $errors);
 
-$badDateRows = array_values(array_filter($rows, static function (array $row): bool {
-    return ((string) ($row['last_purchase_date_raw'] ?? '')) < '2025-10-01';
+$badCategoryRows = array_values(array_filter($rows, static function (array $row): bool {
+    $category = (string) ($row['list_category'] ?? '');
+    $priorityTransactions = (int) ($row['priority_transaction_count'] ?? 0);
+    $ledgerTransactions = (int) ($row['ledger_transaction_count'] ?? 0);
+
+    if ($category === 'priority') {
+        return $priorityTransactions < 1;
+    }
+    if ($category === 'recovery') {
+        return $priorityTransactions !== 0 || $ledgerTransactions < 1;
+    }
+    if ($category === 'no_purchase') {
+        return $ledgerTransactions !== 0;
+    }
+    return true;
 }));
-assert_true(count($badDateRows) === 0, 'Rows only include purchases from October 2025 onward', $passed, $failed, $errors);
+assert_true(count($badCategoryRows) === 0, 'Rows use mutually exclusive priority and recovery rules', $passed, $failed, $errors);
 
-$badCountRows = array_values(array_filter($rows, static fn(array $row): bool => (int) ($row['purchase_count'] ?? 0) < 1));
-assert_true(count($badCountRows) === 0, 'Rows have at least one purchase', $passed, $failed, $errors);
-
-$validAgeGroups = ['recent', 'two_weeks_to_one_month', 'over_one_month'];
+$validAgeGroups = ['recent', 'two_weeks_to_one_month', 'over_one_month', 'no_purchase'];
 $badAgeGroupRows = array_values(array_filter($rows, static function (array $row) use ($validAgeGroups): bool {
     $days = (int) ($row['days_since_last_purchase'] ?? -1);
     $group = (string) ($row['purchase_age_group'] ?? '');
     if ($days < 0 || !in_array($group, $validAgeGroups, true)) {
         return true;
+    }
+    if ((int) ($row['ledger_transaction_count'] ?? 0) === 0) {
+        return $group !== 'no_purchase';
     }
     if ($days < 15) {
         return $group !== 'recent';

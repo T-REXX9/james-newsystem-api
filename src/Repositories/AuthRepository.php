@@ -110,7 +110,20 @@ final class AuthRepository
             return ['home'];
         }
 
-        return $this->legacyPermissions->getAccessRightsForGroup($mainUserId, $groupId);
+        $roleName = strtolower(trim((string) ($this->getRoleName($groupId) ?? '')));
+        if (in_array($roleName, ['owner', 'company owner'], true)) {
+            return ['*'];
+        }
+
+        $rights = $this->legacyPermissions->getAccessRightsForGroup($mainUserId, $groupId);
+        if (count(array_diff($rights, ['home'])) === 0) {
+            $defaultRights = $this->getCoreRoleDefaultRights($roleName);
+            if ($defaultRights !== []) {
+                return $defaultRights;
+            }
+        }
+
+        return $rights;
     }
 
     public function getRoleName(int $groupId): ?string
@@ -241,5 +254,48 @@ final class AuthRepository
         }
 
         return is_array($decoded) ? array_values(array_filter($decoded, 'is_string')) : [];
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function getCoreRoleDefaultRights(string $roleName): array
+    {
+        return match ($roleName) {
+            'sales agent', 'sales person', 'salesperson' => [
+                'home',
+                'sales-pipeline-board',
+                'sales-database-customer-database',
+                'sales-transaction-sales-inquiry',
+                'sales-transaction-sales-order',
+                'sales-transaction-order-slip',
+                'sales-transaction-invoice',
+                'sales-transaction-daily-call-monitoring',
+                'sales-transaction-product-promotions',
+                'sales-reports-inquiry-report',
+                'sales-reports-sales-report',
+                'sales-reports-sales-development-report',
+                'communication-productivity-tasks',
+                'communication-productivity-calendar',
+            ],
+            'warehouse', 'warehouse staff', 'warehouse personnel' => [
+                'home',
+                'warehouse-inventory-product-database',
+                'warehouse-inventory-stock-movement',
+                'warehouse-inventory-transfer-stock',
+                'warehouse-inventory-stock-adjustment',
+                'warehouse-inventory-inventory-audit',
+                'warehouse-purchasing-purchase-request',
+                'warehouse-purchasing-purchase-order',
+                'warehouse-purchasing-receiving-stock',
+                'warehouse-purchasing-return-to-supplier',
+                'warehouse-reports-inventory-report',
+                'warehouse-reports-reorder-report',
+                'warehouse-reports-item-suggested-for-stock-report',
+                'warehouse-reports-fast-slow-inventory-report',
+                'warehouse-reports-incident-items-report',
+            ],
+            default => [],
+        };
     }
 }

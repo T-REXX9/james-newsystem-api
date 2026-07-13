@@ -36,7 +36,18 @@ final class RolePermissionRepository
             return $this->permissionCache[$cacheKey];
         }
 
+        if ($this->isCompanyOwnerGroup($groupId)) {
+            $this->permissionCache[$cacheKey] = ['*'];
+            return ['*'];
+        }
+
         $rights = $this->legacyPermissions->getAccessRightsForGroup($mainId, $groupId);
+        if (count(array_diff($rights, ['home'])) === 0) {
+            $defaultRights = $this->getCoreRoleDefaultRights($groupId);
+            if ($defaultRights !== []) {
+                $rights = $defaultRights;
+            }
+        }
         $this->permissionCache[$cacheKey] = $rights;
 
         return $rights;
@@ -341,5 +352,69 @@ final class RolePermissionRepository
 
         $this->hasAccountAccessRightsColumn = (int) $stmt->fetchColumn() > 0;
         return $this->hasAccountAccessRightsColumn;
+    }
+
+    private function isCompanyOwnerGroup(int $groupId): bool
+    {
+        return in_array($this->getCanonicalRoleName($groupId), ['owner', 'company owner'], true);
+    }
+
+    private function getCanonicalRoleName(int $groupId): string
+    {
+        if ($groupId <= 0) {
+            return '';
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT LOWER(TRIM(COALESCE(ltype_name, \'\')))
+             FROM tblusertype
+             WHERE lid = :group_id
+             LIMIT 1'
+        );
+        $stmt->execute(['group_id' => $groupId]);
+        return (string) ($stmt->fetchColumn() ?: '');
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function getCoreRoleDefaultRights(int $groupId): array
+    {
+        return match ($this->getCanonicalRoleName($groupId)) {
+            'sales agent', 'sales person', 'salesperson' => [
+                'home',
+                'sales-pipeline-board',
+                'sales-database-customer-database',
+                'sales-transaction-sales-inquiry',
+                'sales-transaction-sales-order',
+                'sales-transaction-order-slip',
+                'sales-transaction-invoice',
+                'sales-transaction-daily-call-monitoring',
+                'sales-transaction-product-promotions',
+                'sales-reports-inquiry-report',
+                'sales-reports-sales-report',
+                'sales-reports-sales-development-report',
+                'communication-productivity-tasks',
+                'communication-productivity-calendar',
+            ],
+            'warehouse', 'warehouse staff', 'warehouse personnel' => [
+                'home',
+                'warehouse-inventory-product-database',
+                'warehouse-inventory-stock-movement',
+                'warehouse-inventory-transfer-stock',
+                'warehouse-inventory-stock-adjustment',
+                'warehouse-inventory-inventory-audit',
+                'warehouse-purchasing-purchase-request',
+                'warehouse-purchasing-purchase-order',
+                'warehouse-purchasing-receiving-stock',
+                'warehouse-purchasing-return-to-supplier',
+                'warehouse-reports-inventory-report',
+                'warehouse-reports-reorder-report',
+                'warehouse-reports-item-suggested-for-stock-report',
+                'warehouse-reports-fast-slow-inventory-report',
+                'warehouse-reports-incident-items-report',
+            ],
+            default => [],
+        };
     }
 }
