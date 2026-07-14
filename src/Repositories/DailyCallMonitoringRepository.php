@@ -29,7 +29,8 @@ final class DailyCallMonitoringRepository
         )));
 
         $monthFrom = date('Y-m-01');
-        $purchases = $this->getPurchaseRows($mainId, $customerIds, $monthFrom);
+        $lastMonthFrom = date('Y-m-01', strtotime('-1 month'));
+        $purchases = $this->getPurchaseRows($mainId, $customerIds, $lastMonthFrom);
         $callLogs = $this->getCallLogRows($mainId, $customerIds);
         $metrics = $this->getCustomerMetrics($mainId, $customerIds);
 
@@ -62,6 +63,7 @@ final class DailyCallMonitoringRepository
             $cid = (string) ($customer['id'] ?? '');
             $customerPurchases = $purchasesByCustomer[$cid] ?? [];
             $monthlyOrder = $this->computeCurrentMonthOrder($customerPurchases);
+            $lastMonthOrder = $this->computeMonthOrder($customerPurchases, $lastMonthFrom);
             $weeklyTotals = $this->computeWeeklyRangeTotals($customerPurchases);
             $dailyActivity = $this->buildDailyActivity($logsByCustomer[$cid] ?? []);
 
@@ -92,6 +94,7 @@ final class DailyCallMonitoringRepository
                 'outstandingBalance' => (float) ($metricsRow['outstanding_balance'] ?? 0),
                 'averageMonthlyOrder' => (float) ($metricsRow['average_monthly_purchase'] ?? 0),
                 'monthlyOrder' => $monthlyOrder,
+                'lastMonthOrder' => $lastMonthOrder,
                 'weeklyRangeTotals' => $weeklyTotals,
                 'dailyActivity' => $dailyActivity,
             ];
@@ -139,6 +142,9 @@ final class DailyCallMonitoringRepository
             'main_id' => $mainId,
             'priority_from_date' => $normalizedFromDate,
             'historical_before_date' => $normalizedFromDate,
+            'historical_before_date_count' => $normalizedFromDate,
+            'current_year' => (int) date('Y'),
+            'current_year_month' => (int) date('Y'),
         ];
 
         if (trim($search) !== '') {
@@ -186,9 +192,14 @@ SELECT
     COUNT(DISTINCT lg.lrefno) AS purchase_count,
     COUNT(CASE WHEN DATE(lg.ldatetime) >= :priority_from_date THEN lg.lid END) AS priority_transaction_count,
     COUNT(lg.lid) AS ledger_transaction_count,
-    COUNT(CASE WHEN DATE(lg.ldatetime) < :historical_before_date THEN lg.lid END) AS historical_transaction_count,
+    COUNT(CASE WHEN DATE(lg.ldatetime) < :historical_before_date_count THEN lg.lid END) AS historical_transaction_count,
     COUNT(DISTINCT DATE_FORMAT(lg.ldatetime, '%Y-%m')) AS active_purchase_month_count,
     COALESCE(SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS total_sales,
+    COALESCE(SUM(CASE WHEN YEAR(lg.ldatetime) = :current_year AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS current_year_sales,
+    COUNT(DISTINCT CASE WHEN YEAR(lg.ldatetime) = :current_year_month AND COALESCE(lg.ldebit, 0) > 0 THEN DATE_FORMAT(lg.ldatetime, '%Y-%m') END) AS current_year_purchase_month_count,
+    COALESCE(SUM(CASE WHEN ly.last_active_year IS NOT NULL AND YEAR(lg.ldatetime) = ly.last_active_year AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS last_active_year_sales,
+    COUNT(DISTINCT CASE WHEN ly.last_active_year IS NOT NULL AND YEAR(lg.ldatetime) = ly.last_active_year AND COALESCE(lg.ldebit, 0) > 0 THEN DATE_FORMAT(lg.ldatetime, '%Y-%m') END) AS last_active_year_purchase_month_count,
+    MAX(ly.last_active_year) AS last_active_year,
     COALESCE(SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :current_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS current_month_sales,
     COALESCE(SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS recent_three_month_sales,
     COALESCE(SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) AND lg.ldatetime < DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS previous_three_month_sales,
@@ -210,6 +221,18 @@ LEFT JOIN (
         SELECT lrefno, MIN(lid) AS min_lid FROM tblcontact_person GROUP BY lrefno
     ) cp_min ON cp_min.lrefno = cp.lrefno AND cp_min.min_lid = cp.lid
 ) cp_first ON cp_first.lrefno = p.lsessionid
+LEFT JOIN (
+    SELECT
+        lcustomerid,
+        lmainid,
+        MAX(YEAR(ldatetime)) AS last_active_year
+    FROM tblledger
+    WHERE DATE(ldatetime) < :historical_before_date
+      AND COALESCE(ldebit, 0) > 0
+      AND COALESCE(lcustomerid, '') <> ''
+    GROUP BY lcustomerid, lmainid
+) ly ON ly.lcustomerid = p.lsessionid
+    AND ly.lmainid = CAST(p.lmain_id AS CHAR)
 LEFT JOIN tblledger lg
     ON lg.lcustomerid = p.lsessionid
    AND COALESCE(lg.lmainid, '') = CAST(p.lmain_id AS CHAR)
@@ -243,6 +266,10 @@ SQL;
             $rawDate = (string) ($row['last_purchase_date_raw'] ?? '');
             $daysSinceLastPurchase = max(0, (int) ($row['days_since_last_purchase'] ?? 0));
             $totalSales = (float) ($row['total_sales'] ?? 0);
+            $currentYearSales = (float) ($row['current_year_sales'] ?? 0);
+            $currentYearPurchaseMonthCount = max(0, (int) ($row['current_year_purchase_month_count'] ?? 0));
+            $lastActiveYearSales = (float) ($row['last_active_year_sales'] ?? 0);
+            $lastActiveYearPurchaseMonthCount = max(0, (int) ($row['last_active_year_purchase_month_count'] ?? 0));
             $purchaseCount = (int) ($row['purchase_count'] ?? 0);
             $priorityTransactionCount = (int) ($row['priority_transaction_count'] ?? 0);
             $ledgerTransactionCount = (int) ($row['ledger_transaction_count'] ?? 0);
@@ -250,6 +277,12 @@ SQL;
             $listCategory = $priorityTransactionCount > 0
                 ? 'priority'
                 : ($ledgerTransactionCount > 0 ? 'recovery' : 'no_purchase');
+            $averageMonthlySales = $listCategory === 'recovery'
+                ? ($lastActiveYearPurchaseMonthCount > 0 ? $lastActiveYearSales / $lastActiveYearPurchaseMonthCount : 0)
+                : ($currentYearPurchaseMonthCount > 0 ? $currentYearSales / $currentYearPurchaseMonthCount : 0);
+            $averageMonthlySalesMonthCount = $listCategory === 'recovery'
+                ? $lastActiveYearPurchaseMonthCount
+                : $currentYearPurchaseMonthCount;
             $activePurchaseMonthCount = max(0, (int) ($row['active_purchase_month_count'] ?? 0));
             $recentThreeMonthSales = (float) ($row['recent_three_month_sales'] ?? 0);
             $previousThreeMonthSales = (float) ($row['previous_three_month_sales'] ?? 0);
@@ -280,14 +313,16 @@ SQL;
                 'historical_transaction_count' => $historicalTransactionCount,
                 'listCategory' => $listCategory,
                 'list_category' => $listCategory,
-                'averageMonthlySalesMonthCount' => $activePurchaseMonthCount,
-                'average_monthly_sales_month_count' => $activePurchaseMonthCount,
+                'averageMonthlySalesMonthCount' => $averageMonthlySalesMonthCount,
+                'average_monthly_sales_month_count' => $averageMonthlySalesMonthCount,
+                'averageMonthlySalesYear' => $listCategory === 'recovery' ? (int) ($row['last_active_year'] ?? 0) : (int) date('Y'),
+                'average_monthly_sales_year' => $listCategory === 'recovery' ? (int) ($row['last_active_year'] ?? 0) : (int) date('Y'),
                 'totalSales' => $totalSales,
                 'total_sales' => $totalSales,
                 'currentMonthSales' => (float) ($row['current_month_sales'] ?? 0),
                 'current_month_sales' => (float) ($row['current_month_sales'] ?? 0),
-                'averageMonthlySales' => $activePurchaseMonthCount > 0 ? $totalSales / $activePurchaseMonthCount : 0,
-                'average_monthly_sales' => $activePurchaseMonthCount > 0 ? $totalSales / $activePurchaseMonthCount : 0,
+                'averageMonthlySales' => $averageMonthlySales,
+                'average_monthly_sales' => $averageMonthlySales,
                 'recentThreeMonthSales' => $recentThreeMonthSales,
                 'recent_three_month_sales' => $recentThreeMonthSales,
                 'previousThreeMonthSales' => $previousThreeMonthSales,
@@ -1222,7 +1257,12 @@ SQL;
 
     private function computeCurrentMonthOrder(array $purchaseRows): float
     {
-        $month = date('Y-m');
+        return $this->computeMonthOrder($purchaseRows, date('Y-m-01'));
+    }
+
+    private function computeMonthOrder(array $purchaseRows, string $monthStart): float
+    {
+        $month = date('Y-m', strtotime($monthStart));
         $sum = 0.0;
         foreach ($purchaseRows as $row) {
             $date = (string) ($row['purchase_date'] ?? '');

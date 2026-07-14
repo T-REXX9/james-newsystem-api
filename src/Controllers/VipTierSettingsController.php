@@ -15,6 +15,7 @@ final class VipTierSettingsController
 
     public function index(array $params = [], array $query = [], array $body = []): array
     {
+        $this->assertOwner($body);
         $mainId = (int) ($query['main_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
@@ -25,6 +26,7 @@ final class VipTierSettingsController
 
     public function update(array $params = [], array $query = [], array $body = []): array
     {
+        $this->assertOwner($body);
         $mainId = (int) ($body['main_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
@@ -32,13 +34,20 @@ final class VipTierSettingsController
 
         $current = $this->repo->getConfig($mainId);
         $config = [
-            'silver_entry_threshold' => $body['silver_entry_threshold'] ?? $current['silver_entry_threshold'],
-            'gold_entry_threshold' => $body['gold_entry_threshold'] ?? $current['gold_entry_threshold'],
-            'silver_maintenance_threshold' => $body['silver_maintenance_threshold'] ?? $current['silver_maintenance_threshold'],
-            'gold_maintenance_threshold' => $body['gold_maintenance_threshold'] ?? $current['gold_maintenance_threshold'],
+            'one_time_discount_threshold' => $body['one_time_discount_threshold'] ?? $current['one_time_discount_threshold'],
+            'unlimited_discount_threshold' => $body['unlimited_discount_threshold'] ?? $current['unlimited_discount_threshold'],
+            'discount_percentage' => $body['discount_percentage'] ?? $current['discount_percentage'],
         ];
 
         $userId = (int) ($body['user_id'] ?? 0);
         return $this->repo->setConfig($mainId, $userId, $config);
+    }
+
+    private function assertOwner(array $body): void
+    {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        if ((string) ($claims['user_type'] ?? '') !== '1') {
+            throw new HttpException(403, 'Only account status role 1 can manage VIP discount settings.');
+        }
     }
 }

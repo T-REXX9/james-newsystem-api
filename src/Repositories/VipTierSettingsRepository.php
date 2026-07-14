@@ -11,10 +11,9 @@ final class VipTierSettingsRepository
 {
     private const PAGE = 'VIP Tier Settings';
     private const ACTION_CONFIG_UPDATE = 'VIP_CONFIG_UPDATE';
-    private const DEFAULT_SILVER_ENTRY_THRESHOLD = 10000;
-    private const DEFAULT_GOLD_ENTRY_THRESHOLD = 30000;
-    private const DEFAULT_SILVER_MAINTENANCE_THRESHOLD = 5000;
-    private const DEFAULT_GOLD_MAINTENANCE_THRESHOLD = 10000;
+    private const DEFAULT_ONE_TIME_DISCOUNT_THRESHOLD = 50000;
+    private const DEFAULT_UNLIMITED_DISCOUNT_THRESHOLD = 100000;
+    private const DEFAULT_DISCOUNT_PERCENTAGE = 10;
 
     public function __construct(private readonly Database $db)
     {
@@ -22,30 +21,25 @@ final class VipTierSettingsRepository
 
     /**
      * @return array{
-     *   silver_entry_threshold: int,
-     *   gold_entry_threshold: int,
-     *   silver_maintenance_threshold: int,
-     *   gold_maintenance_threshold: int
+     *   one_time_discount_threshold: int,
+     *   unlimited_discount_threshold: int,
+     *   discount_percentage: int
      * }
      */
     public function getConfig(int $mainId): array
     {
         return $this->normalizeConfig([
-            'silver_entry_threshold' => $this->readNumberSetting(
-                $this->settingKey($mainId, 'silver_entry_threshold'),
-                self::DEFAULT_SILVER_ENTRY_THRESHOLD
+            'one_time_discount_threshold' => $this->readNumberSetting(
+                $this->settingKey($mainId, 'one_time_discount_threshold'),
+                self::DEFAULT_ONE_TIME_DISCOUNT_THRESHOLD
             ),
-            'gold_entry_threshold' => $this->readNumberSetting(
-                $this->settingKey($mainId, 'gold_entry_threshold'),
-                self::DEFAULT_GOLD_ENTRY_THRESHOLD
+            'unlimited_discount_threshold' => $this->readNumberSetting(
+                $this->settingKey($mainId, 'unlimited_discount_threshold'),
+                self::DEFAULT_UNLIMITED_DISCOUNT_THRESHOLD
             ),
-            'silver_maintenance_threshold' => $this->readNumberSetting(
-                $this->settingKey($mainId, 'silver_maintenance_threshold'),
-                self::DEFAULT_SILVER_MAINTENANCE_THRESHOLD
-            ),
-            'gold_maintenance_threshold' => $this->readNumberSetting(
-                $this->settingKey($mainId, 'gold_maintenance_threshold'),
-                self::DEFAULT_GOLD_MAINTENANCE_THRESHOLD
+            'discount_percentage' => $this->readNumberSetting(
+                $this->settingKey($mainId, 'discount_percentage'),
+                self::DEFAULT_DISCOUNT_PERCENTAGE
             ),
         ]);
     }
@@ -53,27 +47,20 @@ final class VipTierSettingsRepository
     /**
      * @param array<string, mixed> $config
      * @return array{
-     *   silver_entry_threshold: int,
-     *   gold_entry_threshold: int,
-     *   silver_maintenance_threshold: int,
-     *   gold_maintenance_threshold: int
+     *   one_time_discount_threshold: int,
+     *   unlimited_discount_threshold: int,
+     *   discount_percentage: int
      * }
      */
     public function setConfig(int $mainId, int $userId, array $config): array
     {
         $normalized = $this->normalizeConfig($config);
 
-        $this->writeNumberSetting($this->settingKey($mainId, 'silver_entry_threshold'), $normalized['silver_entry_threshold']);
-        $this->writeNumberSetting($this->settingKey($mainId, 'gold_entry_threshold'), $normalized['gold_entry_threshold']);
-        $this->writeNumberSetting($this->settingKey($mainId, 'silver_maintenance_threshold'), $normalized['silver_maintenance_threshold']);
-        $this->writeNumberSetting($this->settingKey($mainId, 'gold_maintenance_threshold'), $normalized['gold_maintenance_threshold']);
+        foreach ($normalized as $key => $value) {
+            $this->writeNumberSetting($this->settingKey($mainId, $key), $value);
+        }
 
-        $payload = json_encode([
-            'silver_entry_threshold' => $normalized['silver_entry_threshold'],
-            'gold_entry_threshold' => $normalized['gold_entry_threshold'],
-            'silver_maintenance_threshold' => $normalized['silver_maintenance_threshold'],
-            'gold_maintenance_threshold' => $normalized['gold_maintenance_threshold'],
-        ], JSON_UNESCAPED_SLASHES);
+        $payload = json_encode($normalized, JSON_UNESCAPED_SLASHES);
 
         $this->insertAuditTrail(
             $mainId,
@@ -88,33 +75,21 @@ final class VipTierSettingsRepository
     /**
      * @param array<string, mixed> $config
      * @return array{
-     *   silver_entry_threshold: int,
-     *   gold_entry_threshold: int,
-     *   silver_maintenance_threshold: int,
-     *   gold_maintenance_threshold: int
+     *   one_time_discount_threshold: int,
+     *   unlimited_discount_threshold: int,
+     *   discount_percentage: int
      * }
      */
     private function normalizeConfig(array $config): array
     {
-        $silverEntryThreshold = $this->normalizeMoney($config['silver_entry_threshold'] ?? self::DEFAULT_SILVER_ENTRY_THRESHOLD);
-        $goldEntryThreshold = max(
-            $silverEntryThreshold,
-            $this->normalizeMoney($config['gold_entry_threshold'] ?? self::DEFAULT_GOLD_ENTRY_THRESHOLD)
-        );
-
-        $silverMaintenanceThreshold = $this->normalizeMoney(
-            $config['silver_maintenance_threshold'] ?? self::DEFAULT_SILVER_MAINTENANCE_THRESHOLD
-        );
-        $goldMaintenanceThreshold = max(
-            $silverMaintenanceThreshold,
-            $this->normalizeMoney($config['gold_maintenance_threshold'] ?? self::DEFAULT_GOLD_MAINTENANCE_THRESHOLD)
-        );
+        $oneTime = $this->normalizeMoney($config['one_time_discount_threshold'] ?? self::DEFAULT_ONE_TIME_DISCOUNT_THRESHOLD);
+        $unlimited = max($oneTime, $this->normalizeMoney($config['unlimited_discount_threshold'] ?? self::DEFAULT_UNLIMITED_DISCOUNT_THRESHOLD));
+        $percentage = min(100, $this->normalizeMoney($config['discount_percentage'] ?? self::DEFAULT_DISCOUNT_PERCENTAGE));
 
         return [
-            'silver_entry_threshold' => $silverEntryThreshold,
-            'gold_entry_threshold' => $goldEntryThreshold,
-            'silver_maintenance_threshold' => $silverMaintenanceThreshold,
-            'gold_maintenance_threshold' => $goldMaintenanceThreshold,
+            'one_time_discount_threshold' => $oneTime,
+            'unlimited_discount_threshold' => $unlimited,
+            'discount_percentage' => $percentage,
         ];
     }
 

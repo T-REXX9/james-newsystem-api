@@ -778,8 +778,8 @@ function app_router(): Router
     $router->get('/api/v1/profit-protection/threshold', [$profitProtectionController, 'threshold']);
     $router->patch('/api/v1/profit-protection/threshold', [$profitProtectionController, 'updateThreshold']);
     // VIP Tier Settings
-    $router->get('/api/v1/vip-tier-settings', [$vipTierSettingsController, 'index']);
-    $router->patch('/api/v1/vip-tier-settings', [$vipTierSettingsController, 'update']);
+    $router->get('/api/v1/vip-tier-settings', $requireBearerAuthWithClaims([$vipTierSettingsController, 'index']));
+    $router->patch('/api/v1/vip-tier-settings', $requireBearerAuthWithClaims([$vipTierSettingsController, 'update']));
     $router->post('/api/v1/profit-protection/validate-items', [$profitProtectionController, 'validateItems']);
     $router->post('/api/v1/profit-protection/overrides', [$profitProtectionController, 'createOverride']);
     $router->get('/api/v1/profit-protection/overrides', [$profitProtectionController, 'listOverrides']);
