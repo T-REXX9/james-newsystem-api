@@ -599,6 +599,14 @@ function app_router(): Router
     $router->post('/api/v1/inventory-audits/adjustments', [$inventoryAuditController, 'createAdjustment']);
     $router->patch('/api/v1/inventory-audits/adjustments/{adjustmentId}', [$inventoryAuditController, 'updateAdjustment']);
     $router->delete('/api/v1/inventory-audits/adjustments/{adjustmentId}', [$inventoryAuditController, 'deleteAdjustment']);
+    $router->get('/api/v1/inventory-audits/stock-adjustments', [$inventoryAuditController, 'listStockAdjustments']);
+    $router->post('/api/v1/inventory-audits/stock-adjustments', [$inventoryAuditController, 'createStockAdjustment']);
+    $router->get('/api/v1/inventory-audits/stock-adjustments/{refno}', [$inventoryAuditController, 'showStockAdjustment']);
+    $router->patch('/api/v1/inventory-audits/stock-adjustments/{refno}/date', [$inventoryAuditController, 'updateStockAdjustmentDate']);
+    $router->post('/api/v1/inventory-audits/stock-adjustments/{refno}/counts', [$inventoryAuditController, 'saveStockAdjustmentCounts']);
+    $router->post('/api/v1/inventory-audits/stock-adjustments/{refno}/post', [$inventoryAuditController, 'postStockAdjustment']);
+    $router->delete('/api/v1/inventory-audits/stock-adjustments/{refno}/items/{itemSession}', [$inventoryAuditController, 'deleteStockAdjustmentItem']);
+    $router->delete('/api/v1/inventory-audits/stock-adjustments/{refno}', [$inventoryAuditController, 'deleteStockAdjustment']);
     $router->get('/api/v1/inventory-report/options', [$inventoryReportController, 'options']);
     $router->get('/api/v1/inventory-report', [$inventoryReportController, 'report']);
     $router->get('/api/v1/transfer-stocks', [$transferStockController, 'list']);
