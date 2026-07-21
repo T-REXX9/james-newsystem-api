@@ -27,6 +27,7 @@ final class ReorderReportRepository
     ): array {
         $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
+            'canonical_product_version' => 2,
             'main_id' => $mainId,
             'warehouse_type' => $normalizedWarehouseType,
             'search' => trim($search),
@@ -85,9 +86,27 @@ final class ReorderReportRepository
         }
         $whereSql = implode(' AND ', $where);
 
+        $canonicalItemsSql = <<<SQL
+SELECT
+    MAX(lid) AS lid,
+    lsession,
+    MAX(lmain_id) AS lmain_id,
+    MAX(COALESCE(litemcode, '')) AS litemcode,
+    MAX(COALESCE(lpartno, '')) AS lpartno,
+    MAX(COALESCE(ldescription, '')) AS ldescription,
+    MAX(COALESCE(lstatus, 0)) AS lstatus,
+    MAX(COALESCE(NULLIF(lreorder_amt, ''), '0')) AS lreorder_amt,
+    MAX(COALESCE(NULLIF(lreplenish, ''), '0')) AS lreplenish
+FROM tblinventory_item
+WHERE lmain_id = :canonical_main_id
+  AND TRIM(COALESCE(lsession, '')) <> ''
+GROUP BY lsession
+SQL;
+        $params['canonical_main_id'] = $mainId;
+
         $countSql = <<<SQL
 SELECT COUNT(*) AS total
-FROM tblinventory_item itm
+FROM ({$canonicalItemsSql}) itm
 LEFT JOIN ({$stockSubquery}) st ON st.linvent_id = itm.lsession
 WHERE {$whereSql}
 SQL;
@@ -108,7 +127,7 @@ SQL;
     CAST(COALESCE(NULLIF(itm.lreplenish, ''), '0') AS DECIMAL(15,2)) AS replenish_qty,
     CAST(COALESCE(st.current_stock, 0) AS DECIMAL(15,2)) AS current_stock,
     {$targetExpr} AS target_quantity
-FROM tblinventory_item itm
+FROM ({$canonicalItemsSql}) itm
 LEFT JOIN ({$stockSubquery}) st ON st.linvent_id = itm.lsession
 WHERE {$whereSql}
 ORDER BY itm.ldescription ASC, itm.lpartno ASC, itm.litemcode ASC
