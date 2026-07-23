@@ -353,12 +353,35 @@ SQL;
         }
 
         $status = strtolower((string) ($transfer['transfer']['status'] ?? 'pending'));
-        if (!in_array($status, ['pending', 'submitted'], true)) {
-            throw new RuntimeException('Only pending/submitted transfers can be modified');
+        if ($status !== 'pending') {
+            throw new RuntimeException('Only pending transfers can be modified');
         }
 
-        $this->insertTransferItem($this->db->pdo(), $mainId, $transferRefno, $payload);
-        $itemId = (int) $this->db->pdo()->lastInsertId();
+        $pdo = $this->db->pdo();
+        $partNo = trim((string) ($payload['part_no'] ?? ''));
+        $hasTransferDetails = trim((string) ($payload['from_warehouse_id'] ?? $payload['from_warehouse'] ?? '')) !== ''
+            || trim((string) ($payload['to_warehouse_id'] ?? $payload['to_warehouse'] ?? '')) !== ''
+            || (float) ($payload['transfer_qty'] ?? 0) > 0;
+
+        if ($partNo !== '' && !$hasTransferDetails) {
+            $this->insertTransferItemFromPartNo($pdo, $mainId, $transferRefno, $partNo);
+            $header = $transfer['transfer'] ?? [];
+            $existingParts = is_array($header['part_numbers'] ?? null) ? $header['part_numbers'] : [];
+            $existingParts[] = $partNo;
+            $updateHeader = $pdo->prepare(
+                'UPDATE tblbranchinventory_transferlist
+                 SET lpartno = :partno
+                 WHERE lmain_id = :main_id AND lrefno = :refno'
+            );
+            $updateHeader->execute([
+                'partno' => implode(', ', $existingParts),
+                'main_id' => (string) $mainId,
+                'refno' => $transferRefno,
+            ]);
+        } else {
+            $this->insertTransferItem($pdo, $mainId, $transferRefno, $payload);
+        }
+        $itemId = (int) $pdo->lastInsertId();
         $item = $this->getItemById($mainId, $itemId);
         if ($item === null) {
             throw new RuntimeException('Unable to load created transfer item');
@@ -375,6 +398,10 @@ SQL;
         $existing = $this->getItemById($mainId, $itemId);
         if ($existing === null) {
             return null;
+        }
+        $transfer = $this->getTransfer($mainId, (string) ($existing['transfer_id'] ?? ''));
+        if (strtolower((string) ($transfer['transfer']['status'] ?? '')) !== 'pending') {
+            throw new RuntimeException('Only pending transfers can be modified');
         }
 
         $fields = [];
@@ -427,6 +454,10 @@ SQL;
         $existing = $this->getItemById($mainId, $itemId);
         if ($existing === null) {
             return false;
+        }
+        $transfer = $this->getTransfer($mainId, (string) ($existing['transfer_id'] ?? ''));
+        if (strtolower((string) ($transfer['transfer']['status'] ?? '')) !== 'pending') {
+            throw new RuntimeException('Only pending transfers can be modified');
         }
 
         $stmt = $this->db->pdo()->prepare('DELETE FROM tblbranchinventory_transferproducts WHERE lid = :item_id');
