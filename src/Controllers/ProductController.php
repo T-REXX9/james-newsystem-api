@@ -27,6 +27,14 @@ final class ProductController
             'description' => trim((string) ($query['description'] ?? '')),
             'application' => trim((string) ($query['application'] ?? '')),
             'original_pn' => trim((string) ($query['original_pn'] ?? '')),
+            'category' => trim((string) ($query['category'] ?? '')),
+            'oem_no' => trim((string) ($query['oem_no'] ?? '')),
+            'descriptive_inquiry' => trim((string) ($query['descriptive_inquiry'] ?? '')),
+            'brand' => trim((string) ($query['brand'] ?? '')),
+            'size' => trim((string) ($query['size'] ?? '')),
+            'holes' => trim((string) ($query['holes'] ?? '')),
+            'cylinder' => trim((string) ($query['cylinder'] ?? '')),
+            'barcode' => trim((string) ($query['barcode'] ?? '')),
         ];
         $status = strtolower(trim((string) ($query['status'] ?? 'all')));
         if (!in_array($status, ['all', 'active', 'inactive'], true)) {

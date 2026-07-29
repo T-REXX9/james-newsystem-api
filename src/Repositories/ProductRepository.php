@@ -67,6 +67,14 @@ final class ProductRepository
             'description' => 'itm.ldescription',
             'application' => 'itm.lapplication',
             'original_pn' => 'itm.lopn_number',
+            'category' => 'itm.lproduct_group',
+            'oem_no' => 'itm.loem_number',
+            'descriptive_inquiry' => 'itm.lnickname',
+            'brand' => 'itm.lbrand',
+            'size' => 'itm.lsize',
+            'holes' => 'itm.lholes',
+            'cylinder' => 'itm.lcylinder',
+            'barcode' => 'itm.lbarcode',
         ];
         foreach ($legacyFieldMap as $filterName => $column) {
             $value = trim((string) ($fieldFilters[$filterName] ?? ''));
@@ -91,6 +99,8 @@ SELECT
     CAST(COALESCE(itm.lpcsperbox, 0) AS SIGNED) AS no_of_pieces_per_box,
     COALESCE(itm.litemcode, '') AS item_code,
     COALESCE(itm.ldescription, '') AS description,
+    COALESCE(itm.lpacking, '') AS packing,
+    COALESCE(itm.lspecs, '') AS specifications,
     COALESCE(itm.lsize, '') AS size,
     CAST(COALESCE(itm.lreorder_amt, 0) AS SIGNED) AS reorder_quantity,
     CASE
@@ -113,10 +123,11 @@ SELECT
     COALESCE(itm.lcylinder, '') AS no_of_cylinder,
     CAST(COALESCE(itm.lcost, 0) AS DECIMAL(15,2)) AS cost,
     CAST(COALESCE((
-        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
+        SELECT ip.lprice_amt
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession
-          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'AAA'
+        ORDER BY ip.lid DESC
+        LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_aa,
     CAST(COALESCE((
         SELECT ip.lprice_amt
@@ -140,16 +151,18 @@ SELECT
         LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_dd,
     CAST(COALESCE((
-        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
+        SELECT ip.lprice_amt
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession
-          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'VIP 1'
+        ORDER BY ip.lid DESC
+        LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_vip1,
     CAST(COALESCE((
-        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
+        SELECT ip.lprice_amt
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession
-          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'VIP2'
+        ORDER BY ip.lid DESC
+        LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_vip2,
     CAST(COALESCE((
         SELECT ip.lprice_amt
@@ -216,6 +229,11 @@ SELECT
           AND lg.lwarehouse = :warehouse_6
     ), 0) AS DECIMAL(15,2)) AS stock_wh6,
     CAST(COALESCE(itm.lstatus, 0) AS SIGNED) AS legacy_status,
+    CAST(COALESCE((
+        SELECT COUNT(*)
+        FROM tblinventory_logs tx
+        WHERE tx.linvent_id = itm.lsession
+    ), 0) AS SIGNED) AS transaction_count,
     CAST(COALESCE(itm.lnot_inventory, 0) AS SIGNED) AS is_deleted
 FROM tblinventory_item itm
 LEFT JOIN tblcategory cat ON cat.lid = itm.lcategory
@@ -247,6 +265,8 @@ SQL;
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $rows = $this->attachSalesByYear($rows);
+        $rows = $this->attachSupplierCosts($rows);
+        $rows = $this->attachInventoryBlueprintMetrics($rows);
 
         $countSql = <<<SQL
 SELECT COUNT(*) AS total
@@ -301,6 +321,8 @@ SELECT
     CAST(COALESCE(itm.lpcsperbox, 0) AS SIGNED) AS no_of_pieces_per_box,
     COALESCE(itm.litemcode, '') AS item_code,
     COALESCE(itm.ldescription, '') AS description,
+    COALESCE(itm.lpacking, '') AS packing,
+    COALESCE(itm.lspecs, '') AS specifications,
     COALESCE(itm.lsize, '') AS size,
     CAST(COALESCE(itm.lreorder_amt, 0) AS SIGNED) AS reorder_quantity,
     CASE
@@ -323,10 +345,11 @@ SELECT
     COALESCE(itm.lcylinder, '') AS no_of_cylinder,
     CAST(COALESCE(itm.lcost, 0) AS DECIMAL(15,2)) AS cost,
     CAST(COALESCE((
-        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
+        SELECT ip.lprice_amt
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession
-          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'AAA'
+        ORDER BY ip.lid DESC
+        LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_aa,
     CAST(COALESCE((
         SELECT ip.lprice_amt
@@ -350,16 +373,18 @@ SELECT
         LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_dd,
     CAST(COALESCE((
-        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
+        SELECT ip.lprice_amt
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession
-          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'VIP 1'
+        ORDER BY ip.lid DESC
+        LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_vip1,
     CAST(COALESCE((
-        SELECT MIN(CAST(ip.lprice_amt AS DECIMAL(15,2)))
+        SELECT ip.lprice_amt
         FROM tblinventory_price ip
-        WHERE ip.linv_refno = itm.lsession
-          AND CAST(COALESCE(NULLIF(ip.lprice_amt, ''), '0') AS DECIMAL(15,2)) > 0
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'VIP2'
+        ORDER BY ip.lid DESC
+        LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_vip2,
     CAST(COALESCE((
         SELECT ip.lprice_amt
@@ -426,6 +451,11 @@ SELECT
           AND lg.lwarehouse = :warehouse_6
     ), 0) AS DECIMAL(15,2)) AS stock_wh6,
     CAST(COALESCE(itm.lstatus, 0) AS SIGNED) AS legacy_status,
+    CAST(COALESCE((
+        SELECT COUNT(*)
+        FROM tblinventory_logs tx
+        WHERE tx.linvent_id = itm.lsession
+    ), 0) AS SIGNED) AS transaction_count,
     CAST(COALESCE(itm.lnot_inventory, 0) AS SIGNED) AS is_deleted
 FROM tblinventory_item itm
 LEFT JOIN tblcategory cat ON cat.lid = itm.lcategory
@@ -453,6 +483,8 @@ SQL;
         }
 
         $items = $this->attachSalesByYear([$row]);
+        $items = $this->attachSupplierCosts($items);
+        $items = $this->attachInventoryBlueprintMetrics($items);
         return $items[0] ?? null;
     }
 
@@ -502,6 +534,7 @@ SQL;
         ]);
 
         $this->syncPrices($session, $payload);
+        $this->syncSupplierCosts($mainId, $session, $itemCode, $this->strVal($payload['part_no'] ?? ''), $payload, $userId);
         $this->syncWarehouseStocks($mainId, $session, $payload, $userId);
 
         $item = $this->getProductBySession($mainId, $session);
@@ -568,6 +601,14 @@ SQL;
 
         $userId = (int) ($payload['user_id'] ?? 0);
         $this->syncPrices($productSession, $payload);
+        $this->syncSupplierCosts(
+            $mainId,
+            $productSession,
+            $this->strVal($payload['item_code'] ?? $existing['item_code'] ?? ''),
+            $this->strVal($payload['part_no'] ?? $existing['part_no'] ?? ''),
+            $payload,
+            $userId
+        );
         $this->syncWarehouseStocks($mainId, $productSession, $payload, $userId);
 
         return $this->getProductBySession($mainId, $productSession);
@@ -676,6 +717,184 @@ SQL;
     }
 
     /**
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function attachSupplierCosts(array $rows): array
+    {
+        if (count($rows) === 0) {
+            return $rows;
+        }
+
+        $sessions = array_values(array_unique(array_filter(array_map(
+            static fn(array $row): string => trim((string) ($row['legacy_session'] ?? $row['id'] ?? '')),
+            $rows
+        ))));
+        if (count($sessions) === 0) {
+            return $rows;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($sessions), '?'));
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT
+                CAST(sc.litemsession AS CHAR) AS item_session,
+                CAST(sc.lsupplier_id AS CHAR) AS supplier_id,
+                COALESCE(NULLIF(s.lname, ''), NULLIF(sc.lsupplier_name, ''), '-') AS supplier_code,
+                COALESCE(NULLIF(s.lcompany, ''), NULLIF(s.lsupplier_remark, ''), NULLIF(sc.lsupplier_name, ''), '-') AS supplier_name,
+                CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) AS cost,
+                CAST(COALESCE(s.lstatus, 1) AS SIGNED) AS supplier_status,
+                sc.ldate_created AS cost_updated_at
+             FROM tblsupplier_cost sc
+             LEFT JOIN tblsupplier s ON CAST(s.lid AS CHAR) = CAST(sc.lsupplier_id AS CHAR)
+             WHERE sc.litemsession IN ({$placeholders})
+             ORDER BY sc.litemsession ASC, sc.lcost ASC, sc.lid DESC"
+        );
+        $stmt->execute($sessions);
+
+        $costsBySession = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $cost) {
+            $session = trim((string) ($cost['item_session'] ?? ''));
+            if ($session === '') {
+                continue;
+            }
+            $rank = count($costsBySession[$session] ?? []) + 1;
+            if ($rank > 3) {
+                continue;
+            }
+            $isBlacklisted = (int) ($cost['supplier_status'] ?? 1) !== 1;
+            $costsBySession[$session][] = [
+                'supplier_id' => (string) ($cost['supplier_id'] ?? ''),
+                'supplier_code' => (string) ($cost['supplier_code'] ?? ''),
+                'supplier_name' => (string) ($cost['supplier_name'] ?? ''),
+                'cost' => (float) ($cost['cost'] ?? 0),
+                'rank' => $rank,
+                'status' => $isBlacklisted
+                    ? 'Recommended for Blacklisted'
+                    : ($rank <= 2 ? "Preferred Supplier {$rank}" : ''),
+                'is_blacklisted' => $isBlacklisted,
+                'cost_updated_at' => (string) ($cost['cost_updated_at'] ?? ''),
+            ];
+        }
+
+        foreach ($rows as &$row) {
+            $session = trim((string) ($row['legacy_session'] ?? $row['id'] ?? ''));
+            $row['supplier_costs'] = $costsBySession[$session] ?? [];
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /**
+     * Adds the non-editable operational values used by the Parts Inventory blueprint.
+     *
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function attachInventoryBlueprintMetrics(array $rows): array
+    {
+        if (count($rows) === 0) {
+            return $rows;
+        }
+
+        $sessions = array_values(array_unique(array_filter(array_map(
+            static fn(array $row): string => trim((string) ($row['legacy_session'] ?? $row['id'] ?? '')),
+            $rows
+        ))));
+        if (count($sessions) === 0) {
+            return $rows;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($sessions), '?'));
+        $pdo = $this->db->pdo();
+
+        $receiveStmt = $pdo->prepare(
+            "SELECT CAST(linvent_id AS CHAR) AS item_session,
+                    CAST(COALESCE(lin, 0) AS DECIMAL(15,2)) AS receive_quantity,
+                    ldateadded AS receive_date
+             FROM tblinventory_logs
+             WHERE linvent_id IN ({$placeholders})
+               AND ltransaction_type = 'Receiving'
+               AND COALESCE(lin, 0) > 0
+             ORDER BY linvent_id ASC, ldateadded DESC, lid DESC"
+        );
+        $receiveStmt->execute($sessions);
+        $receives = [];
+        foreach ($receiveStmt->fetchAll(PDO::FETCH_ASSOC) as $receive) {
+            $session = trim((string) ($receive['item_session'] ?? ''));
+            if ($session === '' || isset($receives[$session])) {
+                continue;
+            }
+            $receives[$session] = [
+                'quantity' => (float) ($receive['receive_quantity'] ?? 0),
+                'date' => (string) ($receive['receive_date'] ?? ''),
+            ];
+        }
+
+        $incidentStmt = $pdo->prepare(
+            "SELECT CAST(itm.lsession AS CHAR) AS item_session, COUNT(DISTINCT iri.id) AS report_count
+             FROM tblinventory_item itm
+             LEFT JOIN incident_report_items iri
+               ON iri.main_id = itm.lmain_id
+              AND iri.created_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
+              AND (
+                    iri.product_id = itm.lsession
+                 OR (COALESCE(iri.item_code, '') <> '' AND iri.item_code = itm.litemcode)
+                 OR (COALESCE(iri.part_no, '') <> '' AND iri.part_no = itm.lpartno)
+              )
+             WHERE itm.lsession IN ({$placeholders})
+             GROUP BY itm.lsession"
+        );
+        $incidentStmt->execute($sessions);
+        $incidents = [];
+        foreach ($incidentStmt->fetchAll(PDO::FETCH_ASSOC) as $incident) {
+            $incidents[(string) $incident['item_session']] = (int) ($incident['report_count'] ?? 0);
+        }
+
+        $returnStmt = $pdo->prepare(
+            "SELECT CAST(itm.lsession AS CHAR) AS item_session,
+                    COUNT(DISTINCT CASE WHEN cm.lid IS NOT NULL THEN cri.lid END) AS report_count
+             FROM tblinventory_item itm
+             LEFT JOIN tblcredit_return_item cri
+               ON cri.linv_refno = itm.lsession
+               OR cri.litem_refno = itm.lsession
+               OR (COALESCE(cri.litemcode, '') <> '' AND cri.litemcode = itm.litemcode)
+             LEFT JOIN tblcredit_memo cm
+               ON cm.lrefno = cri.lrefno
+              AND cm.ldatetime >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
+             WHERE itm.lsession IN ({$placeholders})
+             GROUP BY itm.lsession"
+        );
+        $returnStmt->execute($sessions);
+        $returns = [];
+        foreach ($returnStmt->fetchAll(PDO::FETCH_ASSOC) as $return) {
+            $returns[(string) $return['item_session']] = (int) ($return['report_count'] ?? 0);
+        }
+
+        foreach ($rows as &$row) {
+            $session = trim((string) ($row['legacy_session'] ?? $row['id'] ?? ''));
+            $lastReceive = $receives[$session] ?? ['quantity' => 0, 'date' => ''];
+            $supplierCosts = is_array($row['supplier_costs'] ?? null) ? $row['supplier_costs'] : [];
+            $lastPriceUpdate = '';
+            foreach ($supplierCosts as $supplierCost) {
+                $updatedAt = trim((string) ($supplierCost['cost_updated_at'] ?? ''));
+                if ($updatedAt !== '' && ($lastPriceUpdate === '' || strcmp($updatedAt, $lastPriceUpdate) > 0)) {
+                    $lastPriceUpdate = $updatedAt;
+                }
+            }
+
+            $row['last_receive_quantity'] = (float) ($lastReceive['quantity'] ?? 0);
+            $row['last_receive_date'] = (string) ($lastReceive['date'] ?? '');
+            $row['incident_report_count'] = $incidents[$session] ?? 0;
+            $row['return_report_count'] = $returns[$session] ?? 0;
+            $row['last_price_update'] = $lastPriceUpdate;
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /**
      * @param array<int, string> $itemSessions
      * @return array<string, array<string, int>>
      */
@@ -772,6 +991,79 @@ SQL;
             }
             $amount = (float) ($payload[$field] ?? 0);
             $this->upsertPriceGroup($productSession, $groupName, $amount);
+        }
+    }
+
+    private function syncSupplierCosts(
+        int $mainId,
+        string $productSession,
+        string $itemCode,
+        string $partNo,
+        array $payload,
+        int $userId
+    ): void {
+        if (!array_key_exists('supplier_costs', $payload) || !is_array($payload['supplier_costs'])) {
+            return;
+        }
+
+        $pdo = $this->db->pdo();
+        $targetProducts = [[
+            'session' => $productSession,
+            'item_code' => $itemCode,
+            'part_no' => $partNo,
+        ]];
+        if (!empty($payload['apply_cost_to_all_part_no']) && $partNo !== '') {
+            $targets = $pdo->prepare(
+                'SELECT CAST(lsession AS CHAR) AS session, litemcode AS item_code, lpartno AS part_no
+                 FROM tblinventory_item
+                 WHERE lmain_id = :main_id AND lpartno = :part_no AND COALESCE(lnot_inventory, 0) = 0'
+            );
+            $targets->execute([
+                'main_id' => $mainId,
+                'part_no' => $partNo,
+            ]);
+            $targetProducts = $targets->fetchAll(PDO::FETCH_ASSOC);
+        }
+
+        $delete = $pdo->prepare(
+            'DELETE FROM tblsupplier_cost WHERE lmainid = :main_id AND litemsession = :session'
+        );
+        $insert = $pdo->prepare(
+            'INSERT INTO tblsupplier_cost
+                (lmainid, luserid, ldate_created, lsupplier_id, lsupplier_name, litemsession, litemcode, lpartno, lcost)
+             VALUES
+                (:main_id, :user_id, NOW(), :supplier_id, :supplier_name, :session, :item_code, :part_no, :cost)'
+        );
+
+        foreach ($targetProducts as $targetProduct) {
+            $targetSession = trim((string) ($targetProduct['session'] ?? ''));
+            if ($targetSession === '') {
+                continue;
+            }
+            $delete->execute([
+                'main_id' => $mainId,
+                'session' => $targetSession,
+            ]);
+
+            foreach ($payload['supplier_costs'] as $row) {
+                if (!is_array($row)) {
+                    continue;
+                }
+                $supplierId = trim((string) ($row['supplier_id'] ?? ''));
+                if ($supplierId === '') {
+                    continue;
+                }
+                $insert->execute([
+                    'main_id' => $mainId,
+                    'user_id' => $userId > 0 ? $userId : null,
+                    'supplier_id' => $supplierId,
+                    'supplier_name' => trim((string) ($row['supplier_name'] ?? '')),
+                    'session' => $targetSession,
+                    'item_code' => trim((string) ($targetProduct['item_code'] ?? '')),
+                    'part_no' => trim((string) ($targetProduct['part_no'] ?? '')),
+                    'cost' => (float) ($row['cost'] ?? 0),
+                ]);
+            }
         }
     }
 
