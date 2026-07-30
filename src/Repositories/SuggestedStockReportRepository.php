@@ -86,11 +86,47 @@ SELECT
     COALESCE(i.litem_code, '') AS item_code,
     COALESCE(i.ldesc, '') AS description,
     COUNT(*) AS inquiry_count,
-    CAST(COALESCE(SUM(COALESCE(i.lqty, 0)), 0) AS SIGNED) AS total_qty,
+    CAST(COALESCE(SUM(CASE WHEN COALESCE(i.lqty, 0) <= 0 THEN 1 ELSE i.lqty END), 0) AS SIGNED) AS total_qty,
     COUNT(DISTINCT COALESCE(tr.lcustomerid, '')) AS customer_count,
     GROUP_CONCAT(DISTINCT CONCAT(COALESCE(tr.lcustomerid, ''), '::', TRIM(COALESCE(tr.lcompany, ''))) SEPARATOR '||') AS customers,
     COALESCE(MAX(i.lreport_remark), '') AS report_remark,
-    COALESCE(MAX(tr.ldate), '') AS last_inquiry_date
+    COALESCE(MAX(tr.ldate), '') AS last_inquiry_date,
+    COALESCE((
+        SELECT matched.lbrand
+        FROM tblinventory_item matched
+        WHERE matched.lmain_id = :match_main_id_brand
+          AND COALESCE(matched.lnot_inventory, 0) = 0
+          AND (
+              (COALESCE(i.litem_code, '') <> '' AND matched.litemcode = i.litem_code)
+              OR (COALESCE(i.lpartno, '') <> '' AND matched.lpartno = i.lpartno)
+          )
+        ORDER BY (matched.litemcode = i.litem_code) DESC, matched.lid DESC
+        LIMIT 1
+    ), '') AS brand,
+    COALESCE((
+        SELECT matched.litemcode
+        FROM tblinventory_item matched
+        WHERE matched.lmain_id = :match_main_id_code
+          AND COALESCE(matched.lnot_inventory, 0) = 0
+          AND (
+              (COALESCE(i.litem_code, '') <> '' AND matched.litemcode = i.litem_code)
+              OR (COALESCE(i.lpartno, '') <> '' AND matched.lpartno = i.lpartno)
+          )
+        ORDER BY (matched.litemcode = i.litem_code) DESC, matched.lid DESC
+        LIMIT 1
+    ), '') AS database_item_code,
+    COALESCE((
+        SELECT matched.lpartno
+        FROM tblinventory_item matched
+        WHERE matched.lmain_id = :match_main_id_part
+          AND COALESCE(matched.lnot_inventory, 0) = 0
+          AND (
+              (COALESCE(i.litem_code, '') <> '' AND matched.litemcode = i.litem_code)
+              OR (COALESCE(i.lpartno, '') <> '' AND matched.lpartno = i.lpartno)
+          )
+        ORDER BY (matched.litemcode = i.litem_code) DESC, matched.lid DESC
+        LIMIT 1
+    ), '') AS database_part_no
 FROM tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
 WHERE {$whereSql}
@@ -103,6 +139,9 @@ SQL;
         foreach ($params as $key => $value) {
             $stmt->bindValue($key, $value, PDO::PARAM_STR);
         }
+        $stmt->bindValue('match_main_id_brand', (string) $mainId, PDO::PARAM_STR);
+        $stmt->bindValue('match_main_id_code', (string) $mainId, PDO::PARAM_STR);
+        $stmt->bindValue('match_main_id_part', (string) $mainId, PDO::PARAM_STR);
         $stmt->bindValue('limit', $perPage, PDO::PARAM_INT);
         $stmt->bindValue('offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
