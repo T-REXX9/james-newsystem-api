@@ -27,7 +27,7 @@ final class ReorderReportRepository
     ): array {
         $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
-            'canonical_product_version' => 2,
+            'canonical_product_version' => 3,
             'main_id' => $mainId,
             'warehouse_type' => $normalizedWarehouseType,
             'search' => trim($search),
@@ -185,9 +185,9 @@ SQL;
         foreach ($rows as $row) {
             $session = (string) ($row['product_session'] ?? '');
             $itemCode = (string) ($row['item_code'] ?? '');
-            $pr = $latestPrByItem[$itemCode] ?? ['pr_refno' => '', 'pr_no' => ''];
-            $po = $latestPoByItem[$itemCode] ?? ['po_refno' => '', 'po_no' => ''];
-            $rr = $latestRrByItem[$itemCode] ?? ['rr_refno' => '', 'rr_no' => ''];
+            $pr = $latestPrByItem[$itemCode] ?? ['pr_refno' => '', 'pr_no' => '', 'pr_status' => ''];
+            $po = $latestPoByItem[$itemCode] ?? ['po_refno' => '', 'po_no' => '', 'po_status' => ''];
+            $rr = $latestRrByItem[$itemCode] ?? ['rr_refno' => '', 'rr_no' => '', 'rr_status' => ''];
             $arrival = $lastArrivalByItem[$itemCode] ?? ['last_arrival_date' => '', 'last_arrival_qty' => 0];
 
             $mapped[] = [
@@ -205,10 +205,13 @@ SQL;
                 'target_quantity' => (float) ($row['target_quantity'] ?? 0),
                 'pr_refno' => (string) ($pr['pr_refno'] ?? ''),
                 'pr_no' => (string) ($pr['pr_no'] ?? ''),
+                'pr_status' => (string) ($pr['pr_status'] ?? ''),
                 'po_refno' => (string) ($po['po_refno'] ?? ''),
                 'po_no' => (string) ($po['po_no'] ?? ''),
+                'po_status' => (string) ($po['po_status'] ?? ''),
                 'rr_refno' => (string) ($rr['rr_refno'] ?? ''),
                 'rr_no' => (string) ($rr['rr_no'] ?? ''),
+                'rr_status' => (string) ($rr['rr_status'] ?? ''),
                 'last_arrival_date' => (string) ($arrival['last_arrival_date'] ?? ''),
                 'last_arrival_qty' => (float) ($arrival['last_arrival_qty'] ?? 0),
             ];
@@ -402,7 +405,12 @@ SQL;
 SELECT
     pri.litem_code,
     pri.lrefno AS pr_refno,
-    COALESCE(prl.lprno, '') AS pr_no
+    COALESCE(prl.lprno, '') AS pr_no,
+    CASE
+        WHEN LOWER(COALESCE(prl.lstatus, '')) IN ('cancelled', 'canceled', 'rejected', 'disapproved') THEN 'Cancelled'
+        WHEN LOWER(COALESCE(prl.lapproval, '')) = 'approved' THEN 'Approved'
+        ELSE COALESCE(prl.lstatus, 'Pending')
+    END AS pr_status
 FROM tblpr_item pri
 INNER JOIN (
     SELECT litem_code, MAX(lid) AS max_lid
@@ -423,6 +431,7 @@ SQL;
             $map[$item] = [
                 'pr_refno' => (string) ($row['pr_refno'] ?? ''),
                 'pr_no' => (string) ($row['pr_no'] ?? ''),
+                'pr_status' => (string) ($row['pr_status'] ?? ''),
             ];
         }
         return $map;
@@ -440,7 +449,8 @@ SQL;
 SELECT
     poi.litem_code,
     poi.lrefno AS po_refno,
-    COALESCE(pol.lpurchaseno, '') AS po_no
+    COALESCE(pol.lpurchaseno, '') AS po_no,
+    COALESCE(pol.ltransaction_status, 'Pending') AS po_status
 FROM tblpo_itemlist poi
 INNER JOIN (
     SELECT litem_code, MAX(lid) AS max_lid
@@ -461,6 +471,7 @@ SQL;
             $map[$item] = [
                 'po_refno' => (string) ($row['po_refno'] ?? ''),
                 'po_no' => (string) ($row['po_no'] ?? ''),
+                'po_status' => (string) ($row['po_status'] ?? ''),
             ];
         }
         return $map;
@@ -479,6 +490,7 @@ SELECT
     pi.litem_code,
     pi.lrefno AS rr_refno,
     COALESCE(po.lpurchaseno, '') AS rr_no,
+    COALESCE(po.ltransaction_status, 'Pending') AS rr_status,
     COALESCE(po.ldate, '') AS last_arrival_date,
     SUM(COALESCE(pi2.lqty, 0)) AS last_arrival_qty
 FROM tblpurchase_item pi
@@ -506,6 +518,7 @@ SQL;
             $map[$item] = [
                 'rr_refno' => (string) ($row['rr_refno'] ?? ''),
                 'rr_no' => (string) ($row['rr_no'] ?? ''),
+                'rr_status' => (string) ($row['rr_status'] ?? ''),
                 'last_arrival_date' => (string) ($row['last_arrival_date'] ?? ''),
                 'last_arrival_qty' => (float) ($row['last_arrival_qty'] ?? 0),
             ];

@@ -292,6 +292,7 @@ SQL;
             }
 
             $pdo->commit();
+            $this->clearReorderReportCache();
 
             // Some environments have non-transactional tblnumber_generator (e.g. MyISAM + GTID).
             // Keep RR creation successful and write running number separately on best effort.
@@ -304,6 +305,15 @@ SQL;
         } catch (\Throwable $e) {
             $pdo->rollBack();
             throw $e;
+        }
+    }
+
+    private function clearReorderReportCache(): void
+    {
+        $files = glob(rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'james_reorder_cache_*.json');
+        if (!is_array($files)) return;
+        foreach ($files as $file) {
+            @unlink($file);
         }
     }
 

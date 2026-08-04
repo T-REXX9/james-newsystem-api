@@ -259,6 +259,9 @@ SQL;
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
+            $items = is_array($payload['items'] ?? null) ? $payload['items'] : [];
+            (new PurchaseWorkflowGuard($pdo))->assertItemsAvailable($items);
+
             $refno = (string) ($payload['refno'] ?? $this->generateRefno());
             $prNumber = trim((string) ($payload['pr_number'] ?? ''));
             if ($prNumber === '') {
@@ -296,7 +299,6 @@ SQL;
 
             $this->incrementSequence('Purchase Request', $pdo);
 
-            $items = is_array($payload['items'] ?? null) ? $payload['items'] : [];
             foreach ($items as $item) {
                 if (!is_array($item)) {
                     continue;
@@ -305,6 +307,7 @@ SQL;
             }
 
             $pdo->commit();
+            $this->clearReorderReportCache();
         } catch (\Throwable $e) {
             $pdo->rollBack();
             throw $e;
@@ -399,7 +402,9 @@ SQL;
         }
 
         $pdo = $this->db->pdo();
+        (new PurchaseWorkflowGuard($pdo))->assertItemsAvailable([$payload]);
         $this->insertPrItem($pdo, $mainId, $prRefno, $payload);
+        $this->clearReorderReportCache();
 
         $sql = <<<SQL
 SELECT
@@ -656,6 +661,7 @@ SQL;
         if ($updated === null) {
             throw new RuntimeException('Purchase request not found after conversion');
         }
+        $this->clearReorderReportCache();
 
         return [
             'request' => $updated['request'],
@@ -758,6 +764,15 @@ SQL;
             'supp_code' => $supplier['code'],
             'supp_name' => $supplier['name'],
         ]);
+    }
+
+    private function clearReorderReportCache(): void
+    {
+        $files = glob(rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'james_reorder_cache_*.json');
+        if (!is_array($files)) return;
+        foreach ($files as $file) {
+            @unlink($file);
+        }
     }
 
     /**
