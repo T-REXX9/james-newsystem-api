@@ -640,6 +640,7 @@ function app_router(): Router
     $router->get('/api/v1/sales-development-report', [$salesDevelopmentReportController, 'report']);
     $router->get('/api/v1/sales-development-report/summary', [$salesDevelopmentReportController, 'summary']);
     $router->get('/api/v1/sales-returns', [$salesReturnController, 'list']);
+    $router->get('/api/v1/sales-returns/source-documents', [$salesReturnController, 'sourceDocuments']);
     $router->post('/api/v1/sales-returns', [$salesReturnController, 'create']);
     $router->get('/api/v1/sales-returns/{refno}', [$salesReturnController, 'show']);
     $router->patch('/api/v1/sales-returns/{refno}', [$salesReturnController, 'update']);

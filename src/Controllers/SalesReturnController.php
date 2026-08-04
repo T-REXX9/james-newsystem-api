@@ -32,6 +32,20 @@ final class SalesReturnController
         );
     }
 
+    public function sourceDocuments(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        return $this->repo->sourceDocuments(
+            $mainId,
+            trim((string) ($query['search'] ?? '')),
+            max(1, min(100, (int) ($query['limit'] ?? 50)))
+        );
+    }
+
     public function show(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);
@@ -227,4 +241,3 @@ final class SalesReturnController
         }
     }
 }
-

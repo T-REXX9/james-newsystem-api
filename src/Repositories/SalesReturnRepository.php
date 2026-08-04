@@ -136,6 +136,169 @@ final class SalesReturnRepository
         return $row;
     }
 
+    /**
+     * Fast lookup used by the Sales Return "With Reference" picker.
+     *
+     * The generic Invoice and Order Slip report searches also inspect every
+     * historical item row. That is useful for report screens but is too broad
+     * for a document-number picker and can time out on the legacy dataset.
+     *
+     * @return array{items: array<int, array<string, mixed>>}
+     */
+    public function sourceDocuments(int $mainId, string $search = '', int $limit = 50): array
+    {
+        $pdo = $this->db->pdo();
+        $limit = max(1, min(100, $limit));
+        $needle = trim($search);
+        $invoiceSearchSql = '';
+        $orderSlipSearchSql = '';
+        $params = [
+            'invoice_main_id' => $mainId,
+            'order_slip_main_id' => $mainId,
+        ];
+
+        if ($needle !== '') {
+            $like = '%' . $needle . '%';
+            $invoiceSearchSql = <<<'SQL'
+ AND (
+    COALESCE(inv.linvoice_no, '') LIKE :invoice_doc_no
+    OR COALESCE(inv.lrefno, '') LIKE :invoice_refno
+    OR COALESCE(inv.lcustomer_name, '') LIKE :invoice_customer
+ )
+SQL;
+            $orderSlipSearchSql = <<<'SQL'
+ AND (
+    COALESCE(dr.linvoice_no, '') LIKE :order_slip_doc_no
+    OR COALESCE(dr.lrefno, '') LIKE :order_slip_refno
+    OR COALESCE(dr.lcustomer_name, '') LIKE :order_slip_customer
+ )
+SQL;
+            $params += [
+                'invoice_doc_no' => $like,
+                'invoice_refno' => $like,
+                'invoice_customer' => $like,
+                'order_slip_doc_no' => $like,
+                'order_slip_refno' => $like,
+                'order_slip_customer' => $like,
+            ];
+        }
+
+        $sql = <<<SQL
+SELECT source_docs.*
+FROM (
+    SELECT
+        'Invoice' AS type,
+        COALESCE(inv.lrefno, '') AS id,
+        COALESCE(inv.linvoice_no, '') AS doc_no,
+        COALESCE(inv.lcustomerid, '') AS contact_id,
+        COALESCE(inv.lcustomer_name, '') AS customer_name,
+        COALESCE(inv.lsales_person, '') AS sales_person,
+        COALESCE(inv.ldate, '') AS sales_date,
+        COALESCE(inv.lstatus, '') AS status
+    FROM tblinvoice_list inv
+    WHERE inv.lmain_id = :invoice_main_id
+      AND COALESCE(inv.lcancel_invoice, 0) = 0
+      AND LOWER(COALESCE(inv.lstatus, '')) <> 'cancelled'
+      {$invoiceSearchSql}
+
+    UNION ALL
+
+    SELECT
+        'OR' AS type,
+        COALESCE(dr.lrefno, '') AS id,
+        COALESCE(dr.linvoice_no, '') AS doc_no,
+        COALESCE(dr.lcustomerid, '') AS contact_id,
+        COALESCE(dr.lcustomer_name, '') AS customer_name,
+        COALESCE(dr.lsales_person, '') AS sales_person,
+        COALESCE(dr.ldate, '') AS sales_date,
+        COALESCE(dr.lstatus, '') AS status
+    FROM tbldelivery_receipt dr
+    WHERE dr.lmain_id = :order_slip_main_id
+      AND COALESCE(dr.lcancel, 0) = 0
+      AND LOWER(COALESCE(dr.lstatus, '')) <> 'cancelled'
+      {$orderSlipSearchSql}
+) source_docs
+WHERE source_docs.id <> ''
+  AND source_docs.doc_no <> ''
+ORDER BY source_docs.sales_date DESC, source_docs.id DESC
+LIMIT :limit
+SQL;
+        $stmt = $pdo->prepare($sql);
+        foreach ($params as $key => $value) {
+            $stmt->bindValue(':' . $key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $invoiceRefs = [];
+        $orderSlipRefs = [];
+        foreach ($rows as $row) {
+            if (($row['type'] ?? '') === 'OR') {
+                $orderSlipRefs[] = (string) ($row['id'] ?? '');
+            } else {
+                $invoiceRefs[] = (string) ($row['id'] ?? '');
+            }
+        }
+
+        $invoiceTotals = $this->sourceDocumentTotals('tblinvoice_itemrec', 'linvoice_refno', $invoiceRefs);
+        $orderSlipTotals = $this->sourceDocumentTotals('tbldelivery_receipt_items', 'lor_refno', $orderSlipRefs);
+        foreach ($rows as &$row) {
+            $refno = (string) ($row['id'] ?? '');
+            $totals = ($row['type'] ?? '') === 'OR'
+                ? ($orderSlipTotals[$refno] ?? null)
+                : ($invoiceTotals[$refno] ?? null);
+            $row['grand_total'] = (float) ($totals['grand_total'] ?? 0);
+            $row['item_count'] = (int) ($totals['item_count'] ?? 0);
+        }
+        unset($row);
+
+        return ['items' => $rows];
+    }
+
+    /**
+     * @param array<int, string> $refnos
+     * @return array<string, array{grand_total:float,item_count:int}>
+     */
+    private function sourceDocumentTotals(string $table, string $referenceColumn, array $refnos): array
+    {
+        $refnos = array_values(array_unique(array_filter($refnos, static fn(string $value): bool => $value !== '')));
+        if ($refnos === []) {
+            return [];
+        }
+
+        $placeholders = [];
+        foreach ($refnos as $index => $_refno) {
+            $placeholders[] = ':ref_' . $index;
+        }
+        $sql = sprintf(
+            'SELECT %1$s AS refno, COUNT(*) AS item_count, '
+            . 'SUM(COALESCE(lqty, 0) * COALESCE(lprice, 0)) AS grand_total '
+            . 'FROM %2$s WHERE %1$s IN (%3$s) GROUP BY %1$s',
+            $referenceColumn,
+            $table,
+            implode(', ', $placeholders)
+        );
+        $stmt = $this->db->pdo()->prepare($sql);
+        foreach ($refnos as $index => $refno) {
+            $stmt->bindValue(':ref_' . $index, $refno, PDO::PARAM_STR);
+        }
+        $stmt->execute();
+
+        $totals = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $refno = (string) ($row['refno'] ?? '');
+            if ($refno === '') {
+                continue;
+            }
+            $totals[$refno] = [
+                'grand_total' => (float) ($row['grand_total'] ?? 0),
+                'item_count' => (int) ($row['item_count'] ?? 0),
+            ];
+        }
+        return $totals;
+    }
+
     // -----------------------------------------------------------------------
     // Create
     // -----------------------------------------------------------------------
