@@ -13,7 +13,7 @@ final class FastSlowInventoryReportRepository
     {
     }
 
-    public function report(int $mainId, string $sortBy = 'sales_volume', string $sortDirection = 'desc'): array
+    public function report(int $mainId, string $sortBy = 'part_no', string $sortDirection = 'asc'): array
     {
         $periods = $this->getThreeMonthPeriods();
         $items = $this->getItems($mainId);
@@ -76,14 +76,18 @@ final class FastSlowInventoryReportRepository
         }
 
         usort($rows, function (array $a, array $b) use ($sortBy, $sortDirection): int {
-            if ($sortBy === 'part_no') {
-                $cmp = strcasecmp((string) $a['part_no'], (string) $b['part_no']);
-                return $sortDirection === 'asc' ? $cmp : -$cmp;
-            }
-
-            $aVolume = (int) ($a['month1_sales'] ?? 0) + (int) ($a['month2_sales'] ?? 0) + (int) ($a['month3_sales'] ?? 0);
-            $bVolume = (int) ($b['month1_sales'] ?? 0) + (int) ($b['month2_sales'] ?? 0) + (int) ($b['month3_sales'] ?? 0);
-            $cmp = $aVolume <=> $bVolume;
+            $fieldMap = [
+                'part_no' => ['part_no', 'text'],
+                'item_code' => ['item_code', 'text'],
+                'description' => ['description', 'text'],
+                'last_arrived' => ['first_arrival_date', 'text'],
+                'total_purchase' => ['total_purchased', 'number'],
+                'total_sold' => ['total_sold', 'number'],
+            ];
+            [$field, $type] = $fieldMap[$sortBy] ?? $fieldMap['part_no'];
+            $cmp = $type === 'number'
+                ? ((int) ($a[$field] ?? 0) <=> (int) ($b[$field] ?? 0))
+                : strcasecmp((string) ($a[$field] ?? ''), (string) ($b[$field] ?? ''));
             return $sortDirection === 'asc' ? $cmp : -$cmp;
         });
 
@@ -271,4 +275,3 @@ SQL;
         return preg_replace('/\s+/', ' ', substr($trimmed, 0, 10));
     }
 }
-

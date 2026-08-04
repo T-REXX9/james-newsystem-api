@@ -20,9 +20,10 @@ final class FastSlowInventoryReportController
             throw new HttpException(422, 'main_id is required');
         }
 
-        $sortBy = trim((string) ($query['sort_by'] ?? 'sales_volume'));
-        if (!in_array($sortBy, ['sales_volume', 'part_no'], true)) {
-            throw new HttpException(422, 'sort_by must be one of: sales_volume, part_no');
+        $sortBy = trim((string) ($query['sort_by'] ?? 'part_no'));
+        $allowedSortFields = ['part_no', 'item_code', 'description', 'last_arrived', 'total_purchase', 'total_sold'];
+        if (!in_array($sortBy, $allowedSortFields, true)) {
+            throw new HttpException(422, 'sort_by must be one of: ' . implode(', ', $allowedSortFields));
         }
 
         $sortDirection = strtolower(trim((string) ($query['sort_direction'] ?? 'desc')));
@@ -33,4 +34,3 @@ final class FastSlowInventoryReportController
         return $this->repo->report($mainId, $sortBy, $sortDirection);
     }
 }
-
