@@ -196,6 +196,11 @@ SELECT
         SELECT SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0))
         FROM tblinventory_logs lg
         WHERE lg.linvent_id = itm.lsession
+    ), 0) AS DECIMAL(15,2)) AS total_stock,
+    CAST(COALESCE((
+        SELECT SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0))
+        FROM tblinventory_logs lg
+        WHERE lg.linvent_id = itm.lsession
           AND lg.lwarehouse = :warehouse_1
     ), 0) AS DECIMAL(15,2)) AS stock_wh1,
     CAST(COALESCE((

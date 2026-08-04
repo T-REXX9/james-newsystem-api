@@ -282,7 +282,6 @@ final class AuthRepository
                 'home',
                 'warehouse-inventory-product-database',
                 'warehouse-inventory-stock-movement',
-                'warehouse-inventory-transfer-stock',
                 'warehouse-inventory-stock-adjustment',
                 'warehouse-inventory-inventory-audit',
                 'warehouse-purchasing-purchase-request',

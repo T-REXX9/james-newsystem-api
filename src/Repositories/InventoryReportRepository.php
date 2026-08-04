@@ -59,7 +59,7 @@ final class InventoryReportRepository
             'categories' => $categories,
             'part_numbers' => $partNumbers,
             'item_codes' => $itemCodes,
-            'warehouses' => $this->listWarehouses(),
+            'warehouses' => [],
         ];
     }
 
@@ -72,11 +72,10 @@ final class InventoryReportRepository
         if (count($items) === 0) {
             return [
                 'items' => [],
-                'warehouses' => $this->listWarehouses(),
+                'warehouses' => [],
             ];
         }
 
-        $warehouses = $this->listWarehouses();
         $itemSessions = array_values(array_filter(array_map(
             static fn(array $row): string => (string) ($row['item_session'] ?? ''),
             $items
@@ -105,14 +104,14 @@ final class InventoryReportRepository
                 'location' => (string) ($item['location'] ?? ''),
                 'cost' => (float) ($item['cost'] ?? 0),
                 'total_stock' => $totalStock,
-                'warehouse_stock' => $warehouseStock,
+                'warehouse_stock' => [],
                 'value' => round($totalStock * (float) ($item['cost'] ?? 0), 2),
             ];
         }
 
         return [
             'items' => $rows,
-            'warehouses' => $warehouses,
+            'warehouses' => [],
         ];
     }
 

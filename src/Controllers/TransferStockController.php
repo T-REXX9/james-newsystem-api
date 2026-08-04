@@ -71,6 +71,7 @@ final class TransferStockController
 
     public function create(array $params = [], array $query = [], array $body = []): array
     {
+        $this->rejectDisabledTransfer();
         $mainId = (int) ($body['main_id'] ?? 0);
         $userId = (int) ($body['user_id'] ?? 0);
         if ($mainId <= 0 || $userId <= 0) {
@@ -86,6 +87,7 @@ final class TransferStockController
 
     public function update(array $params = [], array $query = [], array $body = []): array
     {
+        $this->rejectDisabledTransfer();
         $mainId = (int) ($body['main_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
@@ -110,6 +112,7 @@ final class TransferStockController
 
     public function delete(array $params = [], array $query = [], array $body = []): array
     {
+        $this->rejectDisabledTransfer();
         $mainId = (int) ($query['main_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
@@ -133,6 +136,7 @@ final class TransferStockController
 
     public function addItem(array $params = [], array $query = [], array $body = []): array
     {
+        $this->rejectDisabledTransfer();
         $mainId = (int) ($body['main_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
@@ -152,6 +156,7 @@ final class TransferStockController
 
     public function updateItem(array $params = [], array $query = [], array $body = []): array
     {
+        $this->rejectDisabledTransfer();
         $mainId = (int) ($body['main_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
@@ -176,6 +181,7 @@ final class TransferStockController
 
     public function deleteItem(array $params = [], array $query = [], array $body = []): array
     {
+        $this->rejectDisabledTransfer();
         $mainId = (int) ($query['main_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
@@ -199,6 +205,7 @@ final class TransferStockController
 
     public function action(array $params = [], array $query = [], array $body = []): array
     {
+        $this->rejectDisabledTransfer();
         $mainId = (int) ($body['main_id'] ?? 0);
         $userId = (int) ($body['user_id'] ?? 0);
         if ($mainId <= 0 || $userId <= 0) {
@@ -226,5 +233,12 @@ final class TransferStockController
 
         return $record;
     }
-}
 
+    private function rejectDisabledTransfer(): void
+    {
+        throw new HttpException(
+            410,
+            'Transfer Product is disabled because inventory now uses one centralized quantity per item code.'
+        );
+    }
+}

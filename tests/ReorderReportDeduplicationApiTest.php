@@ -68,7 +68,7 @@ $health = reorder_get($apiBase . '/api/v1/health');
 reorder_assert($health['code'] === 200, 'API health check', $passed, $failed);
 if ($health['code'] !== 200) exit(1);
 
-foreach (['total', 'wh1'] as $warehouse) {
+foreach (['total'] as $warehouse) {
     $result = fetch_all_reorder_rows($apiBase, $warehouse);
     $rows = $result['rows'];
     $sessions = array_map(static fn (array $row): string => trim((string) ($row['product_session'] ?? '')), $rows);
@@ -79,6 +79,14 @@ foreach (['total', 'wh1'] as $warehouse) {
     reorder_assert(count($sessions) === count($nonEmptySessions), strtoupper($warehouse) . ' rows all have a canonical product session', $passed, $failed);
     reorder_assert(count($sessions) === count($uniqueSessions), strtoupper($warehouse) . ' contains exactly one row per product', $passed, $failed);
 }
+
+$legacyWarehouse = reorder_get($apiBase . '/api/v1/reorder-report?main_id=1&warehouse_type=wh1&page=1&per_page=1');
+reorder_assert(
+    $legacyWarehouse['code'] === 422,
+    'warehouse-split reorder requests are rejected in centralized inventory mode',
+    $passed,
+    $failed
+);
 
 echo "\nPassed: {$passed}; Failed: {$failed}\n";
 exit($failed === 0 ? 0 : 1);

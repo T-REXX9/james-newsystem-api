@@ -9,7 +9,7 @@ use App\Support\Exceptions\HttpException;
 
 final class ReorderReportController
 {
-    private const WAREHOUSE_TYPES = ['total', 'wh1', 'wh2', 'wh3', 'wh4', 'wh5', 'wh6'];
+    private const WAREHOUSE_TYPES = ['total'];
 
     public function __construct(private readonly ReorderReportRepository $repo)
     {

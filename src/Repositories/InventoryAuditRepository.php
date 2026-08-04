@@ -562,12 +562,12 @@ SQL;
             [$sessionSql, $sessionParams] = $this->makeInParams($sessions, 'item');
 
             $stockStmt = $this->db->pdo()->prepare(
-                "SELECT linvent_id AS item_session, COALESCE(lwarehouse, '') AS warehouse,
+                "SELECT linvent_id AS item_session, 'CENTRALIZED' AS warehouse,
                         CAST(COALESCE(SUM(lin), 0) - COALESCE(SUM(lout), 0) AS SIGNED) AS stock,
                         SUBSTRING_INDEX(GROUP_CONCAT(COALESCE(llocation, '') ORDER BY lid DESC), ',', 1) AS location
                  FROM tblinventory_logs
                  WHERE linvent_id IN ({$sessionSql})
-                 GROUP BY linvent_id, lwarehouse"
+                 GROUP BY linvent_id"
             );
             $this->bindParams($stockStmt, $sessionParams);
             $stockStmt->execute();
@@ -579,13 +579,14 @@ SQL;
             }
 
             $adjustmentStmt = $this->db->pdo()->prepare(
-                "SELECT lid AS id, litemsession AS item_session, UPPER(COALESCE(lwarehouse, '')) AS warehouse,
-                        CAST(COALESCE(lold_qty, 0) AS SIGNED) AS old_qty,
-                        CAST(COALESCE(ladjust_qty, 0) AS SIGNED) AS physical_count,
-                        COALESCE(llocation, '') AS location,
-                        COALESCE(lremarks, '') AS remarks
+                "SELECT MIN(lid) AS id, litemsession AS item_session, 'CENTRALIZED' AS warehouse,
+                        CAST(COALESCE(SUM(lold_qty), 0) AS SIGNED) AS old_qty,
+                        CAST(COALESCE(SUM(ladjust_qty), 0) AS SIGNED) AS physical_count,
+                        SUBSTRING_INDEX(GROUP_CONCAT(COALESCE(llocation, '') ORDER BY lid DESC), ',', 1) AS location,
+                        SUBSTRING_INDEX(GROUP_CONCAT(COALESCE(lremarks, '') ORDER BY lid DESC SEPARATOR ' | '), ' | ', 1) AS remarks
                  FROM tblstock_adjustment_item
-                 WHERE ladjustment_refno = :refno AND litemsession IN ({$sessionSql})"
+                 WHERE ladjustment_refno = :refno AND litemsession IN ({$sessionSql})
+                 GROUP BY litemsession"
             );
             $adjustmentStmt->bindValue('refno', $refno, PDO::PARAM_STR);
             $this->bindParams($adjustmentStmt, $sessionParams);
@@ -595,7 +596,7 @@ SQL;
             }
         }
 
-        $warehouses = $this->getWarehouses($mainId);
+        $warehouses = [['name' => 'CENTRALIZED']];
         $normalizedItems = [];
         foreach ($items as $item) {
             $session = (string) ($item['item_session'] ?? '');
@@ -712,9 +713,10 @@ SQL;
                 if (!is_array($entry)) continue;
                 $itemSession = trim((string) ($entry['item_session'] ?? ''));
                 $warehouse = strtoupper(trim((string) ($entry['warehouse'] ?? '')));
-                if ($itemSession === '' || $warehouse === '') {
-                    throw new RuntimeException('Each count requires item_session and warehouse');
+                if ($itemSession === '') {
+                    throw new RuntimeException('Each count requires item_session');
                 }
+                $warehouse = 'CENTRALIZED';
                 $product = $this->findItem($mainId, $itemSession);
                 if ($product === null) {
                     throw new RuntimeException('Inventory item not found: ' . $itemSession);
@@ -722,15 +724,15 @@ SQL;
 
                 $deleteItem = $pdo->prepare(
                     'DELETE FROM tblstock_adjustment_item
-                     WHERE ladjustment_refno = :refno AND litemsession = :item_session AND UPPER(lwarehouse) = :warehouse'
+                     WHERE ladjustment_refno = :refno AND litemsession = :item_session'
                 );
-                $deleteItem->execute(['refno' => $refno, 'item_session' => $itemSession, 'warehouse' => $warehouse]);
+                $deleteItem->execute(['refno' => $refno, 'item_session' => $itemSession]);
                 $deleteLog = $pdo->prepare(
                     "DELETE FROM tblinventory_logs
-                     WHERE lrefno = :refno AND linvent_id = :item_session AND UPPER(lwarehouse) = :warehouse
+                     WHERE lrefno = :refno AND linvent_id = :item_session
                        AND ltransaction_type = 'Stock Adjustment'"
                 );
-                $deleteLog->execute(['refno' => $refno, 'item_session' => $itemSession, 'warehouse' => $warehouse]);
+                $deleteLog->execute(['refno' => $refno, 'item_session' => $itemSession]);
 
                 if (!array_key_exists('physical_count', $entry) || $entry['physical_count'] === null || $entry['physical_count'] === '') {
                     continue;
@@ -938,10 +940,10 @@ SQL;
             "SELECT CAST(COALESCE(SUM(lin), 0) - COALESCE(SUM(lout), 0) AS SIGNED) AS stock,
                     SUBSTRING_INDEX(GROUP_CONCAT(COALESCE(llocation, '') ORDER BY lid DESC), ',', 1) AS location
              FROM tblinventory_logs
-             WHERE linvent_id = :item_session AND UPPER(COALESCE(lwarehouse, '')) = :warehouse
+             WHERE linvent_id = :item_session
                AND NOT (COALESCE(lrefno, '') = :refno AND COALESCE(ltransaction_type, '') = 'Stock Adjustment')"
         );
-        $stmt->execute(['item_session' => $itemSession, 'warehouse' => $warehouse, 'refno' => $excludeRefno]);
+        $stmt->execute(['item_session' => $itemSession, 'refno' => $excludeRefno]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
         return ['stock' => (int) ($row['stock'] ?? 0), 'location' => (string) ($row['location'] ?? '')];
     }
