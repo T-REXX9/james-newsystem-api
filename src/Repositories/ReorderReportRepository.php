@@ -505,7 +505,7 @@ LEFT JOIN tblpurchase_item pi2
    AND pi2.lrefno = pi.lrefno
 LEFT JOIN tblpurchase_order po
     ON po.lrefno = pi.lrefno
-GROUP BY pi.litem_code, pi.lrefno, po.lpurchaseno, po.ldate
+GROUP BY pi.litem_code, pi.lrefno, po.lpurchaseno, po.ltransaction_status, po.ldate
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $this->bindParams($stmt, $bind);
