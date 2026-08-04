@@ -613,8 +613,14 @@ SQL,
             $maxOrder = $this->getMaxApproverOrder($mainId);
             $finalStatus = null;
             $nextApprovers = [];
+            $ledgerRowsReversed = 0;
 
-            if ($currentOrder !== null && $maxOrder !== null && $currentOrder >= $maxOrder) {
+            if ($status === 'Disapprove') {
+                $finalStatus = 'Disapproved';
+                $stmt = $pdo->prepare('UPDATE tblcollection SET lstatus = :status WHERE lrefno = :refno');
+                $stmt->execute(['status' => $finalStatus, 'refno' => $refno]);
+                $ledgerRowsReversed = $this->reverseCollectionLedgerEffects($pdo, $refno);
+            } elseif ($currentOrder !== null && $maxOrder !== null && $currentOrder >= $maxOrder) {
                 $approved = $this->getCountApprove($mainId, $refno);
                 $unapproved = $this->getCountUnapprove($mainId, $refno);
 
@@ -653,7 +659,24 @@ SQL,
             'approver_action' => $status,
             'collection_status' => $finalStatus,
             'next_approvers' => $nextApprovers,
+            'ledger_rows_reversed' => $ledgerRowsReversed,
         ];
+    }
+
+    private function reverseCollectionLedgerEffects(PDO $pdo, string $refno): int
+    {
+        $stmt = $pdo->prepare(
+            'DELETE FROM tblledger
+             WHERE lrefno = :refno
+                OR lcollection_id IN (
+                    SELECT lid FROM tblcollection_item WHERE lrefno = :item_refno
+                )'
+        );
+        $stmt->execute([
+            'refno' => $refno,
+            'item_refno' => $refno,
+        ]);
+        return $stmt->rowCount();
     }
 
     public function postCollection(string $refno): array
@@ -1075,13 +1098,13 @@ SQL;
         if ($status === 'Approve') {
             $stmt = $this->db->pdo()->prepare(
                 'UPDATE tblapprove_logs
-                 SET IsApproved = 1, ldatetime = NOW(), lremarks = :remarks
+                 SET IsApproved = 1, ldatetime = CURRENT_TIMESTAMP, lremarks = :remarks
                  WHERE lsales_refno = :refno AND lstaff_id = :staff_id'
             );
         } else {
             $stmt = $this->db->pdo()->prepare(
                 'UPDATE tblapprove_logs
-                 SET IsUnapproved = 1, ldatetime = NOW(), lremarks = :remarks
+                 SET IsUnapproved = 1, ldatetime = CURRENT_TIMESTAMP, lremarks = :remarks
                  WHERE lsales_refno = :refno AND lstaff_id = :staff_id'
             );
         }
