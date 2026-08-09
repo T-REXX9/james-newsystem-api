@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\CustomerLedgerCalculator;
 use DateTimeImmutable;
 use PDO;
 use RuntimeException;
@@ -70,8 +71,12 @@ SELECT
     p.lcity,
     p.lprovince,
     p.lterms,
+    p.lcredit,
     p.lprice_group,
     p.lprice_group AS price_group,
+    p.lsince,
+    p.ldealer_since,
+    p.ldealer_quota,
     COALESCE(p.ldealer_since, p.ldatereg, '') AS customer_since,
     p.lsales_person,
     p.lvat_type,
@@ -233,7 +238,11 @@ SQL;
             throw new RuntimeException('Customer not found');
         }
 
-        [$normalizedType, $fromDate, $toDate] = $this->resolveDateRange($dateType, $dateFrom, $dateTo);
+        [$normalizedType, $fromDate, $toDate] = CustomerLedgerCalculator::resolveDateRange(
+            $dateType,
+            $dateFrom,
+            $dateTo
+        );
         $normalizedReportType = strtolower(trim($reportType)) === 'summary' ? 'summary' : 'detailed';
 
         $params = ['customer_id' => $sessionId];
@@ -280,6 +289,12 @@ SQL;
             'row_count' => 0,
         ];
 
+        // Compute opening balance when a date filter is active.
+        $openingBalance = 0.0;
+        if ($fromDate !== null) {
+            $openingBalance = $this->computeBalanceBefore($sessionId, $fromDate);
+        }
+
         if ($normalizedReportType === 'summary') {
             $summarySql = <<<SQL
 SELECT
@@ -297,43 +312,21 @@ SQL;
             $stmt->execute($params);
             $rawSummary = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            $runningBalance = 0.0;
-            foreach ($rawSummary as $row) {
-                $debit = (float) ($row['debit'] ?? 0);
-                $credit = (float) ($row['credit'] ?? 0);
-                $runningBalance += $debit - $credit;
-
-                $summaryRows[] = [
-                    'year' => (int) ($row['year'] ?? 0),
-                    'month' => (int) ($row['month'] ?? 0),
-                    'month_name' => date('F', mktime(0, 0, 0, (int) ($row['month'] ?? 1), 1)),
-                    'debit' => $debit,
-                    'credit' => $credit,
-                    'balance' => $runningBalance,
-                ];
-
-                $totals['debit'] += $debit;
-                $totals['credit'] += $credit;
-            }
-            $totals['balance'] = $runningBalance;
-            $totals['row_count'] = count($summaryRows);
+            $summaryReport = CustomerLedgerCalculator::buildSummaryReport($rawSummary, $openingBalance);
+            $summaryRows = $summaryReport['rows'];
+            $totals = $summaryReport['totals'];
         } else {
             $stmt = $this->db->pdo()->prepare($baseSql . ' ORDER BY l.ldatetime ASC, l.ltype DESC, l.lid ASC');
             $stmt->execute($params);
             $rawRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-            $runningBalance = 0.0;
-            $today = date('Y-m-d');
-            foreach ($rawRows as $row) {
-                $line = $this->mapDetailedLedgerRow($row, $today, $runningBalance);
-                $rows[] = $line;
-
-                $totals['debit'] += $line['debit'];
-                $totals['credit'] += $line['credit'];
-                $totals['pdc'] += $line['pdc'];
-                $totals['balance'] = $line['balance'];
-            }
-            $totals['row_count'] = count($rows);
+            $detailedReport = CustomerLedgerCalculator::buildDetailedReport(
+                $rawRows,
+                date('Y-m-d'),
+                $openingBalance
+            );
+            $rows = $detailedReport['rows'];
+            $totals = $detailedReport['totals'];
         }
 
         $metrics = $this->buildLedgerMetrics($sessionId, $customer);
@@ -355,59 +348,33 @@ SQL;
         ];
     }
 
-    private function mapDetailedLedgerRow(array $row, string $today, float &$runningBalance): array
+    /**
+     * Compute the net ledger balance for a customer before a given date,
+     * using the same PDC / future-check logic as mapDetailedLedgerRow.
+     */
+    private function computeBalanceBefore(string $sessionId, string $beforeDate): float
     {
-        $isCredit = strcasecmp((string) ($row['ltype'] ?? ''), 'Credit') === 0;
-        $checkDateRaw = (string) ($row['lcheckdate'] ?? '');
-        $effectiveCheckDate = $this->normalizeDate($checkDateRaw);
-        $isFutureCheck = $effectiveCheckDate !== null && $effectiveCheckDate > $today;
+        $sql = <<<'SQL'
+SELECT
+    l.ltype,
+    l.lcredit,
+    l.ldebit,
+    l.lpdc,
+    l.lcheckdate
+FROM tblledger l
+WHERE l.lcustomerid = :customer_id
+  AND DATE(l.ldatetime) < :before_date
+ORDER BY l.ldatetime ASC, l.ltype DESC, l.lid ASC
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([
+            'customer_id' => $sessionId,
+            'before_date' => $beforeDate,
+        ]);
+        $rawRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        $lineCredit = 0.0;
-        $lineDebit = 0.0;
-        $linePdc = 0.0;
-
-        if ($isCredit) {
-            $creditCandidate = (float) (($row['lcredit'] ?? 0) ?: ($row['lpdc'] ?? 0));
-            if ($isFutureCheck) {
-                $linePdc = $creditCandidate;
-            } else {
-                $lineCredit = $creditCandidate;
-            }
-        } else {
-            $debitCandidate = (float) (($row['ldebit'] ?? 0) ?: ($row['lpdc'] ?? 0));
-            if ($isFutureCheck) {
-                $linePdc = 0 - $debitCandidate;
-            } else {
-                $lineDebit = $debitCandidate;
-            }
-        }
-
-        $positivePdc = max($linePdc, 0);
-        $negativePdc = abs(min($linePdc, 0));
-        $runningBalance += $lineDebit - $positivePdc + $negativePdc - $lineCredit;
-
-        $displayCheckDate = null;
-        if ($effectiveCheckDate !== null && $effectiveCheckDate !== '1970-01-01') {
-            $displayCheckDate = $effectiveCheckDate;
-        }
-
-        return [
-            'id' => (int) ($row['lid'] ?? 0),
-            'date' => $this->normalizeDate((string) ($row['ldatetime'] ?? '')),
-            'datetime' => (string) ($row['ldatetime'] ?? ''),
-            'reference' => strtoupper((string) ($row['lmesssage'] ?? '')),
-            'ref_no' => (string) ($row['lrefno'] ?? ''),
-            'ref_type' => (string) ($row['lref_name'] ?? ''),
-            'check_no' => (string) ($row['lcheck_no'] ?? ''),
-            'check_date' => $displayCheckDate,
-            'dcr' => ltrim((string) ($row['ldcr'] ?? ''), 'DCR-'),
-            'debit' => $lineDebit,
-            'credit' => $lineCredit,
-            'pdc' => $linePdc,
-            'balance' => $runningBalance,
-            'remarks' => strtoupper((string) ($row['lremarks'] ?? '')),
-            'promise_to_pay' => strtoupper((string) ($row['promisetopay'] ?? '')),
-        ];
+        $report = CustomerLedgerCalculator::buildDetailedReport($rawRows, date('Y-m-d'));
+        return (float) $report['totals']['balance'];
     }
 
     private function buildLedgerMetrics(string $sessionId, array $customer): array
@@ -416,13 +383,9 @@ SQL;
         $monthlySales = (float) ($salesTotals['monthly_sales'] ?? 0);
         $dealershipSales = (float) ($salesTotals['dealership_sales'] ?? 0);
 
-        $balanceStmt = $this->db->pdo()->prepare(
-            'SELECT COALESCE(SUM(COALESCE(ldebit, 0) - COALESCE(lcredit, 0)), 0)
-             FROM tblledger
-             WHERE lcustomerid = :customer_id'
-        );
-        $balanceStmt->execute(['customer_id' => $sessionId]);
-        $balance = (float) ($balanceStmt->fetchColumn() ?: 0);
+        $ledgerRows = $this->loadLedgerRows($sessionId);
+        $ledgerReport = CustomerLedgerCalculator::buildDetailedReport($ledgerRows, date('Y-m-d'));
+        $balance = (float) $ledgerReport['totals']['balance'];
 
         $termsStmt = $this->db->pdo()->prepare(
             'SELECT lname
@@ -434,16 +397,54 @@ SQL;
         $termsStmt->execute(['customer_id' => $sessionId]);
         $terms = (string) ($termsStmt->fetchColumn() ?: ($customer['lterms'] ?? ''));
 
+        // VIP status & price code
+        $rawPriceGroup = (string) ($customer['lprice_group'] ?? '');
+        $normalizedPriceGroup = $this->getNormalizedPriceGroup($rawPriceGroup);
+        $customerSince = CustomerLedgerCalculator::normalizeDate((string) ($customer['lsince'] ?? ''));
+        $platinum = $this->resolvePlatinumEligibility($rawPriceGroup, (string) ($customer['lsince'] ?? ''));
+        $vipStatus = $platinum ? 'platinum' : $normalizedPriceGroup;
+
+        $oldNameStmt = $this->db->pdo()->prepare(
+            'SELECT loldname
+             FROM tlbCustomer_Details
+             WHERE lsessionid = :customer_id
+               AND COALESCE(TRIM(loldname), \'\') <> \'\'
+             ORDER BY ldate DESC, lid DESC
+             LIMIT 1'
+        );
+        $oldNameStmt->execute(['customer_id' => $sessionId]);
+        $oldName = trim((string) ($oldNameStmt->fetchColumn() ?: ''));
+
+        $aging = CustomerLedgerCalculator::buildAgingBuckets($ledgerRows, date('Y-m-d'));
+
         return [
-            'dealership_since' => $this->normalizeDate((string) ($customer['ldealer_since'] ?? '')),
+            'dealership_since' => CustomerLedgerCalculator::normalizeDate((string) ($customer['ldealer_since'] ?? '')),
             'dealership_sales' => $dealershipSales,
             'dealership_quota' => (float) ($customer['ldealer_quota'] ?? 0),
             'monthly_sales' => $monthlySales,
-            'customer_since' => $this->normalizeDate((string) ($customer['lsince'] ?? '')),
+            'customer_since' => $customerSince,
             'credit_limit' => (float) ($customer['lcredit'] ?? 0),
             'terms' => $terms,
             'balance' => $balance,
+            'old_name' => $oldName !== '' ? $oldName : null,
+            'price_code' => $rawPriceGroup !== '' ? $rawPriceGroup : null,
+            'vip_status' => $vipStatus !== 'unknown' ? $vipStatus : null,
+            'aging' => $aging,
         ];
+    }
+
+    /** @return list<array<string,mixed>> */
+    private function loadLedgerRows(string $sessionId): array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT lid, lrefno, lmesssage, ldatetime, ltype, lcredit, ldebit,
+                    lcheckdate, lcheck_no, ldcr, lpdc, lremarks, lref_name, promisetopay
+             FROM tblledger
+             WHERE lcustomerid = :customer_id
+             ORDER BY ldatetime ASC, ltype DESC, lid ASC'
+        );
+        $stmt->execute(['customer_id' => $sessionId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
@@ -535,41 +536,6 @@ SQL;
             'dealership_sales' => (float) ($row['dealership_sales'] ?? 0),
             'monthly_sales' => (float) ($row['monthly_sales'] ?? 0),
         ];
-    }
-
-    /**
-     * @return array{0:string,1:?string,2:?string}
-     */
-    private function resolveDateRange(string $dateType, ?string $dateFrom, ?string $dateTo): array
-    {
-        $type = strtolower(trim($dateType));
-        if ($type === '') {
-            $type = 'all';
-        }
-
-        $today = new DateTimeImmutable('today');
-        return match ($type) {
-            'today' => ['today', $today->format('Y-m-d'), $today->format('Y-m-d')],
-            'week' => ['week', $today->modify('-1 week')->format('Y-m-d'), $today->format('Y-m-d')],
-            'month' => ['month', $today->modify('-1 month')->format('Y-m-d'), $today->format('Y-m-d')],
-            'year' => ['year', $today->modify('-1 year')->format('Y-m-d'), $today->format('Y-m-d')],
-            'custom' => ['custom', $this->normalizeDate((string) $dateFrom), $this->normalizeDate((string) $dateTo)],
-            default => ['all', null, null],
-        };
-    }
-
-    private function normalizeDate(string $value): ?string
-    {
-        $trimmed = trim($value);
-        if ($trimmed === '' || $trimmed === '0000-00-00' || $trimmed === '0000-00-00 00:00:00') {
-            return null;
-        }
-
-        $ts = strtotime($trimmed);
-        if ($ts === false) {
-            return null;
-        }
-        return date('Y-m-d', $ts);
     }
 
     private function getContactPersons(string $sessionId): array

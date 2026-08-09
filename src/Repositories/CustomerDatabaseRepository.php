@@ -63,11 +63,18 @@ final class CustomerDatabaseRepository
             $params['search_company'] = '%' . $trimmedSearch . '%';
             $params['search_mobile'] = '%' . $trimmedSearch . '%';
             if ($isPickerMode) {
+                $params['search_old_name'] = '%' . $trimmedSearch . '%';
                 $where[] = <<<SQL
 (
     COALESCE(p.lpatient_code, '') LIKE :search_code
     OR COALESCE(p.lcompany, '') LIKE :search_company
     OR COALESCE(p.lmobile, '') LIKE :search_mobile
+    OR EXISTS (
+        SELECT 1
+        FROM tlbCustomer_Details old_customer
+        WHERE old_customer.lsessionid = p.lsessionid
+          AND COALESCE(old_customer.loldname, '') LIKE :search_old_name
+    )
 )
 SQL;
             } else {
@@ -109,7 +116,15 @@ SELECT
     p.lid AS id,
     COALESCE(p.lsessionid, '') AS session_id,
     COALESCE(p.lpatient_code, '') AS customer_code,
-    COALESCE(p.lcompany, '') AS company
+    COALESCE(p.lcompany, '') AS company,
+    COALESCE((
+        SELECT old_customer.loldname
+        FROM tlbCustomer_Details old_customer
+        WHERE old_customer.lsessionid = p.lsessionid
+          AND COALESCE(TRIM(old_customer.loldname), '') <> ''
+        ORDER BY old_customer.ldate DESC, old_customer.lid DESC
+        LIMIT 1
+    ), '') AS old_name
 FROM tblpatient p
 WHERE {$whereSql}
 ORDER BY p.lcompany ASC, p.lid ASC

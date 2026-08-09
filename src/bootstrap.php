@@ -74,6 +74,7 @@ use App\Support\InternalChatReplyStore;
 use App\Support\InternalChatTypingStore;
 
 require __DIR__ . '/Support/Env.php';
+require __DIR__ . '/Support/CustomerLedgerCalculator.php';
 require __DIR__ . '/Support/Exceptions/HttpException.php';
 require __DIR__ . '/Support/InternalChatReactionStore.php';
 require __DIR__ . '/Support/InternalChatReplyStore.php';
