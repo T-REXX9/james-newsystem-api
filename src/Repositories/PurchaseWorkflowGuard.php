@@ -57,7 +57,7 @@ WHERE ({$identifierSql})
                 SELECT 1
                 FROM tblpurchase_order completed_rr
                 WHERE completed_rr.lpo_refno = active_po.lrefno
-                  AND LOWER(COALESCE(completed_rr.ltransaction_status, 'pending')) IN ('posted', 'received', 'completed')
+                  AND LOWER(COALESCE(completed_rr.ltransaction_status, 'pending')) IN ('posted', 'received', 'delivered', 'completed')
             )
       )
   )
@@ -89,7 +89,7 @@ WHERE ({$identifierSql})
       SELECT 1
       FROM tblpurchase_order completed_rr
       WHERE completed_rr.lpo_refno = poi.lrefno
-        AND LOWER(COALESCE(completed_rr.ltransaction_status, 'pending')) IN ('posted', 'received', 'completed')
+        AND LOWER(COALESCE(completed_rr.ltransaction_status, 'pending')) IN ('posted', 'received', 'delivered', 'completed')
   )
 ORDER BY poi.lid DESC
 LIMIT 1

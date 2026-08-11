@@ -74,5 +74,15 @@ $run('allows a new workflow after receiving is completed', static function (): v
     ]);
 });
 
+$run('allows a new workflow after receiving is delivered', static function (): void {
+    $pdo = workflowPdo();
+    $pdo->exec("INSERT INTO tblpo_list VALUES ('PO-REF-3', 'PO-2603', 'Posted')");
+    $pdo->exec("INSERT INTO tblpo_itemlist VALUES (3, 'PO-REF-3', 'ITEM-4', 'SESSION-4')");
+    $pdo->exec("INSERT INTO tblpurchase_order VALUES ('RR-REF-2', 'PO-REF-3', 'Delivered')");
+    (new PurchaseWorkflowGuard($pdo))->assertItemsAvailable([
+        ['item_code' => 'ITEM-4', 'item_id' => 'SESSION-4'],
+    ]);
+});
+
 echo "Results: {$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);
