@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use PDO;
 use RuntimeException;
 
@@ -411,6 +412,72 @@ SQL;
         ]);
 
         return $this->getPurchaseOrder($mainId, $purchaseRefno);
+    }
+
+    public function unpostPurchaseOrder(int $mainId, int $userId, string $purchaseRefno): ?array
+    {
+        $existing = $this->getPurchaseOrder($mainId, $purchaseRefno);
+        if ($existing === null) return null;
+
+        $status = strtolower(trim((string) ($existing['order']['status'] ?? '')));
+        if ($status !== 'posted') {
+            throw new RuntimeException('Only a posted purchase order can be unposted');
+        }
+        if (!$this->canUnpostPurchaseOrder($mainId, $userId)) {
+            throw new RuntimeException('You do not have permission to unpost purchase orders');
+        }
+
+        $dependencyStmt = $this->db->pdo()->prepare(
+            'SELECT COUNT(*) FROM tblpurchase_order
+             WHERE lmain_id = :main_id AND lpo_refno = :po_refno
+               AND LOWER(COALESCE(ltransaction_status, "pending")) <> "cancelled"'
+        );
+        $dependencyStmt->execute(['main_id' => $mainId, 'po_refno' => $purchaseRefno]);
+        if ((int) $dependencyStmt->fetchColumn() > 0) {
+            throw new RuntimeException('Purchase order cannot be unposted because a receiving report already depends on it');
+        }
+
+        $receivedStmt = $this->db->pdo()->prepare(
+            'SELECT COALESCE(SUM(lreceiving_qty), 0) FROM tblpo_itemlist WHERE lrefno = :refno'
+        );
+        $receivedStmt->execute(['refno' => $purchaseRefno]);
+        if ((float) $receivedStmt->fetchColumn() > 0) {
+            throw new RuntimeException('Purchase order cannot be unposted because quantities have already been received');
+        }
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $update = $pdo->prepare(
+                'UPDATE tblpo_list SET ltransaction_status = "Pending" WHERE lmain_id = :main_id AND lrefno = :refno'
+            );
+            $update->execute(['main_id' => $mainId, 'refno' => $purchaseRefno]);
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Order', 'Unpost', $purchaseRefno);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+
+        return $this->getPurchaseOrder($mainId, $purchaseRefno);
+    }
+
+    private function canUnpostPurchaseOrder(int $mainId, int $userId): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT COALESCE(acc.ltype, ""), LOWER(COALESCE(role.ltype_name, ""))
+             FROM tblaccount acc
+             LEFT JOIN tblusertype role ON role.lid = acc.ltype
+             WHERE acc.lid = :user_id
+               AND (acc.lid = :main_id OR acc.lmother_id = :main_id)
+             LIMIT 1'
+        );
+        $stmt->execute(['user_id' => $userId, 'main_id' => $mainId]);
+        $row = $stmt->fetch(PDO::FETCH_NUM);
+        if ($row === false) return false;
+        $type = (string) ($row[0] ?? '');
+        $role = (string) ($row[1] ?? '');
+        return $type === '1' || in_array($role, ['owner', 'company owner', 'administrator', 'purchasing manager'], true);
     }
 
     public function deletePurchaseOrder(int $mainId, string $purchaseRefno): bool

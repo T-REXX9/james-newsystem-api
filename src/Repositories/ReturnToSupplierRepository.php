@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\ReturnToSupplierStockPolicy;
 use PDO;
 use RuntimeException;
 
@@ -309,7 +310,7 @@ SQL;
                 'return_date_record' => $returnDate,
                 'status' => $status,
                 'remarks' => trim((string) ($payload['remarks'] ?? '')),
-                'warehouse' => trim((string) ($payload['warehouse'] ?? 'WH1')) ?: 'WH1',
+                'warehouse' => 'CENTRALIZED',
                 'po_no' => trim((string) ($payload['po_no'] ?? '')),
                 'rr_refno' => trim((string) ($payload['rr_refno'] ?? $payload['rr_id'] ?? '')),
                 'rr_no' => trim((string) ($payload['rr_no'] ?? '')),
@@ -763,7 +764,7 @@ SQL;
         string $supplierName,
         string $remarks
     ): void {
-        $items = $this->getReturnItemsByRefno($refno);
+        $items = ReturnToSupplierStockPolicy::aggregateByInventoryItem($this->getReturnItemsByRefno($refno));
 
         $insert = $pdo->prepare(
             'INSERT INTO tblinventory_logs (
@@ -799,10 +800,6 @@ SQL;
             )'
         );
 
-        $existsStmt = $pdo->prepare(
-            'SELECT lid FROM tblinventory_logs WHERE lrefno = :refno AND linvent_id = :linvent_id AND ltransaction_type = "Return to Supplier" LIMIT 1'
-        );
-
         foreach ($items as $item) {
             $invRefno = (string) ($item['inv_refno'] ?? '');
             $qty = (float) ($item['qty_returned'] ?? 0);
@@ -810,13 +807,17 @@ SQL;
                 continue;
             }
 
-            $existsStmt->execute([
-                'refno' => $refno,
-                'linvent_id' => $invRefno,
-            ]);
-            if ($existsStmt->fetch(PDO::FETCH_ASSOC) !== false) {
-                continue;
-            }
+            $availableStmt = $pdo->prepare(
+                'SELECT COALESCE(SUM(COALESCE(lin, 0) - COALESCE(lout, 0)), 0)
+                 FROM tblinventory_logs WHERE linvent_id = :linvent_id'
+            );
+            $availableStmt->execute(['linvent_id' => $invRefno]);
+            $available = (float) ($availableStmt->fetchColumn() ?: 0);
+            ReturnToSupplierStockPolicy::assertAvailable(
+                (string) ($item['item_code'] ?? $item['part_no'] ?? ''),
+                $qty,
+                $available
+            );
 
             $noteParts = array_filter([
                 trim($supplierName),
@@ -833,7 +834,7 @@ SQL;
                 'linventory_id' => (string) ($item['item_id'] ?? ''),
                 'lprice' => (float) ($item['unit_cost'] ?? 0),
                 'lrefno' => $refno,
-                'lwarehouse' => $warehouse !== '' ? $warehouse : 'WH1',
+                'lwarehouse' => 'CENTRALIZED',
             ]);
         }
     }

@@ -24,6 +24,7 @@ final class ActivityLogController
             $mainId,
             trim((string) ($query['search'] ?? '')),
             trim((string) ($query['user_id'] ?? '')),
+            trim((string) ($query['action'] ?? '')),
             trim((string) ($query['date_from'] ?? '')),
             trim((string) ($query['date_to'] ?? '')),
             max(1, (int) ($query['page'] ?? 1)),

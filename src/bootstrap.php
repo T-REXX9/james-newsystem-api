@@ -80,6 +80,9 @@ require __DIR__ . '/Support/InternalChatReactionStore.php';
 require __DIR__ . '/Support/InternalChatReplyStore.php';
 require __DIR__ . '/Support/InternalChatTypingStore.php';
 require __DIR__ . '/Support/DailyCallClaimPolicy.php';
+require __DIR__ . '/Support/PurchaseReceivingPolicy.php';
+require __DIR__ . '/Support/ReturnToSupplierStockPolicy.php';
+require __DIR__ . '/Support/AuditTrailWriter.php';
 require __DIR__ . '/Config.php';
 require __DIR__ . '/Database.php';
 require __DIR__ . '/Http/Response.php';
@@ -541,6 +544,7 @@ function app_router(): Router
     $router->patch('/api/v1/purchase-orders/{purchaseRefno}', [$purchaseOrderController, 'update']);
     $router->delete('/api/v1/purchase-orders/{purchaseRefno}', [$purchaseOrderController, 'delete']);
     $router->post('/api/v1/purchase-orders/{purchaseRefno}/items', [$purchaseOrderController, 'addItem']);
+    $router->post('/api/v1/purchase-orders/{purchaseRefno}/actions/unpost', [$purchaseOrderController, 'unpost']);
     $router->get('/api/v1/suppliers', [$supplierController, 'list']);
     $router->get('/api/v1/suppliers/{supplierId}', [$supplierController, 'show']);
     $router->post('/api/v1/suppliers', [$supplierController, 'create']);
@@ -549,6 +553,7 @@ function app_router(): Router
     $router->patch('/api/v1/purchase-order-items/{itemId}', [$purchaseOrderController, 'updateItem']);
     $router->delete('/api/v1/purchase-order-items/{itemId}', [$purchaseOrderController, 'deleteItem']);
     $router->get('/api/v1/receiving-stocks', [$receivingStockController, 'list']);
+    $router->get('/api/v1/receiving-stocks/purchase-orders/eligible', [$receivingStockController, 'eligiblePurchaseOrders']);
     $router->get('/api/v1/receiving-stocks/{receivingRefno}', [$receivingStockController, 'show']);
     $router->post('/api/v1/receiving-stocks', [$receivingStockController, 'create']);
     $router->patch('/api/v1/receiving-stocks/{receivingRefno}', [$receivingStockController, 'update']);

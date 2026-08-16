@@ -159,6 +159,23 @@ final class PurchaseOrderController
         }
     }
 
+    public function unpost(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $userId = (int) ($body['user_id'] ?? 0);
+        $purchaseRefno = trim((string) ($params['purchaseRefno'] ?? ''));
+        if ($mainId <= 0 || $userId <= 0 || $purchaseRefno === '') {
+            throw new HttpException(422, 'main_id, user_id, and purchaseRefno are required');
+        }
+        try {
+            $record = $this->repo->unpostPurchaseOrder($mainId, $userId, $purchaseRefno);
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
+        if ($record === null) throw new HttpException(404, 'Purchase order not found');
+        return $record;
+    }
+
     public function updateItem(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($body['main_id'] ?? 0);

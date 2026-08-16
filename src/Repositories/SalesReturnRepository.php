@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use PDO;
 use RuntimeException;
 
@@ -380,6 +381,7 @@ SQL);
             ]);
 
             $pdo->commit();
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Sales Return Entry', 'Create Sales Return Entry', $refno);
             return $this->show($mainId, $refno) ?? ['lrefno' => $refno, 'lcredit_no' => $creditNo];
         } catch (\Throwable $e) {
             $pdo->rollBack();
@@ -803,6 +805,7 @@ SQL);
             }
 
             $pdo->commit();
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Sales Return Entry', 'Post Sales Return Entry', $refno);
             return $this->show($mainId, $refno) ?? [];
         } catch (\Throwable $e) {
             $pdo->rollBack();

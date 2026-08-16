@@ -44,10 +44,48 @@ final class CustomerController
         $dateFrom = $query['date_from'] ?? null;
         $dateTo = $query['date_to'] ?? null;
 
+        $customer = $this->repo->findCustomerBySession($sessionId);
+        if ($customer === null) {
+            throw new HttpException(404, 'Customer not found');
+        }
+
+        $monthStart = date('Y-m-01');
+        $monthEnd = date('Y-m-t');
+        $monthRows = $this->repo->getPurchaseHistory($sessionId, $monthStart, $monthEnd);
+        $postedMonthRows = array_filter(
+            $monthRows,
+            static fn (array $row): bool => strtolower(trim((string) ($row['source_status'] ?? ''))) === 'posted'
+        );
+        $currentMonthSales = array_reduce(
+            $postedMonthRows,
+            static fn (float $sum, array $row): float => $sum
+                + (((float) ($row['lqty'] ?? 0) - (float) ($row['return_qty'] ?? 0)) * (float) ($row['lprice'] ?? 0)),
+            0.0
+        );
+
+        $priceGroup = (string) ($customer['price_group'] ?? '');
+        $customerSince = (string) ($customer['customer_since'] ?? '');
+        $vipStatus = $this->repo->resolvePlatinumEligibility($priceGroup, $customerSince)
+            ? 'PLATINUM'
+            : strtoupper($this->repo->getNormalizedPriceGroup($priceGroup));
+
         return [
             'customer_session' => $sessionId,
             'date_from' => $dateFrom,
             'date_to' => $dateTo,
+            'generated_at' => date('Y-m-d H:i:s'),
+            'customer' => [
+                'company' => (string) ($customer['lcompany'] ?? ''),
+                'old_name' => (string) ($customer['old_name'] ?? ''),
+                'customer_since' => (string) ($customer['customer_since'] ?? ''),
+                'vip_status' => $vipStatus,
+                'price_code' => (string) ($customer['price_group'] ?? ''),
+                'current_month_sales' => $currentMonthSales,
+                'outstanding_balance' => (float) ($customer['latest_balance'] ?? 0),
+                'terms' => (string) ($customer['latest_terms'] ?? $customer['lterms'] ?? ''),
+                'credit_limit' => (float) ($customer['lcredit'] ?? 0),
+                'agent_name' => (string) ($customer['agent_name'] ?? ''),
+            ],
             'items' => $this->repo->getPurchaseHistory($sessionId, $dateFrom, $dateTo),
         ];
     }

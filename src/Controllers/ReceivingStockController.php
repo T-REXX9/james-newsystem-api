@@ -39,6 +39,19 @@ final class ReceivingStockController
         return $this->repo->listReceivingStocks($mainId, $month, $year, $status, $search, $page, $perPage);
     }
 
+    public function eligiblePurchaseOrders(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        return $this->repo->listEligiblePurchaseOrders(
+            $mainId,
+            trim((string) ($query['search'] ?? '')),
+            max(1, (int) ($query['limit'] ?? 100))
+        );
+    }
+
     public function show(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);

@@ -448,7 +448,19 @@ SQL;
         }
 
         $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
-        (new AuditTrailWriter($this->db->pdo()))->write($mainId, $auditUserId, 'Customer Database', 'Update', $sessionId);
+        $auditPage = 'Customer Database';
+        $auditAction = 'Update';
+        $oldVerification = strtolower(trim((string) ($existing['verification'] ?? '')));
+        $newVerification = strtolower(trim((string) ($payload['verification'] ?? $existing['verification'] ?? '')));
+        $newStatus = isset($payload['status']) ? (int) $payload['status'] : (int) ($existing['status'] ?? 1);
+        if ($newVerification === 'verified' && $oldVerification !== 'verified') {
+            $auditPage = 'Daily Call Monitoring Dashboard';
+            $auditAction = 'Verify Prospect';
+        } elseif ($newStatus === 4 || $newVerification === 'rejected') {
+            $auditPage = 'Daily Call Monitoring Dashboard';
+            $auditAction = 'Reject Prospect - Blacklisted';
+        }
+        (new AuditTrailWriter($this->db->pdo()))->write($mainId, $auditUserId, $auditPage, $auditAction, $sessionId);
 
         return $this->getCustomer($mainId, $sessionId);
     }

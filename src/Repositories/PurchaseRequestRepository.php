@@ -545,6 +545,10 @@ SQL;
             throw new RuntimeException('Purchase request not found');
         }
 
+        if (strcasecmp((string) ($record['request']['status'] ?? ''), 'Approved') !== 0) {
+            throw new RuntimeException('Only an approved purchase request can generate a purchase order');
+        }
+
         $items = $record['items'] ?? [];
         if (!is_array($items) || $items === []) {
             throw new RuntimeException('Purchase request has no items to convert');

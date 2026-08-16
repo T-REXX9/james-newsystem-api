@@ -82,6 +82,15 @@ SELECT
     p.lvat_type,
     p.lvat_percent,
     p.lstatus,
+    COALESCE((
+        SELECT old_customer.loldname
+        FROM tlbCustomer_Details old_customer
+        WHERE old_customer.lsessionid = p.lsessionid
+          AND COALESCE(TRIM(old_customer.loldname), '') <> ''
+        ORDER BY old_customer.ldate DESC, old_customer.lid DESC
+        LIMIT 1
+    ), '') AS old_name,
+    TRIM(CONCAT(COALESCE(agent.lfname, ''), ' ', COALESCE(agent.llname, ''))) AS agent_name,
     (
         SELECT pt.lname
         FROM tblpatient_terms pt
@@ -96,6 +105,7 @@ SELECT
         0
     ) AS latest_balance
 FROM tblpatient p
+LEFT JOIN tblaccount agent ON agent.lid = p.lsales_person
 WHERE p.lsessionid = :session_id
 LIMIT 1
 SQL;
@@ -131,6 +141,7 @@ SQL;
         $sql = <<<SQL
 SELECT
     src.source_type,
+    src.source_status,
     src.source_refno,
     src.source_no,
     src.ldate,
@@ -144,6 +155,7 @@ SELECT
 FROM (
     SELECT
         'INVOICE' AS source_type,
+        COALESCE(inv.lstatus, '') AS source_status,
         inv.lrefno AS source_refno,
         inv.linvoice_no AS source_no,
         inv.ldate,
@@ -162,6 +174,7 @@ FROM (
 
     SELECT
         'ORDER_SLIP' AS source_type,
+        COALESCE(dr.lstatus, '') AS source_status,
         dr.lrefno AS source_refno,
         dr.linvoice_no AS source_no,
         dr.ldate,
@@ -181,9 +194,18 @@ LEFT JOIN (
         litemcode,
         lpartno,
         SUM(lqty) AS return_qty
-    FROM tblcredit_return_item
-    GROUP BY litemcode, lpartno
-) ret ON ret.litemcode = src.litemcode AND ret.lpartno = src.lpartno
+    SELECT
+        cm.linvoice_refno AS source_refno,
+        cri.litemcode,
+        cri.lpartno,
+        SUM(COALESCE(cri.lqty, 0)) AS return_qty
+    FROM tblcredit_return_item cri
+    INNER JOIN tblcredit_memo cm ON cm.lrefno = cri.lrefno
+    WHERE COALESCE(cm.lstatus, '') IN ('Posted', 'Approved')
+    GROUP BY cm.linvoice_refno, cri.litemcode, cri.lpartno
+) ret ON ret.source_refno = src.source_refno
+     AND ret.litemcode = src.litemcode
+     AND ret.lpartno = src.lpartno
 WHERE 1=1
 {$filters}
 ORDER BY src.ldate DESC, src.source_type ASC

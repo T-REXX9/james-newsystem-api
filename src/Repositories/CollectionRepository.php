@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use PDO;
 use RuntimeException;
 
@@ -24,8 +25,10 @@ final class CollectionRepository
         $sql = <<<SQL
 SELECT
     col.*,
-    COALESCE(ci.total_amt, 0) AS total_amt
+    COALESCE(ci.total_amt, 0) AS total_amt,
+    TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by
 FROM tblcollection col
+LEFT JOIN tblaccount acc ON acc.lid = col.luserid
 LEFT JOIN (
     SELECT lrefno, SUM(lamt) AS total_amt
     FROM tblcollection_item
@@ -87,6 +90,7 @@ SQL;
             'INSERT INTO tblnumber_generator (ltransaction_type, lmax_no) VALUES (:type, :max_no)'
         );
         $stmt2->execute(['type' => 'Collection', 'max_no' => $next]);
+        (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Daily Collection Entry', 'Create Collection Entry', $collectionNo);
 
         return [
             'lrefno' => $refno,
@@ -100,8 +104,10 @@ SQL;
         $sql = <<<SQL
 SELECT
     col.*,
-    COALESCE(ci.total_amt, 0) AS total_amt
+    COALESCE(ci.total_amt, 0) AS total_amt,
+    TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by
 FROM tblcollection col
+LEFT JOIN tblaccount acc ON acc.lid = col.luserid
 LEFT JOIN (
     SELECT lrefno, SUM(lamt) AS total_amt
     FROM tblcollection_item
@@ -529,6 +535,7 @@ SQL,
             ]);
 
             $pdo->commit();
+            (new AuditTrailWriter($pdo))->write($mainId, (int) $staffId, 'Daily Collection Entry', $status === 'Approve' ? 'Approve Collection Entry' : 'Disapprove Collection Entry', $refno);
             return $itemId;
         } catch (\Throwable $e) {
             $pdo->rollBack();
@@ -681,12 +688,15 @@ SQL,
 
     public function postCollection(string $refno): array
     {
-        $stmt = $this->db->pdo()->prepare(
+        $pdo = $this->db->pdo();
+        $collection = $this->getCollection($refno);
+        $stmt = $pdo->prepare(
             'UPDATE tblcollection
              SET lstatus = :status, ldate_approved = NOW()
              WHERE lrefno = :refno'
         );
         $stmt->execute(['status' => 'Posted', 'refno' => $refno]);
+        (new AuditTrailWriter($pdo))->write((int) ($collection['lmain_id'] ?? 0), (int) ($collection['luserid'] ?? 0), 'Daily Collection Entry', 'Post Collection Entry', $refno);
 
         return [
             'collection_refno' => $refno,

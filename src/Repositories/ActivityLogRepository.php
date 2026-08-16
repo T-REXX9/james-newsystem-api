@@ -17,6 +17,7 @@ final class ActivityLogRepository
         int $mainId,
         string $search = '',
         string $userId = '',
+        string $action = '',
         string $dateFrom = '',
         string $dateTo = '',
         int $page = 1,
@@ -50,6 +51,12 @@ final class ActivityLogRepository
         if ($trimmedUser !== '' && strtolower($trimmedUser) !== 'all') {
             $params['user_id'] = $trimmedUser;
             $where[] = 'log.luser_id = :user_id';
+        }
+
+        $trimmedAction = trim($action);
+        if ($trimmedAction !== '' && strtolower($trimmedAction) !== 'all') {
+            $params['action'] = $trimmedAction;
+            $where[] = 'log.laction = :action';
         }
 
         $dateFromNormalized = $this->normalizeDate($dateFrom);
@@ -141,6 +148,7 @@ SQL;
                 'filters' => [
                     'search' => $trimmedSearch,
                     'user_id' => $trimmedUser,
+                    'action' => $trimmedAction,
                     'date_from' => $dateFromNormalized,
                     'date_to' => $dateToNormalized,
                 ],

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\PurchaseReceivingPolicy;
 use PDO;
 use RuntimeException;
 
@@ -12,6 +13,47 @@ final class ReceivingStockRepository
 {
     public function __construct(private readonly Database $db)
     {
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function listEligiblePurchaseOrders(int $mainId, string $search = '', int $limit = 100): array
+    {
+        $limit = min(200, max(1, $limit));
+        $sql = <<<SQL
+SELECT
+    po.lrefno AS refno,
+    po.lpurchaseno AS po_number,
+    po.lpr_refno AS pr_refno,
+    po.lpr_no AS pr_number,
+    po.lsupplier AS supplier_id,
+    po.lsupplier_name AS supplier_name,
+    po.ldate AS order_date,
+    po.ltransaction_status AS status,
+    COUNT(poi.lid) AS remaining_line_count
+FROM tblpo_list po
+INNER JOIN tblpo_itemlist poi ON poi.lrefno = po.lrefno
+WHERE po.lmain_id = :main_id
+  AND LOWER(COALESCE(po.ltransaction_status, '')) IN ('posted', 'approved')
+  AND (COALESCE(po.lpr_refno, '') <> '' OR COALESCE(po.lpr_no, '') <> '')
+  AND COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)
+SQL;
+        $params = ['main_id' => $mainId];
+        $trimmedSearch = trim($search);
+        if ($trimmedSearch !== '') {
+            $sql .= ' AND (po.lpurchaseno LIKE :search_po OR po.lpr_no LIKE :search_pr OR po.lsupplier_name LIKE :search_supplier)';
+            $like = '%' . $trimmedSearch . '%';
+            $params['search_po'] = $like;
+            $params['search_pr'] = $like;
+            $params['search_supplier'] = $like;
+        }
+        $sql .= ' GROUP BY po.lrefno, po.lpurchaseno, po.lpr_refno, po.lpr_no, po.lsupplier, po.lsupplier_name, po.ldate, po.ltransaction_status ORDER BY po.lid DESC LIMIT :limit';
+        $stmt = $this->db->pdo()->prepare($sql);
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value, $key === 'main_id' ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $stmt->bindValue('limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
@@ -243,13 +285,16 @@ SQL;
         $pdo->beginTransaction();
 
         try {
+            $purchaseOrder = $this->resolvePurchaseOrder($mainId, $payload);
+            PurchaseReceivingPolicy::assertEligiblePurchaseOrder($purchaseOrder);
+
             $refno = (string) ($payload['refno'] ?? $this->generateRefno());
             $rrNumber = trim((string) ($payload['rr_number'] ?? ''));
             if ($rrNumber === '') {
                 $rrNumber = $this->nextReceivingNumber($pdo);
             }
 
-            $supplier = $this->resolveSupplier((string) ($payload['supplier_id'] ?? ''));
+            $supplier = $this->resolveSupplier((string) ($purchaseOrder['supplier_id'] ?? ''));
             $receiveDate = $this->normalizeDate((string) ($payload['receive_date'] ?? date('Y-m-d')));
             $etaDate = $this->normalizeDateNullable((string) ($payload['eta_date'] ?? ''));
             $status = trim((string) ($payload['status'] ?? 'Pending'));
@@ -277,8 +322,8 @@ SQL;
                 'reference' => (string) ($payload['reference'] ?? ''),
                 'terms' => (string) ($payload['terms'] ?? ''),
                 'address' => (string) ($payload['address'] ?? ''),
-                'po_refno' => (string) ($payload['po_refno'] ?? ''),
-                'po_number' => (string) ($payload['po_number'] ?? ''),
+                'po_refno' => (string) $purchaseOrder['refno'],
+                'po_number' => (string) $purchaseOrder['po_number'],
                 'posted_date' => $receiveDate,
                 'eta_date' => $etaDate,
             ]);
@@ -288,6 +333,7 @@ SQL;
                 if (!is_array($item)) {
                     continue;
                 }
+                $item['po_refno'] = (string) $purchaseOrder['refno'];
                 $this->upsertItemForReceiving($pdo, $mainId, $userId, $refno, $item, false);
             }
 
@@ -501,6 +547,7 @@ SQL;
             return null;
         }
 
+        $wasDelivered = in_array(strtolower((string) ($record['record']['status'] ?? '')), ['delivered', 'posted'], true);
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
@@ -555,6 +602,23 @@ SQL;
                     'item_code' => (string) ($item['item_code'] ?? ''),
                     'part_no' => (string) ($item['part_no'] ?? ''),
                 ]);
+
+                $poItemId = (int) ($item['po_item_id'] ?? 0);
+                if (!$wasDelivered && $poItemId > 0) {
+                    $updatePoItem = $pdo->prepare(
+                        'UPDATE tblpo_itemlist
+                         SET lreceiving_qty = LEAST(COALESCE(lqty, 0), COALESCE(lreceiving_qty, 0) + :qty),
+                             lreceiving_refno = :receiving_refno,
+                             lreceiving_no = :receiving_no
+                         WHERE lid = :po_item_id'
+                    );
+                    $updatePoItem->execute([
+                        'qty' => $qty,
+                        'receiving_refno' => $receivingRefno,
+                        'receiving_no' => $rrNumber,
+                        'po_item_id' => $poItemId,
+                    ]);
+                }
             }
 
             $pdo->commit();
@@ -611,11 +675,12 @@ SQL;
         array $payload,
         bool $allowIncrement
     ): array {
-        $item = $this->resolveInventoryItem($mainId, $payload);
+        $poItem = $this->resolvePurchaseOrderItem($mainId, $payload);
         $qty = (int) ($payload['qty'] ?? 0);
-        if ($qty <= 0) {
-            throw new RuntimeException('qty must be greater than 0');
-        }
+        PurchaseReceivingPolicy::assertReceivableLine($poItem, $qty);
+        $payload['product_session'] = (string) ($poItem['product_session'] ?? '');
+        $payload['product_id'] = (int) ($poItem['product_id'] ?? 0);
+        $item = $this->resolveInventoryItem($mainId, $payload);
 
         $unitCost = isset($payload['unit_cost']) ? (float) $payload['unit_cost'] : (float) ($item['lcost'] ?? 0);
         $unit = (string) ($payload['unit'] ?? ($item['inv_lunit'] ?? ''));
@@ -649,9 +714,9 @@ SQL;
 
         $insert = $pdo->prepare(
             'INSERT INTO tblpurchase_item
-            (lrefno, litemid, ldesc, lqty, luser, lpartno, litem_code, litem_refno, lsup_price, lunit, lunit_qty, llocation, lwarehouse, lbrand, lupdated)
+            (lrefno, litemid, ldesc, lqty, luser, lpartno, litem_code, litem_refno, lsup_price, lunit, lunit_qty, llocation, lwarehouse, lbrand, lpo_itemid, lupdated)
             VALUES
-            (:refno, :item_id, :description, :qty, :user_id, :part_no, :item_code, :item_refno, :unit_cost, :unit, :unit_qty, :location_id, :warehouse_id, :brand, 1)'
+            (:refno, :item_id, :description, :qty, :user_id, :part_no, :item_code, :item_refno, :unit_cost, :unit, :unit_qty, :location_id, :warehouse_id, :brand, :po_item_id, 1)'
         );
         $insert->execute([
             'refno' => $receivingRefno,
@@ -668,10 +733,56 @@ SQL;
             'location_id' => (string) ($payload['location_id'] ?? 'Main'),
             'warehouse_id' => (string) ($payload['warehouse_id'] ?? 'Main'),
             'brand' => (string) ($payload['brand'] ?? ($item['lbrand'] ?? '')),
+            'po_item_id' => (string) $poItem['id'],
         ]);
 
         $itemId = (int) $pdo->lastInsertId();
         return $this->getReceivingStockItem($mainId, $itemId) ?? [];
+    }
+
+    /** @return array<string, mixed> */
+    private function resolvePurchaseOrder(int $mainId, array $payload): array
+    {
+        $poRefno = trim((string) ($payload['po_refno'] ?? ''));
+        if ($poRefno === '') {
+            throw new RuntimeException('A posted purchase order is required before receiving');
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT lrefno AS refno, lpurchaseno AS po_number, lpr_refno AS pr_refno, lpr_no AS pr_number,
+                    lsupplier AS supplier_id, ltransaction_status AS status
+             FROM tblpo_list WHERE lmain_id = :main_id AND lrefno = :po_refno LIMIT 1'
+        );
+        $stmt->execute(['main_id' => $mainId, 'po_refno' => $poRefno]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) {
+            throw new RuntimeException('Purchase order not found');
+        }
+        return $row;
+    }
+
+    /** @return array<string, mixed> */
+    private function resolvePurchaseOrderItem(int $mainId, array $payload): array
+    {
+        $poRefno = trim((string) ($payload['po_refno'] ?? ''));
+        $poItemId = (int) ($payload['po_item_id'] ?? 0);
+        if ($poRefno === '' || $poItemId <= 0) {
+            throw new RuntimeException('Each receiving item must reference a purchase order item');
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT poi.lid AS id, poi.litemid AS product_id, poi.litem_refno AS product_session,
+                    poi.lqty AS qty, poi.lreceiving_qty AS receiving_qty
+             FROM tblpo_itemlist poi
+             INNER JOIN tblpo_list po ON po.lrefno = poi.lrefno
+             WHERE po.lmain_id = :main_id AND poi.lrefno = :po_refno AND poi.lid = :po_item_id LIMIT 1'
+        );
+        $stmt->execute(['main_id' => $mainId, 'po_refno' => $poRefno, 'po_item_id' => $poItemId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) {
+            throw new RuntimeException('Purchase order item not found');
+        }
+        return $row;
     }
 
     /**
