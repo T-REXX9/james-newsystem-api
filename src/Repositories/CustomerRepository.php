@@ -191,10 +191,6 @@ FROM (
 ) src
 LEFT JOIN (
     SELECT
-        litemcode,
-        lpartno,
-        SUM(lqty) AS return_qty
-    SELECT
         cm.linvoice_refno AS source_refno,
         cri.litemcode,
         cri.lpartno,

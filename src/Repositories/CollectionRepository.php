@@ -535,7 +535,13 @@ SQL,
             ]);
 
             $pdo->commit();
-            (new AuditTrailWriter($pdo))->write($mainId, (int) $staffId, 'Daily Collection Entry', $status === 'Approve' ? 'Approve Collection Entry' : 'Disapprove Collection Entry', $refno);
+            (new AuditTrailWriter($pdo))->write(
+                (int) $payload['main_id'],
+                (int) $payload['user_id'],
+                'Daily Collection Entry',
+                'Add Collection Payment',
+                $collectionRefno
+            );
             return $itemId;
         } catch (\Throwable $e) {
             $pdo->rollBack();
