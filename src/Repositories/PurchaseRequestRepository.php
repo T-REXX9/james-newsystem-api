@@ -231,6 +231,7 @@ SQL;
         $itemsStmt->bindValue('refno', $prRefno, PDO::PARAM_STR);
         $itemsStmt->execute();
         $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+        $items = $this->enrichPurchaseRequestItems($mainId, $items);
 
         $summary = [
             'item_count' => count($items),
@@ -252,6 +253,133 @@ SQL;
                 'main_id' => $mainId,
             ],
         ];
+    }
+
+    /**
+     * Enrich PR items from existing inventory and procurement history.
+     * This is intentionally read-only; no schema changes are required.
+     *
+     * @param array<int, array<string, mixed>> $items
+     * @return array<int, array<string, mixed>>
+     */
+    private function enrichPurchaseRequestItems(int $mainId, array $items): array
+    {
+        if (count($items) === 0) return $items;
+
+        $sessions = [];
+        $codes = [];
+        foreach ($items as $item) {
+            $session = trim((string) ($item['item_id'] ?? ''));
+            $code = trim((string) ($item['item_code'] ?? ''));
+            if ($session !== '') $sessions[] = $session;
+            if ($code !== '') $codes[] = $code;
+        }
+        $sessions = array_values(array_unique($sessions));
+        $codes = array_values(array_unique($codes));
+        if (count($sessions) === 0 && count($codes) === 0) return $items;
+
+        $sessionTokens = [];
+        $codeTokens = [];
+        $params = ['main_id' => $mainId, 'since' => date('Y-m-d', strtotime('-12 months'))];
+        foreach ($sessions as $index => $session) {
+            $key = 'session_' . $index;
+            $sessionTokens[] = ':'.$key;
+            $params[$key] = $session;
+        }
+        foreach ($codes as $index => $code) {
+            $key = 'code_' . $index;
+            $codeTokens[] = ':'.$key;
+            $params[$key] = $code;
+        }
+        $sessionSql = count($sessionTokens) > 0 ? implode(',', $sessionTokens) : 'NULL';
+        $codeSql = count($codeTokens) > 0 ? implode(',', $codeTokens) : 'NULL';
+
+        $sql = <<<SQL
+SELECT
+    COALESCE(inv.lsession, '') AS item_session,
+    COALESCE(inv.litemcode, '') AS item_code,
+    COALESCE(inv.lopn_number, '') AS original_part_no,
+    COALESCE(inv.lbrand, '') AS brand,
+    CAST(COALESCE(inv.lcog, inv.lcost, 0) AS DECIMAL(15,2)) AS inventory_cost,
+    CAST(COALESCE((
+        SELECT sc.lcost
+        FROM tblsupplier_cost sc
+        WHERE sc.litemsession = inv.lsession
+          AND CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) > 0
+        ORDER BY CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) ASC, sc.lid DESC
+        LIMIT 1
+    ), 0) AS DECIMAL(15,2)) AS preferred_supplier_price,
+    COALESCE((
+        SELECT s.lname
+        FROM tblsupplier_cost sc
+        LEFT JOIN tblsupplier s ON s.lid = sc.lsupplier_id
+        WHERE sc.litemsession = inv.lsession
+          AND CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) > 0
+        ORDER BY CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) ASC, sc.lid DESC
+        LIMIT 1
+    ), '') AS preferred_supplier_name,
+    CAST(COALESCE((
+        SELECT COUNT(DISTINCT cm.lrefno)
+        FROM tblcredit_return_item cri
+        INNER JOIN tblcredit_memo cm ON cm.lrefno = cri.lrefno
+        WHERE CAST(COALESCE(cm.lmainid, 0) AS SIGNED) = :main_id
+          AND LOWER(COALESCE(cm.lstatus, '')) = 'posted'
+          AND COALESCE(cm.ldate, '1000-01-01') >= :since
+          AND (cri.linv_refno = inv.lsession OR cri.litemcode = inv.litemcode)
+    ), 0) AS UNSIGNED) AS sr_cases,
+    CAST(COALESCE((
+        SELECT COUNT(DISTINCT rs.lrefno)
+        FROM tblreturn_supplier_item rsi
+        INNER JOIN tblreturn_supplier rs ON rs.lrefno = rsi.lrefno
+        WHERE CAST(COALESCE(rs.lmainid, 0) AS SIGNED) = :main_id_ir
+          AND LOWER(COALESCE(rs.lstatus, '')) = 'posted'
+          AND COALESCE(rs.ldate, '1000-01-01') >= :since_ir
+          AND (rsi.linv_refno = inv.lsession OR rsi.litem_refno = inv.lsession OR rsi.litemcode = inv.litemcode)
+    ), 0) AS UNSIGNED) AS ir_cases
+FROM tblinventory_item inv
+WHERE inv.lmain_id = :inventory_main_id
+  AND (inv.lsession IN ({$sessionSql}) OR inv.litemcode IN ({$codeSql}))
+SQL;
+        $params['main_id_ir'] = $mainId;
+        $params['since_ir'] = $params['since'];
+        $params['inventory_main_id'] = $mainId;
+        $stmt = $this->db->pdo()->prepare($sql);
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $stmt->execute();
+
+        $metadata = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $normalized = [
+                'original_part_no' => (string) ($row['original_part_no'] ?? ''),
+                'brand' => (string) ($row['brand'] ?? ''),
+                'inventory_cost' => (float) ($row['inventory_cost'] ?? 0),
+                'preferred_supplier_price' => (float) ($row['preferred_supplier_price'] ?? 0),
+                'preferred_supplier_name' => (string) ($row['preferred_supplier_name'] ?? ''),
+                'sr_cases' => (int) ($row['sr_cases'] ?? 0),
+                'ir_cases' => (int) ($row['ir_cases'] ?? 0),
+            ];
+            $metadata['session:' . (string) ($row['item_session'] ?? '')] = $normalized;
+            $metadata['code:' . (string) ($row['item_code'] ?? '')] = $normalized;
+        }
+
+        return array_map(function (array $item) use ($metadata): array {
+            $lookup = $metadata['session:' . trim((string) ($item['item_id'] ?? ''))]
+                ?? $metadata['code:' . trim((string) ($item['item_code'] ?? ''))]
+                ?? [];
+            $srCases = (int) ($lookup['sr_cases'] ?? 0);
+            $irCases = (int) ($lookup['ir_cases'] ?? 0);
+            $item['original_part_no'] = (string) ($item['original_part_no'] ?? ($lookup['original_part_no'] ?? ''));
+            $item['brand'] = (string) ($item['brand'] ?? ($lookup['brand'] ?? ''));
+            $item['unit'] = (string) ($item['unit'] ?? 'PCS');
+            $item['sr_cases'] = $srCases;
+            $item['ir_cases'] = $irCases;
+            $item['preferred_supplier_name'] = (string) ($lookup['preferred_supplier_name'] ?? '');
+            $item['preferred_supplier_price'] = (float) ($lookup['preferred_supplier_price'] ?? 0);
+            $item['recommendation'] = ($srCases + $irCases) === 0 ? 'Good' : 'Review Supplier';
+            return $item;
+        }, $items);
     }
 
     public function createPurchaseRequest(int $mainId, int $userId, array $payload): array

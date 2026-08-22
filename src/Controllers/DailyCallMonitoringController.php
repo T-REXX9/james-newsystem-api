@@ -26,6 +26,19 @@ final class DailyCallMonitoringController
         return $this->repo->getExcelRows($mainId, $status, $search, $viewerUserId);
     }
 
+    public function salesPerformanceDashboard(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        $year = (int) ($query['year'] ?? date('Y'));
+        if ($year < 2000 || $year > ((int) date('Y') + 1)) {
+            throw new HttpException(422, 'year is invalid');
+        }
+        return $this->repo->getSalesPerformanceDashboard($mainId, $year);
+    }
+
     public function masterList(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);

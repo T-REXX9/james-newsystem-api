@@ -13,6 +13,9 @@ function collectionTestRepository(): array
     $pdo = new PDO('sqlite::memory:');
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
+    $pdo->exec('CREATE TABLE tblaccount (
+        lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT
+    )');
     $pdo->exec('CREATE TABLE tblcollection (
         lrefno TEXT PRIMARY KEY, lmain_id INTEGER, luserid INTEGER, lstatus TEXT,
         lcolection_no TEXT, lamt REAL, ldatetime TEXT
@@ -32,6 +35,7 @@ function collectionTestRepository(): array
         lcredit REAL, ldebit REAL, lremarks TEXT
     )');
 
+    $pdo->exec("INSERT INTO tblaccount VALUES (10, 'Test', 'User')");
     $pdo->exec("INSERT INTO tblcollection VALUES ('DCR-REF-1', 1, 10, 'Submitted', 'DCR-1001', 150, '2026-08-04')");
     $pdo->exec("INSERT INTO tblcollection_item VALUES (101, 'DCR-REF-1', 100, 'Posted', 1)");
     $pdo->exec("INSERT INTO tblcollection_item VALUES (102, 'DCR-REF-1', 50, 'Posted', 1)");

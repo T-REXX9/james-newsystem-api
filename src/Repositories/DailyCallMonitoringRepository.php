@@ -132,6 +132,184 @@ final class DailyCallMonitoringRepository
         ];
     }
 
+    public function getSalesPerformanceDashboard(int $mainId, int $year): array
+    {
+        $currentMonth = (int) date('n');
+        $yearStart = sprintf('%04d-01-01', $year);
+        $nextYearStart = sprintf('%04d-01-01', $year + 1);
+        $monthStart = sprintf('%04d-%02d-01', $year, $currentMonth);
+        $nextMonthStart = date('Y-m-d', strtotime($monthStart . ' +1 month'));
+
+        $summaryStmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT
+    MONTH(ldatetime) AS month,
+    COALESCE(SUM(CASE WHEN COALESCE(ldebit, 0) > 0 THEN COALESCE(ldebit, 0) ELSE 0 END), 0) AS sales,
+    COALESCE(SUM(CASE WHEN COALESCE(lcredit, 0) > 0 THEN COALESCE(lcredit, 0) ELSE 0 END), 0) AS collections
+FROM tblledger
+WHERE lmainid = :main_id
+  AND ldatetime >= :year_start
+  AND ldatetime < :next_year_start
+GROUP BY MONTH(ldatetime)
+ORDER BY MONTH(ldatetime)
+SQL);
+        $summaryStmt->execute([
+            'main_id' => $mainId,
+            'year_start' => $yearStart,
+            'next_year_start' => $nextYearStart,
+        ]);
+        $summaryRows = $summaryStmt->fetchAll(PDO::FETCH_ASSOC);
+        $monthlySales = array_fill(0, 12, ['sales' => 0.0, 'collections' => 0.0]);
+        foreach ($summaryRows as $row) {
+            $month = (int) ($row['month'] ?? 0);
+            if ($month >= 1 && $month <= 12) {
+                $monthlySales[$month - 1] = [
+                    'sales' => (float) ($row['sales'] ?? 0),
+                    'collections' => (float) ($row['collections'] ?? 0),
+                ];
+            }
+        }
+
+        $kpiStmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT
+    COALESCE(SUM(CASE WHEN lg.ldatetime >= :sales_year_start AND lg.ldatetime < :sales_next_year_start AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS total_sales_ytd,
+    COALESCE(SUM(CASE WHEN lg.ldatetime >= :collections_year_start AND lg.ldatetime < :collections_next_year_start AND COALESCE(lg.lcredit, 0) > 0 THEN COALESCE(lg.lcredit, 0) ELSE 0 END), 0) AS total_collections_ytd,
+    COALESCE(SUM(COALESCE(lg.ldebit, 0) - COALESCE(lg.lcredit, 0)), 0) AS outstanding_receivables
+FROM tblledger lg
+WHERE lg.lmainid = :main_id
+SQL);
+        $kpiStmt->execute([
+            'main_id' => $mainId,
+            'sales_year_start' => $yearStart,
+            'sales_next_year_start' => $nextYearStart,
+            'collections_year_start' => $yearStart,
+            'collections_next_year_start' => $nextYearStart,
+        ]);
+        $kpis = $kpiStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        $activeStmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT COUNT(*)
+FROM tblpatient p
+WHERE p.lmain_id = :main_id
+  AND LOWER(COALESCE(p.lactive, '')) NOT LIKE '%inactive%'
+  AND COALESCE(p.lstatus, 1) <> 0
+  AND LOWER(COALESCE(p.lprofile_type, '')) NOT LIKE '%prospective%'
+  AND COALESCE(p.lstatus, 1) <> 3
+SQL);
+        $activeStmt->execute(['main_id' => $mainId]);
+        $activeCustomers = (int) ($activeStmt->fetchColumn() ?: 0);
+
+        $topCustomersStmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT
+    COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Customer') AS customer_name,
+    COALESCE(SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS amount
+FROM tblledger lg
+LEFT JOIN tblpatient p ON p.lsessionid = lg.lcustomerid AND p.lmain_id = lg.lmainid
+WHERE lg.lmainid = :main_id
+  AND lg.ldatetime >= :month_start
+  AND lg.ldatetime < :next_month_start
+GROUP BY p.lsessionid, p.lcompany
+HAVING amount > 0
+ORDER BY amount DESC, customer_name ASC
+LIMIT 10
+SQL);
+        $topCustomersStmt->execute([
+            'main_id' => $mainId,
+            'month_start' => $monthStart,
+            'next_month_start' => $nextMonthStart,
+        ]);
+        $topCustomers = $topCustomersStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $topSalespeopleStmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT
+    COALESCE(NULLIF(TRIM(CONCAT(a.lfname, ' ', a.llname)), ''), 'Unassigned') AS salesperson,
+    COALESCE(SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS amount
+FROM tblledger lg
+LEFT JOIN tblpatient p ON p.lsessionid = lg.lcustomerid AND p.lmain_id = lg.lmainid
+LEFT JOIN tblaccount a ON a.lid = p.lsales_person
+WHERE lg.lmainid = :main_id
+  AND lg.ldatetime >= :month_start
+  AND lg.ldatetime < :next_month_start
+GROUP BY p.lsales_person, a.lfname, a.llname
+HAVING amount > 0
+ORDER BY amount DESC, salesperson ASC
+LIMIT 10
+SQL);
+        $topSalespeopleStmt->execute([
+            'main_id' => $mainId,
+            'month_start' => $monthStart,
+            'next_month_start' => $nextMonthStart,
+        ]);
+        $topSalespeople = $topSalespeopleStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $itemsStmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT
+    COALESCE(NULLIF(TRIM(s.item_code), ''), '—') AS item_code,
+    COALESCE(NULLIF(TRIM(s.part_no), ''), '—') AS part_no,
+    COALESCE(NULLIF(TRIM(s.description), ''), '—') AS description,
+    COALESCE(SUM(s.qty), 0) AS qty_ytd,
+    COALESCE(SUM(CASE WHEN s.sale_date >= :month_start THEN s.qty ELSE 0 END), 0) AS qty_mtd
+FROM (
+    SELECT
+        inv.lmain_id,
+        inv.ldate AS sale_date,
+        item.litemcode AS item_code,
+        item.lpartno AS part_no,
+        item.ldesc AS description,
+        COALESCE(item.lqty, 0) AS qty
+    FROM tblinvoice_list inv
+    INNER JOIN tblinvoice_itemrec item ON item.linvoice_refno = inv.lrefno
+    WHERE inv.lmain_id = :invoice_main_id
+      AND inv.ldate >= :invoice_year_start
+      AND inv.ldate < :invoice_next_year_start
+      AND COALESCE(inv.lcancel_invoice, 0) = 0
+      AND LOWER(COALESCE(inv.lstatus, '')) <> 'cancelled'
+    UNION ALL
+    SELECT
+        dr.lmain_id,
+        dr.ldate AS sale_date,
+        item.litemcode AS item_code,
+        item.lpartno AS part_no,
+        item.ldesc AS description,
+        COALESCE(item.lqty, 0) AS qty
+    FROM tbldelivery_receipt dr
+    INNER JOIN tbldelivery_receipt_items item ON item.lor_refno = dr.lrefno
+    WHERE dr.lmain_id = :receipt_main_id
+      AND dr.ldate >= :receipt_year_start
+      AND dr.ldate < :receipt_next_year_start
+      AND COALESCE(dr.lcancel, 0) = 0
+      AND LOWER(COALESCE(dr.lstatus, '')) <> 'cancelled'
+) s
+GROUP BY s.item_code, s.part_no, s.description
+HAVING qty_ytd > 0
+ORDER BY qty_ytd DESC, s.item_code ASC
+SQL);
+        $itemsStmt->execute([
+            'month_start' => $monthStart,
+            'invoice_main_id' => $mainId,
+            'invoice_year_start' => $yearStart,
+            'invoice_next_year_start' => $nextYearStart,
+            'receipt_main_id' => $mainId,
+            'receipt_year_start' => $yearStart,
+            'receipt_next_year_start' => $nextYearStart,
+        ]);
+        $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return [
+            'year' => $year,
+            'month' => $currentMonth,
+            'kpis' => [
+                'total_sales_ytd' => (float) ($kpis['total_sales_ytd'] ?? 0),
+                'total_collections_ytd' => (float) ($kpis['total_collections_ytd'] ?? 0),
+                'outstanding_receivables' => (float) ($kpis['outstanding_receivables'] ?? 0),
+                'active_customers' => $activeCustomers,
+            ],
+            'monthly_sales' => $monthlySales,
+            'top_customers' => $topCustomers,
+            'top_salespeople' => $topSalespeople,
+            'item_performance' => $items,
+        ];
+    }
+
     public function getPurchaseMasterList(int $mainId, string $fromDate = '2025-10-01', string $search = ''): array
     {
         $normalizedFromDate = $this->normalizeDateOrDefault($fromDate, '2025-10-01');
@@ -145,6 +323,10 @@ final class DailyCallMonitoringRepository
             'historical_before_date_count' => $normalizedFromDate,
             'current_year' => (int) date('Y'),
             'current_year_month' => (int) date('Y'),
+            'current_month' => date('Y-m'),
+            'ledger_main_id' => $mainId,
+            'historical_ledger_main_id' => $mainId,
+            'verification_main_id' => $mainId,
         ];
 
         if (trim($search) !== '') {
@@ -170,7 +352,6 @@ final class DailyCallMonitoringRepository
         }
 
         $whereSql = implode(' AND ', $where);
-        $currentMonth = date('Y-m');
         $sql = <<<SQL
 SELECT
     p.lsessionid AS id,
@@ -187,30 +368,26 @@ SELECT
     TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))) AS assigned_to,
     COALESCE(p.lprofile_type, '') AS profile_type,
     COALESCE(p.lverification, '') AS verification,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(verifier.lfname, ''), ' ', COALESCE(verifier.llname, ''))), ''), '') AS verified_by,
+    COALESCE(p.ldatetime, '') AS created_at,
     COALESCE(p.lprice_group, '') AS price_group,
-    DATE(MAX(lg.ldatetime)) AS last_purchase_date_raw,
-    COUNT(DISTINCT lg.lrefno) AS purchase_count,
-    COUNT(CASE WHEN DATE(lg.ldatetime) >= :priority_from_date THEN lg.lid END) AS priority_transaction_count,
-    COUNT(lg.lid) AS ledger_transaction_count,
-    COUNT(CASE WHEN DATE(lg.ldatetime) < :historical_before_date_count THEN lg.lid END) AS historical_transaction_count,
-    COUNT(DISTINCT DATE_FORMAT(lg.ldatetime, '%Y-%m')) AS active_purchase_month_count,
-    COALESCE(SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS total_sales,
-    COALESCE(SUM(CASE WHEN YEAR(lg.ldatetime) = :current_year AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS current_year_sales,
-    COUNT(DISTINCT CASE WHEN YEAR(lg.ldatetime) = :current_year_month AND COALESCE(lg.ldebit, 0) > 0 THEN DATE_FORMAT(lg.ldatetime, '%Y-%m') END) AS current_year_purchase_month_count,
-    COALESCE(SUM(CASE WHEN ly.last_active_year IS NOT NULL AND YEAR(lg.ldatetime) = ly.last_active_year AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS last_active_year_sales,
-    COUNT(DISTINCT CASE WHEN ly.last_active_year IS NOT NULL AND YEAR(lg.ldatetime) = ly.last_active_year AND COALESCE(lg.ldebit, 0) > 0 THEN DATE_FORMAT(lg.ldatetime, '%Y-%m') END) AS last_active_year_purchase_month_count,
-    MAX(ly.last_active_year) AS last_active_year,
-    COALESCE(SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :current_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS current_month_sales,
-    COALESCE(SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS recent_three_month_sales,
-    COALESCE(SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) AND lg.ldatetime < DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS previous_three_month_sales,
-    CASE
-        WHEN MAX(lg.ldatetime) IS NULL THEN NULL
-        ELSE DATEDIFF(CURDATE(), DATE(MAX(lg.ldatetime)))
-    END AS days_since_last_purchase,
-    CASE
-        WHEN MAX(lg.ldatetime) IS NULL THEN NULL
-        ELSE TIMESTAMPDIFF(MONTH, DATE(MAX(lg.ldatetime)), CURDATE())
-    END AS months_since_last_purchase
+    ledger_summary.last_purchase_date_raw,
+    COALESCE(ledger_summary.purchase_count, 0) AS purchase_count,
+    COALESCE(ledger_summary.priority_transaction_count, 0) AS priority_transaction_count,
+    COALESCE(ledger_summary.ledger_transaction_count, 0) AS ledger_transaction_count,
+    COALESCE(ledger_summary.historical_transaction_count, 0) AS historical_transaction_count,
+    COALESCE(ledger_summary.active_purchase_month_count, 0) AS active_purchase_month_count,
+    COALESCE(ledger_summary.total_sales, 0) AS total_sales,
+    COALESCE(ledger_summary.current_year_sales, 0) AS current_year_sales,
+    COALESCE(ledger_summary.current_year_purchase_month_count, 0) AS current_year_purchase_month_count,
+    COALESCE(ledger_summary.last_active_year_sales, 0) AS last_active_year_sales,
+    COALESCE(ledger_summary.last_active_year_purchase_month_count, 0) AS last_active_year_purchase_month_count,
+    ledger_summary.last_active_year,
+    COALESCE(ledger_summary.current_month_sales, 0) AS current_month_sales,
+    COALESCE(ledger_summary.recent_three_month_sales, 0) AS recent_three_month_sales,
+    COALESCE(ledger_summary.previous_three_month_sales, 0) AS previous_three_month_sales,
+    ledger_summary.days_since_last_purchase,
+    ledger_summary.months_since_last_purchase
 FROM tblpatient p
 LEFT JOIN tblaccount a
     ON a.lid = p.lsales_person
@@ -223,44 +400,72 @@ LEFT JOIN (
 ) cp_first ON cp_first.lrefno = p.lsessionid
 LEFT JOIN (
     SELECT
-        lcustomerid,
-        lmainid,
-        MAX(YEAR(ldatetime)) AS last_active_year
-    FROM tblledger
-    WHERE DATE(ldatetime) < :historical_before_date
-      AND COALESCE(ldebit, 0) > 0
-      AND COALESCE(lcustomerid, '') <> ''
-    GROUP BY lcustomerid, lmainid
-) ly ON ly.lcustomerid = p.lsessionid
-    AND ly.lmainid = CAST(p.lmain_id AS CHAR)
-LEFT JOIN tblledger lg
-    ON lg.lcustomerid = p.lsessionid
-   AND COALESCE(lg.lmainid, '') = CAST(p.lmain_id AS CHAR)
-   AND DATE(lg.ldatetime) <= CURDATE()
-   AND COALESCE(lg.lcustomerid, '') <> ''
+        lg.lcustomerid,
+        lg.lmainid,
+        DATE(MAX(lg.ldatetime)) AS last_purchase_date_raw,
+        COUNT(DISTINCT lg.lrefno) AS purchase_count,
+        COUNT(CASE WHEN lg.ldatetime >= :priority_from_date THEN lg.lid END) AS priority_transaction_count,
+        COUNT(lg.lid) AS ledger_transaction_count,
+        COUNT(CASE WHEN lg.ldatetime < :historical_before_date_count THEN lg.lid END) AS historical_transaction_count,
+        COUNT(DISTINCT DATE_FORMAT(lg.ldatetime, '%Y-%m')) AS active_purchase_month_count,
+        SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS total_sales,
+        SUM(CASE WHEN YEAR(lg.ldatetime) = :current_year AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS current_year_sales,
+        COUNT(DISTINCT CASE WHEN YEAR(lg.ldatetime) = :current_year_month AND COALESCE(lg.ldebit, 0) > 0 THEN DATE_FORMAT(lg.ldatetime, '%Y-%m') END) AS current_year_purchase_month_count,
+        SUM(CASE WHEN ly.last_active_year IS NOT NULL AND YEAR(lg.ldatetime) = ly.last_active_year AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS last_active_year_sales,
+        COUNT(DISTINCT CASE WHEN ly.last_active_year IS NOT NULL AND YEAR(lg.ldatetime) = ly.last_active_year AND COALESCE(lg.ldebit, 0) > 0 THEN DATE_FORMAT(lg.ldatetime, '%Y-%m') END) AS last_active_year_purchase_month_count,
+        ly.last_active_year,
+        SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :current_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS current_month_sales,
+        SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS recent_three_month_sales,
+        SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) AND lg.ldatetime < DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS previous_three_month_sales,
+        DATEDIFF(CURDATE(), DATE(MAX(lg.ldatetime))) AS days_since_last_purchase,
+        TIMESTAMPDIFF(MONTH, DATE(MAX(lg.ldatetime)), CURDATE()) AS months_since_last_purchase
+    FROM tblledger lg
+    LEFT JOIN (
+        SELECT
+            historical.lcustomerid,
+            historical.lmainid,
+            MAX(YEAR(historical.ldatetime)) AS last_active_year
+        FROM tblledger historical
+        WHERE historical.lmainid = CAST(:historical_ledger_main_id AS CHAR)
+          AND historical.ldatetime < :historical_before_date
+          AND COALESCE(historical.ldebit, 0) > 0
+          AND COALESCE(historical.lcustomerid, '') <> ''
+        GROUP BY historical.lcustomerid, historical.lmainid
+    ) ly ON ly.lcustomerid = lg.lcustomerid
+        AND ly.lmainid = lg.lmainid
+    WHERE lg.lmainid = CAST(:ledger_main_id AS CHAR)
+      AND lg.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+      AND COALESCE(lg.lcustomerid, '') <> ''
+    GROUP BY lg.lcustomerid, lg.lmainid, ly.last_active_year
+) ledger_summary ON ledger_summary.lcustomerid = p.lsessionid
+    AND ledger_summary.lmainid = CAST(p.lmain_id AS CHAR)
+LEFT JOIN (
+    SELECT audit.lmain_id, audit.lrefno, audit.luser_id
+    FROM tblaudit_trail audit
+    INNER JOIN (
+        SELECT lmain_id, lrefno, MAX(lid) AS latest_id
+        FROM tblaudit_trail
+        WHERE lmain_id = :verification_main_id
+          AND lpage = 'Daily Call Monitoring Dashboard'
+          AND laction = 'Verify Prospect'
+        GROUP BY lmain_id, lrefno
+    ) latest_audit ON latest_audit.latest_id = audit.lid
+        AND latest_audit.lmain_id = audit.lmain_id
+        AND latest_audit.lrefno = audit.lrefno
+    WHERE audit.lpage = 'Daily Call Monitoring Dashboard'
+      AND audit.laction = 'Verify Prospect'
+) verification_audit ON verification_audit.lmain_id = p.lmain_id
+    AND verification_audit.lrefno = p.lsessionid
+LEFT JOIN tblaccount verifier ON verifier.lid = verification_audit.luser_id
 WHERE {$whereSql}
-GROUP BY
-    p.lsessionid,
-    p.lcompany,
-    p.lprovince,
-    p.lcity,
-    p.lmobile,
-    p.lphone,
-    cp_first.lc_mobile,
-    cp_first.lc_phone,
-    a.lfname,
-    a.llname,
-    p.lprofile_type,
-    p.lverification,
-    p.lprice_group
 ORDER BY
-    CASE WHEN MAX(lg.ldatetime) IS NULL THEN 1 ELSE 0 END ASC,
+    CASE WHEN ledger_summary.last_purchase_date_raw IS NULL THEN 1 ELSE 0 END ASC,
     last_purchase_date_raw DESC,
     total_sales DESC,
     shop_name ASC
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute(array_merge(['current_month' => $currentMonth], $params));
+        $stmt->execute($params);
 
         $items = array_map(function (array $row): array {
             $rawDate = (string) ($row['last_purchase_date_raw'] ?? '');
@@ -299,6 +504,10 @@ SQL;
                 'profileType' => (string) ($row['profile_type'] ?? ''),
                 'profile_type' => (string) ($row['profile_type'] ?? ''),
                 'verification' => (string) ($row['verification'] ?? ''),
+                'verifiedBy' => $this->cleanDisplayText($row['verified_by'] ?? '', ''),
+                'verified_by' => $this->cleanDisplayText($row['verified_by'] ?? '', ''),
+                'createdAt' => (string) ($row['created_at'] ?? ''),
+                'created_at' => (string) ($row['created_at'] ?? ''),
                 'priceGroup' => (string) ($row['price_group'] ?? ''),
                 'price_group' => (string) ($row['price_group'] ?? ''),
                 'lastPurchaseDate' => $this->formatDateText($rawDate),

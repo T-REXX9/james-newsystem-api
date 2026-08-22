@@ -492,6 +492,7 @@ function app_router(): Router
     $router->post('/api/v1/profiles/{id}/role', [$profilesController, 'updateRole']);
     $router->get('/api/v1/daily-call-monitoring/excel', [$dailyCallMonitoringController, 'excelRows']);
     $router->get('/api/v1/daily-call-monitoring/master-list', [$dailyCallMonitoringController, 'masterList']);
+    $router->get('/api/v1/daily-call-monitoring/sales-performance-dashboard', [$dailyCallMonitoringController, 'salesPerformanceDashboard']);
     $router->get('/api/v1/daily-call-monitoring/owner-snapshot', [$dailyCallMonitoringController, 'ownerSnapshot']);
     $router->get('/api/v1/daily-call-monitoring/agent-snapshot', [$dailyCallMonitoringController, 'agentSnapshot']);
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/purchase-history', [$dailyCallMonitoringController, 'customerPurchaseHistory']);
@@ -747,6 +748,15 @@ function app_router(): Router
     $router->get('/api/v1/message-templates', [$campaignController, 'listTemplates']);
     $router->get('/api/v1/message-templates/{id}', [$campaignController, 'getTemplate']);
     $router->post('/api/v1/message-templates', [$campaignController, 'createTemplate']);
+
+    // SMS Gateway (Authenticated by Gateway Device ID)
+    $smsGatewayController = new \App\Controllers\SmsGatewayController($db);
+    $router->post('/api/v1/sms-gateway/queue', $requireBearerAuth([$smsGatewayController, 'queue']));
+    $router->get('/api/v1/sms-gateway/devices', $requireBearerAuth([$smsGatewayController, 'getDevices']));
+    $router->get('/api/v1/sms-gateway/history', $requireBearerAuth([$smsGatewayController, 'getHistory']));
+    $router->post('/api/v1/sms-gateway/register-device', [$smsGatewayController, 'registerDevice']);
+    $router->post('/api/v1/sms-gateway/fetch-jobs', [$smsGatewayController, 'fetchJobs']);
+    $router->post('/api/v1/sms-gateway/report-status', [$smsGatewayController, 'reportStatus']);
     $router->patch('/api/v1/message-templates/{id}', [$campaignController, 'updateTemplate']);
     $router->delete('/api/v1/message-templates/{id}', [$campaignController, 'deleteTemplate']);
     // Queue Processing
