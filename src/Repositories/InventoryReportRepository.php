@@ -15,16 +15,18 @@ final class InventoryReportRepository
 
     public function options(int $mainId): array
     {
-        $categoriesStmt = $this->db->pdo()->prepare(
-            'SELECT COALESCE(lname, "") AS name
-             FROM tblproduct_group
-             WHERE COALESCE(lstatus, 1) = 1
-             ORDER BY lname ASC'
+        $descriptionsStmt = $this->db->pdo()->prepare(
+            'SELECT DISTINCT COALESCE(ldescription, "") AS description
+             FROM tblinventory_item
+             WHERE lmain_id = :main_id
+               AND COALESCE(lstatus, 1) = 1
+               AND COALESCE(ldescription, "") <> ""
+             ORDER BY description ASC'
         );
-        $categoriesStmt->execute();
-        $categories = array_values(array_filter(array_map(
-            static fn(array $row): string => trim((string) ($row['name'] ?? '')),
-            $categoriesStmt->fetchAll(PDO::FETCH_ASSOC)
+        $descriptionsStmt->execute(['main_id' => $mainId]);
+        $descriptions = array_values(array_filter(array_map(
+            static fn(array $row): string => trim((string) ($row['description'] ?? '')),
+            $descriptionsStmt->fetchAll(PDO::FETCH_ASSOC)
         )));
 
         $partsStmt = $this->db->pdo()->prepare(
@@ -56,7 +58,7 @@ final class InventoryReportRepository
         )));
 
         return [
-            'categories' => $categories,
+            'descriptions' => $descriptions,
             'part_numbers' => $partNumbers,
             'item_codes' => $itemCodes,
             'warehouses' => [],
@@ -156,7 +158,7 @@ SELECT
         SELECT ip.lprice_amt
         FROM tblinventory_price ip
         WHERE ip.linv_refno = itm.lsession
-          AND ip.lprice_name = 'AAA'
+          AND ip.lprice_name = 'VIP 1'
         ORDER BY ip.lid DESC
         LIMIT 1
     ), 0) AS cost,
@@ -172,9 +174,9 @@ SQL;
 
         $params = ['main_id' => $mainId];
 
-        if ($filters['category'] !== '') {
-            $sql .= ' AND itm.lproduct_group = :category';
-            $params['category'] = $filters['category'];
+        if ($filters['description'] !== '') {
+            $sql .= ' AND itm.ldescription LIKE :description';
+            $params['description'] = '%' . $filters['description'] . '%';
         }
         if ($filters['part_number'] !== '') {
             $sql .= ' AND itm.lpartno LIKE :part_number';

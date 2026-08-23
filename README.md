@@ -59,6 +59,7 @@ If you use the combined launcher, API URL/port come from:
 - `GET /daily-call-monitoring/customers/{contactId}/sales-reports?main_id={mainId}`
 - `GET /daily-call-monitoring/customers/{contactId}/incident-reports?main_id={mainId}`
 - `GET /fast-slow-inventory-report?main_id={mainId}&sort_by=sales_volume|part_no&sort_direction=asc|desc`
+- `GET /incident-items-report?main_id={mainId}&search=&supplier=&match_source=all|manual|related_transaction|description_match|imported&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&min_count=1&page=1&per_page=100`
 - `GET /inventory-report/options?main_id={mainId}`
 - `GET /inventory-report?main_id={mainId}&category=&part_number=&item_code=&stock_status=all|with_stock|without_stock&report_type=inventory|product`
 - `GET /sales-return-report/options?main_id={mainId}`

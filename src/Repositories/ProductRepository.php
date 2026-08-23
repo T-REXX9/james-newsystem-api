@@ -192,6 +192,11 @@ SELECT
         ORDER BY ip.lid DESC
         LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_bdd,
+    COALESCE((
+        SELECT MAX(ph.lupdated_at)
+        FROM tblinventory_price_history ph
+        WHERE ph.linv_refno = itm.lsession
+    ), '') AS last_price_update,
     CAST(COALESCE((
         SELECT SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0))
         FROM tblinventory_logs lg
@@ -419,6 +424,11 @@ SELECT
         ORDER BY ip.lid DESC
         LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_bdd,
+    COALESCE((
+        SELECT MAX(ph.lupdated_at)
+        FROM tblinventory_price_history ph
+        WHERE ph.linv_refno = itm.lsession
+    ), '') AS last_price_update,
     CAST(COALESCE((
         SELECT SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0))
         FROM tblinventory_logs lg
@@ -538,7 +548,7 @@ SQL;
             'laddedby' => $userId > 0 ? $userId : null,
         ]);
 
-        $this->syncPrices($session, $payload);
+        $this->syncPrices($mainId, $session, $payload, $userId);
         $this->syncSupplierCosts($mainId, $session, $itemCode, $this->strVal($payload['part_no'] ?? ''), $payload, $userId);
         $this->syncWarehouseStocks($mainId, $session, $payload, $userId);
 
@@ -605,7 +615,7 @@ SQL;
         }
 
         $userId = (int) ($payload['user_id'] ?? 0);
-        $this->syncPrices($productSession, $payload);
+        $this->syncPrices($mainId, $productSession, $payload, $userId);
         $this->syncSupplierCosts(
             $mainId,
             $productSession,
@@ -979,7 +989,7 @@ SQL;
         };
     }
 
-    private function syncPrices(string $productSession, array $payload): void
+    private function syncPrices(int $mainId, string $productSession, array $payload, int $userId): void
     {
         $mapping = [
             'price_aa' => 'AAA',
@@ -995,7 +1005,7 @@ SQL;
                 continue;
             }
             $amount = (float) ($payload[$field] ?? 0);
-            $this->upsertPriceGroup($productSession, $groupName, $amount);
+            $this->upsertPriceGroup($mainId, $productSession, $groupName, $amount, $userId);
         }
     }
 
@@ -1072,7 +1082,7 @@ SQL;
         }
     }
 
-    private function upsertPriceGroup(string $productSession, string $groupName, float $amount): void
+    private function upsertPriceGroup(int $mainId, string $productSession, string $groupName, float $amount, int $userId): void
     {
         $pdo = $this->db->pdo();
         $find = $pdo->prepare(
@@ -1085,14 +1095,20 @@ SQL;
         $row = $find->fetch(PDO::FETCH_ASSOC);
 
         if ($row) {
+            $oldAmount = (float) ($row['lprice_amt'] ?? 0);
+            if (abs($oldAmount - $amount) < 0.00001) {
+                return;
+            }
+
             $update = $pdo->prepare(
                 'UPDATE tblinventory_price SET lprice_amt_old = :old, lprice_amt = :new WHERE lid = :id'
             );
             $update->execute([
-                'old' => (string) ($row['lprice_amt'] ?? '0'),
+                'old' => (string) $oldAmount,
                 'new' => (string) $amount,
                 'id' => (int) $row['lid'],
             ]);
+            $this->recordPriceHistory($mainId, $productSession, $groupName, $oldAmount, $amount, $userId);
             return;
         }
 
@@ -1105,6 +1121,26 @@ SQL;
             'group_name' => $groupName,
             'amount' => (string) $amount,
             'old' => '0',
+        ]);
+        if (abs($amount) >= 0.00001) {
+            $this->recordPriceHistory($mainId, $productSession, $groupName, 0, $amount, $userId);
+        }
+    }
+
+    private function recordPriceHistory(int $mainId, string $productSession, string $groupName, float $oldAmount, float $newAmount, int $userId): void
+    {
+        $history = $this->db->pdo()->prepare(
+            'INSERT INTO tblinventory_price_history
+             (lmain_id, linv_refno, lprice_name, lprice_amt_old, lprice_amt_new, lupdated_at, lupdated_by)
+             VALUES (:main_id, :session, :group_name, :old_amount, :new_amount, NOW(), :updated_by)'
+        );
+        $history->execute([
+            'main_id' => $mainId,
+            'session' => $productSession,
+            'group_name' => $groupName,
+            'old_amount' => $oldAmount,
+            'new_amount' => $newAmount,
+            'updated_by' => $userId > 0 ? $userId : null,
         ]);
     }
 

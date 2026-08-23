@@ -71,6 +71,7 @@ final class FastSlowInventoryReportRepository
                 'month1_label' => $periods['month1']['label'],
                 'month2_label' => $periods['month2']['label'],
                 'month3_label' => $periods['month3']['label'],
+                'last_price_update' => $item['last_price_update'] ?? null,
                 'category' => $this->categorizeMovement($month1Sales, $month2Sales, $month3Sales),
             ];
         }
@@ -103,17 +104,8 @@ final class FastSlowInventoryReportRepository
 
     private function categorizeMovement(int $month1Sales, int $month2Sales, int $month3Sales): string
     {
-        // Keep old-system conditions from Reportctl::inventory_moving_report_view.
-        if ($month1Sales === 0 && $month2Sales === 0) {
-            return 'slow';
-        }
-        if ($month2Sales > $month3Sales) {
-            return 'slow';
-        }
-        if ($month2Sales < $month3Sales) {
-            return 'fast';
-        }
-        return 'slow';
+        // Fast Moving means the item sold at least once in each of the three consecutive months.
+        return $month1Sales > 0 && $month2Sales > 0 && $month3Sales > 0 ? 'fast' : 'slow';
     }
 
     private function getItems(int $mainId): array
@@ -124,7 +116,12 @@ SELECT
     itm.lsession AS item_session,
     COALESCE(itm.lpartno, '') AS part_no,
     COALESCE(itm.litemcode, '') AS item_code,
-    COALESCE(itm.ldescription, '') AS description
+    COALESCE(itm.ldescription, '') AS description,
+    COALESCE((
+        SELECT MAX(ph.lupdated_at)
+        FROM tblinventory_price_history ph
+        WHERE ph.linv_refno = itm.lsession
+    ), '') AS last_price_update
 FROM tblinventory_item itm
 WHERE itm.lmain_id = :main_id
   AND COALESCE(itm.lstatus, 1) = 1

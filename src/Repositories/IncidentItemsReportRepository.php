@@ -71,20 +71,30 @@ SQL;
 
         $search = trim((string) ($filters['search'] ?? ''));
         if ($search !== '') {
-            $params['search'] = '%' . $search . '%';
+            // Native MySQL PDO prepares do not allow one named placeholder to
+            // appear more than once in a statement. Keep each LIKE operand
+            // separately bound so filtering does not fail with SQLSTATE[HY093].
+            $searchLike = '%' . $search . '%';
+            $params['search_supplier_name'] = $searchLike;
+            $params['search_item_code'] = $searchLike;
+            $params['search_part_no'] = $searchLike;
+            $params['search_description'] = $searchLike;
+            $params['search_issue_summary'] = $searchLike;
             $where[] = '('
-                . 'COALESCE(supplier_name, "") LIKE :search '
-                . 'OR COALESCE(item_code, "") LIKE :search '
-                . 'OR COALESCE(part_no, "") LIKE :search '
-                . 'OR COALESCE(description, "") LIKE :search '
-                . 'OR COALESCE(issue_summary, "") LIKE :search'
+                . 'COALESCE(supplier_name, "") LIKE :search_supplier_name '
+                . 'OR COALESCE(item_code, "") LIKE :search_item_code '
+                . 'OR COALESCE(part_no, "") LIKE :search_part_no '
+                . 'OR COALESCE(description, "") LIKE :search_description '
+                . 'OR COALESCE(issue_summary, "") LIKE :search_issue_summary'
                 . ')';
         }
 
         $supplier = trim((string) ($filters['supplier'] ?? ''));
         if ($supplier !== '') {
-            $params['supplier'] = '%' . $supplier . '%';
-            $where[] = '(COALESCE(supplier_id, "") LIKE :supplier OR COALESCE(supplier_name, "") LIKE :supplier)';
+            $supplierLike = '%' . $supplier . '%';
+            $params['supplier_id'] = $supplierLike;
+            $params['supplier_name'] = $supplierLike;
+            $where[] = '(COALESCE(supplier_id, "") LIKE :supplier_id OR COALESCE(supplier_name, "") LIKE :supplier_name)';
         }
 
         $matchSource = trim((string) ($filters['match_source'] ?? 'all'));

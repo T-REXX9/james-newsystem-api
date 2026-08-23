@@ -98,7 +98,13 @@ if (count($items) > 0) {
     assert_true(isset($first['incident_count']), 'Rows include incident_count', $passed, $failed, $errors);
 }
 
-echo "\n--- 3. Missing main_id Validation ---\n";
+echo "\n--- 3. Search and Supplier Filters ---\n";
+$filtered = request('GET', "{$API_BASE}/api/v1/incident-items-report?main_id={$MAIN_ID}&page=1&per_page=5&search=NOZZLE&supplier=QK9N");
+assert_eq(200, $filtered['http_code'], 'Search and supplier filters return 200', $passed, $failed, $errors);
+assert_eq(true, $filtered['body']['ok'] ?? false, 'Filtered response ok=true', $passed, $failed, $errors);
+assert_true(is_array($filtered['body']['data']['items'] ?? null), 'Filtered response includes items array', $passed, $failed, $errors);
+
+echo "\n--- 4. Missing main_id Validation ---\n";
 $missingMain = request('GET', "{$API_BASE}/api/v1/incident-items-report");
 assert_eq(422, $missingMain['http_code'], 'Missing main_id returns 422', $passed, $failed, $errors);
 

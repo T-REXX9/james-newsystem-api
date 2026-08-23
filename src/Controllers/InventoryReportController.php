@@ -31,7 +31,7 @@ final class InventoryReportController
         }
 
         $filters = [
-            'category' => trim((string) ($query['category'] ?? '')),
+            'description' => trim((string) ($query['description'] ?? '')),
             'part_number' => trim((string) ($query['part_number'] ?? '')),
             'item_code' => trim((string) ($query['item_code'] ?? '')),
             'stock_status' => strtolower(trim((string) ($query['stock_status'] ?? 'all'))),

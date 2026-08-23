@@ -65,6 +65,8 @@ final class ReorderReportRepository
         $where = [
             'itm.lmain_id = :main_id',
             'COALESCE(st.current_stock, 0) < ' . $targetExpr,
+            // Items with a zero reorder level are not reorder candidates.
+            "CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2)) > 0",
         ];
         $params = ['main_id' => $mainId];
 
