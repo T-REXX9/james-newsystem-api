@@ -12,6 +12,7 @@ use PDO;
 final class AccountsReceivableRepository
 {
     private const TIMING_LOG_LABEL = 'AccountsReceivableRepository';
+    private const TERMS_LOOKUP_BATCH_SIZE = 1000;
 
     public function __construct(private readonly Database $db)
     {
@@ -127,7 +128,10 @@ SQL;
         if ($normalizedDebtType !== 'All') {
             $sql .= ' AND ldebt_type = :debt_type';
         }
-        $sql .= ' ORDER BY lcompany ASC, lid DESC LIMIT 200';
+        // Receivables is a financial total, so every active customer in the
+        // selected company must be included. A presentation-oriented row cap
+        // here silently understates both the total and the aging buckets.
+        $sql .= ' ORDER BY lcompany ASC, lid DESC';
 
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
@@ -288,59 +292,60 @@ SQL;
             return [];
         }
 
-        $refnos = array_keys($neededRefnos);
-        $invoicePlaceholders = [];
-        $deliveryPlaceholders = [];
-        $params = [];
-        foreach ($refnos as $index => $refno) {
-            $invoiceKey = 'invoice_refno_' . $index;
-            $deliveryKey = 'delivery_refno_' . $index;
-            $invoicePlaceholders[] = ':' . $invoiceKey;
-            $deliveryPlaceholders[] = ':' . $deliveryKey;
-            $params[$invoiceKey] = $refno;
-            $params[$deliveryKey] = $refno;
-        }
-
-        $sql = sprintf(
-            "SELECT lid, invoice_refno, '' AS ldr_refno, lterms
-             FROM tbltransaction
-             WHERE invoice_refno IN (%s)
-             UNION ALL
-             SELECT lid, '' AS invoice_refno, ldr_refno, lterms
-             FROM tbltransaction
-             WHERE ldr_refno IN (%s)",
-            implode(', ', $invoicePlaceholders),
-            implode(', ', $deliveryPlaceholders)
-        );
-
-        $stmt = $this->db->pdo()->prepare($sql);
-        foreach ($params as $key => $value) {
-            $stmt->bindValue($key, $value, PDO::PARAM_STR);
-        }
-        $stmt->execute();
-
         $termsByRefno = [];
         $latestTermIdsByRefno = [];
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $lid = (int) ($row['lid'] ?? 0);
-            $invoiceRefno = trim((string) ($row['invoice_refno'] ?? ''));
-            if (
-                $invoiceRefno !== ''
-                && isset($neededRefnos[$invoiceRefno])
-                && $lid >= (int) ($latestTermIdsByRefno[$invoiceRefno] ?? 0)
-            ) {
-                $termsByRefno[$invoiceRefno] = (string) ($row['lterms'] ?? '');
-                $latestTermIdsByRefno[$invoiceRefno] = $lid;
+        foreach (array_chunk(array_keys($neededRefnos), self::TERMS_LOOKUP_BATCH_SIZE) as $batchIndex => $refnos) {
+            $invoicePlaceholders = [];
+            $deliveryPlaceholders = [];
+            $params = [];
+            foreach ($refnos as $index => $refno) {
+                $invoiceKey = 'invoice_refno_' . $batchIndex . '_' . $index;
+                $deliveryKey = 'delivery_refno_' . $batchIndex . '_' . $index;
+                $invoicePlaceholders[] = ':' . $invoiceKey;
+                $deliveryPlaceholders[] = ':' . $deliveryKey;
+                $params[$invoiceKey] = $refno;
+                $params[$deliveryKey] = $refno;
             }
 
-            $ldrRefno = trim((string) ($row['ldr_refno'] ?? ''));
-            if (
-                $ldrRefno !== ''
-                && isset($neededRefnos[$ldrRefno])
-                && $lid >= (int) ($latestTermIdsByRefno[$ldrRefno] ?? 0)
-            ) {
-                $termsByRefno[$ldrRefno] = (string) ($row['lterms'] ?? '');
-                $latestTermIdsByRefno[$ldrRefno] = $lid;
+            $sql = sprintf(
+                "SELECT lid, invoice_refno, '' AS ldr_refno, lterms
+                 FROM tbltransaction
+                 WHERE invoice_refno IN (%s)
+                 UNION ALL
+                 SELECT lid, '' AS invoice_refno, ldr_refno, lterms
+                 FROM tbltransaction
+                 WHERE ldr_refno IN (%s)",
+                implode(', ', $invoicePlaceholders),
+                implode(', ', $deliveryPlaceholders)
+            );
+
+            $stmt = $this->db->pdo()->prepare($sql);
+            foreach ($params as $key => $value) {
+                $stmt->bindValue($key, $value, PDO::PARAM_STR);
+            }
+            $stmt->execute();
+
+            while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+                $lid = (int) ($row['lid'] ?? 0);
+                $invoiceRefno = trim((string) ($row['invoice_refno'] ?? ''));
+                if (
+                    $invoiceRefno !== ''
+                    && isset($neededRefnos[$invoiceRefno])
+                    && $lid >= (int) ($latestTermIdsByRefno[$invoiceRefno] ?? 0)
+                ) {
+                    $termsByRefno[$invoiceRefno] = (string) ($row['lterms'] ?? '');
+                    $latestTermIdsByRefno[$invoiceRefno] = $lid;
+                }
+
+                $ldrRefno = trim((string) ($row['ldr_refno'] ?? ''));
+                if (
+                    $ldrRefno !== ''
+                    && isset($neededRefnos[$ldrRefno])
+                    && $lid >= (int) ($latestTermIdsByRefno[$ldrRefno] ?? 0)
+                ) {
+                    $termsByRefno[$ldrRefno] = (string) ($row['lterms'] ?? '');
+                    $latestTermIdsByRefno[$ldrRefno] = $lid;
+                }
             }
         }
 
