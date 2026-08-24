@@ -72,6 +72,12 @@ class SmsGatewayController
             return ['error' => 'device_id is required'];
         }
 
+        // The gateway app polls successfully even when its initial registration
+        // request was missed. Refresh registration on every poll so the web page
+        // can show the live device and SIM list.
+        $reportedSimCards = $payload['sim_cards'] ?? null;
+        $this->updateDeviceCache($deviceId, is_array($reportedSimCards) ? $reportedSimCards : null);
+
         $pdo = $this->db->pdo();
         
         // Find unsent SMS messages
@@ -136,25 +142,7 @@ class SmsGatewayController
             return ['error' => 'device_id is required'];
         }
         
-        // Since we can't change schema, we can store device info in a file cache or memory cache
-        // For a production system without schema changes, we can use the filesystem temporarily
-        $cacheDir = __DIR__ . '/../../../cache';
-        if (!is_dir($cacheDir)) {
-            @mkdir($cacheDir, 0777, true);
-        }
-        
-        $cacheFile = $cacheDir . '/gateway_devices.json';
-        $devices = [];
-        if (file_exists($cacheFile)) {
-            $devices = json_decode(file_get_contents($cacheFile), true) ?: [];
-        }
-        
-        $devices[$deviceId] = [
-            'last_seen' => date('Y-m-d H:i:s'),
-            'sim_cards' => $simCards
-        ];
-        
-        file_put_contents($cacheFile, json_encode($devices, JSON_PRETTY_PRINT));
+        $this->updateDeviceCache($deviceId, is_array($simCards) ? $simCards : []);
         
         return ['success' => true];
     }
@@ -172,16 +160,42 @@ class SmsGatewayController
         $stmt->execute();
         $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // Parse sim_id out of lmodem if it's still pending
+        // Parse and remove the SIM marker for pending, sent, and failed rows.
+        // The marker is stored in the existing lmodem field to preserve the
+        // selected SIM without changing the legacy table schema.
         foreach ($history as &$row) {
             $row['sim_id'] = null;
-            if ($row['status'] === 'pending' && isset($row['details']) && strpos($row['details'], 'SIM_ID:') === 0) {
-                $row['sim_id'] = (int) substr($row['details'], 7);
-                $row['details'] = 'Waiting for gateway...';
+            $details = (string) ($row['details'] ?? '');
+            if (preg_match('/(?:^|[;|[:space:]])SIM_ID:(\\d+)/', $details, $matches) === 1) {
+                $row['sim_id'] = (int) $matches[1];
+                $details = trim((string) preg_replace('/(?:^|[;|[:space:]])SIM_ID:\\d+\\s*[;|,-]?\\s*/', '', $details, 1));
             }
+            $row['details'] = $details !== '' ? $details : ($row['status'] === 'pending' ? 'Waiting for gateway...' : null);
         }
 
         return ['history' => $history];
+    }
+
+    private function updateDeviceCache(string $deviceId, ?array $simCards = null): void
+    {
+        $cacheDir = __DIR__ . '/../../../cache';
+        if (!is_dir($cacheDir)) {
+            @mkdir($cacheDir, 0777, true);
+        }
+
+        $cacheFile = $cacheDir . '/gateway_devices.json';
+        $devices = [];
+        if (file_exists($cacheFile)) {
+            $devices = json_decode((string) file_get_contents($cacheFile), true) ?: [];
+        }
+
+        $previous = is_array($devices[$deviceId] ?? null) ? $devices[$deviceId] : [];
+        $devices[$deviceId] = [
+            'last_seen' => date('Y-m-d H:i:s'),
+            'sim_cards' => $simCards ?? ($previous['sim_cards'] ?? []),
+        ];
+
+        @file_put_contents($cacheFile, json_encode($devices, JSON_PRETTY_PRINT), LOCK_EX);
     }
 
     public function getDevices(array $request): array
@@ -218,6 +232,21 @@ class SmsGatewayController
         }
 
         $pdo = $this->db->pdo();
+
+        // Keep the selected SIM marker when replacing the temporary queue detail
+        // with the final delivery result. This preserves SIM visibility in history
+        // using the existing lmodem column.
+        $simId = null;
+        $simLookup = $pdo->prepare('SELECT lmodem FROM tblsms WHERE lid = :job_id AND lgateway = :device_id LIMIT 1');
+        $simLookup->execute(['job_id' => $jobId, 'device_id' => $deviceId]);
+        $queuedModem = (string) ($simLookup->fetchColumn() ?: '');
+        if (preg_match('/^SIM_ID:(\\d+)/', $queuedModem, $matches) === 1) {
+            $simId = (int) $matches[1];
+        }
+        $storedDetails = $simId !== null
+            ? 'SIM_ID:' . $simId . ($details !== '' ? '; ' . $details : '')
+            : $details;
+        $storedDetails = substr($storedDetails, 0, 255);
         
         // Map app status to db status
         $dbStatus = $status === 'sent' ? 'sent' : 'failed';
@@ -242,7 +271,7 @@ class SmsGatewayController
         $stmt->execute([
             'job_id' => $jobId,
             'device_id' => $deviceId,
-            'details' => substr($details, 0, 255) // truncate to fit standard column if needed
+            'details' => $storedDetails
         ]);
         
         return ['success' => true, 'updated' => $stmt->rowCount() > 0];
