@@ -11,17 +11,27 @@ declare(strict_types=1);
 $API_BASE = rtrim(getenv('API_BASE_URL') ?: 'http://127.0.0.1:8081', '/');
 $MAIN_ID = 1;
 
+require_once __DIR__ . '/../src/Support/Env.php';
+\App\Support\Env::load(__DIR__ . '/../.env');
+require_once __DIR__ . '/../src/Security/TokenService.php';
+$testTokenService = new \App\Security\TokenService(
+    (string) \App\Support\Env::get('AUTH_SECRET', (string) \App\Support\Env::get('APP_KEY', 'change-me-in-env')),
+    3600
+);
+$testToken = $testTokenService->issue(['sub' => 1, 'main_userid' => $MAIN_ID]);
+$authHeaders = ["Authorization: Bearer {$testToken}"];
+
 $passed = 0;
 $failed = 0;
 $errors = [];
 
-function request(string $method, string $url): array
+function request(string $method, string $url, array $headers = []): array
 {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_CUSTOMREQUEST => strtoupper($method),
-        CURLOPT_HTTPHEADER => ['Accept: application/json'],
+        CURLOPT_HTTPHEADER => array_merge(['Accept: application/json'], $headers),
         CURLOPT_TIMEOUT => 15,
     ]);
 
@@ -81,7 +91,7 @@ if (($health['http_code'] ?? 0) === 0 || ($health['body']['ok'] ?? false) !== tr
 }
 
 echo "\n--- 2. Report Shape ---\n";
-$report = request('GET', "{$API_BASE}/api/v1/incident-items-report?main_id={$MAIN_ID}&page=1&per_page=5");
+$report = request('GET', "{$API_BASE}/api/v1/incident-items-report?main_id={$MAIN_ID}&page=1&per_page=5", $authHeaders);
 assert_eq(200, $report['http_code'], 'Incident items report returns 200', $passed, $failed, $errors);
 assert_eq(true, $report['body']['ok'] ?? false, 'Incident items response ok=true', $passed, $failed, $errors);
 assert_true(is_array($report['body']['data']['items'] ?? null), 'Response includes items array', $passed, $failed, $errors);
@@ -99,14 +109,19 @@ if (count($items) > 0) {
 }
 
 echo "\n--- 3. Search and Supplier Filters ---\n";
-$filtered = request('GET', "{$API_BASE}/api/v1/incident-items-report?main_id={$MAIN_ID}&page=1&per_page=5&search=NOZZLE&supplier=QK9N");
+$filtered = request('GET', "{$API_BASE}/api/v1/incident-items-report?main_id={$MAIN_ID}&page=1&per_page=5&search=NOZZLE&supplier=QK9N", $authHeaders);
 assert_eq(200, $filtered['http_code'], 'Search and supplier filters return 200', $passed, $failed, $errors);
 assert_eq(true, $filtered['body']['ok'] ?? false, 'Filtered response ok=true', $passed, $failed, $errors);
 assert_true(is_array($filtered['body']['data']['items'] ?? null), 'Filtered response includes items array', $passed, $failed, $errors);
 
-echo "\n--- 4. Missing main_id Validation ---\n";
-$missingMain = request('GET', "{$API_BASE}/api/v1/incident-items-report");
-assert_eq(422, $missingMain['http_code'], 'Missing main_id returns 422', $passed, $failed, $errors);
+echo "\n--- 4. Authenticated Tenant Fallback ---\n";
+$missingMain = request('GET', "{$API_BASE}/api/v1/incident-items-report", $authHeaders);
+assert_eq(200, $missingMain['http_code'], 'Authenticated report uses tenant from token when main_id is omitted', $passed, $failed, $errors);
+assert_eq(true, $missingMain['body']['ok'] ?? false, 'Authenticated tenant fallback response ok=true', $passed, $failed, $errors);
+
+echo "\n--- 5. Synchronization Authentication ---\n";
+$unauthorizedSync = request('POST', "{$API_BASE}/api/v1/incident-report-items");
+assert_eq(401, $unauthorizedSync['http_code'], 'Incident item synchronization requires authentication', $passed, $failed, $errors);
 
 echo "\n==========================================================\n";
 echo "Passed: {$passed} | Failed: {$failed}\n";

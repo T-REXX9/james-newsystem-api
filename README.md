@@ -28,6 +28,8 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
    - `mysql -u root topnotch < migrations/011_create_incident_report_items.sql`
    - `mysql -u root topnotch < migrations/012_seed_incident_report_items_demo.sql`
    - `mysql -u root topnotch < migrations/013_create_daily_call_claims.sql`
+   - `mysql -u root topnotch < migrations/014_optimize_notification_indexes.sql`
+     *(Required for notification polling and the automatic inventory-alert scan. Idempotent.)*
 4. Run local server:
    - `PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8081 -t public`
 
@@ -60,6 +62,7 @@ If you use the combined launcher, API URL/port come from:
 - `GET /daily-call-monitoring/customers/{contactId}/incident-reports?main_id={mainId}`
 - `GET /fast-slow-inventory-report?main_id={mainId}&sort_by=sales_volume|part_no&sort_direction=asc|desc`
 - `GET /incident-items-report?main_id={mainId}&search=&supplier=&match_source=all|manual|related_transaction|description_match|imported&date_from=YYYY-MM-DD&date_to=YYYY-MM-DD&min_count=1&page=1&per_page=100`
+- `POST /incident-report-items` (Bearer token; idempotent warehouse projection sync for a customer incident)
 - `GET /inventory-report/options?main_id={mainId}`
 - `GET /inventory-report?main_id={mainId}&category=&part_number=&item_code=&stock_status=all|with_stock|without_stock&report_type=inventory|product`
 - `GET /sales-return-report/options?main_id={mainId}`

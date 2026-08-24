@@ -10,6 +10,7 @@ use PDO;
 final class NotificationsRepository
 {
     private const DEFAULT_MAX_AGE_DAYS = 10;
+    private const INVENTORY_SCAN_REFERENCE_BATCH_SIZE = 500;
     private const LEGACY_METADATA_MAX_BYTES = 225;
     private const LEGACY_METADATA_VALUE_LIMITS = [
         'e' => 24,
@@ -34,10 +35,10 @@ final class NotificationsRepository
         $sql = 'SELECT *
                 FROM tblnotifications
                 WHERE luserid = :user_id
-                  AND COALESCE(lstatus, 0) != -1';
+                  AND (lstatus IS NULL OR lstatus != -1)';
 
         if ($cutoff !== null) {
-            $sql .= ' AND COALESCE(ldatetime, NOW()) >= :cutoff';
+            $sql .= ' AND (ldatetime IS NULL OR ldatetime >= :cutoff)';
         }
 
         $sql .= '
@@ -64,10 +65,10 @@ final class NotificationsRepository
         $sql = 'SELECT COUNT(*)
                 FROM tblnotifications
                 WHERE luserid = :user_id
-                  AND COALESCE(lstatus, 0) = 1';
+                  AND lstatus = 1';
 
         if ($cutoff !== null) {
-            $sql .= ' AND COALESCE(ldatetime, NOW()) >= :cutoff';
+            $sql .= ' AND (ldatetime IS NULL OR ldatetime >= :cutoff)';
         }
 
         $stmt = $this->db->pdo()->prepare($sql);
@@ -119,6 +120,18 @@ final class NotificationsRepository
             }
         }
 
+        return $this->insertNotification($input, $referenceKey, $metadata, $metadataJson, $recipientId, $title, $message);
+    }
+
+    private function insertNotification(
+        array $input,
+        string $referenceKey,
+        array $metadata,
+        ?string $metadataJson,
+        string $recipientId,
+        string $title,
+        string $message
+    ): ?array {
         $stmt = $this->db->pdo()->prepare(
             'INSERT INTO tblnotifications
                 (ltitle, lmessage, ldatetime, lstatus, lmain_id, linv_session, lout_status, ltype, luserid, lrefno)
@@ -149,7 +162,7 @@ final class NotificationsRepository
 
     public function markAllAsRead(string $userId): bool
     {
-        $stmt = $this->db->pdo()->prepare('UPDATE tblnotifications SET lstatus = 0 WHERE luserid = :user_id AND COALESCE(lstatus, 0) = 1');
+        $stmt = $this->db->pdo()->prepare('UPDATE tblnotifications SET lstatus = 0 WHERE luserid = :user_id AND lstatus = 1');
         $stmt->execute([':user_id' => $userId]);
 
         return true;
@@ -171,7 +184,7 @@ final class NotificationsRepository
         }
 
         $select = $this->db->pdo()->prepare(
-            'SELECT lid FROM tblnotifications WHERE luserid = :user_id AND lrefno = :refno AND COALESCE(lstatus, 0) = 1'
+            'SELECT lid FROM tblnotifications WHERE luserid = :user_id AND lrefno = :refno AND lstatus = 1'
         );
         $select->execute([
             ':user_id' => $userId,
@@ -192,7 +205,7 @@ final class NotificationsRepository
         }
 
         $update = $this->db->pdo()->prepare(
-            'UPDATE tblnotifications SET lstatus = 0 WHERE luserid = :user_id AND lrefno = :refno AND COALESCE(lstatus, 0) = 1'
+            'UPDATE tblnotifications SET lstatus = 0 WHERE luserid = :user_id AND lrefno = :refno AND lstatus = 1'
         );
         $update->execute([
             ':user_id' => $userId,
@@ -266,9 +279,26 @@ final class NotificationsRepository
 
     public function scanInventoryAlerts(int $mainId = 0): array
     {
+        if (!$this->acquireInventoryScanLock($mainId)) {
+            return [];
+        }
+
+        try {
+            return $this->performInventoryAlertScan($mainId);
+        } finally {
+            $this->releaseInventoryScanLock($mainId);
+        }
+    }
+
+    private function performInventoryAlertScan(int $mainId): array
+    {
         $products = $this->inventoryAlertCandidates($mainId);
         $recipients = $this->resolveRecipients(['Warehouse Manager', 'Warehouse', 'Purchasing Manager', 'Purchasing Staff', 'Owner'], []);
-        $created = [];
+        if ($products === [] || $recipients === []) {
+            return [];
+        }
+
+        $pending = [];
 
         foreach ($products as $product) {
             $conditions = [];
@@ -317,7 +347,7 @@ final class NotificationsRepository
 
             foreach ($conditions as $condition) {
                 foreach ($recipients as $recipientId) {
-                    $notification = $this->create([
+                    $pending[] = [
                         'recipient_id' => $recipientId,
                         'title' => $condition['title'],
                         'message' => $condition['message'],
@@ -341,16 +371,134 @@ final class NotificationsRepository
                             'category' => 'alert',
                             'alert_type' => $condition['condition'],
                         ],
-                    ]);
-
-                    if ($notification !== null) {
-                        $created[] = $notification;
-                    }
+                    ];
                 }
             }
         }
 
+        if ($pending === []) {
+            return [];
+        }
+
+        $referenceKeys = array_values(array_unique(array_map(
+            fn (array $input): string => $this->resolveReferenceKey($input['metadata']),
+            $pending
+        )));
+        $existing = $this->findExistingInventoryNotificationKeys($recipients, $referenceKeys);
+        $created = [];
+
+        foreach ($pending as $input) {
+            $rawMetadata = $input['metadata'];
+            $referenceKey = $this->resolveReferenceKey($rawMetadata);
+            $recipientId = trim((string) $input['recipient_id']);
+            $lookupKey = $this->notificationLookupKey($recipientId, $referenceKey);
+            if ($referenceKey === '' || isset($existing[$lookupKey])) {
+                continue;
+            }
+
+            $metadata = $this->compactMetadata($input);
+            $notification = $this->insertNotification(
+                $input,
+                $referenceKey,
+                $metadata,
+                $this->encodeMetadataForStorage($metadata),
+                $recipientId,
+                trim((string) $input['title']),
+                trim((string) $input['message'])
+            );
+
+            if ($notification !== null) {
+                $created[] = $notification;
+                $existing[$lookupKey] = true;
+            }
+        }
+
         return $created;
+    }
+
+    /**
+     * Load existing inventory notifications in a few bounded queries instead of
+     * running one table lookup for every product/recipient combination.
+     *
+     * @return array<string, true>
+     */
+    private function findExistingInventoryNotificationKeys(array $recipientIds, array $referenceKeys): array
+    {
+        $recipientIds = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $value): string => trim((string) $value),
+            $recipientIds
+        ))));
+        $referenceKeys = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $value): string => trim((string) $value),
+            $referenceKeys
+        ))));
+
+        if ($recipientIds === [] || $referenceKeys === []) {
+            return [];
+        }
+
+        $existing = [];
+        foreach (array_chunk($referenceKeys, self::INVENTORY_SCAN_REFERENCE_BATCH_SIZE) as $batchIndex => $referenceBatch) {
+            $params = [':status' => 1];
+            $recipientPlaceholders = [];
+            foreach ($recipientIds as $index => $recipientId) {
+                $placeholder = sprintf(':recipient_%d_%d', $batchIndex, $index);
+                $recipientPlaceholders[] = $placeholder;
+                $params[$placeholder] = $recipientId;
+            }
+
+            $referencePlaceholders = [];
+            foreach ($referenceBatch as $index => $referenceKey) {
+                $placeholder = sprintf(':reference_%d_%d', $batchIndex, $index);
+                $referencePlaceholders[] = $placeholder;
+                $params[$placeholder] = $referenceKey;
+            }
+
+            $sql = sprintf(
+                'SELECT luserid, lrefno
+                 FROM tblnotifications
+                 WHERE lstatus = :status
+                   AND luserid IN (%s)
+                   AND lrefno IN (%s)',
+                implode(', ', $recipientPlaceholders),
+                implode(', ', $referencePlaceholders)
+            );
+            $stmt = $this->db->pdo()->prepare($sql);
+            $stmt->execute($params);
+
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $existing[$this->notificationLookupKey(
+                    (string) ($row['luserid'] ?? ''),
+                    (string) ($row['lrefno'] ?? '')
+                )] = true;
+            }
+        }
+
+        return $existing;
+    }
+
+    private function notificationLookupKey(string $recipientId, string $referenceKey): string
+    {
+        return $recipientId . "\0" . $referenceKey;
+    }
+
+    private function acquireInventoryScanLock(int $mainId): bool
+    {
+        $stmt = $this->db->pdo()->prepare('SELECT GET_LOCK(:lock_name, 0)');
+        $stmt->execute([':lock_name' => $this->inventoryScanLockName($mainId)]);
+
+        return (int) $stmt->fetchColumn() === 1;
+    }
+
+    private function releaseInventoryScanLock(int $mainId): void
+    {
+        $stmt = $this->db->pdo()->prepare('SELECT RELEASE_LOCK(:lock_name)');
+        $stmt->execute([':lock_name' => $this->inventoryScanLockName($mainId)]);
+    }
+
+    private function inventoryScanLockName(int $mainId): string
+    {
+        return 'james:inventory-alert-scan:' . max(0, $mainId);
     }
 
     private function findById(string $id): ?array

@@ -14,6 +14,113 @@ final class IncidentItemsReportRepository
     }
 
     /**
+     * Create or refresh the item projection for a customer incident.
+     *
+     * The existing table has no unique key for incident_report_id, so the
+     * lookup/update prevents duplicate rows when a client retries a sync.
+     *
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function create(int $mainId, ?int $userId, array $payload): array
+    {
+        $pdo = $this->db->pdo();
+        $incidentReportId = trim((string) ($payload['incident_report_id'] ?? ''));
+        $existingStmt = $pdo->prepare(
+            'SELECT id FROM incident_report_items
+             WHERE main_id = :main_id AND incident_report_id = :incident_report_id
+             LIMIT 1'
+        );
+        $existingStmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        $existingStmt->bindValue('incident_report_id', $incidentReportId, PDO::PARAM_STR);
+        $existingStmt->execute();
+        $existingId = $existingStmt->fetchColumn();
+
+        $nullableString = static function (mixed $value): ?string {
+            $value = trim((string) ($value ?? ''));
+            return $value === '' ? null : $value;
+        };
+        $productId = $nullableString($payload['product_id'] ?? null);
+        $itemCode = $nullableString($payload['item_code'] ?? null);
+        $partNo = $nullableString($payload['part_no'] ?? null);
+        $supplierId = $nullableString($payload['supplier_id'] ?? null);
+        $supplierName = $nullableString($payload['supplier_name'] ?? null);
+        $contactId = $nullableString($payload['contact_id'] ?? null);
+        $quantity = $payload['quantity'] ?? null;
+        $quantityValue = $quantity === null || $quantity === '' ? null : (float) $quantity;
+        $confidence = min(1, max(0, (float) ($payload['confidence_score'] ?? 1)));
+        $metadata = json_encode([
+            'source' => 'customer_incident_report',
+            'issue_type' => trim((string) ($payload['issue_type'] ?? 'other')),
+            'report_date' => trim((string) ($payload['report_date'] ?? '')),
+            'sync_version' => 1,
+        ], JSON_THROW_ON_ERROR);
+
+        $values = [
+            'main_id' => $mainId,
+            'incident_report_id' => $incidentReportId,
+            'contact_id' => $contactId,
+            'product_id' => $productId,
+            'item_code' => $itemCode,
+            'part_no' => $partNo,
+            'description' => trim((string) ($payload['description'] ?? '')),
+            'supplier_id' => $supplierId,
+            'supplier_name' => $supplierName,
+            'quantity' => $quantityValue,
+            'issue_summary' => trim((string) ($payload['issue_summary'] ?? $payload['description'] ?? '')),
+            'match_source' => 'manual',
+            'confidence_score' => $confidence,
+            'metadata' => $metadata,
+            'created_by_user_id' => $userId,
+        ];
+
+        if ($existingId !== false) {
+            $sql = 'UPDATE incident_report_items SET
+                contact_id = :contact_id,
+                product_id = :product_id,
+                item_code = :item_code,
+                part_no = :part_no,
+                description = :description,
+                supplier_id = :supplier_id,
+                supplier_name = :supplier_name,
+                quantity = :quantity,
+                issue_summary = :issue_summary,
+                match_source = :match_source,
+                confidence_score = :confidence_score,
+                metadata = :metadata,
+                updated_at = CURRENT_TIMESTAMP(3)
+                WHERE id = :id AND main_id = :main_id';
+            $stmt = $pdo->prepare($sql);
+            $this->bindIncidentItemValues($stmt, $values);
+            $stmt->bindValue('id', (int) $existingId, PDO::PARAM_INT);
+            $stmt->execute();
+            $id = (int) $existingId;
+            $created = false;
+        } else {
+            $sql = 'INSERT INTO incident_report_items (
+                main_id, incident_report_id, contact_id, product_id, item_code,
+                part_no, description, supplier_id, supplier_name, quantity,
+                issue_summary, match_source, confidence_score, metadata, created_by_user_id
+            ) VALUES (
+                :main_id, :incident_report_id, :contact_id, :product_id, :item_code,
+                :part_no, :description, :supplier_id, :supplier_name, :quantity,
+                :issue_summary, :match_source, :confidence_score, :metadata, :created_by_user_id
+            )';
+            $stmt = $pdo->prepare($sql);
+            $this->bindIncidentItemValues($stmt, $values);
+            $stmt->execute();
+            $id = (int) $pdo->lastInsertId();
+            $created = true;
+        }
+
+        return [
+            'id' => (string) $id,
+            'incident_report_id' => $incidentReportId,
+            'created' => $created,
+        ];
+    }
+
+    /**
      * @param array<string, string|int> $filters
      */
     public function report(int $mainId, array $filters, int $page, int $perPage): array
@@ -218,11 +325,26 @@ SQL;
         ];
     }
 
+        /**
+     * @param array<string, mixed> $values
+     */
+    private function bindIncidentItemValues(\PDOStatement $stmt, array $values): void
+    {
+        foreach ($values as $key => $value) {
+            $type = PDO::PARAM_STR;
+            if ($key === 'main_id' || $key === 'created_by_user_id') {
+                $type = $value === null ? PDO::PARAM_NULL : PDO::PARAM_INT;
+            } elseif ($value === null) {
+                $type = PDO::PARAM_NULL;
+            }
+            $stmt->bindValue($key, $value, $type);
+        }
+    }
+
     /**
      * @param array<string, mixed> $params
      */
-    private function bind(\PDOStatement $stmt, array $params): void
-    {
+    private function bind(\PDOStatement $stmt, array $params): void {
         $sql = $stmt->queryString ?: '';
         foreach ($params as $key => $value) {
             $pattern = '/:' . preg_quote($key, '/') . '(?![A-Za-z0-9_])/';

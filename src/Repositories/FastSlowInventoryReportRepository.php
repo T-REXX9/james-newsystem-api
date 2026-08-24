@@ -244,7 +244,7 @@ SQL;
     private function getThreeMonthPeriods(): array
     {
         $now = new \DateTimeImmutable('now');
-        $months = [3, 2, 1];
+        $months = [2, 1, 0];
         $labels = ['month1', 'month2', 'month3'];
         $result = [];
 

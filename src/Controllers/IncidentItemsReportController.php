@@ -15,9 +15,15 @@ final class IncidentItemsReportController
 
     public function report(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $claimMainId = (int) ($claims['main_userid'] ?? 0);
+        $requestedMainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $requestedMainId > 0 ? $requestedMainId : $claimMainId;
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
+        }
+        if ($claimMainId > 0 && $mainId !== $claimMainId) {
+            throw new HttpException(403, 'main_id does not belong to the authenticated account');
         }
 
         $matchSource = strtolower(trim((string) ($query['match_source'] ?? 'all')));
@@ -38,5 +44,39 @@ final class IncidentItemsReportController
         $perPage = max(1, min(300, (int) ($query['per_page'] ?? 100)));
 
         return $this->repo->report($mainId, $filters, $page, $perPage);
+    }
+
+    public function create(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $claimMainId = (int) ($claims['main_userid'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        if ($claimMainId > 0 && $mainId !== $claimMainId) {
+            throw new HttpException(403, 'main_id does not belong to the authenticated account');
+        }
+
+        $incidentReportId = trim((string) ($body['incident_report_id'] ?? ''));
+        $description = trim((string) ($body['description'] ?? ''));
+        $issueType = strtolower(trim((string) ($body['issue_type'] ?? 'other')));
+        if ($incidentReportId === '' || $description === '') {
+            throw new HttpException(422, 'incident_report_id and description are required');
+        }
+        if (!in_array($issueType, ['product_quality', 'service_quality', 'delivery', 'other'], true)) {
+            throw new HttpException(422, 'issue_type must be one of: product_quality, service_quality, delivery, other');
+        }
+        if (strlen($incidentReportId) > 64) {
+            throw new HttpException(422, 'incident_report_id is too long');
+        }
+
+        $quantity = $body['quantity'] ?? null;
+        if ($quantity !== null && (!is_numeric($quantity) || (float) $quantity <= 0)) {
+            throw new HttpException(422, 'quantity must be greater than zero');
+        }
+
+        $userId = (int) ($claims['sub'] ?? 0);
+        return $this->repo->create($mainId, $userId > 0 ? $userId : null, $body);
     }
 }

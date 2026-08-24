@@ -1366,7 +1366,7 @@ SQL;
         $threeMonthsAgo = date('Y-m-d', strtotime('-3 months'));
         $sql = <<<SQL
 SELECT
-    CAST(cle.lid AS CHAR) AS id,
+    CONCAT('legacy_', cle.lid) AS id,
     cle.lcustomer_id AS contact_id,
     COALESCE(
         NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
@@ -1378,18 +1378,45 @@ SELECT
     END AS channel,
     cle.lnotes AS notes,
     COALESCE(NULLIF(cle.lstatus, ''), NULLIF(cle.lremarks, ''), 'logged') AS outcome,
-    CONCAT(cl.lcall_date, ' 00:00:00') AS occurred_at
+    CONCAT(cl.lcall_date, ' 00:00:00') AS occurred_at,
+    CASE
+        WHEN LOWER(COALESCE(cl.lcall_type, '')) LIKE '%inbound%' THEN 'inbound'
+        ELSE 'outbound'
+    END AS direction,
+    0 AS duration_seconds
 FROM tblcall_logs_entry cle
 INNER JOIN tblcall_logs cl ON cl.lrefno = cle.lrefno
 LEFT JOIN tblaccount ua ON ua.lid = cl.lsalesman_id
 WHERE cl.lmain_id = ?
   AND cle.lcustomer_id IN ({$placeholders})
   AND cl.lcall_date >= ?
-ORDER BY cl.lcall_date DESC, cle.lid DESC
+
+UNION ALL
+
+SELECT
+    CAST(nc.lid AS CHAR) AS id,
+    nc.lcustomer_id AS contact_id,
+    TRIM(CONCAT(COALESCE(na.lfname, ''), ' ', COALESCE(na.llname, ''))) AS agent_name,
+    'call' AS channel,
+    '' AS notes,
+    CASE
+        WHEN nc.lduration_seconds > 0 THEN 'logged'
+        ELSE 'missed'
+    END AS outcome,
+    nc.lcall_timestamp AS occurred_at,
+    nc.ldirection AS direction,
+    nc.lduration_seconds AS duration_seconds
+FROM tblcall_logs_v2 nc
+INNER JOIN tblaccount na ON na.lid = nc.lagent_id
+WHERE (na.lid = ? OR na.lmother_id = ?)
+  AND nc.lcustomer_id IN ({$placeholders})
+  AND nc.lcall_timestamp >= ?
+
+ORDER BY occurred_at DESC, id DESC
 SQL;
 
         $stmt = $this->db->pdo()->prepare($sql);
-        $params = array_merge([$mainId], $contactIds, [$threeMonthsAgo]);
+        $params = array_merge([$mainId], $contactIds, [$threeMonthsAgo], [$mainId, $mainId], $contactIds, [$threeMonthsAgo . ' 00:00:00']);
         $stmt->execute($params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -1820,7 +1847,7 @@ SQL;
     {
         $sql = <<<SQL
 SELECT
-    CAST(cle.lid AS CHAR) AS id,
+    CONCAT('legacy_', cle.lid) AS id,
     CAST(cle.lcustomer_id AS CHAR) AS contact_id,
     COALESCE(
         NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
@@ -1831,7 +1858,10 @@ SELECT
         WHEN LOWER(COALESCE(cl.lcall_type, '')) LIKE '%text%' OR LOWER(COALESCE(cl.lcall_type, '')) LIKE '%sms%' THEN 'text'
         ELSE 'call'
     END AS channel,
-    'outbound' AS direction,
+    CASE
+        WHEN LOWER(COALESCE(cl.lcall_type, '')) LIKE '%inbound%' THEN 'inbound'
+        ELSE 'outbound'
+    END AS direction,
     0 AS duration_seconds,
     cle.lnotes AS notes,
     COALESCE(NULLIF(cle.lstatus, ''), NULLIF(cle.lremarks, ''), 'logged') AS outcome,
@@ -1859,7 +1889,45 @@ SQL;
             $params['to_date'] = substr($toDate, 0, 10);
         }
 
-        $sql .= ' ORDER BY cl.lcall_date DESC, cle.lid DESC';
+        $sql .= <<<SQL
+UNION ALL
+
+SELECT
+    CAST(nc.lid AS CHAR) AS id,
+    CAST(nc.lcustomer_id AS CHAR) AS contact_id,
+    TRIM(CONCAT(COALESCE(na.lfname, ''), ' ', COALESCE(na.llname, ''))) AS agent_name,
+    nc.lcall_timestamp AS occurred_at,
+    'call' AS channel,
+    nc.ldirection AS direction,
+    nc.lduration_seconds AS duration_seconds,
+    '' AS notes,
+    CASE
+        WHEN nc.lduration_seconds > 0 THEN 'logged'
+        ELSE 'missed'
+    END AS outcome,
+    NULL AS next_action,
+    NULL AS next_action_due
+FROM tblcall_logs_v2 nc
+INNER JOIN tblaccount na ON na.lid = nc.lagent_id
+WHERE (na.lid = :main_id_2 OR na.lmother_id = :main_id_3)
+  AND CAST(nc.lcustomer_id AS CHAR) = :contact_id_2
+SQL;
+
+        $params['main_id_2'] = $mainId;
+        $params['main_id_3'] = $mainId;
+        $params['contact_id_2'] = $contactId;
+
+        if ($fromDate !== null && $fromDate !== '') {
+            $sql .= ' AND nc.lcall_timestamp >= :from_date_2';
+            $params['from_date_2'] = substr($fromDate, 0, 10) . ' 00:00:00';
+        }
+
+        if ($toDate !== null && $toDate !== '') {
+            $sql .= ' AND nc.lcall_timestamp <= :to_date_2';
+            $params['to_date_2'] = substr($toDate, 0, 10) . ' 23:59:59';
+        }
+
+        $sql .= ' ORDER BY occurred_at DESC, id DESC';
 
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute($params);
