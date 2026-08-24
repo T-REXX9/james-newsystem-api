@@ -303,7 +303,10 @@ function app_router(): Router
         $internalChatTypingStore
     );
     $dailyCallMonitoringController = new DailyCallMonitoringController(new App\Repositories\DailyCallMonitoringRepository($db));
-    $callSystemController = new CallSystemController(new App\Repositories\CallSystemRepository($db));
+    $callSystemController = new CallSystemController(
+        new App\Repositories\CallSystemRepository($db),
+        $internalChatRealtimeNotifier
+    );
     $fastSlowInventoryReportController = new FastSlowInventoryReportController(new App\Repositories\FastSlowInventoryReportRepository($db));
     $freightChargesController = new FreightChargesController(new App\Repositories\FreightChargesRepository($db));
     $authController = new AuthController(

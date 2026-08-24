@@ -76,6 +76,19 @@ final class InternalChatRealtimeNotifier
         ]);
     }
 
+    public function notifyDialRequestCreated(int $userId, array $request): void
+    {
+        if ($userId <= 0 || $request === []) {
+            return;
+        }
+
+        $this->post([
+            'type' => 'call.dial_request.created',
+            'user_id' => (string) $userId,
+            'request' => $request,
+        ]);
+    }
+
     private function post(array $payload): void
     {
         if ($this->endpointUrl === '' || $this->sharedSecret === '') {

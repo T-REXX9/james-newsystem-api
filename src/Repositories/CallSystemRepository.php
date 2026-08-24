@@ -136,6 +136,18 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
             $callTimestamp
         );
         if ($duplicate !== null) {
+            if ($customerId !== null && (int) ($duplicate['lcustomer_id'] ?? 0) <= 0) {
+                $stmt = $this->db->pdo()->prepare(
+                    'UPDATE tblcall_logs_v2
+                     SET lcustomer_id = :customer_id
+                     WHERE lid = :id AND lcustomer_id IS NULL'
+                );
+                $stmt->execute([
+                    'customer_id' => $customerId,
+                    'id' => (int) $duplicate['lid'],
+                ]);
+                $duplicate = $this->getCallLog((int) $duplicate['lid']) ?? $duplicate;
+            }
             return [
                 'created' => false,
                 'duplicate' => true,

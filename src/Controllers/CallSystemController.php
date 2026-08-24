@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\CallSystemRepositoryInterface;
+use App\Services\InternalChatRealtimeNotifier;
 use DateTimeImmutable;
 use DateTimeZone;
 use App\Support\Exceptions\HttpException;
@@ -15,8 +16,10 @@ final class CallSystemController
     /**
      * @param CallSystemRepositoryInterface $repo
      */
-    public function __construct(private readonly CallSystemRepositoryInterface $repo)
-    {
+    public function __construct(
+        private readonly CallSystemRepositoryInterface $repo,
+        private readonly ?InternalChatRealtimeNotifier $realtimeNotifier = null
+    ) {
     }
 
     /**
@@ -135,7 +138,7 @@ final class CallSystemController
 
     /**
      * Queue a dial request for the authenticated staff member's registered phone.
-     * The Android app must present its own confirmation before opening the native dialer.
+     * The website confirms the action before the Android app opens the native dialer.
      *
      * @param array<string, mixed> $body
      * @return array<string, mixed>
@@ -150,9 +153,12 @@ final class CallSystemController
         }
 
         $customerId = $this->repo->findCustomerIdByPhone($mainId, $phoneNumber);
+        $request = $this->repo->createDialRequest($agentId, $customerId, $phoneNumber);
+        $this->realtimeNotifier?->notifyDialRequestCreated($agentId, $request);
+
         return [
             'queued' => true,
-            'request' => $this->repo->createDialRequest($agentId, $customerId, $phoneNumber),
+            'request' => $request,
             'customer_matched' => $customerId !== null,
         ];
     }
@@ -174,7 +180,7 @@ final class CallSystemController
     }
 
     /**
-     * Mark a request as dialed or failed after the Android confirmation/native-dial step.
+     * Mark a request as dialed or failed after the Android native-dial step.
      *
      * @param array<string, mixed> $params
      * @param array<string, mixed> $body

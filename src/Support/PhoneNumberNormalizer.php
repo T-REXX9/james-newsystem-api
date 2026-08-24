@@ -26,12 +26,33 @@ final class PhoneNumberNormalizer
 
     public static function equivalent(string $left, string $right): bool
     {
-        $leftNormalized = self::normalize($left);
-        $rightNormalized = self::normalize($right);
-        if ($leftNormalized === '' || $rightNormalized === '') {
+        $leftCandidates = self::candidates($left);
+        $rightCandidates = self::candidates($right);
+        if ($leftCandidates === [] || $rightCandidates === []) {
             return false;
         }
 
-        return $leftNormalized === $rightNormalized;
+        return array_intersect($leftCandidates, $rightCandidates) !== [];
+    }
+
+    /**
+     * Customer records sometimes keep multiple phone numbers in one field,
+     * separated by a slash, comma, semicolon, pipe, or line break. Treat each
+     * entry as a separate number instead of concatenating all of their digits.
+     *
+     * @return list<string>
+     */
+    public static function candidates(string $value): array
+    {
+        $parts = preg_split('/\s*(?:\/|,|;|\||\R)\s*/', trim($value)) ?: [];
+        $numbers = [];
+        foreach ($parts as $part) {
+            $normalized = self::normalize($part);
+            if ($normalized !== '') {
+                $numbers[] = $normalized;
+            }
+        }
+
+        return array_values(array_unique($numbers));
     }
 }
