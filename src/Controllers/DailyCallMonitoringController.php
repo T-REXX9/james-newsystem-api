@@ -6,6 +6,7 @@ namespace App\Controllers;
 
 use App\Repositories\DailyCallMonitoringRepository;
 use App\Support\Exceptions\HttpException;
+use InvalidArgumentException;
 
 final class DailyCallMonitoringController
 {
@@ -276,17 +277,21 @@ final class DailyCallMonitoringController
             throw new HttpException(422, 'note, promise_to_pay, or comments is required');
         }
 
-        return $this->repo->createCustomerLog($mainId, [
-            'contact_id' => $contactId,
-            'user_id' => $body['user_id'] ?? null,
-            'entry_type' => $entryType,
-            'topic' => $body['topic'] ?? null,
-            'status' => $status,
-            'note' => $note,
-            'promise_to_pay' => $promiseToPay,
-            'comments' => $comments,
-            'attachment' => $body['attachment'] ?? null,
-            'occurred_at' => $body['occurred_at'] ?? null,
-        ]);
+        try {
+            return $this->repo->createCustomerLog($mainId, [
+                'contact_id' => $contactId,
+                'user_id' => $body['user_id'] ?? null,
+                'entry_type' => $entryType,
+                'topic' => $body['topic'] ?? null,
+                'status' => $status,
+                'note' => $note,
+                'promise_to_pay' => $promiseToPay,
+                'comments' => $comments,
+                'attachment' => $body['attachment'] ?? null,
+                'occurred_at' => $body['occurred_at'] ?? null,
+            ]);
+        } catch (InvalidArgumentException $error) {
+            throw new HttpException(422, $error->getMessage());
+        }
     }
 }

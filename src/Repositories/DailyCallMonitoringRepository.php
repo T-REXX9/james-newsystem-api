@@ -7,6 +7,7 @@ namespace App\Repositories;
 use App\Database;
 use App\Support\DailyCallClaimPolicy;
 use App\Support\Exceptions\HttpException;
+use App\Support\SqlDateTimeNormalizer;
 use DateTimeImmutable;
 use PDO;
 
@@ -815,7 +816,7 @@ SQL;
     public function createCustomerLog(int $mainId, array $data): array
     {
         $entryType = (string) ($data['entry_type'] ?? 'Note');
-        $occurredAt = (string) ($data['occurred_at'] ?? date('Y-m-d H:i:s'));
+        $occurredAt = SqlDateTimeNormalizer::normalize($data['occurred_at'] ?? null);
         $topic = $entryType === 'Status'
             ? 'Status'
             : (trim((string) ($data['topic'] ?? '')) ?: 'Sales');
