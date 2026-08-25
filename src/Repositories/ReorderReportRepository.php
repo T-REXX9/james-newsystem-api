@@ -27,7 +27,7 @@ final class ReorderReportRepository
     ): array {
         $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
-            'canonical_product_version' => 3,
+            'purchasing_control_version' => 4,
             'main_id' => $mainId,
             'warehouse_type' => $normalizedWarehouseType,
             'search' => trim($search),
@@ -62,13 +62,53 @@ final class ReorderReportRepository
             ? "CAST(COALESCE(NULLIF(itm.lreplenish, ''), '0') AS DECIMAL(15,2))"
             : "CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2))";
 
+        $reservationSubquery = <<<SQL
+SELECT
+    COALESCE(NULLIF(TRIM(soi.litem_refno), ''), NULLIF(TRIM(soi.linv_refno), '')) AS item_session,
+    SUM(COALESCE(soi.lqty, 0)) AS reserved_qty
+FROM tbltransaction_item soi
+INNER JOIN tbltransaction so ON so.lrefno = soi.lrefno
+WHERE so.lmain_id = :reservation_main_id
+  AND COALESCE(soi.lcancel, 0) = 0
+  AND COALESCE(so.lcancel, 0) = 0
+  AND LOWER(COALESCE(so.lsubmitstat, '')) IN ('approved', 'posted')
+  AND LOWER(COALESCE(so.ltransaction_status, '')) NOT IN ('cancelled', 'canceled', 'unposted')
+  AND TRIM(COALESCE(so.ldr_refno, '')) = ''
+  AND TRIM(COALESCE(so.invoice_refno, '')) = ''
+GROUP BY COALESCE(NULLIF(TRIM(soi.litem_refno), ''), NULLIF(TRIM(soi.linv_refno), ''))
+SQL;
+
+        $availableExpr = '(COALESCE(st.current_stock, 0) - COALESCE(res.reserved_qty, 0))';
+        $activeWorkflowExpr = <<<SQL
+(
+    EXISTS (
+        SELECT 1
+        FROM tblpr_item active_pr_item
+        INNER JOIN tblpr_list active_pr ON active_pr.lrefno = active_pr_item.lrefno
+        WHERE (active_pr_item.litem_refno = itm.lsession OR active_pr_item.litem_code = itm.litemcode)
+          AND LOWER(COALESCE(active_pr.lstatus, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
+          AND TRIM(COALESCE(active_pr_item.lpo_refno, '')) = ''
+    )
+    OR EXISTS (
+        SELECT 1
+        FROM tblpo_itemlist active_po_item
+        INNER JOIN tblpo_list active_po ON active_po.lrefno = active_po_item.lrefno
+        WHERE active_po.lmain_id = itm.lmain_id
+          AND (active_po_item.litem_refno = itm.lsession OR active_po_item.litem_code = itm.litemcode)
+          AND LOWER(COALESCE(active_po.ltransaction_status, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
+          AND COALESCE(active_po_item.lqty, 0) > COALESCE(active_po_item.lreceiving_qty, 0)
+    )
+)
+SQL;
+
         $where = [
             'itm.lmain_id = :main_id',
-            'COALESCE(st.current_stock, 0) < ' . $targetExpr,
+            '(' . $availableExpr . ' <= ' . $targetExpr . ' OR ' . $activeWorkflowExpr . ')',
             // Items with a zero reorder level are not reorder candidates.
             "CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2)) > 0",
         ];
         $params = ['main_id' => $mainId];
+        $params['reservation_main_id'] = $mainId;
 
         if (!$includeHidden) {
             $where[] = 'COALESCE(itm.lstatus, 0) = 1';
@@ -110,6 +150,7 @@ SQL;
 SELECT COUNT(*) AS total
 FROM ({$canonicalItemsSql}) itm
 LEFT JOIN ({$stockSubquery}) st ON st.linvent_id = itm.lsession
+LEFT JOIN ({$reservationSubquery}) res ON res.item_session = itm.lsession
 WHERE {$whereSql}
 SQL;
         $countStmt = $pdo->prepare($countSql);
@@ -128,9 +169,12 @@ SQL;
     CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2)) AS reorder_qty,
     CAST(COALESCE(NULLIF(itm.lreplenish, ''), '0') AS DECIMAL(15,2)) AS replenish_qty,
     CAST(COALESCE(st.current_stock, 0) AS DECIMAL(15,2)) AS current_stock,
+    CAST(COALESCE(res.reserved_qty, 0) AS DECIMAL(15,2)) AS reserved_stock,
+    CAST({$availableExpr} AS DECIMAL(15,2)) AS available_stock,
     {$targetExpr} AS target_quantity
 FROM ({$canonicalItemsSql}) itm
 LEFT JOIN ({$stockSubquery}) st ON st.linvent_id = itm.lsession
+LEFT JOIN ({$reservationSubquery}) res ON res.item_session = itm.lsession
 WHERE {$whereSql}
 ORDER BY itm.ldescription ASC, itm.lpartno ASC, itm.litemcode ASC
 LIMIT :limit OFFSET :offset
@@ -176,6 +220,17 @@ SQL;
 
         $totalRrBySession = $this->fetchTotalRrBySession($sessions);
         $totalReturnBySession = $this->fetchTotalReturnBySession($sessions);
+        $preferredSuppliers = $this->fetchPreferredSuppliers($mainId, $sessions);
+        $prDocumentsByItem = $this->fetchOpenPrDocuments($sessions, $itemCodes);
+        $poDocumentsByItem = $this->fetchOpenPoDocuments($mainId, $sessions, $itemCodes);
+        $openPoRefnos = [];
+        foreach ($poDocumentsByItem as $documents) {
+            foreach ($documents as $document) {
+                $refno = trim((string) ($document['refno'] ?? ''));
+                if ($refno !== '') $openPoRefnos[$refno] = true;
+            }
+        }
+        $rrDocumentsByItem = $this->fetchReceivingDocuments($sessions, $itemCodes, array_keys($openPoRefnos));
         $latestPrByItem = $this->fetchLatestPrByItemCode($itemCodes);
         $latestPoByItem = $this->fetchLatestPoByItemCode($itemCodes);
         $latestRrByItem = $this->fetchLatestRrByItemCode($itemCodes);
@@ -191,6 +246,86 @@ SQL;
             $po = $latestPoByItem[$itemCode] ?? ['po_refno' => '', 'po_no' => '', 'po_status' => ''];
             $rr = $latestRrByItem[$itemCode] ?? ['rr_refno' => '', 'rr_no' => '', 'rr_status' => ''];
             $arrival = $lastArrivalByItem[$itemCode] ?? ['last_arrival_date' => '', 'last_arrival_qty' => 0];
+            $preferredSupplier = $preferredSuppliers[$session] ?? [
+                'supplier_id' => '',
+                'supplier_name' => '',
+                'supplier_cost' => 0,
+            ];
+            $prDocuments = $prDocumentsByItem[$session] ?? $prDocumentsByItem['code:' . $itemCode] ?? [];
+            $poDocuments = $poDocumentsByItem[$session] ?? $poDocumentsByItem['code:' . $itemCode] ?? [];
+            $rrDocuments = $rrDocumentsByItem[$session] ?? $rrDocumentsByItem['code:' . $itemCode] ?? [];
+
+            $openPrQty = 0.0;
+            $hasPendingPr = false;
+            $hasApprovedPr = false;
+            foreach ($prDocuments as $document) {
+                if (trim((string) ($document['po_refno'] ?? '')) !== '') continue;
+                $openPrQty += (float) ($document['requested_qty'] ?? 0);
+                $status = strtolower(trim((string) ($document['status'] ?? '')));
+                if ($status === 'approved') $hasApprovedPr = true;
+                else $hasPendingPr = true;
+            }
+
+            $orderedQty = 0.0;
+            $acceptedQty = 0.0;
+            $openPoQty = 0.0;
+            $hasPendingPo = false;
+            $isOverdue = false;
+            foreach ($poDocuments as $document) {
+                $status = strtolower(trim((string) ($document['status'] ?? '')));
+                $isOnOrder = in_array($status, ['posted', 'approved', 'ordered', 'awaiting delivery'], true);
+                if (!$isOnOrder) {
+                    $hasPendingPo = true;
+                    continue;
+                }
+                $orderedQty += (float) ($document['ordered_qty'] ?? 0);
+                $acceptedQty += (float) ($document['accepted_qty'] ?? 0);
+                $openPoQty += (float) ($document['outstanding_qty'] ?? 0);
+                $eta = trim((string) ($document['expected_delivery_date'] ?? ''));
+                if ($eta !== '' && $eta !== '1970-01-01' && $eta < date('Y-m-d') && (float) ($document['outstanding_qty'] ?? 0) > 0) {
+                    $isOverdue = true;
+                }
+            }
+
+            $physicallyReceivedQty = 0.0;
+            foreach ($rrDocuments as $document) {
+                $physicallyReceivedQty += (float) ($document['received_qty'] ?? 0);
+            }
+
+            $availableStock = (float) ($row['available_stock'] ?? 0);
+            $reorderLevel = (float) ($row['reorder_qty'] ?? 0);
+            $configuredReplenish = (float) ($row['replenish_qty'] ?? 0);
+            $grossRequirement = $configuredReplenish > 0
+                ? $configuredReplenish
+                : max(0.0, $reorderLevel - $availableStock);
+            $suggestedReorderQty = max(0.0, $grossRequirement - $openPoQty);
+
+            if ($isOverdue) {
+                $overallStatus = 'Overdue';
+            } elseif ($acceptedQty > 0 && $openPoQty > 0) {
+                $overallStatus = 'Partially Received';
+            } elseif ($openPoQty > 0) {
+                $overallStatus = 'Ordered';
+            } elseif ($hasPendingPo || $hasApprovedPr) {
+                $overallStatus = 'Awaiting PO';
+            } elseif ($hasPendingPr) {
+                $overallStatus = 'PR Pending';
+            } else {
+                $latestPoStatus = strtolower(trim((string) ($po['po_status'] ?? '')));
+                $latestPrStatus = strtolower(trim((string) ($pr['pr_status'] ?? '')));
+                $latestRrStatus = strtolower(trim((string) ($rr['rr_status'] ?? '')));
+                if (in_array($latestPoStatus, ['cancelled', 'canceled'], true) || in_array($latestPrStatus, ['cancelled', 'canceled'], true)) {
+                    $overallStatus = 'Cancelled';
+                } elseif ($po['po_refno'] !== '' && in_array($latestRrStatus, ['posted', 'received', 'delivered', 'completed'], true)) {
+                    $overallStatus = 'Completed';
+                } else {
+                    $overallStatus = 'Needs PR';
+                }
+            }
+
+            $currentPr = $prDocuments !== [] ? $prDocuments[array_key_last($prDocuments)] : null;
+            $currentPo = $poDocuments !== [] ? $poDocuments[array_key_last($poDocuments)] : null;
+            $currentRr = $rrDocuments !== [] ? $rrDocuments[array_key_last($rrDocuments)] : null;
 
             $mapped[] = [
                 'id' => (int) ($row['id'] ?? 0),
@@ -202,18 +337,36 @@ SQL;
                 'reorder_qty' => (float) ($row['reorder_qty'] ?? 0),
                 'replenish_qty' => (float) ($row['replenish_qty'] ?? 0),
                 'current_stock' => (float) ($row['current_stock'] ?? 0),
+                'physical_stock' => (float) ($row['current_stock'] ?? 0),
+                'reserved_stock' => (float) ($row['reserved_stock'] ?? 0),
+                'available_stock' => $availableStock,
                 'total_rr' => (float) ($totalRrBySession[$session] ?? 0),
                 'total_return' => (float) ($totalReturnBySession[$session] ?? 0),
                 'target_quantity' => (float) ($row['target_quantity'] ?? 0),
-                'pr_refno' => (string) ($pr['pr_refno'] ?? ''),
-                'pr_no' => (string) ($pr['pr_no'] ?? ''),
-                'pr_status' => (string) ($pr['pr_status'] ?? ''),
-                'po_refno' => (string) ($po['po_refno'] ?? ''),
-                'po_no' => (string) ($po['po_no'] ?? ''),
-                'po_status' => (string) ($po['po_status'] ?? ''),
-                'rr_refno' => (string) ($rr['rr_refno'] ?? ''),
-                'rr_no' => (string) ($rr['rr_no'] ?? ''),
-                'rr_status' => (string) ($rr['rr_status'] ?? ''),
+                'suggested_reorder_qty' => $suggestedReorderQty,
+                'open_pr_qty' => $openPrQty,
+                'po_ordered_qty' => $orderedQty,
+                'open_po_qty' => $openPoQty,
+                'received_qty' => $physicallyReceivedQty,
+                'accepted_qty' => $acceptedQty,
+                'remaining_qty' => $openPoQty,
+                'preferred_supplier_id' => (string) ($preferredSupplier['supplier_id'] ?? ''),
+                'preferred_supplier_name' => (string) ($preferredSupplier['supplier_name'] ?? ''),
+                'preferred_supplier_cost' => (float) ($preferredSupplier['supplier_cost'] ?? 0),
+                'overall_status' => $overallStatus,
+                'can_create_pr' => !in_array($overallStatus, ['PR Pending', 'Awaiting PO', 'Ordered', 'Partially Received', 'Overdue'], true),
+                'pr_documents' => $prDocuments,
+                'po_documents' => $poDocuments,
+                'rr_documents' => $rrDocuments,
+                'pr_refno' => (string) ($currentPr['refno'] ?? $pr['pr_refno'] ?? ''),
+                'pr_no' => (string) ($currentPr['number'] ?? $pr['pr_no'] ?? ''),
+                'pr_status' => (string) ($currentPr['status'] ?? $pr['pr_status'] ?? ''),
+                'po_refno' => (string) ($currentPo['refno'] ?? $po['po_refno'] ?? ''),
+                'po_no' => (string) ($currentPo['number'] ?? $po['po_no'] ?? ''),
+                'po_status' => (string) ($currentPo['status'] ?? $po['po_status'] ?? ''),
+                'rr_refno' => (string) ($currentRr['refno'] ?? $rr['rr_refno'] ?? ''),
+                'rr_no' => (string) ($currentRr['number'] ?? $rr['rr_no'] ?? ''),
+                'rr_status' => (string) ($currentRr['status'] ?? $rr['rr_status'] ?? ''),
                 'last_arrival_date' => (string) ($arrival['last_arrival_date'] ?? ''),
                 'last_arrival_qty' => (float) ($arrival['last_arrival_qty'] ?? 0),
             ];
@@ -279,6 +432,210 @@ SQL;
         $stmt->execute();
         $this->clearCache();
         return $stmt->rowCount();
+    }
+
+    /**
+     * @param array<int, string> $sessions
+     * @return array<string, array{supplier_id:string,supplier_name:string,supplier_cost:float}>
+     */
+    private function fetchPreferredSuppliers(int $mainId, array $sessions): array
+    {
+        if ($sessions === []) return [];
+        [$inClause, $bind] = $this->buildInClause($sessions, 'supplier_session');
+        $bind['supplier_main_id'] = (string) $mainId;
+        $sql = <<<SQL
+SELECT
+    sc.litemsession AS item_session,
+    COALESCE(sc.lsupplier_id, '') AS supplier_id,
+    COALESCE(NULLIF(TRIM(s.lcompany), ''), NULLIF(TRIM(s.lname), ''), sc.lsupplier_name, '') AS supplier_name,
+    CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) AS supplier_cost
+FROM tblsupplier_cost sc
+INNER JOIN (
+    SELECT litemsession, MAX(lid) AS max_lid
+    FROM tblsupplier_cost
+    WHERE lmainid = :supplier_main_id
+      AND litemsession IN ({$inClause})
+    GROUP BY litemsession
+) latest ON latest.max_lid = sc.lid
+LEFT JOIN tblsupplier s ON CAST(s.lid AS CHAR) = sc.lsupplier_id
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $this->bindParams($stmt, $bind);
+        $stmt->execute();
+
+        $result = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $session = trim((string) ($row['item_session'] ?? ''));
+            if ($session === '') continue;
+            $result[$session] = [
+                'supplier_id' => (string) ($row['supplier_id'] ?? ''),
+                'supplier_name' => (string) ($row['supplier_name'] ?? ''),
+                'supplier_cost' => (float) ($row['supplier_cost'] ?? 0),
+            ];
+        }
+        return $result;
+    }
+
+    /**
+     * @param array<int, string> $sessions
+     * @param array<int, string> $itemCodes
+     * @return array<string, array<int, array<string, mixed>>>
+     */
+    private function fetchOpenPrDocuments(array $sessions, array $itemCodes): array
+    {
+        if ($sessions === [] && $itemCodes === []) return [];
+        [$sessionClause, $sessionBind] = $this->buildInClause($sessions, 'pr_session');
+        [$codeClause, $codeBind] = $this->buildInClause($itemCodes, 'pr_code');
+        $identifiers = [];
+        if ($sessions !== []) $identifiers[] = 'pri.litem_refno IN (' . $sessionClause . ')';
+        if ($itemCodes !== []) $identifiers[] = 'pri.litem_code IN (' . $codeClause . ')';
+        $sql = <<<SQL
+SELECT
+    COALESCE(pri.litem_refno, '') AS item_session,
+    COALESCE(pri.litem_code, '') AS item_code,
+    COALESCE(pri.lrefno, '') AS refno,
+    COALESCE(prl.lprno, pri.lrefno, '') AS number,
+    CAST(COALESCE(NULLIF(pri.lqty, ''), '0') AS DECIMAL(15,2)) AS requested_qty,
+    COALESCE(prl.ldatetime, '') AS request_date,
+    CASE
+        WHEN LOWER(COALESCE(prl.lstatus, '')) IN ('cancelled', 'canceled', 'rejected', 'disapproved') THEN 'Cancelled'
+        WHEN LOWER(COALESCE(prl.lapproval, '')) = 'approved' THEN 'Approved'
+        ELSE 'Pending Approval'
+    END AS status,
+    COALESCE(pri.lsupp_id, '') AS supplier_id,
+    COALESCE(pri.lsupp_name, '') AS supplier_name,
+    COALESCE(pri.lpo_refno, '') AS po_refno
+FROM tblpr_item pri
+INNER JOIN tblpr_list prl ON prl.lrefno = pri.lrefno
+WHERE (%s)
+  AND LOWER(COALESCE(prl.lstatus, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
+  AND (
+      TRIM(COALESCE(pri.lpo_refno, '')) = ''
+      OR EXISTS (
+          SELECT 1
+          FROM tblpo_itemlist linked_po_item
+          INNER JOIN tblpo_list linked_po ON linked_po.lrefno = linked_po_item.lrefno
+          WHERE linked_po.lrefno = pri.lpo_refno
+            AND linked_po_item.litem_refno = pri.litem_refno
+            AND LOWER(COALESCE(linked_po.ltransaction_status, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
+            AND COALESCE(linked_po_item.lqty, 0) > COALESCE(linked_po_item.lreceiving_qty, 0)
+      )
+  )
+ORDER BY pri.lid ASC
+SQL;
+        $stmt = $this->db->pdo()->prepare(sprintf($sql, implode(' OR ', $identifiers)));
+        $this->bindParams($stmt, array_merge($sessionBind, $codeBind));
+        $stmt->execute();
+        return $this->indexDocumentsByItem($stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /**
+     * @param array<int, string> $sessions
+     * @param array<int, string> $itemCodes
+     * @return array<string, array<int, array<string, mixed>>>
+     */
+    private function fetchOpenPoDocuments(int $mainId, array $sessions, array $itemCodes): array
+    {
+        if ($sessions === [] && $itemCodes === []) return [];
+        [$sessionClause, $sessionBind] = $this->buildInClause($sessions, 'po_session');
+        [$codeClause, $codeBind] = $this->buildInClause($itemCodes, 'po_code');
+        $identifiers = [];
+        if ($sessions !== []) $identifiers[] = 'poi.litem_refno IN (' . $sessionClause . ')';
+        if ($itemCodes !== []) $identifiers[] = 'poi.litem_code IN (' . $codeClause . ')';
+        $bind = array_merge($sessionBind, $codeBind, ['po_main_id' => $mainId]);
+        $sql = <<<SQL
+SELECT
+    COALESCE(poi.litem_refno, '') AS item_session,
+    COALESCE(poi.litem_code, '') AS item_code,
+    COALESCE(poi.lrefno, '') AS refno,
+    COALESCE(pol.lpurchaseno, poi.lrefno, '') AS number,
+    COALESCE(pol.ltransaction_status, 'Pending') AS status,
+    COALESCE(pol.lsupplier, poi.lsupp_id, '') AS supplier_id,
+    COALESCE(NULLIF(TRIM(pol.lsupplier_name), ''), poi.lsupp_name, '') AS supplier_name,
+    CAST(COALESCE(poi.lqty, 0) AS DECIMAL(15,2)) AS ordered_qty,
+    CAST(COALESCE(poi.lreceiving_qty, 0) AS DECIMAL(15,2)) AS accepted_qty,
+    CAST(GREATEST(COALESCE(poi.lqty, 0) - COALESCE(poi.lreceiving_qty, 0), 0) AS DECIMAL(15,2)) AS outstanding_qty,
+    CAST(COALESCE(NULLIF(poi.lsup_price, ''), '0') AS DECIMAL(15,2)) AS unit_cost,
+    COALESCE(pol.ldate, '') AS order_date,
+    COALESCE(poi.leta_date, '') AS expected_delivery_date,
+    COALESCE(pol.lpr_refno, '') AS pr_refno,
+    COALESCE(pol.lpr_no, '') AS pr_number
+FROM tblpo_itemlist poi
+INNER JOIN tblpo_list pol ON pol.lrefno = poi.lrefno
+WHERE pol.lmain_id = :po_main_id
+  AND (%s)
+  AND LOWER(COALESCE(pol.ltransaction_status, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
+  AND COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)
+ORDER BY poi.lid ASC
+SQL;
+        $stmt = $this->db->pdo()->prepare(sprintf($sql, implode(' OR ', $identifiers)));
+        $this->bindParams($stmt, $bind);
+        $stmt->execute();
+        return $this->indexDocumentsByItem($stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /**
+     * @param array<int, string> $sessions
+     * @param array<int, string> $itemCodes
+     * @param array<int, string> $poRefnos
+     * @return array<string, array<int, array<string, mixed>>>
+     */
+    private function fetchReceivingDocuments(array $sessions, array $itemCodes, array $poRefnos): array
+    {
+        if ($poRefnos === [] || ($sessions === [] && $itemCodes === [])) return [];
+        [$sessionClause, $sessionBind] = $this->buildInClause($sessions, 'rr_session');
+        [$codeClause, $codeBind] = $this->buildInClause($itemCodes, 'rr_code');
+        [$poClause, $poBind] = $this->buildInClause($poRefnos, 'rr_po');
+        $identifiers = [];
+        if ($sessions !== []) $identifiers[] = 'pi.litem_refno IN (' . $sessionClause . ')';
+        if ($itemCodes !== []) $identifiers[] = 'pi.litem_code IN (' . $codeClause . ')';
+        $sql = <<<SQL
+SELECT
+    COALESCE(pi.litem_refno, '') AS item_session,
+    COALESCE(pi.litem_code, '') AS item_code,
+    COALESCE(rr.lrefno, '') AS refno,
+    COALESCE(rr.lpurchaseno, rr.lrefno, '') AS number,
+    COALESCE(rr.ltransaction_status, 'Pending') AS status,
+    COALESCE(rr.lpo_refno, '') AS po_refno,
+    COALESCE(rr.lpo_number, '') AS po_number,
+    CAST(SUM(COALESCE(pi.lqty, 0)) AS DECIMAL(15,2)) AS received_qty,
+    CAST(SUM(CASE
+        WHEN LOWER(COALESCE(rr.ltransaction_status, '')) IN ('posted', 'received', 'delivered', 'completed')
+        THEN COALESCE(pi.lqty, 0)
+        ELSE 0
+    END) AS DECIMAL(15,2)) AS accepted_qty,
+    COALESCE(rr.ldate_recieved, rr.ldate, '') AS receiving_date,
+    COALESCE(rr.luser, '') AS received_by
+FROM tblpurchase_item pi
+INNER JOIN tblpurchase_order rr ON rr.lrefno = pi.lrefno
+WHERE rr.lpo_refno IN ({$poClause})
+  AND (%s)
+GROUP BY pi.litem_refno, pi.litem_code, rr.lrefno, rr.lpurchaseno, rr.ltransaction_status,
+    rr.lpo_refno, rr.lpo_number, rr.ldate_recieved, rr.ldate, rr.luser
+ORDER BY MAX(pi.lid) ASC
+SQL;
+        $stmt = $this->db->pdo()->prepare(sprintf($sql, implode(' OR ', $identifiers)));
+        $this->bindParams($stmt, array_merge($sessionBind, $codeBind, $poBind));
+        $stmt->execute();
+        return $this->indexDocumentsByItem($stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<string, array<int, array<string, mixed>>>
+     */
+    private function indexDocumentsByItem(array $rows): array
+    {
+        $result = [];
+        foreach ($rows as $row) {
+            $session = trim((string) ($row['item_session'] ?? ''));
+            $itemCode = trim((string) ($row['item_code'] ?? ''));
+            $key = $session !== '' ? $session : 'code:' . $itemCode;
+            if ($key === 'code:') continue;
+            $result[$key] ??= [];
+            $result[$key][] = $row;
+        }
+        return $result;
     }
 
     private function normalizeWarehouseType(string $warehouseType): string

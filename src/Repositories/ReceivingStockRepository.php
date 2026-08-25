@@ -46,7 +46,7 @@ SQL;
             $params['search_pr'] = $like;
             $params['search_supplier'] = $like;
         }
-        $sql .= ' GROUP BY po.lrefno, po.lpurchaseno, po.lpr_refno, po.lpr_no, po.lsupplier, po.lsupplier_name, po.ldate, po.ltransaction_status ORDER BY po.lid DESC LIMIT :limit';
+        $sql .= ' GROUP BY po.lrefno, po.lpurchaseno, po.lpr_refno, po.lpr_no, po.lsupplier, po.lsupplier_name, po.ldate, po.ltransaction_status ORDER BY MAX(po.lid) DESC LIMIT :limit';
         $stmt = $this->db->pdo()->prepare($sql);
         foreach ($params as $key => $value) {
             $stmt->bindValue($key, $value, $key === 'main_id' ? PDO::PARAM_INT : PDO::PARAM_STR);
@@ -621,7 +621,30 @@ SQL;
                 }
             }
 
+            $poRefno = trim((string) ($header['po_refno'] ?? ''));
+            if ($poRefno !== '') {
+                $remainingPoItems = $pdo->prepare(
+                    'SELECT COUNT(*)
+                     FROM tblpo_itemlist
+                     WHERE lrefno = :po_refno
+                       AND COALESCE(lqty, 0) > COALESCE(lreceiving_qty, 0)'
+                );
+                $remainingPoItems->execute(['po_refno' => $poRefno]);
+                if ((int) ($remainingPoItems->fetchColumn() ?: 0) === 0) {
+                    $completePo = $pdo->prepare(
+                        'UPDATE tblpo_list
+                         SET ltransaction_status = "Completed"
+                         WHERE lmain_id = :main_id AND lrefno = :po_refno'
+                    );
+                    $completePo->execute([
+                        'main_id' => (string) $mainId,
+                        'po_refno' => $poRefno,
+                    ]);
+                }
+            }
+
             $pdo->commit();
+            $this->clearReorderReportCache();
             return $this->getReceivingStock($mainId, $receivingRefno);
         } catch (\Throwable $e) {
             $pdo->rollBack();

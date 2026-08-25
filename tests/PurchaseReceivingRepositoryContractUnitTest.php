@@ -16,6 +16,7 @@ $checks = [
     'finalization updates the PO received quantity' => 'lreceiving_qty = LEAST',
     'eligible PO list requires a PR link' => "COALESCE(po.lpr_refno, '') <> ''",
     'eligible PO list only includes remaining quantities' => 'COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)',
+    'eligible PO ordering is valid with ONLY_FULL_GROUP_BY' => 'ORDER BY MAX(po.lid) DESC',
 ];
 
 $failed = 0;

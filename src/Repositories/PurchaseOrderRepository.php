@@ -354,6 +354,7 @@ SQL;
             }
 
             $pdo->commit();
+            $this->clearReorderReportCache();
         } catch (\Throwable $e) {
             $pdo->rollBack();
             throw $e;
@@ -411,6 +412,8 @@ SQL;
             'refno' => $purchaseRefno,
         ]);
 
+        $this->clearReorderReportCache();
+
         return $this->getPurchaseOrder($mainId, $purchaseRefno);
     }
 
@@ -454,6 +457,7 @@ SQL;
             $update->execute(['main_id' => $mainId, 'refno' => $purchaseRefno]);
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Order', 'Unpost', $purchaseRefno);
             $pdo->commit();
+            $this->clearReorderReportCache();
         } catch (\Throwable $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
             throw $e;
@@ -516,6 +520,7 @@ SQL;
         }
 
         $this->insertPoItem($this->db->pdo(), $mainId, $userId, $purchaseRefno, $payload);
+        $this->clearReorderReportCache();
         $po = $this->getPurchaseOrder($mainId, $purchaseRefno);
         if ($po === null) {
             throw new RuntimeException('Purchase order not found after item insert');
@@ -564,6 +569,8 @@ SQL;
             'item_id' => $itemId,
         ]);
 
+        $this->clearReorderReportCache();
+
         return $this->getPurchaseOrderItem($mainId, $itemId);
     }
 
@@ -577,7 +584,18 @@ SQL;
         $stmt = $this->db->pdo()->prepare('DELETE FROM tblpo_itemlist WHERE lid = :item_id');
         $stmt->execute(['item_id' => $itemId]);
 
+        $this->clearReorderReportCache();
+
         return true;
+    }
+
+    private function clearReorderReportCache(): void
+    {
+        $files = glob(rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'james_reorder_cache_*.json');
+        if (!is_array($files)) return;
+        foreach ($files as $file) {
+            @unlink($file);
+        }
     }
 
     private function bindParams(\PDOStatement $stmt, array $params, bool $withPagination): void

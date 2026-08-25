@@ -636,6 +636,7 @@ SQL;
         if ($normalized === 'approve') {
             $stmt = $this->db->pdo()->prepare('UPDATE tblpr_list SET lapproval = "Approved" WHERE lrefno = :refno');
             $stmt->execute(['refno' => $prRefno]);
+            $this->clearReorderReportCache();
             $record = $this->getPurchaseRequest($mainId, $prRefno);
             if ($record === null) {
                 throw new RuntimeException('Purchase request not found');
@@ -646,6 +647,7 @@ SQL;
         if ($normalized === 'cancel') {
             $stmt = $this->db->pdo()->prepare('UPDATE tblpr_list SET lstatus = "Cancelled" WHERE lrefno = :refno');
             $stmt->execute(['refno' => $prRefno]);
+            $this->clearReorderReportCache();
             $record = $this->getPurchaseRequest($mainId, $prRefno);
             if ($record === null) {
                 throw new RuntimeException('Purchase request not found');
@@ -656,6 +658,7 @@ SQL;
         if ($normalized === 'submit') {
             $stmt = $this->db->pdo()->prepare('UPDATE tblpr_list SET lstatus = "Pending" WHERE lrefno = :refno');
             $stmt->execute(['refno' => $prRefno]);
+            $this->clearReorderReportCache();
             $record = $this->getPurchaseRequest($mainId, $prRefno);
             if ($record === null) {
                 throw new RuntimeException('Purchase request not found');
