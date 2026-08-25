@@ -15,6 +15,18 @@ final class ReorderReportRepository
     {
     }
 
+    public static function calculateSuggestedReorderQty(
+        float $availableStock,
+        float $reorderLevel,
+        float $configuredReplenish,
+        float $openPoQty
+    ): float {
+        $shortageToReorderLevel = max(0.0, $reorderLevel - $availableStock);
+        $grossRequirement = max(max(0.0, $configuredReplenish), $shortageToReorderLevel);
+
+        return max(0.0, $grossRequirement - max(0.0, $openPoQty));
+    }
+
     public function listReport(
         int $mainId,
         string $warehouseType = 'total',
@@ -27,7 +39,7 @@ final class ReorderReportRepository
     ): array {
         $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
-            'purchasing_control_version' => 4,
+            'purchasing_control_version' => 8,
             'main_id' => $mainId,
             'warehouse_type' => $normalizedWarehouseType,
             'search' => trim($search),
@@ -146,18 +158,6 @@ GROUP BY lsession
 SQL;
         $params['canonical_main_id'] = $mainId;
 
-        $countSql = <<<SQL
-SELECT COUNT(*) AS total
-FROM ({$canonicalItemsSql}) itm
-LEFT JOIN ({$stockSubquery}) st ON st.linvent_id = itm.lsession
-LEFT JOIN ({$reservationSubquery}) res ON res.item_session = itm.lsession
-WHERE {$whereSql}
-SQL;
-        $countStmt = $pdo->prepare($countSql);
-        $this->bindParams($countStmt, $params);
-        $countStmt->execute();
-        $total = (int) ($countStmt->fetchColumn() ?: 0);
-
         $listSql = <<<SQL
     SELECT
     CAST(itm.lid AS UNSIGNED) AS id,
@@ -171,7 +171,8 @@ SQL;
     CAST(COALESCE(st.current_stock, 0) AS DECIMAL(15,2)) AS current_stock,
     CAST(COALESCE(res.reserved_qty, 0) AS DECIMAL(15,2)) AS reserved_stock,
     CAST({$availableExpr} AS DECIMAL(15,2)) AS available_stock,
-    {$targetExpr} AS target_quantity
+    {$targetExpr} AS target_quantity,
+    COUNT(*) OVER() AS report_total
 FROM ({$canonicalItemsSql}) itm
 LEFT JOIN ({$stockSubquery}) st ON st.linvent_id = itm.lsession
 LEFT JOIN ({$reservationSubquery}) res ON res.item_session = itm.lsession
@@ -185,6 +186,7 @@ SQL;
         $stmt->bindValue('offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $total = (int) ($rows[0]['report_total'] ?? 0);
 
         if (count($rows) === 0) {
             $result = [
@@ -231,8 +233,6 @@ SQL;
             }
         }
         $rrDocumentsByItem = $this->fetchReceivingDocuments($sessions, $itemCodes, array_keys($openPoRefnos));
-        $latestPrByItem = $this->fetchLatestPrByItemCode($itemCodes);
-        $latestPoByItem = $this->fetchLatestPoByItemCode($itemCodes);
         $latestRrByItem = $this->fetchLatestRrByItemCode($itemCodes);
         $lastArrivalByItem = $isWarehouseSpecific
             ? $this->fetchLastTransferByItemCode($itemCodes, $selectedWarehouse)
@@ -242,9 +242,6 @@ SQL;
         foreach ($rows as $row) {
             $session = (string) ($row['product_session'] ?? '');
             $itemCode = (string) ($row['item_code'] ?? '');
-            $pr = $latestPrByItem[$itemCode] ?? ['pr_refno' => '', 'pr_no' => '', 'pr_status' => ''];
-            $po = $latestPoByItem[$itemCode] ?? ['po_refno' => '', 'po_no' => '', 'po_status' => ''];
-            $rr = $latestRrByItem[$itemCode] ?? ['rr_refno' => '', 'rr_no' => '', 'rr_status' => ''];
             $arrival = $lastArrivalByItem[$itemCode] ?? ['last_arrival_date' => '', 'last_arrival_qty' => 0];
             $preferredSupplier = $preferredSuppliers[$session] ?? [
                 'supplier_id' => '',
@@ -254,6 +251,20 @@ SQL;
             $prDocuments = $prDocumentsByItem[$session] ?? $prDocumentsByItem['code:' . $itemCode] ?? [];
             $poDocuments = $poDocumentsByItem[$session] ?? $poDocumentsByItem['code:' . $itemCode] ?? [];
             $rrDocuments = $rrDocumentsByItem[$session] ?? $rrDocumentsByItem['code:' . $itemCode] ?? [];
+            $rowOpenPoRefnos = array_values(array_filter(array_map(
+                static fn (array $document): string => trim((string) ($document['refno'] ?? '')),
+                $poDocuments
+            )));
+            $rrDocuments = $rowOpenPoRefnos === []
+                ? []
+                : array_values(array_filter(
+                    $rrDocuments,
+                    static fn (array $document): bool => in_array(
+                        trim((string) ($document['po_refno'] ?? '')),
+                        $rowOpenPoRefnos,
+                        true
+                    )
+                ));
 
             $openPrQty = 0.0;
             $hasPendingPr = false;
@@ -295,10 +306,12 @@ SQL;
             $availableStock = (float) ($row['available_stock'] ?? 0);
             $reorderLevel = (float) ($row['reorder_qty'] ?? 0);
             $configuredReplenish = (float) ($row['replenish_qty'] ?? 0);
-            $grossRequirement = $configuredReplenish > 0
-                ? $configuredReplenish
-                : max(0.0, $reorderLevel - $availableStock);
-            $suggestedReorderQty = max(0.0, $grossRequirement - $openPoQty);
+            $suggestedReorderQty = self::calculateSuggestedReorderQty(
+                $availableStock,
+                $reorderLevel,
+                $configuredReplenish,
+                $openPoQty
+            );
 
             if ($isOverdue) {
                 $overallStatus = 'Overdue';
@@ -311,16 +324,11 @@ SQL;
             } elseif ($hasPendingPr) {
                 $overallStatus = 'PR Pending';
             } else {
-                $latestPoStatus = strtolower(trim((string) ($po['po_status'] ?? '')));
-                $latestPrStatus = strtolower(trim((string) ($pr['pr_status'] ?? '')));
-                $latestRrStatus = strtolower(trim((string) ($rr['rr_status'] ?? '')));
-                if (in_array($latestPoStatus, ['cancelled', 'canceled'], true) || in_array($latestPrStatus, ['cancelled', 'canceled'], true)) {
-                    $overallStatus = 'Cancelled';
-                } elseif ($po['po_refno'] !== '' && in_array($latestRrStatus, ['posted', 'received', 'delivered', 'completed'], true)) {
-                    $overallStatus = 'Completed';
-                } else {
-                    $overallStatus = 'Needs PR';
-                }
+                // This is an active-control report, not purchasing history. Once
+                // a cycle is completed or cancelled its documents are excluded by
+                // the open-document queries above. If the item is still below its
+                // threshold, it begins a clean reorder cycle here.
+                $overallStatus = 'Needs PR';
             }
 
             $currentPr = $prDocuments !== [] ? $prDocuments[array_key_last($prDocuments)] : null;
@@ -358,15 +366,15 @@ SQL;
                 'pr_documents' => $prDocuments,
                 'po_documents' => $poDocuments,
                 'rr_documents' => $rrDocuments,
-                'pr_refno' => (string) ($currentPr['refno'] ?? $pr['pr_refno'] ?? ''),
-                'pr_no' => (string) ($currentPr['number'] ?? $pr['pr_no'] ?? ''),
-                'pr_status' => (string) ($currentPr['status'] ?? $pr['pr_status'] ?? ''),
-                'po_refno' => (string) ($currentPo['refno'] ?? $po['po_refno'] ?? ''),
-                'po_no' => (string) ($currentPo['number'] ?? $po['po_no'] ?? ''),
-                'po_status' => (string) ($currentPo['status'] ?? $po['po_status'] ?? ''),
-                'rr_refno' => (string) ($currentRr['refno'] ?? $rr['rr_refno'] ?? ''),
-                'rr_no' => (string) ($currentRr['number'] ?? $rr['rr_no'] ?? ''),
-                'rr_status' => (string) ($currentRr['status'] ?? $rr['rr_status'] ?? ''),
+                'pr_refno' => (string) ($currentPr['refno'] ?? ''),
+                'pr_no' => (string) ($currentPr['number'] ?? ''),
+                'pr_status' => (string) ($currentPr['status'] ?? ''),
+                'po_refno' => (string) ($currentPo['refno'] ?? ''),
+                'po_no' => (string) ($currentPo['number'] ?? ''),
+                'po_status' => (string) ($currentPo['status'] ?? ''),
+                'rr_refno' => (string) ($currentRr['refno'] ?? ''),
+                'rr_no' => (string) ($currentRr['number'] ?? ''),
+                'rr_status' => (string) ($currentRr['status'] ?? ''),
                 'last_arrival_date' => (string) ($arrival['last_arrival_date'] ?? ''),
                 'last_arrival_qty' => (float) ($arrival['last_arrival_qty'] ?? 0),
             ];
@@ -630,10 +638,13 @@ SQL;
         foreach ($rows as $row) {
             $session = trim((string) ($row['item_session'] ?? ''));
             $itemCode = trim((string) ($row['item_code'] ?? ''));
-            $key = $session !== '' ? $session : 'code:' . $itemCode;
-            if ($key === 'code:') continue;
-            $result[$key] ??= [];
-            $result[$key][] = $row;
+            $keys = [];
+            if ($session !== '') $keys[] = $session;
+            if ($itemCode !== '') $keys[] = 'code:' . $itemCode;
+            foreach (array_values(array_unique($keys)) as $key) {
+                $result[$key] ??= [];
+                $result[$key][] = $row;
+            }
         }
         return $result;
     }

@@ -78,6 +78,47 @@ foreach (['total'] as $warehouse) {
     reorder_assert(count($rows) === $result['reported_total'], strtoupper($warehouse) . ' returns every reported row across pages', $passed, $failed);
     reorder_assert(count($sessions) === count($nonEmptySessions), strtoupper($warehouse) . ' rows all have a canonical product session', $passed, $failed);
     reorder_assert(count($sessions) === count($uniqueSessions), strtoupper($warehouse) . ' contains exactly one row per product', $passed, $failed);
+
+    $completedRows = array_filter(
+        $rows,
+        static fn (array $row): bool => strtolower(trim((string) ($row['overall_status'] ?? ''))) === 'completed'
+    );
+    reorder_assert($completedRows === [], strtoupper($warehouse) . ' excludes completed cycles from the active report', $passed, $failed);
+
+    $stagesMatchActiveDocuments = true;
+    foreach ($rows as $row) {
+        foreach ([
+            ['documents' => 'pr_documents', 'refno' => 'pr_refno', 'number' => 'pr_no', 'status' => 'pr_status'],
+            ['documents' => 'po_documents', 'refno' => 'po_refno', 'number' => 'po_no', 'status' => 'po_status'],
+            ['documents' => 'rr_documents', 'refno' => 'rr_refno', 'number' => 'rr_no', 'status' => 'rr_status'],
+        ] as $stage) {
+            $documents = is_array($row[$stage['documents']] ?? null) ? $row[$stage['documents']] : [];
+            if ($documents !== []) continue;
+            if (
+                trim((string) ($row[$stage['refno']] ?? '')) !== ''
+                || trim((string) ($row[$stage['number']] ?? '')) !== ''
+                || trim((string) ($row[$stage['status']] ?? '')) !== ''
+            ) {
+                $stagesMatchActiveDocuments = false;
+                break 2;
+            }
+        }
+    }
+    reorder_assert($stagesMatchActiveDocuments, strtoupper($warehouse) . ' never exposes historical documents as active stages', $passed, $failed);
+
+    $needsPrRowsAreClean = true;
+    foreach ($rows as $row) {
+        if (strtolower(trim((string) ($row['overall_status'] ?? ''))) !== 'needs pr') continue;
+        if (
+            (is_array($row['pr_documents'] ?? null) && $row['pr_documents'] !== [])
+            || (is_array($row['po_documents'] ?? null) && $row['po_documents'] !== [])
+            || (is_array($row['rr_documents'] ?? null) && $row['rr_documents'] !== [])
+        ) {
+            $needsPrRowsAreClean = false;
+            break;
+        }
+    }
+    reorder_assert($needsPrRowsAreClean, strtoupper($warehouse) . ' Needs PR rows start with clean PR, PO, and RR stages', $passed, $failed);
 }
 
 $legacyWarehouse = reorder_get($apiBase . '/api/v1/reorder-report?main_id=1&warehouse_type=wh1&page=1&per_page=1');

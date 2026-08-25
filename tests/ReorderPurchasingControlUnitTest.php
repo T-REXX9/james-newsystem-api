@@ -21,6 +21,8 @@ $assertions = [
         && str_contains($report, "'open_pr_qty'")
         && str_contains($report, "'open_po_qty'")
         && str_contains($report, "'remaining_qty'"),
+    'report obtains pagination totals in the same database pass' => str_contains($report, 'COUNT(*) OVER() AS report_total')
+        && !str_contains($report, 'SELECT COUNT(*) AS total'),
     'partial receiving still blocks a duplicate PR' => str_contains($guard, 'COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)')
         && !str_contains($guard, 'completed_rr'),
     'fully received PO is marked completed' => str_contains($receiving, 'SET ltransaction_status = "Completed"'),
