@@ -987,6 +987,40 @@ SQL;
 
     public function getCustomerIncidentReports(int $mainId, string $contactId): array
     {
+        $incidentStmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT
+    id,
+    contact_id,
+    report_date,
+    incident_date,
+    issue_type,
+    description,
+    reported_by,
+    attachments,
+    related_transactions,
+    approval_status,
+    approved_by,
+    approval_date,
+    notes
+FROM incident_reports
+WHERE main_id = :main_id
+  AND contact_id = :contact_id
+ORDER BY report_date DESC, created_at DESC
+LIMIT 150
+SQL);
+        $incidentStmt->execute([
+            'main_id' => $mainId,
+            'contact_id' => $contactId,
+        ]);
+        $incidentRows = $incidentStmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($incidentRows as &$incidentRow) {
+            $incidentRow['attachments'] = $this->decodeJsonArray($incidentRow['attachments'] ?? null);
+            $incidentRow['related_transactions'] = $this->decodeJsonArray($incidentRow['related_transactions'] ?? null);
+        }
+        unset($incidentRow);
+
+        // Keep older customer-log incidents visible while new records use the
+        // dedicated table above.
         $sql = <<<SQL
 SELECT
     CAST(cl.lid AS CHAR) AS id,
@@ -1022,8 +1056,64 @@ SQL;
                 $row['description'] = 'Customer activity log entry';
             }
         }
+        unset($row);
 
-        return $rows;
+        return array_merge($incidentRows, $rows);
+    }
+
+    public function createIncidentReport(int $mainId, int $createdByUserId, array $data): array
+    {
+        $reportDate = $this->normalizeDate($data['report_date'] ?? null, 'report_date');
+        $incidentDate = $this->normalizeDate($data['incident_date'] ?? null, 'incident_date');
+        $attachments = json_encode(array_values((array) ($data['attachments'] ?? [])), JSON_UNESCAPED_SLASHES);
+        $relatedTransactions = json_encode(array_values((array) ($data['related_transactions'] ?? [])), JSON_UNESCAPED_SLASHES);
+        if ($attachments === false || $relatedTransactions === false) {
+            throw new InvalidArgumentException('Incident attachments or related transactions are invalid');
+        }
+
+        $sql = <<<'SQL'
+INSERT INTO incident_reports (
+    id, main_id, contact_id, report_date, incident_date, issue_type,
+    description, reported_by, attachments, related_transactions,
+    approval_status, notes, created_by_user_id
+) VALUES (
+    :id, :main_id, :contact_id, :report_date, :incident_date, :issue_type,
+    :description, :reported_by, :attachments, :related_transactions,
+    'pending', :notes, :created_by_user_id
+)
+ON DUPLICATE KEY UPDATE
+    contact_id = VALUES(contact_id),
+    report_date = VALUES(report_date),
+    incident_date = VALUES(incident_date),
+    issue_type = VALUES(issue_type),
+    description = VALUES(description),
+    reported_by = VALUES(reported_by),
+    attachments = VALUES(attachments),
+    related_transactions = VALUES(related_transactions),
+    notes = VALUES(notes),
+    updated_at = CURRENT_TIMESTAMP(3)
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([
+            'id' => (string) $data['id'],
+            'main_id' => $mainId,
+            'contact_id' => (string) $data['contact_id'],
+            'report_date' => $reportDate,
+            'incident_date' => $incidentDate,
+            'issue_type' => (string) $data['issue_type'],
+            'description' => (string) $data['description'],
+            'reported_by' => (string) $data['reported_by'],
+            'attachments' => $attachments,
+            'related_transactions' => $relatedTransactions,
+            'notes' => $data['notes'] ?? null,
+            'created_by_user_id' => $createdByUserId,
+        ]);
+
+        $created = $this->getIncidentReportById($mainId, (string) $data['id']);
+        if ($created === null) {
+            throw new \RuntimeException('Failed to load created incident report');
+        }
+        return $created;
     }
 
     private function getOwnerContacts(int $mainId): array
@@ -2014,6 +2104,51 @@ SQL;
 
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
+    }
+
+    private function getIncidentReportById(int $mainId, string $reportId): ?array
+    {
+        $stmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT
+    id, contact_id, report_date, incident_date, issue_type, description,
+    reported_by, attachments, related_transactions, approval_status,
+    approved_by, approval_date, notes
+FROM incident_reports
+WHERE main_id = :main_id AND id = :id
+LIMIT 1
+SQL);
+        $stmt->execute(['main_id' => $mainId, 'id' => $reportId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            return null;
+        }
+
+        $row['attachments'] = $this->decodeJsonArray($row['attachments'] ?? null);
+        $row['related_transactions'] = $this->decodeJsonArray($row['related_transactions'] ?? null);
+        return $row;
+    }
+
+    private function decodeJsonArray(mixed $value): array
+    {
+        if (is_array($value)) {
+            return array_values($value);
+        }
+        if (!is_string($value) || trim($value) === '') {
+            return [];
+        }
+        $decoded = json_decode($value, true);
+        return is_array($decoded) ? array_values($decoded) : [];
+    }
+
+    private function normalizeDate(mixed $value, string $field): string
+    {
+        $text = trim((string) $value);
+        $date = DateTimeImmutable::createFromFormat('!Y-m-d', $text);
+        $errors = DateTimeImmutable::getLastErrors();
+        if ($date === false || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))) {
+            throw new InvalidArgumentException("{$field} must use YYYY-MM-DD format");
+        }
+        return $date->format('Y-m-d');
     }
 
     /**

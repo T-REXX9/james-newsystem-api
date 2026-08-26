@@ -123,6 +123,52 @@ final class DailyCallMonitoringController
         return $this->repo->getCustomerIncidentReports($mainId, $contactId);
     }
 
+    public function createIncidentReport(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $authenticatedUserId = (int) ($claims['sub'] ?? 0);
+        if ($authenticatedUserId <= 0) {
+            throw new HttpException(401, 'Invalid authenticated account');
+        }
+
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+
+        $required = ['id', 'contact_id', 'report_date', 'incident_date', 'issue_type', 'description', 'reported_by'];
+        foreach ($required as $field) {
+            if (trim((string) ($body[$field] ?? '')) === '') {
+                throw new HttpException(422, "{$field} is required");
+            }
+        }
+
+        $issueType = trim((string) $body['issue_type']);
+        if (!in_array($issueType, ['product_quality', 'service_quality', 'delivery', 'other'], true)) {
+            throw new HttpException(422, 'issue_type is invalid');
+        }
+
+        try {
+            return $this->repo->createIncidentReport($mainId, $authenticatedUserId, [
+                'id' => trim((string) $body['id']),
+                'contact_id' => trim((string) $body['contact_id']),
+                'report_date' => $body['report_date'],
+                'incident_date' => $body['incident_date'],
+                'issue_type' => $issueType,
+                'description' => trim((string) $body['description']),
+                'reported_by' => trim((string) $body['reported_by']),
+                'attachments' => $body['attachments'] ?? [],
+                'related_transactions' => $body['related_transactions'] ?? [],
+                'notes' => isset($body['notes']) ? trim((string) $body['notes']) : null,
+            ]);
+        } catch (InvalidArgumentException $error) {
+            throw new HttpException(422, $error->getMessage());
+        }
+    }
+
     /**
      * Get call logs for a contact
      * Replaces Supabase call_logs queries
