@@ -39,7 +39,7 @@ final class ReorderReportRepository
     ): array {
         $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
-            'purchasing_control_version' => 8,
+            'purchasing_control_version' => 10,
             'main_id' => $mainId,
             'warehouse_type' => $normalizedWarehouseType,
             'search' => trim($search),
@@ -266,10 +266,12 @@ SQL;
                     )
                 ));
 
+            $requestedPrQty = 0.0;
             $openPrQty = 0.0;
             $hasPendingPr = false;
             $hasApprovedPr = false;
             foreach ($prDocuments as $document) {
+                $requestedPrQty += (float) ($document['requested_qty'] ?? 0);
                 if (trim((string) ($document['po_refno'] ?? '')) !== '') continue;
                 $openPrQty += (float) ($document['requested_qty'] ?? 0);
                 $status = strtolower(trim((string) ($document['status'] ?? '')));
@@ -280,17 +282,21 @@ SQL;
             $orderedQty = 0.0;
             $acceptedQty = 0.0;
             $openPoQty = 0.0;
+            $recordedOutstandingQty = 0.0;
             $hasPendingPo = false;
             $isOverdue = false;
             foreach ($poDocuments as $document) {
+                // A pending PO is still a real document with a visible ordered
+                // quantity. It only becomes stock "on order" after posting.
+                $orderedQty += (float) ($document['ordered_qty'] ?? 0);
+                $acceptedQty += (float) ($document['accepted_qty'] ?? 0);
+                $recordedOutstandingQty += (float) ($document['outstanding_qty'] ?? 0);
                 $status = strtolower(trim((string) ($document['status'] ?? '')));
                 $isOnOrder = in_array($status, ['posted', 'approved', 'ordered', 'awaiting delivery'], true);
                 if (!$isOnOrder) {
                     $hasPendingPo = true;
                     continue;
                 }
-                $orderedQty += (float) ($document['ordered_qty'] ?? 0);
-                $acceptedQty += (float) ($document['accepted_qty'] ?? 0);
                 $openPoQty += (float) ($document['outstanding_qty'] ?? 0);
                 $eta = trim((string) ($document['expected_delivery_date'] ?? ''));
                 if ($eta !== '' && $eta !== '1970-01-01' && $eta < date('Y-m-d') && (float) ($document['outstanding_qty'] ?? 0) > 0) {
@@ -352,12 +358,13 @@ SQL;
                 'total_return' => (float) ($totalReturnBySession[$session] ?? 0),
                 'target_quantity' => (float) ($row['target_quantity'] ?? 0),
                 'suggested_reorder_qty' => $suggestedReorderQty,
+                'pr_requested_qty' => $requestedPrQty,
                 'open_pr_qty' => $openPrQty,
                 'po_ordered_qty' => $orderedQty,
                 'open_po_qty' => $openPoQty,
                 'received_qty' => $physicallyReceivedQty,
                 'accepted_qty' => $acceptedQty,
-                'remaining_qty' => $openPoQty,
+                'remaining_qty' => $recordedOutstandingQty,
                 'preferred_supplier_id' => (string) ($preferredSupplier['supplier_id'] ?? ''),
                 'preferred_supplier_name' => (string) ($preferredSupplier['supplier_name'] ?? ''),
                 'preferred_supplier_cost' => (float) ($preferredSupplier['supplier_cost'] ?? 0),

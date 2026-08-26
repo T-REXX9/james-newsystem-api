@@ -18,9 +18,15 @@ $assertions = [
     'only the unreceived PO balance remains on order' => str_contains($report, 'COALESCE(active_po_item.lqty, 0) > COALESCE(active_po_item.lreceiving_qty, 0)'),
     'accepted receiving quantities require a finalized RR status' => str_contains($report, "IN ('posted', 'received', 'delivered', 'completed')"),
     'report exposes the full purchasing-control quantities' => str_contains($report, "'suggested_reorder_qty'")
+        && str_contains($report, "'pr_requested_qty'")
         && str_contains($report, "'open_pr_qty'")
         && str_contains($report, "'open_po_qty'")
         && str_contains($report, "'remaining_qty'"),
+    'displayed PR quantity includes lines already linked to a PO' => str_contains($report, '$requestedPrQty +=')
+        && str_contains($report, "'pr_requested_qty' => \$requestedPrQty"),
+    'pending PO quantity remains visible without counting as on order' => strpos($report, '$orderedQty +=') < strpos($report, 'if (!$isOnOrder)'),
+    'PO record outstanding quantity remains visible separately from on order' => str_contains($report, '$recordedOutstandingQty +=')
+        && str_contains($report, "'remaining_qty' => \$recordedOutstandingQty"),
     'report obtains pagination totals in the same database pass' => str_contains($report, 'COUNT(*) OVER() AS report_total')
         && !str_contains($report, 'SELECT COUNT(*) AS total'),
     'partial receiving still blocks a duplicate PR' => str_contains($guard, 'COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)')
