@@ -57,10 +57,40 @@ final class InventoryReportRepository
             $codesStmt->fetchAll(PDO::FETCH_ASSOC)
         )));
 
+        $originalPartsStmt = $this->db->pdo()->prepare(
+            'SELECT DISTINCT COALESCE(lopn_number, "") AS original_part_no
+             FROM tblinventory_item
+             WHERE lmain_id = :main_id
+               AND COALESCE(lstatus, 1) = 1
+               AND COALESCE(lopn_number, "") <> ""
+             ORDER BY original_part_no ASC'
+        );
+        $originalPartsStmt->execute(['main_id' => $mainId]);
+        $originalPartNumbers = array_values(array_filter(array_map(
+            static fn(array $row): string => trim((string) ($row['original_part_no'] ?? '')),
+            $originalPartsStmt->fetchAll(PDO::FETCH_ASSOC)
+        )));
+
+        $brandsStmt = $this->db->pdo()->prepare(
+            'SELECT DISTINCT COALESCE(lbrand, "") AS brand
+             FROM tblinventory_item
+             WHERE lmain_id = :main_id
+               AND COALESCE(lstatus, 1) = 1
+               AND COALESCE(lbrand, "") <> ""
+             ORDER BY brand ASC'
+        );
+        $brandsStmt->execute(['main_id' => $mainId]);
+        $brands = array_values(array_filter(array_map(
+            static fn(array $row): string => trim((string) ($row['brand'] ?? '')),
+            $brandsStmt->fetchAll(PDO::FETCH_ASSOC)
+        )));
+
         return [
             'descriptions' => $descriptions,
             'part_numbers' => $partNumbers,
             'item_codes' => $itemCodes,
+            'original_part_numbers' => $originalPartNumbers,
+            'brands' => $brands,
             'warehouses' => [],
         ];
     }

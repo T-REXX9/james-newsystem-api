@@ -39,7 +39,7 @@ final class ReorderReportRepository
     ): array {
         $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
-            'purchasing_control_version' => 10,
+            'purchasing_control_version' => 11,
             'main_id' => $mainId,
             'warehouse_type' => $normalizedWarehouseType,
             'search' => trim($search),
@@ -135,7 +135,7 @@ SQL;
 
         $trimmedSearch = trim($search);
         if ($trimmedSearch !== '') {
-            $where[] = "CONCAT_WS(' ', COALESCE(itm.litemcode, ''), COALESCE(itm.lpartno, ''), COALESCE(itm.ldescription, '')) LIKE :search";
+            $where[] = "CONCAT_WS(' ', COALESCE(itm.litemcode, ''), COALESCE(itm.lpartno, ''), COALESCE(itm.lopn_number, ''), COALESCE(itm.ldescription, ''), COALESCE(itm.lbrand, '')) LIKE :search";
             $params['search'] = '%' . $trimmedSearch . '%';
         }
         $whereSql = implode(' AND ', $where);
@@ -147,7 +147,9 @@ SELECT
     MAX(lmain_id) AS lmain_id,
     MAX(COALESCE(litemcode, '')) AS litemcode,
     MAX(COALESCE(lpartno, '')) AS lpartno,
+    MAX(COALESCE(lopn_number, '')) AS lopn_number,
     MAX(COALESCE(ldescription, '')) AS ldescription,
+    MAX(COALESCE(lbrand, '')) AS lbrand,
     MAX(COALESCE(lstatus, 0)) AS lstatus,
     MAX(COALESCE(NULLIF(lreorder_amt, ''), '0')) AS lreorder_amt,
     MAX(COALESCE(NULLIF(lreplenish, ''), '0')) AS lreplenish
