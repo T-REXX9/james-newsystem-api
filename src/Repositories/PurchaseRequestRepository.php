@@ -231,7 +231,19 @@ SQL;
         $itemsStmt->bindValue('refno', $prRefno, PDO::PARAM_STR);
         $itemsStmt->execute();
         $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
-        $items = $this->enrichPurchaseRequestItems($mainId, $items);
+        try {
+            try {
+            $items = $this->enrichPurchaseRequestItems($mainId, $items);
+        } catch (\Throwable $e) {
+            // Enrichment (SR/IR counts, supplier prices) is best-effort.
+            // A slow or failing enrichment must never prevent the PR detail from loading.
+            error_log('PurchaseRequestRepository::enrichPurchaseRequestItems failed: ' . $e->getMessage());
+        }
+        } catch (\Throwable $e) {
+            // Enrichment is best-effort (SR/IR counts, supplier prices).
+            // A slow or failing enrichment must never prevent the PR detail from loading.
+            error_log('PurchaseRequestRepository::enrichPurchaseRequestItems failed: ' . $e->getMessage());
+        }
 
         $summary = [
             'item_count' => count($items),
