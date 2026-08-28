@@ -134,6 +134,9 @@ final class InventoryReportRepository
                 'description' => (string) ($item['description'] ?? ''),
                 'category' => (string) ($item['category'] ?? ''),
                 'location' => (string) ($item['location'] ?? ''),
+                'last_transaction_date' => (string) ($item['last_transaction_date'] ?? ''),
+                'last_rr_date' => (string) ($item['last_rr_date'] ?? ''),
+                'reorder_quantity' => (float) ($item['reorder_quantity'] ?? 0),
                 'cost' => (float) ($item['cost'] ?? 0),
                 'total_stock' => $totalStock,
                 'warehouse_stock' => [],
@@ -184,6 +187,35 @@ SELECT
     COALESCE(itm.ldescription, '') AS description,
     COALESCE(itm.lproduct_group, '') AS category,
     COALESCE(itm.llocation, '') AS location,
+    COALESCE(itm.lreorder_amt, 0) AS reorder_quantity,
+    COALESCE((
+        SELECT MAX(
+            CASE
+                WHEN lg_last.ldateadded IS NULL
+                  OR TRIM(lg_last.ldateadded) = ''
+                  OR lg_last.ldateadded LIKE '0000-00-00%'
+                THEN NULL
+                ELSE lg_last.ldateadded
+            END
+        )
+        FROM tblinventory_logs lg_last
+        WHERE lg_last.linvent_id = itm.lsession
+    ), '') AS last_transaction_date,
+    COALESCE((
+        SELECT MAX(
+            CASE
+                WHEN lg_rr.ldateadded IS NULL
+                  OR TRIM(lg_rr.ldateadded) = ''
+                  OR lg_rr.ldateadded LIKE '0000-00-00%'
+                THEN NULL
+                ELSE lg_rr.ldateadded
+            END
+        )
+        FROM tblinventory_logs lg_rr
+        WHERE lg_rr.linvent_id = itm.lsession
+          AND lg_rr.ltransaction_type = 'Receiving'
+          AND COALESCE(lg_rr.lin, 0) > 0
+    ), '') AS last_rr_date,
     COALESCE((
         SELECT ip.lprice_amt
         FROM tblinventory_price ip
