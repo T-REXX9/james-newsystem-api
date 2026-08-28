@@ -29,7 +29,7 @@ final class FastSlowInventoryReportRepository
         $itemIds = array_map(static fn(array $row): int => (int) ($row['item_id'] ?? 0), $items);
         $itemSessions = array_map(static fn(array $row): string => (string) ($row['item_session'] ?? ''), $items);
 
-        $salesStatsBySession = $this->getSalesStatsBySession($itemSessions, $periods);
+        $salesStatsBySession = $this->getSalesStatsBySession($mainId, $itemSessions, $periods);
         $arrivalByItemId = $this->getFirstArrivalByItemId($mainId, $itemIds);
 
         $rows = [];
@@ -62,6 +62,7 @@ final class FastSlowInventoryReportRepository
                 'part_no' => (string) ($item['part_no'] ?? ''),
                 'item_code' => (string) ($item['item_code'] ?? ''),
                 'description' => (string) ($item['description'] ?? ''),
+                'vip1_price' => (float) ($item['vip1_price'] ?? 0),
                 'first_arrival_date' => $arrivalByItemId[$itemId] ?? null,
                 'total_purchased' => (int) ($stats['total_purchased'] ?? 0),
                 'total_sold' => (int) ($stats['total_sold'] ?? 0),
@@ -118,6 +119,14 @@ SELECT
     COALESCE(itm.litemcode, '') AS item_code,
     COALESCE(itm.ldescription, '') AS description,
     COALESCE((
+        SELECT ip.lprice_amt
+        FROM tblinventory_price ip
+        WHERE ip.linv_refno = itm.lsession
+          AND ip.lprice_name = 'VIP 1'
+        ORDER BY ip.lid DESC
+        LIMIT 1
+    ), 0) AS vip1_price,
+    COALESCE((
         SELECT MAX(ph.lupdated_at)
         FROM tblinventory_price_history ph
         WHERE ph.linv_refno = itm.lsession
@@ -166,7 +175,7 @@ SQL;
         return $map;
     }
 
-    private function getSalesStatsBySession(array $itemSessions, array $periods): array
+    private function getSalesStatsBySession(int $mainId, array $itemSessions, array $periods): array
     {
         if (count($itemSessions) === 0) {
             return [];
@@ -175,38 +184,67 @@ SQL;
         $placeholders = implode(',', array_fill(0, count($itemSessions), '?'));
         $sql = <<<SQL
 SELECT
-    lg.linvent_id AS item_session,
+    movement.item_session,
+    SUM(movement.purchased_qty) AS total_purchased,
+    SUM(movement.sold_qty) AS total_sold,
     SUM(CASE
-        WHEN lg.ltransaction_type = 'Receiving' AND lg.lstatus_logs = '+'
-            THEN COALESCE(lg.lin, 0)
-        ELSE 0
-    END) AS total_purchased,
-    SUM(CASE
-        WHEN lg.ltransaction_type IN ('Invoice', 'Order Slip') AND lg.lstatus_logs = '-'
-            THEN COALESCE(lg.lout, 0)
-        ELSE 0
-    END) AS total_sold,
-    SUM(CASE
-        WHEN lg.ltransaction_type IN ('Invoice', 'Order Slip') AND lg.lstatus_logs = '-'
-             AND lg.ldateadded >= ? AND lg.ldateadded <= ?
-            THEN COALESCE(lg.lout, 0)
+        WHEN movement.sales_date >= ? AND movement.sales_date <= ?
+            THEN movement.sold_qty
         ELSE 0
     END) AS month1_sales,
     SUM(CASE
-        WHEN lg.ltransaction_type IN ('Invoice', 'Order Slip') AND lg.lstatus_logs = '-'
-             AND lg.ldateadded >= ? AND lg.ldateadded <= ?
-            THEN COALESCE(lg.lout, 0)
+        WHEN movement.sales_date >= ? AND movement.sales_date <= ?
+            THEN movement.sold_qty
         ELSE 0
     END) AS month2_sales,
     SUM(CASE
-        WHEN lg.ltransaction_type IN ('Invoice', 'Order Slip') AND lg.lstatus_logs = '-'
-             AND lg.ldateadded >= ? AND lg.ldateadded <= ?
-            THEN COALESCE(lg.lout, 0)
+        WHEN movement.sales_date >= ? AND movement.sales_date <= ?
+            THEN movement.sold_qty
         ELSE 0
     END) AS month3_sales
-FROM tblinventory_logs lg
-WHERE lg.linvent_id IN ({$placeholders})
-GROUP BY lg.linvent_id
+FROM (
+    SELECT
+        lg.linvent_id AS item_session,
+        CASE
+            WHEN lg.ltransaction_type = 'Receiving' AND lg.lstatus_logs = '+'
+                THEN COALESCE(lg.lin, 0)
+            ELSE 0
+        END AS purchased_qty,
+        0 AS sold_qty,
+        NULL AS sales_date
+    FROM tblinventory_logs lg
+    WHERE lg.linvent_id IN ({$placeholders})
+
+    UNION ALL
+
+    SELECT
+        ii.linv_refno AS item_session,
+        0 AS purchased_qty,
+        COALESCE(ii.lqty, 0) AS sold_qty,
+        inv.ldate AS sales_date
+    FROM tblinvoice_list inv
+    INNER JOIN tblinvoice_itemrec ii ON ii.linvoice_refno = inv.lrefno
+    WHERE inv.lmain_id = ?
+      AND ii.linv_refno IN ({$placeholders})
+      AND LOWER(COALESCE(inv.lstatus, '')) = 'posted'
+      AND COALESCE(inv.lcancel, '') = ''
+      AND COALESCE(inv.lcancel_invoice, 0) = 0
+
+    UNION ALL
+
+    SELECT
+        dri.linv_refno AS item_session,
+        0 AS purchased_qty,
+        COALESCE(dri.lqty, 0) AS sold_qty,
+        dr.ldate AS sales_date
+    FROM tbldelivery_receipt dr
+    INNER JOIN tbldelivery_receipt_items dri ON dri.lor_refno = dr.lrefno
+    WHERE dr.lmain_id = ?
+      AND dri.linv_refno IN ({$placeholders})
+      AND LOWER(COALESCE(dr.lstatus, '')) = 'posted'
+      AND COALESCE(dr.lcancel, '') = ''
+) movement
+GROUP BY movement.item_session
 SQL;
 
         $params = [
@@ -217,7 +255,14 @@ SQL;
             $periods['month3']['start'],
             $periods['month3']['end'],
         ];
-        $params = array_merge($params, $itemSessions);
+        $params = array_merge(
+            $params,
+            $itemSessions,
+            [$mainId],
+            $itemSessions,
+            [$mainId],
+            $itemSessions
+        );
 
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute($params);
