@@ -323,7 +323,6 @@ final class AccessGroupRepository
     {
         $this->findOrCreateAccessGroup($mainId, self::SALES_AGENT_NAME, 'Sales staff access for inquiries, orders, customers, calls, and sales reports.', [
             'home',
-            'sales-pipeline-board',
             'sales-database-customer-database',
             'sales-transaction-sales-inquiry',
             'sales-transaction-sales-order',
@@ -334,7 +333,6 @@ final class AccessGroupRepository
             'sales-reports-inquiry-report',
             'sales-reports-sales-report',
             'sales-reports-sales-development-report',
-            'communication-productivity-tasks',
             'communication-productivity-calendar',
         ]);
 

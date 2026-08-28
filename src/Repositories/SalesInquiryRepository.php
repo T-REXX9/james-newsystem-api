@@ -23,7 +23,8 @@ final class SalesInquiryRepository
         string $search = '',
         string $status = 'active',
         int $page = 1,
-        int $perPage = 50
+        int $perPage = 50,
+        string $contactId = ''
     ): array {
         $page = max(1, $page);
         $perPage = min(200, max(1, $perPage));
@@ -35,6 +36,10 @@ final class SalesInquiryRepository
             'offset' => $offset,
         ];
         $where = ['iq.lmain_id = :main_id'];
+        if ($contactId !== '') {
+            $where[] = 'iq.lcustomerid = :contact_id';
+            $params['contact_id'] = $contactId;
+        }
 
         $normalizedStatus = strtolower(trim($status));
         if ($normalizedStatus === '' || $normalizedStatus === 'active') {

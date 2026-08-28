@@ -578,6 +578,8 @@ SQL;
                 return false;
             }
 
+            (new LocalRecycleBinRepository($this->db))->capture($mainId, 'contact', $sessionId);
+
             $delPatient = $pdo->prepare('DELETE FROM tblpatient WHERE lmain_id = :main_id AND lsessionid = :session_id');
             $delPatient->execute([
                 'main_id' => $mainId,

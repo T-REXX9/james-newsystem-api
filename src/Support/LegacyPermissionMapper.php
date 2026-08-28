@@ -24,8 +24,6 @@ final class LegacyPermissionMapper
         'receiving delivery' => ['warehouse-purchasing-receiving-stock'],
         'return supplier' => ['warehouse-purchasing-return-to-supplier'],
         'reorder' => ['warehouse-reports-reorder-report'],
-        'prospect' => ['sales-pipeline-board'],
-        'prospect data' => ['sales-pipeline-board'],
         'customer database' => ['sales-database-customer-database'],
         'sales inquiry' => ['sales-transaction-sales-inquiry'],
         'sales order' => ['sales-transaction-sales-order'],

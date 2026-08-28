@@ -383,7 +383,6 @@ final class RolePermissionRepository
         return match ($this->getCanonicalRoleName($groupId)) {
             'sales agent', 'sales person', 'salesperson' => [
                 'home',
-                'sales-pipeline-board',
                 'sales-database-customer-database',
                 'sales-transaction-sales-inquiry',
                 'sales-transaction-sales-order',
@@ -394,7 +393,6 @@ final class RolePermissionRepository
                 'sales-reports-inquiry-report',
                 'sales-reports-sales-report',
                 'sales-reports-sales-development-report',
-                'communication-productivity-tasks',
                 'communication-productivity-calendar',
             ],
             'warehouse', 'warehouse staff', 'warehouse personnel' => [

@@ -30,6 +30,12 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
    - `mysql -u root topnotch < migrations/013_create_daily_call_claims.sql`
    - `mysql -u root topnotch < migrations/014_optimize_notification_indexes.sql`
      *(Required for notification polling and the automatic inventory-alert scan. Idempotent.)*
+   - Apply `migrations/017_create_customer_requests.sql` and
+     `migrations/018_create_local_recycle_bin.sql` to your configured database before
+     deploying the customer workflow changes. Customer/product deletes now require
+     the recovery table so snapshots and deletion remain transactional.
+   - Run `php tests/CustomerWorkflowDatabaseTest.php` for the temporary-table
+     customer request/history/recovery regression checks (no persistent business writes).
 4. Run local server:
    - `PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8081 -t public`
 

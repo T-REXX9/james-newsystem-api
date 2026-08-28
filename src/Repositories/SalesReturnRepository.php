@@ -863,7 +863,8 @@ SQL);
         string $month = '',
         string $year = '',
         int $page = 1,
-        int $perPage = 50
+        int $perPage = 50,
+        string $contactId = ''
     ): array {
         $page = max(1, $page);
         $perPage = min(200, max(1, $perPage));
@@ -871,10 +872,14 @@ SQL);
 
         $where = ['CAST(COALESCE(cm.lmainid, 0) AS SIGNED) = :main_id'];
         $params = ['main_id' => $mainId];
+        if ($contactId !== '') {
+            $where[] = 'cm.lcustomer = :contact_id';
+            $params['contact_id'] = $contactId;
+        }
 
         $month = trim($month) !== '' ? trim($month) : date('m');
         $year = trim($year) !== '' ? trim($year) : date('Y');
-        if (preg_match('/^\d{2}$/', $month) === 1 && preg_match('/^\d{4}$/', $year) === 1) {
+        if ($contactId === '' && preg_match('/^\d{2}$/', $month) === 1 && preg_match('/^\d{4}$/', $year) === 1) {
             $params['month_filter'] = sprintf('%s-%s', $year, $month);
             $where[] = 'DATE_FORMAT(COALESCE(cm.ldate, cm.ldaterec, cm.ldatetime), "%Y-%m") = :month_filter';
         }

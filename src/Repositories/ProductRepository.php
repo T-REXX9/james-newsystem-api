@@ -651,20 +651,18 @@ SQL;
 
     public function deleteProduct(int $mainId, string $productSession): bool
     {
-        $sql = <<<SQL
-UPDATE tblinventory_item
-SET lstatus = 0,
-    lnot_inventory = 1
-WHERE lmain_id = :main_id
-  AND lsession = :session
-LIMIT 1
-SQL;
-        $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute([
-            'main_id' => $mainId,
-            'session' => $productSession,
-        ]);
-        return $stmt->rowCount() > 0;
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            (new LocalRecycleBinRepository($this->db))->capture($mainId, 'product', $productSession);
+            $stmt = $pdo->prepare('UPDATE tblinventory_item SET lstatus = 0, lnot_inventory = 1 WHERE lmain_id = ? AND lsession = ? LIMIT 1');
+            $stmt->execute([$mainId, $productSession]);
+            $pdo->commit();
+            return true;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
     }
 
     /**
