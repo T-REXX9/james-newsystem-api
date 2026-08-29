@@ -63,6 +63,26 @@ function fetch_all_reorder_rows(string $apiBase, string $warehouse): array
     return ['rows' => $rows, 'reported_total' => $reportedTotal];
 }
 
+function fetch_all_reorder_products(string $apiBase): array
+{
+    $page = 1;
+    $rows = [];
+    do {
+        $url = $apiBase . '/api/v1/products?main_id=1&status=active&reorder_only=1&page=' . $page . '&per_page=500';
+        $response = reorder_get($url);
+        if ($response['code'] !== 200) {
+            throw new RuntimeException("Product API returned HTTP {$response['code']} for reorder-only search");
+        }
+        $data = $response['body']['data'] ?? [];
+        $rows = array_merge($rows, is_array($data['items'] ?? null) ? $data['items'] : []);
+        $meta = is_array($data['meta'] ?? null) ? $data['meta'] : [];
+        $totalPages = max(1, (int) ($meta['total_pages'] ?? 1));
+        $page++;
+    } while ($page <= $totalPages);
+
+    return $rows;
+}
+
 echo "Reorder Report deduplication regression test\n";
 $health = reorder_get($apiBase . '/api/v1/health');
 reorder_assert($health['code'] === 200, 'API health check', $passed, $failed);
@@ -78,6 +98,42 @@ foreach (['total'] as $warehouse) {
     reorder_assert(count($rows) === $result['reported_total'], strtoupper($warehouse) . ' returns every reported row across pages', $passed, $failed);
     reorder_assert(count($sessions) === count($nonEmptySessions), strtoupper($warehouse) . ' rows all have a canonical product session', $passed, $failed);
     reorder_assert(count($sessions) === count($uniqueSessions), strtoupper($warehouse) . ' contains exactly one row per product', $passed, $failed);
+
+    $negativeAvailableStockRows = array_filter(
+        $rows,
+        static fn (array $row): bool => (float) ($row['available_stock'] ?? 0) < 0
+    );
+    reorder_assert(
+        $negativeAvailableStockRows === [],
+        strtoupper($warehouse) . ' clamps negative available stock to zero',
+        $passed,
+        $failed
+    );
+
+    $availabilityMismatchRows = array_filter(
+        $rows,
+        static fn (array $row): bool =>
+            (float) ($row['available_stock'] ?? 0) !== max(0.0, (float) ($row['current_stock'] ?? 0))
+            || (float) ($row['reserved_stock'] ?? 0) !== 0.0
+    );
+    reorder_assert(
+        $availabilityMismatchRows === [],
+        strtoupper($warehouse) . ' uses only nonnegative ledger stock for availability',
+        $passed,
+        $failed
+    );
+
+    $atOrAboveReorderRows = array_filter(
+        $rows,
+        static fn (array $row): bool =>
+            (float) ($row['available_stock'] ?? 0) >= (float) ($row['reorder_qty'] ?? 0)
+    );
+    reorder_assert(
+        $atOrAboveReorderRows === [],
+        strtoupper($warehouse) . ' only includes stock strictly below reorder quantity',
+        $passed,
+        $failed
+    );
 
     $completedRows = array_filter(
         $rows,
@@ -120,6 +176,26 @@ foreach (['total'] as $warehouse) {
     }
     reorder_assert($needsPrRowsAreClean, strtoupper($warehouse) . ' Needs PR rows start with clean PR, PO, and RR stages', $passed, $failed);
 }
+
+$reorderProducts = fetch_all_reorder_products($apiBase);
+reorder_assert(
+    $reorderProducts !== [],
+    'purchase-request product search returns eligible low-stock products',
+    $passed,
+    $failed
+);
+$invalidReorderProducts = array_filter(
+    $reorderProducts,
+    static fn (array $row): bool =>
+        (float) ($row['reorder_quantity'] ?? 0) <= 0
+        || max(0.0, (float) ($row['total_stock'] ?? 0)) >= (float) ($row['reorder_quantity'] ?? 0)
+);
+reorder_assert(
+    $invalidReorderProducts === [],
+    'purchase-request product search returns only active stock below a positive reorder quantity',
+    $passed,
+    $failed
+);
 
 $legacyWarehouse = reorder_get($apiBase . '/api/v1/reorder-report?main_id=1&warehouse_type=wh1&page=1&per_page=1');
 reorder_assert(

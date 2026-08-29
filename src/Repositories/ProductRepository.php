@@ -25,7 +25,8 @@ final class ProductRepository
         string $status = 'all',
         int $page = 1,
         int $perPage = 100,
-        array $fieldFilters = []
+        array $fieldFilters = [],
+        bool $reorderOnly = false
     ): array {
         $page = max(1, $page);
         $perPage = min(500, max(1, $perPage));
@@ -53,6 +54,21 @@ final class ProductRepository
             $where[] = 'COALESCE(itm.lstatus, 0) = 1';
         } elseif ($status === 'inactive') {
             $where[] = 'COALESCE(itm.lstatus, 0) <> 1';
+        }
+
+        $stockTotalsJoin = '';
+        if ($reorderOnly) {
+            $stockTotalsJoin = <<<SQL
+LEFT JOIN (
+    SELECT lg.linvent_id, SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0)) AS current_stock
+    FROM tblinventory_logs lg
+    GROUP BY lg.linvent_id
+) reorder_stock ON reorder_stock.linvent_id = itm.lsession
+SQL;
+            $reorderLevelExpr = "CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2))";
+            $availableStockExpr = 'GREATEST(COALESCE(reorder_stock.current_stock, 0), 0)';
+            $where[] = $reorderLevelExpr . ' > 0';
+            $where[] = $availableStockExpr . ' < ' . $reorderLevelExpr;
         }
 
         $trimmedSearch = trim($search);
@@ -246,6 +262,7 @@ SELECT
     ), 0) AS SIGNED) AS transaction_count,
     CAST(COALESCE(itm.lnot_inventory, 0) AS SIGNED) AS is_deleted
 FROM tblinventory_item itm
+{$stockTotalsJoin}
 LEFT JOIN tblcategory cat ON cat.lid = itm.lcategory
 LEFT JOIN tblbrand brnd ON brnd.lid = itm.lbrand
 WHERE {$whereSql}
@@ -281,6 +298,7 @@ SQL;
         $countSql = <<<SQL
 SELECT COUNT(*) AS total
 FROM tblinventory_item itm
+{$stockTotalsJoin}
 WHERE {$whereSql}
 SQL;
         $countStmt = $this->db->pdo()->prepare($countSql);

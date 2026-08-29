@@ -43,8 +43,13 @@ final class ProductController
 
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, (int) ($query['per_page'] ?? 100));
+        $reorderOnly = in_array(
+            strtolower(trim((string) ($query['reorder_only'] ?? ''))),
+            ['1', 'true', 'yes', 'on'],
+            true
+        );
 
-        return $this->repo->listProducts($mainId, $search, $status, $page, $perPage, $fieldFilters);
+        return $this->repo->listProducts($mainId, $search, $status, $page, $perPage, $fieldFilters, $reorderOnly);
     }
 
     public function show(array $params = [], array $query = [], array $body = []): array

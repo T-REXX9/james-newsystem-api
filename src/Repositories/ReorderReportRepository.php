@@ -39,7 +39,7 @@ final class ReorderReportRepository
     ): array {
         $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
-            'purchasing_control_version' => 11,
+            'purchasing_control_version' => 15,
             'main_id' => $mainId,
             'warehouse_type' => $normalizedWarehouseType,
             'search' => trim($search),
@@ -70,57 +70,23 @@ final class ReorderReportRepository
                FROM tblinventory_logs lg
                GROUP BY lg.linvent_id";
 
+        $reorderLevelExpr = "CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2))";
         $targetExpr = $isWarehouseSpecific
             ? "CAST(COALESCE(NULLIF(itm.lreplenish, ''), '0') AS DECIMAL(15,2))"
-            : "CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2))";
+            : $reorderLevelExpr;
 
-        $reservationSubquery = <<<SQL
-SELECT
-    COALESCE(NULLIF(TRIM(soi.litem_refno), ''), NULLIF(TRIM(soi.linv_refno), '')) AS item_session,
-    SUM(COALESCE(soi.lqty, 0)) AS reserved_qty
-FROM tbltransaction_item soi
-INNER JOIN tbltransaction so ON so.lrefno = soi.lrefno
-WHERE so.lmain_id = :reservation_main_id
-  AND COALESCE(soi.lcancel, 0) = 0
-  AND COALESCE(so.lcancel, 0) = 0
-  AND LOWER(COALESCE(so.lsubmitstat, '')) IN ('approved', 'posted')
-  AND LOWER(COALESCE(so.ltransaction_status, '')) NOT IN ('cancelled', 'canceled', 'unposted')
-  AND TRIM(COALESCE(so.ldr_refno, '')) = ''
-  AND TRIM(COALESCE(so.invoice_refno, '')) = ''
-GROUP BY COALESCE(NULLIF(TRIM(soi.litem_refno), ''), NULLIF(TRIM(soi.linv_refno), ''))
-SQL;
-
-        $availableExpr = '(COALESCE(st.current_stock, 0) - COALESCE(res.reserved_qty, 0))';
-        $activeWorkflowExpr = <<<SQL
-(
-    EXISTS (
-        SELECT 1
-        FROM tblpr_item active_pr_item
-        INNER JOIN tblpr_list active_pr ON active_pr.lrefno = active_pr_item.lrefno
-        WHERE (active_pr_item.litem_refno = itm.lsession OR active_pr_item.litem_code = itm.litemcode)
-          AND LOWER(COALESCE(active_pr.lstatus, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
-          AND TRIM(COALESCE(active_pr_item.lpo_refno, '')) = ''
-    )
-    OR EXISTS (
-        SELECT 1
-        FROM tblpo_itemlist active_po_item
-        INNER JOIN tblpo_list active_po ON active_po.lrefno = active_po_item.lrefno
-        WHERE active_po.lmain_id = itm.lmain_id
-          AND (active_po_item.litem_refno = itm.lsession OR active_po_item.litem_code = itm.litemcode)
-          AND LOWER(COALESCE(active_po.ltransaction_status, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
-          AND COALESCE(active_po_item.lqty, 0) > COALESCE(active_po_item.lreceiving_qty, 0)
-    )
-)
-SQL;
-
+        // Reorder availability is the on-hand ledger balance. Sales reservations
+        // do not reduce stock in this report, and negative ledger balances display as zero.
+        $availableExpr = 'GREATEST(COALESCE(st.current_stock, 0), 0)';
         $where = [
             'itm.lmain_id = :main_id',
-            '(' . $availableExpr . ' <= ' . $targetExpr . ' OR ' . $activeWorkflowExpr . ')',
+            // Stock eligibility is absolute: purchasing documents never keep an
+            // item in this report after available stock exceeds its reorder level.
+            $availableExpr . ' < ' . $reorderLevelExpr,
             // Items with a zero reorder level are not reorder candidates.
-            "CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2)) > 0",
+            $reorderLevelExpr . ' > 0',
         ];
         $params = ['main_id' => $mainId];
-        $params['reservation_main_id'] = $mainId;
 
         if (!$includeHidden) {
             $where[] = 'COALESCE(itm.lstatus, 0) = 1';
@@ -171,13 +137,12 @@ SQL;
     CAST(COALESCE(NULLIF(itm.lreorder_amt, ''), '0') AS DECIMAL(15,2)) AS reorder_qty,
     CAST(COALESCE(NULLIF(itm.lreplenish, ''), '0') AS DECIMAL(15,2)) AS replenish_qty,
     CAST(COALESCE(st.current_stock, 0) AS DECIMAL(15,2)) AS current_stock,
-    CAST(COALESCE(res.reserved_qty, 0) AS DECIMAL(15,2)) AS reserved_stock,
+    CAST(0 AS DECIMAL(15,2)) AS reserved_stock,
     CAST({$availableExpr} AS DECIMAL(15,2)) AS available_stock,
     {$targetExpr} AS target_quantity,
     COUNT(*) OVER() AS report_total
 FROM ({$canonicalItemsSql}) itm
 LEFT JOIN ({$stockSubquery}) st ON st.linvent_id = itm.lsession
-LEFT JOIN ({$reservationSubquery}) res ON res.item_session = itm.lsession
 WHERE {$whereSql}
 ORDER BY itm.ldescription ASC, itm.lpartno ASC, itm.litemcode ASC
 LIMIT :limit OFFSET :offset
