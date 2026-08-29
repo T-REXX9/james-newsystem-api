@@ -184,6 +184,12 @@ SQL;
         $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         if (!$isPickerMode && $items !== []) {
+            // Resolve the customer's province the same way the province-summary
+            // endpoint does (lprovince, falling back to refprovince text match
+            // against laddress), then map it to the GeoJSON canonical name so
+            // the Sales Map sidebar matches the map's colour counts.
+            $items = $this->applyProvinceResolution($items);
+
             foreach ($items as &$item) {
                 $sessionId = trim((string) ($item['session_id'] ?? ''));
                 $item['contacts'] = $sessionId !== '' ? $this->listContacts($sessionId) : [];
@@ -957,6 +963,97 @@ SQL;
      * Mapping from DB province names (UPPER) to GeoJSON PROVINCE values.
      * The GeoJSON source is macoymejia/geojsonph Province/Provinces.json.
      */
+    /**
+     * Single source of truth for resolving a customer's province from
+     * the raw DB row. Mirrors the logic used by getCustomerCountsByProvince
+     * and the list endpoint so all three consumers stay in sync.
+     *
+     * Returns the SQL fragment (without alias) that produces a column
+     * containing the resolved province name as stored in DB (not yet
+     * mapped to the GeoJSON canonical name). Use resolveGeoJsonProvince()
+     * to normalize to the GeoJSON form used by the Sales Map.
+     */
+    private function provinceResolutionSqlExpression(): string
+    {
+        return <<<SQL
+CASE
+    WHEN COALESCE(TRIM(p.lprovince), '') <> ''
+        THEN TRIM(p.lprovince)
+    ELSE (
+        SELECT rp.provDesc
+        FROM refprovince rp
+        WHERE UPPER(p.laddress) LIKE CONCAT('%', UPPER(rp.provDesc), '%')
+        ORDER BY CHAR_LENGTH(rp.provDesc) DESC
+        LIMIT 1
+    )
+END
+SQL;
+    }
+
+    /**
+     * Apply the province resolution to a list of fetched customer rows in-place.
+     * Each row's `province` field is overwritten with the GeoJSON-canonical
+     * name (or '' when no resolution is possible).
+     *
+     * @param array<int, array<string, mixed>> $items
+     */
+    private function applyProvinceResolution(array $items): array
+    {
+        if ($items === []) {
+            return $items;
+        }
+
+        // Fetch (session_id → resolved_province) for the whole page in one
+        // round trip instead of N correlated subqueries.
+        $sessionIds = [];
+        foreach ($items as $row) {
+            $sid = trim((string) ($row['session_id'] ?? ''));
+            if ($sid !== '') {
+                $sessionIds[$sid] = true;
+            }
+        }
+        if ($sessionIds === []) {
+            return $items;
+        }
+
+        $placeholders = [];
+        $params = [];
+        $i = 0;
+        foreach (array_keys($sessionIds) as $sid) {
+            $key = ':sid' . $i++;
+            $placeholders[] = $key;
+            $params[$key] = $sid;
+        }
+        $in = implode(',', $placeholders);
+
+        $expr = $this->provinceResolutionSqlExpression();
+        $sql = "SELECT p.lsessionid, {$expr} AS resolved_province
+                FROM tblpatient p
+                WHERE p.lsessionid IN ({$in})";
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value, PDO::PARAM_STR);
+        }
+        $stmt->execute();
+
+        $resolved = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $sid = (string) ($row['lsessionid'] ?? '');
+            $raw = $row['resolved_province'] ?? null;
+            $rawStr = $raw === null ? '' : trim((string) $raw);
+            $resolved[$sid] = $rawStr === '' ? '' : (string) (self::resolveGeoJsonProvince($rawStr) ?? '');
+        }
+
+        foreach ($items as &$item) {
+            $sid = trim((string) ($item['session_id'] ?? ''));
+            $item['province'] = $resolved[$sid] ?? '';
+        }
+        unset($item);
+
+        return $items;
+    }
+
     private const GEOJSON_PROVINCE_MAP = [
         'ABRA' => 'Abra',
         'AGUSAN DEL NORTE' => 'Agusan del Norte',
@@ -1043,6 +1140,15 @@ SQL;
         'ZAMBOANGA DEL NORTE' => 'Zamboanga del Norte',
         'ZAMBOANGA DEL SUR' => 'Zamboanga del Sur',
         'ZAMBOANGA SIBUGAY' => 'Zamboanga Sibugay',
+        // Canonical names must round-trip to themselves. These rows are added
+        // because the summary endpoint already emits GeoJSON-canonical names
+        // for some records (e.g. when lprovince is filled with the canonical
+        // form). Without these, resolveGeoJsonProvince() would return null and
+        // the matching list rows would lose their province.
+        'COMPOSTELA VALLEY' => 'Compostela Valley',
+        'NORTH COTABATO' => 'North Cotabato', // already present, kept for self-round-trip
+        'METROPOLITAN MANILA' => 'Metropolitan Manila',
+        'MAGUINDANAO' => 'Maguindanao', // self-round-trip
         // NCR districts all map to Metropolitan Manila
         'NCR, CITY OF MANILA, FIRST DISTRICT' => 'Metropolitan Manila',
         'CITY OF MANILA' => 'Metropolitan Manila',
@@ -1056,8 +1162,9 @@ SQL;
 
     /**
      * Map a raw DB province name to its GeoJSON equivalent.
+     * Public so it can be unit-tested without a database.
      */
-    private function resolveGeoJsonProvince(string $raw): ?string
+    public static function resolveGeoJsonProvince(string $raw): ?string
     {
         $upper = strtoupper(trim($raw));
         return self::GEOJSON_PROVINCE_MAP[$upper] ?? null;
@@ -1065,23 +1172,14 @@ SQL;
 
     public function getCustomerCountsByProvince(int $mainId): array
     {
+        $expr = $this->provinceResolutionSqlExpression();
         $sql = <<<SQL
 SELECT
     UPPER(TRIM(resolved_province)) AS province,
     COUNT(*) AS customer_count
 FROM (
     SELECT
-        CASE
-            WHEN COALESCE(TRIM(p.lprovince), '') <> ''
-                THEN TRIM(p.lprovince)
-            ELSE (
-                SELECT rp.provDesc
-                FROM refprovince rp
-                WHERE UPPER(p.laddress) LIKE CONCAT('%', UPPER(rp.provDesc), '%')
-                ORDER BY CHAR_LENGTH(rp.provDesc) DESC
-                LIMIT 1
-            )
-        END AS resolved_province
+        {$expr} AS resolved_province
     FROM tblpatient p
     WHERE p.lmain_id = :main_id
       AND COALESCE(p.lstatus, 1) = 1
@@ -1102,7 +1200,7 @@ SQL;
         // Re-key by GeoJSON province name and merge counts for aliases
         $merged = [];
         foreach ($rows as $row) {
-            $geoName = $this->resolveGeoJsonProvince((string) $row['province']);
+            $geoName = self::resolveGeoJsonProvince((string) $row['province']);
             if ($geoName === null) {
                 continue; // skip unrecognised values
             }
