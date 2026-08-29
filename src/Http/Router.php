@@ -73,7 +73,7 @@ final class Router
         } catch (HttpException $e) {
             Response::json(['ok' => false, 'error' => $e->getMessage()], $e->statusCode());
         } catch (Throwable $e) {
-            Response::json(['ok' => false, 'error' => $e->getMessage()], 500);
+            Response::json(['ok' => false, 'error' => $e->getMessage(), 'trace' => $e->getTraceAsString()], 500);
         }
     }
 

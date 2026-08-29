@@ -467,6 +467,15 @@ SQL;
             return null;
         }
 
+        $checkStmt = $this->db->pdo()->prepare(
+            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND LOWER(COALESCE(ltransaction_status, "")) <> "cancelled" LIMIT 1'
+        );
+        $checkStmt->execute(['refno' => $prRefno]);
+        $poNo = $checkStmt->fetchColumn();
+        if ($poNo) {
+            throw new RuntimeException('This Purchase Requisition cannot be edited because PO ' . $poNo . ' has already been generated. Unpost or cancel the related Purchase Order first.');
+        }
+
         $request = $existing['request'];
         $statusRaw = (string) ($request['status_raw'] ?? 'Pending');
         $approvalRaw = (string) ($request['approval_status'] ?? 'Pending');
@@ -541,6 +550,15 @@ SQL;
             throw new RuntimeException('Purchase request not found');
         }
 
+        $checkStmt = $this->db->pdo()->prepare(
+            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND LOWER(COALESCE(ltransaction_status, "")) <> "cancelled" LIMIT 1'
+        );
+        $checkStmt->execute(['refno' => $prRefno]);
+        $poNo = $checkStmt->fetchColumn();
+        if ($poNo) {
+            throw new RuntimeException('Cannot add items to this Purchase Requisition because PO ' . $poNo . ' has already been generated.');
+        }
+
         $pdo = $this->db->pdo();
         (new PurchaseWorkflowGuard($pdo))->assertItemsAvailable([$payload]);
         $this->insertPrItem($pdo, $mainId, $prRefno, $payload);
@@ -588,6 +606,18 @@ SQL;
             return null;
         }
 
+        $prRefno = (string) ($item['pr_refno'] ?? '');
+        if ($prRefno !== '') {
+            $checkStmt = $this->db->pdo()->prepare(
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND LOWER(COALESCE(ltransaction_status, "")) <> "cancelled" LIMIT 1'
+            );
+            $checkStmt->execute(['refno' => $prRefno]);
+            $poNo = $checkStmt->fetchColumn();
+            if ($poNo) {
+                throw new RuntimeException('This Purchase Requisition item cannot be edited because PO ' . $poNo . ' has already been generated. Unpost or cancel the related Purchase Order first.');
+            }
+        }
+
         $supplier = null;
         if (array_key_exists('supplier_id', $payload)) {
             $supplierId = trim((string) ($payload['supplier_id'] ?? ''));
@@ -633,6 +663,19 @@ SQL;
         if ($item === null) {
             return false;
         }
+
+        $prRefno = (string) ($item['pr_refno'] ?? '');
+        if ($prRefno !== '') {
+            $checkStmt = $this->db->pdo()->prepare(
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND LOWER(COALESCE(ltransaction_status, "")) <> "cancelled" LIMIT 1'
+            );
+            $checkStmt->execute(['refno' => $prRefno]);
+            $poNo = $checkStmt->fetchColumn();
+            if ($poNo) {
+                throw new RuntimeException('This Purchase Requisition item cannot be deleted because PO ' . $poNo . ' has already been generated. Unpost or cancel the related Purchase Order first.');
+            }
+        }
+
         $stmt = $this->db->pdo()->prepare('DELETE FROM tblpr_item WHERE lid = :item_id');
         $stmt->execute(['item_id' => $itemId]);
         return true;
@@ -643,6 +686,18 @@ SQL;
         $normalized = strtolower(trim($action));
         if (!in_array($normalized, ['approve', 'cancel', 'submit', 'convert-po'], true)) {
             throw new RuntimeException('Unsupported action: ' . $action);
+        }
+
+        if ($normalized === 'cancel' || $normalized === 'submit') {
+            $checkStmt = $this->db->pdo()->prepare(
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND LOWER(COALESCE(ltransaction_status, "")) <> "cancelled" LIMIT 1'
+            );
+            $checkStmt->execute(['refno' => $prRefno]);
+            $poNo = $checkStmt->fetchColumn();
+            if ($poNo) {
+                $actionName = $normalized === 'cancel' ? 'cancelled' : 'unposted';
+                throw new RuntimeException('This Purchase Requisition cannot be ' . $actionName . ' because PO ' . $poNo . ' has already been generated. Unpost or cancel the related Purchase Order first.');
+            }
         }
 
         if ($normalized === 'approve') {
@@ -668,7 +723,7 @@ SQL;
         }
 
         if ($normalized === 'submit') {
-            $stmt = $this->db->pdo()->prepare('UPDATE tblpr_list SET lstatus = "Pending" WHERE lrefno = :refno');
+            $stmt = $this->db->pdo()->prepare('UPDATE tblpr_list SET lstatus = "Pending", lapproval = "Pending" WHERE lrefno = :refno');
             $stmt->execute(['refno' => $prRefno]);
             $this->clearReorderReportCache();
             $record = $this->getPurchaseRequest($mainId, $prRefno);

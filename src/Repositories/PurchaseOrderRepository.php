@@ -375,6 +375,20 @@ SQL;
         }
 
         $order = $existing['order'];
+        
+        $newStatus = $this->normalizeStatus((string) ($payload['status'] ?? $order['status'] ?? 'Pending'));
+        if (strtolower($newStatus) === 'cancelled' || strtolower($newStatus) !== strtolower((string) $order['status'])) {
+            $dependencyStmt = $this->db->pdo()->prepare(
+                'SELECT COUNT(*) FROM tblpurchase_order
+                 WHERE lmain_id = :main_id AND lpo_refno = :po_refno
+                   AND LOWER(COALESCE(ltransaction_status, "pending")) <> "cancelled"'
+            );
+            $dependencyStmt->execute(['main_id' => $mainId, 'po_refno' => $purchaseRefno]);
+            if ((int) $dependencyStmt->fetchColumn() > 0) {
+                throw new RuntimeException('Purchase order cannot be modified because a receiving report already depends on it');
+            }
+        }
+
         $supplierId = array_key_exists('supplier_id', $payload)
             ? (string) ($payload['supplier_id'] ?? '')
             : (string) ($order['supplier_id'] ?? '');
@@ -473,10 +487,10 @@ SQL;
              FROM tblaccount acc
              LEFT JOIN tblusertype role ON role.lid = acc.ltype
              WHERE acc.lid = :user_id
-               AND (acc.lid = :main_id OR acc.lmother_id = :main_id)
+               AND (acc.lid = :main_id1 OR acc.lmother_id = :main_id2)
              LIMIT 1'
         );
-        $stmt->execute(['user_id' => $userId, 'main_id' => $mainId]);
+        $stmt->execute(['user_id' => $userId, 'main_id1' => $mainId, 'main_id2' => $mainId]);
         $row = $stmt->fetch(PDO::FETCH_NUM);
         if ($row === false) return false;
         $type = (string) ($row[0] ?? '');
