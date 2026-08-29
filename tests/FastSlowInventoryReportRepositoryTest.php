@@ -142,8 +142,9 @@ expect_true(count($result['slowMovingItems']) === 1, 'item is slow moving');
 // Current month sales (0 months ago) should count if the period logic uses [2,1,0]
 $pdo->exec("INSERT INTO tblinventory_item (lid, lsession, lpartno, lmain_id) VALUES (2, 'item-2', 'PART-2', 1)");
 $pdo->exec("INSERT INTO tblinventory_price (lid, linv_refno, lprice_name, lprice_amt) VALUES
-    (1, 'item-2', 'VIP 1', 120),
-    (2, 'item-2', 'VIP 1', 135)");
+    (1, 'item-2', 'AAA', 120),
+    (2, 'item-2', 'AAA', 135),
+    (3, 'item-2', 'VIP 1', 0)");
 $month0 = $now->format('Y-m-d 12:00:00');
 $pdo->exec("INSERT INTO tblinvoice_list (lrefno, lmain_id, ldate, lstatus, lcancel) VALUES
     ('inv-fast-1', 1, '{$month2}', 'Posted', ''),

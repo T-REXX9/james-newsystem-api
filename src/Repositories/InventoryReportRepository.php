@@ -137,10 +137,13 @@ final class InventoryReportRepository
                 'last_transaction_date' => (string) ($item['last_transaction_date'] ?? ''),
                 'last_rr_date' => (string) ($item['last_rr_date'] ?? ''),
                 'reorder_quantity' => (float) ($item['reorder_quantity'] ?? 0),
-                'cost' => (float) ($item['cost'] ?? 0),
+                // Product Database's visible VIP 1 is stored under the legacy AAA price group.
+                'vip1_price' => (float) ($item['vip1_price'] ?? 0),
+                // Keep the old key during rollout for older deployed web bundles.
+                'cost' => (float) ($item['vip1_price'] ?? 0),
                 'total_stock' => $totalStock,
                 'warehouse_stock' => [],
-                'value' => round($totalStock * (float) ($item['cost'] ?? 0), 2),
+                'value' => round($totalStock * (float) ($item['vip1_price'] ?? 0), 2),
             ];
         }
 
@@ -220,10 +223,10 @@ SELECT
         SELECT ip.lprice_amt
         FROM tblinventory_price ip
         WHERE ip.linv_refno = itm.lsession
-          AND ip.lprice_name = 'VIP 1'
+          AND ip.lprice_name = 'AAA'
         ORDER BY ip.lid DESC
         LIMIT 1
-    ), 0) AS cost,
+    ), 0) AS vip1_price,
     COALESCE((
         SELECT SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0))
         FROM tblinventory_logs lg

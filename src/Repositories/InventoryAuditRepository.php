@@ -531,14 +531,8 @@ SELECT
     COALESCE(itm.litemcode, '') AS item_code,
     COALESCE(itm.ldescription, '') AS description,
     COALESCE(br.lname, itm.lbrand, '') AS brand,
-    CAST(COALESCE(
-        (SELECT NULLIF(ip.lprice_amt, '') FROM tblinventory_price ip
-         WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'AAA'
-         ORDER BY ip.lid DESC LIMIT 1),
-        itm.lcost,
-        itm.lcog,
-        0
-    ) AS DECIMAL(15,2)) AS cost
+    -- Inventory valuation uses acquisition cost, never a customer selling-price group.
+    CAST(COALESCE(NULLIF(itm.lcost, ''), NULLIF(itm.lcog, ''), 0) AS DECIMAL(15,2)) AS cost
 FROM tblinventory_item itm
 LEFT JOIN tblbrand br ON CAST(br.lid AS CHAR) = CAST(itm.lbrand AS CHAR)
 WHERE {$whereSql}
@@ -992,14 +986,8 @@ SELECT
     COALESCE(itm.litemcode, '') AS item_code,
     COALESCE(itm.lpartno, '') AS part_no,
     COALESCE(itm.ldescription, '') AS description,
-    CAST(COALESCE(
-        (SELECT NULLIF(ip.lprice_amt, '') FROM tblinventory_price ip
-         WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'AAA'
-         ORDER BY ip.lid DESC LIMIT 1),
-        itm.lcost,
-        itm.lcog,
-        0
-    ) AS DECIMAL(15,2)) AS cost
+    -- Stock-adjustment value uses acquisition cost, never VIP selling price.
+    CAST(COALESCE(NULLIF(itm.lcost, ''), NULLIF(itm.lcog, ''), 0) AS DECIMAL(15,2)) AS cost
 FROM tblinventory_item itm
 WHERE itm.lmain_id = :main_id
   AND itm.lsession = :item_session

@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Product pricing regression test.
+ * Product pricing-group mapping regression test.
  *
  * Run:
  *   API_BASE_URL=http://127.0.0.1:8081 php api/tests/ProductLowestPriceApiTest.php
@@ -112,7 +112,7 @@ try {
     }
 
     echo "==========================================================\n";
-    echo " Product Lowest Price API Test\n";
+    echo " Product Price Mapping API Test\n";
     echo " Base URL: {$API_BASE}\n";
     echo "==========================================================\n\n";
 
@@ -120,17 +120,17 @@ try {
     assert_eq(200, $res['http_code'], 'Product endpoint returns 200', $passed, $failed, $errors);
 
     $product = is_array($res['body']['data'] ?? null) ? $res['body']['data'] : [];
-    assert_eq(300.0, (float) ($product['price_aa'] ?? -1), 'Regular uses lowest positive product price', $passed, $failed, $errors);
-    assert_eq(300.0, (float) ($product['price_vip1'] ?? -1), 'Silver uses lowest positive product price', $passed, $failed, $errors);
-    assert_eq(300.0, (float) ($product['price_vip2'] ?? -1), 'Gold uses lowest positive product price', $passed, $failed, $errors);
+    assert_eq(500.0, (float) ($product['price_aa'] ?? -1), 'Product Database VIP 1 maps to AAA', $passed, $failed, $errors);
+    assert_eq(450.0, (float) ($product['price_vip1'] ?? -1), 'Product Database VIP 2 maps to legacy VIP 1', $passed, $failed, $errors);
+    assert_eq(475.0, (float) ($product['price_vip2'] ?? -1), 'Product Database VIP 3 maps to VIP2', $passed, $failed, $errors);
 
     $list = request("{$API_BASE}/api/v1/products?main_id={$MAIN_ID}&status=all&search=CODEX-LOWEST-PRICE&page=1&per_page=5");
     assert_eq(200, $list['http_code'], 'Product list endpoint returns 200', $passed, $failed, $errors);
     $listProduct = $list['body']['data']['items'][0] ?? [];
     assert_eq($session, (string) ($listProduct['id'] ?? ''), 'Product list finds seeded product', $passed, $failed, $errors);
-    assert_eq(300.0, (float) ($listProduct['price_aa'] ?? -1), 'List Regular uses lowest positive product price', $passed, $failed, $errors);
-    assert_eq(300.0, (float) ($listProduct['price_vip1'] ?? -1), 'List Silver uses lowest positive product price', $passed, $failed, $errors);
-    assert_eq(300.0, (float) ($listProduct['price_vip2'] ?? -1), 'List Gold uses lowest positive product price', $passed, $failed, $errors);
+    assert_eq(500.0, (float) ($listProduct['price_aa'] ?? -1), 'Product list VIP 1 maps to AAA', $passed, $failed, $errors);
+    assert_eq(450.0, (float) ($listProduct['price_vip1'] ?? -1), 'Product list VIP 2 maps to legacy VIP 1', $passed, $failed, $errors);
+    assert_eq(475.0, (float) ($listProduct['price_vip2'] ?? -1), 'Product list VIP 3 maps to VIP2', $passed, $failed, $errors);
 } finally {
     $pdo->prepare('DELETE FROM tblinventory_price WHERE linv_refno = :session')->execute(['session' => $session]);
     $pdo->prepare('DELETE FROM tblinventory_item WHERE lsession = :session')->execute(['session' => $session]);
