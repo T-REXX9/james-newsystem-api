@@ -64,8 +64,8 @@ final class IncidentItemsReportController
         if ($incidentReportId === '' || $description === '') {
             throw new HttpException(422, 'incident_report_id and description are required');
         }
-        if (!in_array($issueType, ['product_quality', 'service_quality', 'delivery', 'other'], true)) {
-            throw new HttpException(422, 'issue_type must be one of: product_quality, service_quality, delivery, other');
+        if (!in_array($issueType, ['product_quality', 'service_quality', 'delivery', 'lbc_rto', 'other'], true)) {
+            throw new HttpException(422, 'issue_type must be one of: product_quality, service_quality, delivery, lbc_rto, other');
         }
         if (strlen($incidentReportId) > 64) {
             throw new HttpException(422, 'incident_report_id is too long');

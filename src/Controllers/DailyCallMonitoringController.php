@@ -147,7 +147,7 @@ final class DailyCallMonitoringController
         }
 
         $issueType = trim((string) $body['issue_type']);
-        if (!in_array($issueType, ['product_quality', 'service_quality', 'delivery', 'other'], true)) {
+        if (!in_array($issueType, ['product_quality', 'service_quality', 'delivery', 'lbc_rto', 'other'], true)) {
             throw new HttpException(422, 'issue_type is invalid');
         }
 
