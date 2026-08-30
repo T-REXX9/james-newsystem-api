@@ -119,7 +119,9 @@ final class PurchaseRequestController
 
     public function delete(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $mainId = (int) ($claims['main_userid'] ?? $body['main_id'] ?? $query['main_id'] ?? 0);
+        $userId = (int) ($claims['sub'] ?? $body['user_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
@@ -128,8 +130,13 @@ final class PurchaseRequestController
         if ($prRefno === '') {
             throw new HttpException(422, 'prRefno is required');
         }
+        if ($userId <= 0) throw new HttpException(422, 'user_id is required');
 
-        $deleted = $this->repo->deletePurchaseRequest($mainId, $prRefno);
+        try {
+            $deleted = $this->repo->deletePurchaseRequest($mainId, $userId, $prRefno, (string) ($body['reason'] ?? ''));
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
         if (!$deleted) {
             throw new HttpException(404, 'Purchase request not found');
         }
@@ -209,8 +216,9 @@ final class PurchaseRequestController
 
     public function action(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($body['main_id'] ?? 0);
-        $userId = (int) ($body['user_id'] ?? 0);
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $mainId = (int) ($claims['main_userid'] ?? $body['main_id'] ?? 0);
+        $userId = (int) ($claims['sub'] ?? $body['user_id'] ?? 0);
         if ($mainId <= 0 || $userId <= 0) {
             throw new HttpException(422, 'main_id and user_id are required');
         }
@@ -222,6 +230,11 @@ final class PurchaseRequestController
 
         $action = strtolower(trim((string) ($params['action'] ?? '')));
         try {
+            if ($action === 'unpost') {
+                $record = $this->repo->unpostPurchaseRequest($mainId, $userId, $prRefno, (string) ($body['reason'] ?? ''));
+                if ($record === null) throw new HttpException(404, 'Purchase request not found');
+                return $record;
+            }
             return $this->repo->applyAction($mainId, $userId, $prRefno, $action, $body);
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());

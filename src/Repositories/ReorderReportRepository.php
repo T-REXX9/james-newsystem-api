@@ -39,7 +39,7 @@ final class ReorderReportRepository
     ): array {
         $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
-            'purchasing_control_version' => 15,
+            'purchasing_control_version' => 17,
             'main_id' => $mainId,
             'warehouse_type' => $normalizedWarehouseType,
             'search' => trim($search),
@@ -78,11 +78,33 @@ final class ReorderReportRepository
         // Reorder availability is the on-hand ledger balance. Sales reservations
         // do not reduce stock in this report, and negative ledger balances display as zero.
         $availableExpr = 'GREATEST(COALESCE(st.current_stock, 0), 0)';
+        // Keep a line visible while it has a PO balance still awaiting receipt.
+        // This makes partially received items auditable even when the accepted
+        // quantity has already lifted stock to (or above) the reorder level.
+        $activeOutstandingPoExpr = <<<SQL
+EXISTS (
+    SELECT 1
+    FROM tblpo_itemlist active_poi
+    INNER JOIN tblpo_list active_pol ON active_pol.lrefno = active_poi.lrefno
+    WHERE active_pol.lmain_id = itm.lmain_id
+      AND (
+          active_poi.litem_refno = itm.lsession
+          OR (
+              TRIM(COALESCE(active_poi.litem_code, '')) <> ''
+              AND active_poi.litem_code = itm.litemcode
+          )
+      )
+      AND LOWER(COALESCE(active_pol.ltransaction_status, 'pending'))
+          NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
+      AND COALESCE(active_poi.lqty, 0) > COALESCE(active_poi.lreceiving_qty, 0)
+)
+SQL;
         $where = [
             'itm.lmain_id = :main_id',
-            // Stock eligibility is absolute: purchasing documents never keep an
-            // item in this report after available stock exceeds its reorder level.
-            $availableExpr . ' < ' . $reorderLevelExpr,
+            // Normal reorder candidates are below threshold. An incomplete PO
+            // remains visible as an exception so its receiving progress is not
+            // lost once stock reaches the reorder level.
+            '(' . $availableExpr . ' < ' . $reorderLevelExpr . ' OR ' . $activeOutstandingPoExpr . ')',
             // Items with a zero reorder level are not reorder candidates.
             $reorderLevelExpr . ' > 0',
         ];
@@ -286,10 +308,25 @@ SQL;
                 $openPoQty
             );
 
-            if ($isOverdue) {
+            $completionPercent = $orderedQty > 0
+                ? min(100.0, max(0.0, ($acceptedQty / $orderedQty) * 100))
+                : 0.0;
+            $completionLabel = rtrim(rtrim(number_format($completionPercent, 2, '.', ''), '0'), '.');
+            $pendingReceiptPercent = $orderedQty > 0
+                ? min(100.0, max(0.0, ($physicallyReceivedQty / $orderedQty) * 100))
+                : 0.0;
+            $pendingReceiptLabel = rtrim(rtrim(number_format($pendingReceiptPercent, 2, '.', ''), '0'), '.');
+
+            if ($isOverdue && $acceptedQty > 0 && $openPoQty > 0) {
+                $overallStatus = 'Overdue — ' . $completionLabel . '% Complete';
+            } elseif ($isOverdue) {
                 $overallStatus = 'Overdue';
             } elseif ($acceptedQty > 0 && $openPoQty > 0) {
-                $overallStatus = 'Partially Received';
+                $overallStatus = 'Partially Received — ' . $completionLabel . '% Complete';
+            } elseif ($rrDocuments !== [] && $openPoQty > 0) {
+                // RR quantities are not stock until the RR is posted/delivered.
+                // Show the entered RR progress without treating it as accepted stock.
+                $overallStatus = 'RR Pending — ' . $pendingReceiptLabel . '% Received';
             } elseif ($openPoQty > 0) {
                 $overallStatus = 'Ordered';
             } elseif ($hasPendingPo || $hasApprovedPr) {
@@ -336,7 +373,7 @@ SQL;
                 'preferred_supplier_name' => (string) ($preferredSupplier['supplier_name'] ?? ''),
                 'preferred_supplier_cost' => (float) ($preferredSupplier['supplier_cost'] ?? 0),
                 'overall_status' => $overallStatus,
-                'can_create_pr' => !in_array($overallStatus, ['PR Pending', 'Awaiting PO', 'Ordered', 'Partially Received', 'Overdue'], true),
+                'can_create_pr' => !($hasPendingPr || $hasApprovedPr || $hasPendingPo || $openPoQty > 0),
                 'pr_documents' => $prDocuments,
                 'po_documents' => $poDocuments,
                 'rr_documents' => $rrDocuments,

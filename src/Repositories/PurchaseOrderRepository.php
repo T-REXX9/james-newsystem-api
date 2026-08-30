@@ -43,6 +43,7 @@ final class PurchaseOrderRepository
         ];
         $where = [
             'po.lmain_id = :main_id',
+            'COALESCE(po.ldeleted, 0) = 0',
             'MONTH(po.ldate) = :month',
             'YEAR(po.ldate) = :year',
         ];
@@ -218,6 +219,7 @@ LEFT JOIN tblaccount acc
     ON acc.lid = po.luser
 WHERE po.lmain_id = :main_id
   AND po.lrefno = :refno
+  AND COALESCE(po.ldeleted, 0) = 0
 LIMIT 1
 SQL;
         $orderStmt = $this->db->pdo()->prepare($orderSql);
@@ -431,7 +433,7 @@ SQL;
         return $this->getPurchaseOrder($mainId, $purchaseRefno);
     }
 
-    public function unpostPurchaseOrder(int $mainId, int $userId, string $purchaseRefno): ?array
+    public function unpostPurchaseOrder(int $mainId, int $userId, string $purchaseRefno, string $reason): ?array
     {
         $existing = $this->getPurchaseOrder($mainId, $purchaseRefno);
         if ($existing === null) return null;
@@ -440,6 +442,7 @@ SQL;
         if ($status !== 'posted') {
             throw new RuntimeException('Only a posted purchase order can be unposted');
         }
+        $this->assertReason($reason);
         if (!$this->canUnpostPurchaseOrder($mainId, $userId)) {
             throw new RuntimeException('You do not have permission to unpost purchase orders');
         }
@@ -466,10 +469,13 @@ SQL;
         $pdo->beginTransaction();
         try {
             $update = $pdo->prepare(
-                'UPDATE tblpo_list SET ltransaction_status = "Pending" WHERE lmain_id = :main_id AND lrefno = :refno'
+                'UPDATE tblpo_list
+                 SET ltransaction_status = "Unposted", lunposted_at = NOW(),
+                     lunposted_by = :user_id, lunpost_reason = :reason
+                 WHERE lmain_id = :main_id AND lrefno = :refno'
             );
-            $update->execute(['main_id' => $mainId, 'refno' => $purchaseRefno]);
-            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Order', 'Unpost', $purchaseRefno);
+            $update->execute(['main_id' => $mainId, 'user_id' => $userId, 'reason' => trim($reason), 'refno' => $purchaseRefno]);
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Order', 'Unpost', $purchaseRefno, $reason, (string) ($existing['order']['status'] ?? ''), 'Unposted');
             $pdo->commit();
             $this->clearReorderReportCache();
         } catch (\Throwable $e) {
@@ -498,32 +504,55 @@ SQL;
         return $type === '1' || in_array($role, ['owner', 'company owner', 'administrator', 'purchasing manager'], true);
     }
 
-    public function deletePurchaseOrder(int $mainId, string $purchaseRefno): bool
+    public function deletePurchaseOrder(int $mainId, int $userId, string $purchaseRefno, string $reason): bool
     {
         $exists = $this->getPurchaseOrder($mainId, $purchaseRefno);
-        if ($exists === null) {
-            return false;
+        if ($exists === null) return false;
+        $this->assertReason($reason);
+        $this->assertPrivilegedAction($mainId, $userId, 'delete');
+
+        $dependencyStmt = $this->db->pdo()->prepare(
+            'SELECT COUNT(*) FROM tblpurchase_order
+             WHERE lmain_id = :main_id AND lpo_refno = :po_refno
+               AND COALESCE(ldeleted, 0) = 0
+               AND LOWER(COALESCE(ltransaction_status, "pending")) NOT IN ("cancelled", "deleted")'
+        );
+        $dependencyStmt->execute(['main_id' => $mainId, 'po_refno' => $purchaseRefno]);
+        if ((int) $dependencyStmt->fetchColumn() > 0) {
+            throw new RuntimeException('Purchase order cannot be deleted because a receiving report depends on it');
         }
 
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
-            $deleteItems = $pdo->prepare('DELETE FROM tblpo_itemlist WHERE lrefno = :refno');
-            $deleteItems->execute(['refno' => $purchaseRefno]);
-
-            $deleteHeader = $pdo->prepare('DELETE FROM tblpo_list WHERE lmain_id = :main_id AND lrefno = :refno');
-            $deleteHeader->execute([
-                'main_id' => $mainId,
-                'refno' => $purchaseRefno,
-            ]);
-
+            $update = $pdo->prepare(
+                'UPDATE tblpo_list
+                 SET ldeleted = 1, ldeleted_at = NOW(), ldeleted_by = :user_id,
+                     ldelete_reason = :reason, ltransaction_status = "Deleted"
+                 WHERE lmain_id = :main_id AND lrefno = :refno'
+            );
+            $update->execute(['user_id' => $userId, 'reason' => trim($reason), 'main_id' => $mainId, 'refno' => $purchaseRefno]);
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Order', 'Delete', $purchaseRefno, $reason, (string) ($exists['order']['status'] ?? ''), 'Deleted');
             $pdo->commit();
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) $pdo->rollBack();
             throw $e;
         }
-
+        $this->clearReorderReportCache();
         return true;
+    }
+
+    private function assertReason(string $reason): void
+    {
+        if (trim($reason) === '') throw new RuntimeException('A reason is required for this action');
+        if (mb_strlen(trim($reason)) > 500) throw new RuntimeException('Reason must be 500 characters or fewer');
+    }
+
+    private function assertPrivilegedAction(int $mainId, int $userId, string $action): void
+    {
+        if (!$this->canUnpostPurchaseOrder($mainId, $userId)) {
+            throw new RuntimeException('You do not have permission to ' . $action . ' purchase orders');
+        }
     }
 
     public function addPurchaseOrderItem(int $mainId, int $userId, string $purchaseRefno, array $payload): array

@@ -113,7 +113,9 @@ final class ReceivingStockController
 
     public function delete(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $mainId = (int) ($claims['main_userid'] ?? $body['main_id'] ?? $query['main_id'] ?? 0);
+        $userId = (int) ($claims['sub'] ?? $body['user_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
@@ -122,8 +124,13 @@ final class ReceivingStockController
         if ($refno === '') {
             throw new HttpException(422, 'receivingRefno is required');
         }
+        if ($userId <= 0) throw new HttpException(422, 'user_id is required');
 
-        $deleted = $this->repo->deleteReceivingStock($mainId, $refno);
+        try {
+            $deleted = $this->repo->deleteReceivingStock($mainId, $userId, $refno, (string) ($body['reason'] ?? ''));
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
         if (!$deleted) {
             throw new HttpException(404, 'Receiving stock record not found');
         }
@@ -217,7 +224,9 @@ final class ReceivingStockController
             $record = $this->repo->finalizeReceivingStock(
                 $mainId,
                 $refno,
-                trim((string) ($body['status'] ?? 'Delivered'))
+                trim((string) ($body['status'] ?? 'Delivered')),
+                filter_var($body['close_remaining_po_qty'] ?? false, FILTER_VALIDATE_BOOL),
+                trim((string) ($body['short_receipt_reason'] ?? ''))
             );
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());
@@ -226,6 +235,22 @@ final class ReceivingStockController
             throw new HttpException(404, 'Receiving stock record not found');
         }
 
+        return $record;
+    }
+
+    public function unpost(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $mainId = (int) ($claims['main_userid'] ?? $body['main_id'] ?? 0);
+        $userId = (int) ($claims['sub'] ?? $body['user_id'] ?? 0);
+        $refno = trim((string) ($params['receivingRefno'] ?? ''));
+        if ($mainId <= 0 || $userId <= 0 || $refno === '') throw new HttpException(422, 'main_id, user_id, and receivingRefno are required');
+        try {
+            $record = $this->repo->unpostReceivingStock($mainId, $userId, $refno, (string) ($body['reason'] ?? ''));
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
+        if ($record === null) throw new HttpException(404, 'Receiving stock record not found');
         return $record;
     }
 }

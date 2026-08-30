@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\PurchaseReceivingPolicy;
+use App\Support\AuditTrailWriter;
 use PDO;
 use RuntimeException;
 
@@ -84,6 +85,7 @@ SQL;
         ];
         $where = [
             'rr.lmain_id = :main_id',
+            'COALESCE(rr.ldeleted, 0) = 0',
             'MONTH(rr.ldate) = :month',
             'YEAR(rr.ldate) = :year',
         ];
@@ -219,6 +221,7 @@ LEFT JOIN tblaccount acc
     ON acc.lid = rr.luser
 WHERE rr.lmain_id = :main_id
   AND rr.lrefno = :refno
+  AND COALESCE(rr.ldeleted, 0) = 0
 LIMIT 1
 SQL;
         $headerStmt = $this->db->pdo()->prepare($headerSql);
@@ -416,8 +419,13 @@ SQL;
         return $this->getReceivingStock($mainId, $receivingRefno);
     }
 
-    public function deleteReceivingStock(int $mainId, string $receivingRefno): bool
+    public function deleteReceivingStock(int $mainId, int $userId, string $receivingRefno, string $reason): bool
     {
+        $existing = $this->getReceivingStock($mainId, $receivingRefno);
+        if ($existing === null) return false;
+        $this->assertReason($reason);
+        $this->assertPrivilegedAction($mainId, $userId);
+        if (in_array(strtolower((string) ($existing['record']['status'] ?? '')), ['posted', 'delivered'], true)) throw new RuntimeException('Posted receiving reports must be unposted before deletion');
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
 
@@ -432,17 +440,9 @@ SQL;
                 return false;
             }
 
-            $deleteHeader = $pdo->prepare('DELETE FROM tblpurchase_order WHERE lmain_id = :main_id AND lrefno = :refno');
-            $deleteHeader->execute([
-                'main_id' => (string) $mainId,
-                'refno' => $receivingRefno,
-            ]);
-
-            $deleteItems = $pdo->prepare('DELETE FROM tblpurchase_item WHERE lrefno = :refno');
-            $deleteItems->execute(['refno' => $receivingRefno]);
-
-            $deleteLogs = $pdo->prepare('DELETE FROM tblinventory_logs WHERE lrefno = :refno');
-            $deleteLogs->execute(['refno' => $receivingRefno]);
+            $update = $pdo->prepare('UPDATE tblpurchase_order SET ldeleted = 1, ldeleted_at = NOW(), ldeleted_by = :user_id, ldelete_reason = :reason, ltransaction_status = "Deleted" WHERE lmain_id = :main_id AND lrefno = :refno');
+            $update->execute(['user_id' => $userId, 'reason' => trim($reason), 'main_id' => (string) $mainId, 'refno' => $receivingRefno]);
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Receiving Report', 'Delete', $receivingRefno, $reason, (string) ($existing['record']['status'] ?? ''), 'Deleted');
 
             $pdo->commit();
             return true;
@@ -450,6 +450,58 @@ SQL;
             $pdo->rollBack();
             throw $e;
         }
+    }
+
+    public function unpostReceivingStock(int $mainId, int $userId, string $receivingRefno, string $reason): ?array
+    {
+        $existing = $this->getReceivingStock($mainId, $receivingRefno);
+        if ($existing === null) return null;
+        $status = strtolower(trim((string) ($existing['record']['status'] ?? '')));
+        if (!in_array($status, ['posted', 'delivered'], true)) throw new RuntimeException('Only a posted receiving report can be unposted');
+        $this->assertReason($reason);
+        $this->assertPrivilegedAction($mainId, $userId);
+        $dependency = $this->db->pdo()->prepare('SELECT COUNT(*) FROM tblreturn_supplier rs WHERE rs.lmainid = :main_id AND rs.ltransaction_refno = :refno AND LOWER(COALESCE(rs.lstatus, "pending")) NOT IN ("cancelled", "deleted")');
+        $dependency->execute(['main_id' => $mainId, 'refno' => $receivingRefno]);
+        if ((int) $dependency->fetchColumn() > 0) throw new RuntimeException('Receiving report cannot be unposted because a return-to-supplier transaction depends on it');
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $items = $pdo->prepare('SELECT lpo_itemid, lqty FROM tblpurchase_item WHERE lrefno = :refno AND COALESCE(lpo_itemid, "") <> ""');
+            $items->execute(['refno' => $receivingRefno]);
+            $restore = $pdo->prepare('UPDATE tblpo_itemlist SET lreceiving_qty = GREATEST(0, COALESCE(lreceiving_qty, 0) - :qty), lreceiving_refno = "", lreceiving_no = "" WHERE lid = :po_item_id');
+            while ($item = $items->fetch(PDO::FETCH_ASSOC)) $restore->execute(['qty' => (int) ($item['lqty'] ?? 0), 'po_item_id' => (int) ($item['lpo_itemid'] ?? 0)]);
+            $pdo->prepare('DELETE FROM tblinventory_logs WHERE lrefno = :refno AND ltransaction_type = "Receiving"')->execute(['refno' => $receivingRefno]);
+            $update = $pdo->prepare('UPDATE tblpurchase_order SET ltransaction_status = "Unposted", lunposted_at = NOW(), lunposted_by = :user_id, lunpost_reason = :reason, ldate_recieved = NULL WHERE lmain_id = :main_id AND lrefno = :refno');
+            $update->execute(['user_id' => $userId, 'reason' => trim($reason), 'main_id' => (string) $mainId, 'refno' => $receivingRefno]);
+            $poRefno = trim((string) ($existing['record']['po_refno'] ?? ''));
+            if ($poRefno !== '') {
+                $reopenPo = $pdo->prepare(
+                    'UPDATE tblpo_list
+                     SET ltransaction_status = "Posted"
+                     WHERE lmain_id = :main_id AND lrefno = :po_refno
+                       AND LOWER(COALESCE(ltransaction_status, "")) = "completed"'
+                );
+                $reopenPo->execute(['main_id' => $mainId, 'po_refno' => $poRefno]);
+            }
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Receiving Report', 'Unpost', $receivingRefno, $reason, (string) ($existing['record']['status'] ?? ''), 'Unposted');
+            $pdo->commit();
+        } catch (\Throwable $e) { if ($pdo->inTransaction()) $pdo->rollBack(); throw $e; }
+        $this->clearReorderReportCache();
+        return $this->getReceivingStock($mainId, $receivingRefno);
+    }
+
+    private function assertReason(string $reason): void
+    {
+        if (trim($reason) === '') throw new RuntimeException('A reason is required for this action');
+        if (mb_strlen(trim($reason)) > 500) throw new RuntimeException('Reason must be 500 characters or fewer');
+    }
+
+    private function assertPrivilegedAction(int $mainId, int $userId): void
+    {
+        $stmt = $this->db->pdo()->prepare('SELECT COALESCE(acc.ltype, ""), LOWER(COALESCE(role.ltype_name, "")) FROM tblaccount acc LEFT JOIN tblusertype role ON role.lid = acc.ltype WHERE acc.lid = :user_id AND (acc.lid = :main_id1 OR acc.lmother_id = :main_id2) LIMIT 1');
+        $stmt->execute(['user_id' => $userId, 'main_id1' => $mainId, 'main_id2' => $mainId]);
+        $row = $stmt->fetch(PDO::FETCH_NUM);
+        if ($row === false || ((string) ($row[0] ?? '') !== '1' && !in_array((string) ($row[1] ?? ''), ['owner', 'company owner', 'administrator', 'warehouse manager'], true))) throw new RuntimeException('You do not have permission to recover receiving reports');
     }
 
     public function addReceivingStockItem(int $mainId, int $userId, string $receivingRefno, array $payload): array
@@ -540,7 +592,13 @@ SQL;
     /**
      * @return array<string, mixed>|null
      */
-    public function finalizeReceivingStock(int $mainId, string $receivingRefno, string $status = 'Delivered'): ?array
+    public function finalizeReceivingStock(
+        int $mainId,
+        string $receivingRefno,
+        string $status = 'Delivered',
+        bool $closeRemainingPoQty = false,
+        string $shortReceiptReason = ''
+    ): ?array
     {
         $record = $this->getReceivingStock($mainId, $receivingRefno);
         if ($record === null) {
@@ -548,6 +606,10 @@ SQL;
         }
 
         $wasDelivered = in_array(strtolower((string) ($record['record']['status'] ?? '')), ['delivered', 'posted'], true);
+        $shortReceiptReason = trim($shortReceiptReason);
+        if ($closeRemainingPoQty && $shortReceiptReason === '') {
+            throw new RuntimeException('A reason is required when closing a PO with undelivered quantity.');
+        }
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
@@ -630,7 +692,26 @@ SQL;
                        AND COALESCE(lqty, 0) > COALESCE(lreceiving_qty, 0)'
                 );
                 $remainingPoItems->execute(['po_refno' => $poRefno]);
-                if ((int) ($remainingPoItems->fetchColumn() ?: 0) === 0) {
+                $hasRemainingPoQty = (int) ($remainingPoItems->fetchColumn() ?: 0) > 0;
+                if ($closeRemainingPoQty && !$hasRemainingPoQty) {
+                    throw new RuntimeException('This PO has no remaining quantity to close as a short receipt.');
+                }
+                if ($closeRemainingPoQty) {
+                    $reason = $pdo->prepare(
+                        'UPDATE tblpurchase_order
+                         SET lreference = CASE
+                             WHEN TRIM(COALESCE(lreference, "")) = "" THEN :reason
+                             ELSE CONCAT(lreference, " | ", :reason)
+                         END
+                         WHERE lmain_id = :main_id AND lrefno = :refno'
+                    );
+                    $reason->execute([
+                        'reason' => 'Short receipt reason: ' . $shortReceiptReason,
+                        'main_id' => (string) $mainId,
+                        'refno' => $receivingRefno,
+                    ]);
+                }
+                if (!$hasRemainingPoQty || $closeRemainingPoQty) {
                     $completePo = $pdo->prepare(
                         'UPDATE tblpo_list
                          SET ltransaction_status = "Completed"

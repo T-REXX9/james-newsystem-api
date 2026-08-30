@@ -558,7 +558,8 @@ SQL;
             'lproduct_group' => $this->strVal($payload['category'] ?? ''),
             'lnickname' => $this->strVal($payload['descriptive_inquiry'] ?? ''),
             'lholes' => $this->strVal($payload['no_of_holes'] ?? ''),
-            'lreplenish' => (int) ($payload['replenish_quantity'] ?? 0),
+            // Replenishment is retired; reorder quantity is the only stocking control.
+            'lreplenish' => 0,
             'lopn_number' => $this->strVal($payload['original_pn_no'] ?? ''),
             'lapplication' => $this->strVal($payload['application'] ?? ''),
             'lcylinder' => $this->strVal($payload['no_of_cylinder'] ?? ''),
@@ -599,7 +600,6 @@ SQL;
             'category' => 'lproduct_group',
             'descriptive_inquiry' => 'lnickname',
             'no_of_holes' => 'lholes',
-            'replenish_quantity' => 'lreplenish',
             'original_pn_no' => 'lopn_number',
             'application' => 'lapplication',
             'no_of_cylinder' => 'lcylinder',
@@ -612,7 +612,7 @@ SQL;
             }
             $paramName = 'p_' . $dbField;
             $sets[] = "{$dbField} = :{$paramName}";
-            if (in_array($apiField, ['no_of_pieces_per_box', 'reorder_quantity', 'replenish_quantity'], true)) {
+            if (in_array($apiField, ['no_of_pieces_per_box', 'reorder_quantity'], true)) {
                 $params[$paramName] = (int) $payload[$apiField];
             } elseif ($apiField === 'cost') {
                 $params[$paramName] = (float) $payload[$apiField];

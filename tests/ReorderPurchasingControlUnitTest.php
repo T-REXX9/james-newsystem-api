@@ -21,13 +21,14 @@ $assertions = [
         $report,
         "\$availableExpr = 'GREATEST(COALESCE(st.current_stock, 0), 0)'"
     ),
-    'report only includes stock strictly below the reorder quantity' => str_contains($report, "\$availableExpr . ' < ' . \$reorderLevelExpr"),
+    'report includes stock below reorder quantity or with an incomplete PO balance' => str_contains($report, "\$availableExpr . ' < ' . \$reorderLevelExpr . ' OR ' . \$activeOutstandingPoExpr"),
     'product search supports the same reorder eligibility rule' => str_contains($products, 'if ($reorderOnly)')
         && str_contains($products, "\$reorderLevelExpr . ' > 0'")
         && str_contains($products, "\$availableStockExpr . ' < ' . \$reorderLevelExpr")
         && str_contains($productController, "\$query['reorder_only']")
         && str_contains($productController, '$reorderOnly'),
-    'active purchasing documents cannot bypass the stock threshold' => !str_contains($report, '$activeWorkflowExpr'),
+    'incomplete PO balances keep items visible above the stock threshold' => str_contains($report, '$activeOutstandingPoExpr')
+        && str_contains($report, 'COALESCE(active_poi.lqty, 0) > COALESCE(active_poi.lreceiving_qty, 0)'),
     'pending PR lines remain open until linked to a PO' => str_contains($report, "TRIM(COALESCE(pri.lpo_refno, '')) = ''"),
     'only the unreceived PO balance remains on order' => str_contains($report, 'COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)'),
     'accepted receiving quantities require a finalized RR status' => str_contains($report, "IN ('posted', 'received', 'delivered', 'completed')"),
@@ -41,6 +42,10 @@ $assertions = [
     'pending PO quantity remains visible without counting as on order' => strpos($report, '$orderedQty +=') < strpos($report, 'if (!$isOnOrder)'),
     'PO record outstanding quantity remains visible separately from on order' => str_contains($report, '$recordedOutstandingQty +=')
         && str_contains($report, "'remaining_qty' => \$recordedOutstandingQty"),
+    'partial receipt status reports actual completion progress' => str_contains($report, "'Partially Received — ' . \$completionLabel . '% Complete'"),
+    'overdue partial receipt retains its completion progress' => str_contains($report, "'Overdue — ' . \$completionLabel . '% Complete'"),
+    'pending RR status reports entered receiving progress' => str_contains($report, "'RR Pending — ' . \$pendingReceiptLabel . '% Received'"),
+    'active PO balance blocks a duplicate PR regardless of status label' => str_contains($report, "'can_create_pr' => !(\$hasPendingPr || \$hasApprovedPr || \$hasPendingPo || \$openPoQty > 0)"),
     'report obtains pagination totals in the same database pass' => str_contains($report, 'COUNT(*) OVER() AS report_total')
         && !str_contains($report, 'SELECT COUNT(*) AS total'),
     'partial receiving still blocks a duplicate PR' => str_contains($guard, 'COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)')

@@ -118,7 +118,9 @@ final class PurchaseOrderController
 
     public function delete(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $mainId = (int) ($claims['main_userid'] ?? $body['main_id'] ?? $query['main_id'] ?? 0);
+        $userId = (int) ($claims['sub'] ?? $body['user_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
@@ -127,8 +129,13 @@ final class PurchaseOrderController
         if ($purchaseRefno === '') {
             throw new HttpException(422, 'purchaseRefno is required');
         }
+        if ($userId <= 0) throw new HttpException(422, 'user_id is required');
 
-        $deleted = $this->repo->deletePurchaseOrder($mainId, $purchaseRefno);
+        try {
+            $deleted = $this->repo->deletePurchaseOrder($mainId, $userId, $purchaseRefno, (string) ($body['reason'] ?? ''));
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
         if (!$deleted) {
             throw new HttpException(404, 'Purchase order not found');
         }
@@ -161,14 +168,15 @@ final class PurchaseOrderController
 
     public function unpost(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($body['main_id'] ?? 0);
-        $userId = (int) ($body['user_id'] ?? 0);
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $mainId = (int) ($claims['main_userid'] ?? $body['main_id'] ?? 0);
+        $userId = (int) ($claims['sub'] ?? $body['user_id'] ?? 0);
         $purchaseRefno = trim((string) ($params['purchaseRefno'] ?? ''));
         if ($mainId <= 0 || $userId <= 0 || $purchaseRefno === '') {
             throw new HttpException(422, 'main_id, user_id, and purchaseRefno are required');
         }
         try {
-            $record = $this->repo->unpostPurchaseOrder($mainId, $userId, $purchaseRefno);
+            $record = $this->repo->unpostPurchaseOrder($mainId, $userId, $purchaseRefno, (string) ($body['reason'] ?? ''));
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());
         }

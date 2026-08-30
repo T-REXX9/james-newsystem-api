@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use PDO;
 use RuntimeException;
 
@@ -37,7 +38,7 @@ final class PurchaseRequestRepository
             'limit' => $perPage,
             'offset' => $offset,
         ];
-        $where = ['1=1'];
+        $where = ['COALESCE(pr.ldeleted, 0) = 0'];
 
         if ($month !== null && $year !== null) {
             $params['month'] = $month;
@@ -105,6 +106,8 @@ SELECT
     COALESCE(pr.lapproval, 'Pending') AS approval_status,
     COALESCE(pr.lstatus, 'Pending') AS status_raw,
     CASE
+        WHEN LOWER(COALESCE(pr.lstatus, "")) = "deleted" THEN "Deleted"
+        WHEN LOWER(COALESCE(pr.lstatus, "")) = "unposted" THEN "Unposted"
         WHEN LOWER(COALESCE(pr.lstatus, "")) = "cancelled" THEN "Cancelled"
         WHEN LOWER(COALESCE(pr.lstatus, "")) = "submitted" THEN "Submitted"
         WHEN LOWER(COALESCE(pr.lapproval, "")) = "approved" THEN "Approved"
@@ -193,6 +196,7 @@ FROM tblpr_list pr
 LEFT JOIN tblaccount acc
     ON acc.lid = pr.luser
 WHERE pr.lrefno = :refno
+  AND COALESCE(pr.ldeleted, 0) = 0
 LIMIT 1
 SQL;
         $headerStmt = $this->db->pdo()->prepare($headerSql);
@@ -519,21 +523,25 @@ SQL;
         return $this->getPurchaseRequest($mainId, $prRefno);
     }
 
-    public function deletePurchaseRequest(int $mainId, string $prRefno): bool
+    public function deletePurchaseRequest(int $mainId, int $userId, string $prRefno, string $reason): bool
     {
         $exists = $this->getPurchaseRequest($mainId, $prRefno);
         if ($exists === null) {
             return false;
         }
 
+        $this->assertReason($reason);
+        $this->assertPrivilegedAction($mainId, $userId);
+        $dependency = $this->db->pdo()->prepare('SELECT COUNT(*) FROM tblpo_list WHERE lmain_id = :main_id AND lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted")');
+        $dependency->execute(['main_id' => $mainId, 'refno' => $prRefno]);
+        if ((int) $dependency->fetchColumn() > 0) throw new RuntimeException('Purchase request cannot be deleted because an active purchase order depends on it');
+
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
-            $deleteItems = $pdo->prepare('DELETE FROM tblpr_item WHERE lrefno = :refno');
-            $deleteItems->execute(['refno' => $prRefno]);
-
-            $deleteHeader = $pdo->prepare('DELETE FROM tblpr_list WHERE lrefno = :refno');
-            $deleteHeader->execute(['refno' => $prRefno]);
+            $update = $pdo->prepare('UPDATE tblpr_list SET ldeleted = 1, ldeleted_at = NOW(), ldeleted_by = :user_id, ldelete_reason = :reason, lstatus = "Deleted" WHERE lrefno = :refno');
+            $update->execute(['user_id' => $userId, 'reason' => trim($reason), 'refno' => $prRefno]);
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Request', 'Delete', $prRefno, $reason, (string) ($exists['request']['status'] ?? ''), 'Deleted');
 
             $pdo->commit();
             return true;
@@ -679,6 +687,42 @@ SQL;
         $stmt = $this->db->pdo()->prepare('DELETE FROM tblpr_item WHERE lid = :item_id');
         $stmt->execute(['item_id' => $itemId]);
         return true;
+    }
+
+    public function unpostPurchaseRequest(int $mainId, int $userId, string $prRefno, string $reason): ?array
+    {
+        $record = $this->getPurchaseRequest($mainId, $prRefno);
+        if ($record === null) return null;
+        $status = strtolower(trim((string) ($record['request']['status'] ?? '')));
+        if (!in_array($status, ['submitted', 'approved'], true)) throw new RuntimeException('Only a submitted or approved purchase request can be unposted');
+        $this->assertReason($reason);
+        $this->assertPrivilegedAction($mainId, $userId);
+        $dependency = $this->db->pdo()->prepare('SELECT COUNT(*) FROM tblpo_list WHERE lmain_id = :main_id AND lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted")');
+        $dependency->execute(['main_id' => $mainId, 'refno' => $prRefno]);
+        if ((int) $dependency->fetchColumn() > 0) throw new RuntimeException('Purchase request cannot be unposted while an active purchase order depends on it');
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare('UPDATE tblpr_list SET lstatus = "Unposted", lapproval = "Pending", lunposted_at = NOW(), lunposted_by = :user_id, lunpost_reason = :reason WHERE lrefno = :refno');
+            $stmt->execute(['user_id' => $userId, 'reason' => trim($reason), 'refno' => $prRefno]);
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Request', 'Unpost', $prRefno, $reason, (string) ($record['request']['status'] ?? ''), 'Unposted');
+            $pdo->commit();
+        } catch (\Throwable $e) { if ($pdo->inTransaction()) $pdo->rollBack(); throw $e; }
+        return $this->getPurchaseRequest($mainId, $prRefno);
+    }
+
+    private function assertReason(string $reason): void
+    {
+        if (trim($reason) === '') throw new RuntimeException('A reason is required for this action');
+        if (mb_strlen(trim($reason)) > 500) throw new RuntimeException('Reason must be 500 characters or fewer');
+    }
+
+    private function assertPrivilegedAction(int $mainId, int $userId): void
+    {
+        $stmt = $this->db->pdo()->prepare('SELECT COALESCE(acc.ltype, ""), LOWER(COALESCE(role.ltype_name, "")) FROM tblaccount acc LEFT JOIN tblusertype role ON role.lid = acc.ltype WHERE acc.lid = :user_id AND (acc.lid = :main_id1 OR acc.lmother_id = :main_id2) LIMIT 1');
+        $stmt->execute(['user_id' => $userId, 'main_id1' => $mainId, 'main_id2' => $mainId]);
+        $row = $stmt->fetch(PDO::FETCH_NUM);
+        if ($row === false || ((string) ($row[0] ?? '') !== '1' && !in_array((string) ($row[1] ?? ''), ['owner', 'company owner', 'administrator', 'purchasing manager'], true))) throw new RuntimeException('You do not have permission to recover purchase requests');
     }
 
     public function applyAction(int $mainId, int $userId, string $prRefno, string $action, array $payload): array
