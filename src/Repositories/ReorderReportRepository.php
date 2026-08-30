@@ -39,7 +39,7 @@ final class ReorderReportRepository
     ): array {
         $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
-            'purchasing_control_version' => 17,
+            'purchasing_control_version' => 18,
             'main_id' => $mainId,
             'warehouse_type' => $normalizedWarehouseType,
             'search' => trim($search),
@@ -87,6 +87,7 @@ EXISTS (
     FROM tblpo_itemlist active_poi
     INNER JOIN tblpo_list active_pol ON active_pol.lrefno = active_poi.lrefno
     WHERE active_pol.lmain_id = itm.lmain_id
+      AND COALESCE(active_pol.ldeleted, 0) = 0
       AND (
           active_poi.litem_refno = itm.lsession
           OR (
@@ -527,6 +528,7 @@ SELECT
 FROM tblpr_item pri
 INNER JOIN tblpr_list prl ON prl.lrefno = pri.lrefno
 WHERE (%s)
+  AND COALESCE(prl.ldeleted, 0) = 0
   AND LOWER(COALESCE(prl.lstatus, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
   AND (
       TRIM(COALESCE(pri.lpo_refno, '')) = ''
@@ -535,6 +537,7 @@ WHERE (%s)
           FROM tblpo_itemlist linked_po_item
           INNER JOIN tblpo_list linked_po ON linked_po.lrefno = linked_po_item.lrefno
           WHERE linked_po.lrefno = pri.lpo_refno
+            AND COALESCE(linked_po.ldeleted, 0) = 0
             AND linked_po_item.litem_refno = pri.litem_refno
             AND LOWER(COALESCE(linked_po.ltransaction_status, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
             AND COALESCE(linked_po_item.lqty, 0) > COALESCE(linked_po_item.lreceiving_qty, 0)
@@ -582,6 +585,7 @@ SELECT
 FROM tblpo_itemlist poi
 INNER JOIN tblpo_list pol ON pol.lrefno = poi.lrefno
 WHERE pol.lmain_id = :po_main_id
+  AND COALESCE(pol.ldeleted, 0) = 0
   AND (%s)
   AND LOWER(COALESCE(pol.ltransaction_status, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
   AND COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)
@@ -628,6 +632,7 @@ SELECT
 FROM tblpurchase_item pi
 INNER JOIN tblpurchase_order rr ON rr.lrefno = pi.lrefno
 WHERE rr.lpo_refno IN ({$poClause})
+  AND COALESCE(rr.ldeleted, 0) = 0
   AND (%s)
 GROUP BY pi.litem_refno, pi.litem_code, rr.lrefno, rr.lpurchaseno, rr.ltransaction_status,
     rr.lpo_refno, rr.lpo_number, rr.ldate_recieved, rr.ldate, rr.luser
@@ -720,10 +725,12 @@ SQL;
         if (count($sessions) === 0) return [];
         [$inClause, $bind] = $this->buildInClause($sessions, 'sess');
         $sql = <<<SQL
-SELECT litem_refno AS session, SUM(COALESCE(lqty, 0)) AS total_rr
-FROM tblpurchase_item
-WHERE litem_refno IN ({$inClause})
-GROUP BY litem_refno
+SELECT pi.litem_refno AS session, SUM(COALESCE(pi.lqty, 0)) AS total_rr
+FROM tblpurchase_item pi
+INNER JOIN tblpurchase_order rr ON rr.lrefno = pi.lrefno
+WHERE pi.litem_refno IN ({$inClause})
+  AND COALESCE(rr.ldeleted, 0) = 0
+GROUP BY pi.litem_refno
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $this->bindParams($stmt, $bind);
@@ -886,6 +893,7 @@ LEFT JOIN tblpurchase_item pi2
    AND pi2.lrefno = pi.lrefno
 LEFT JOIN tblpurchase_order po
     ON po.lrefno = pi.lrefno
+WHERE COALESCE(po.ldeleted, 0) = 0
 GROUP BY pi.litem_code, pi.lrefno, po.lpurchaseno, po.ltransaction_status, po.ldate
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);

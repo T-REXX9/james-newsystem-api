@@ -28,7 +28,11 @@ $assertions = [
         && str_contains($productController, "\$query['reorder_only']")
         && str_contains($productController, '$reorderOnly'),
     'incomplete PO balances keep items visible above the stock threshold' => str_contains($report, '$activeOutstandingPoExpr')
-        && str_contains($report, 'COALESCE(active_poi.lqty, 0) > COALESCE(active_poi.lreceiving_qty, 0)'),
+        && str_contains($report, 'COALESCE(active_poi.lqty, 0) > COALESCE(active_poi.lreceiving_qty, 0)')
+        && str_contains($report, 'COALESCE(active_pol.ldeleted, 0) = 0'),
+    'deleted PR, PO, and RR headers do not appear in purchasing control' => str_contains($report, 'COALESCE(prl.ldeleted, 0) = 0')
+        && str_contains($report, 'COALESCE(pol.ldeleted, 0) = 0')
+        && str_contains($report, 'COALESCE(rr.ldeleted, 0) = 0'),
     'pending PR lines remain open until linked to a PO' => str_contains($report, "TRIM(COALESCE(pri.lpo_refno, '')) = ''"),
     'only the unreceived PO balance remains on order' => str_contains($report, 'COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)'),
     'accepted receiving quantities require a finalized RR status' => str_contains($report, "IN ('posted', 'received', 'delivered', 'completed')"),
