@@ -391,6 +391,7 @@ function app_router(): Router
     $router->post('/api/v1/activity-logs', $requireBearerAuthWithClaims([$customerWorkflowController, 'logActivity']));
     $router->get('/api/v1/customer-workflows/{contactId}/inquiries', $requireBearerAuthWithClaims([$customerWorkflowController, 'inquiries']));
     $router->get('/api/v1/customer-workflows/{contactId}/returns', $requireBearerAuthWithClaims([$customerWorkflowController, 'returns']));
+    $router->get('/api/v1/customer-workflows/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'allRequests']));
     $router->get('/api/v1/customer-workflows/{contactId}/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'requests']));
     $router->post('/api/v1/customer-workflows/{contactId}/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'createRequest']));
     $router->post('/api/v1/customer-workflows/{contactId}/requests/{requestId}/review', $requireBearerAuthWithClaims([$customerWorkflowController, 'reviewRequest']));

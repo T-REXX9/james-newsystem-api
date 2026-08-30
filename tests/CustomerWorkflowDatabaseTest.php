@@ -58,6 +58,8 @@ $params = ['contactId'=>$customer]; $query = ['main_id'=>$main];
 $created = $controller->createRequest($params, $query, $agentClaims + ['kind'=>'customer_update','payload'=>['company'=>'After']]);
 $assert($repo->customer($main, $customer)['company'] === 'Before', 'submission does not bypass owner approval');
 $assert(count($controller->requests($params, $query, $ownerClaims)) === 1, 'owner sees the persisted request');
+$assert(count($controller->allRequests([], $query, $ownerClaims)) === 1, 'owner sees the centralized customer detail update queue');
+$reject(fn() => $controller->allRequests([], $query, $agentClaims), 403, 'agent cannot view the centralized customer detail update queue');
 $reject(fn() => $controller->reviewRequest($params + ['requestId'=>$created['id']], $query, $agentClaims + ['decision'=>'approved']), 403, 'agent cannot self-approve');
 $reject(fn() => $controller->requests($params, ['main_id'=>$outsider], $agentClaims), 403, 'tenant query cannot override authenticated tenant');
 $reject(fn() => $controller->requests($params, [], $claims($outsider, $outsider)), 404, 'other tenant cannot read customer requests');

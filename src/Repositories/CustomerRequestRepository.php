@@ -33,6 +33,20 @@ final class CustomerRequestRepository
         return array_map([$this, 'decode'], $stmt->fetchAll());
     }
 
+    /** @return array<int, array<string, mixed>> */
+    public function listAll(int $mainId): array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT r.*, TRIM(CONCAT(COALESCE(a.lfname,\'\'), \' \', COALESCE(a.llname,\'\'))) AS submitted_by_name
+             FROM customer_requests r
+             LEFT JOIN tblaccount a ON a.lid = r.submitted_by
+             WHERE r.main_id = ?
+             ORDER BY r.submitted_at DESC, r.id DESC'
+        );
+        $stmt->execute([$mainId]);
+        return array_map([$this, 'decode'], $stmt->fetchAll());
+    }
+
     private function decode(array $row): array
     {
         $row['payload'] = json_decode($row['payload'], true, 512, JSON_THROW_ON_ERROR);

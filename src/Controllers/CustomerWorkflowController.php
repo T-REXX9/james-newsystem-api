@@ -52,6 +52,13 @@ final class CustomerWorkflowController
         return (new CustomerRequestRepository($this->db))->list($mainId, rawurldecode($params['contactId']), $owner ? null : $userId);
     }
 
+    public function allRequests(array $params, array $query, array $body): array
+    {
+        [$mainId, , $owner] = $this->context($query, $body);
+        if (!$owner) throw new HttpException(403, 'Only an owner can view all customer detail update requests');
+        return (new CustomerRequestRepository($this->db))->listAll($mainId);
+    }
+
     public function createRequest(array $params, array $query, array $body): array
     {
         [$mainId, $userId] = $this->context($query, $body);
@@ -76,9 +83,10 @@ final class CustomerWorkflowController
                 'metadata' => [
                     'entity_type' => 'customer_detail_update_request',
                     'entity_id' => (string) $result['id'],
+                    'contact_id' => $contactId,
                     'action' => 'review',
                     'status' => 'pending',
-                    'action_url' => 'sales-transaction-daily-call-monitoring',
+                    'action_url' => 'sales-database-customer-database',
                     'refno' => 'customer-detail-update-request:' . (string) $result['id'],
                     'idempotency_key' => 'customer-detail-update-request:' . (string) $result['id'] . ':' . $mainId,
                     'category' => 'notification',
