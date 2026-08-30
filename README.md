@@ -30,6 +30,10 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
    - `mysql -u root topnotch < migrations/013_create_daily_call_claims.sql`
    - `mysql -u root topnotch < migrations/014_optimize_notification_indexes.sql`
      *(Required for notification polling and the automatic inventory-alert scan. Idempotent.)*
+   - `mysql -u root topnotch < migrations/016_create_incident_reports.sql`
+   - `mysql -u root topnotch < migrations/020_create_call_logs_v2.sql`
+   - `mysql -u root topnotch < migrations/022_add_lbc_rto_to_incident_reports.sql`
+     *(Required before users can create LBC RTO incident reports.)*
    - Apply `migrations/017_create_customer_requests.sql` and
      `migrations/018_create_local_recycle_bin.sql` to your configured database before
      deploying the customer workflow changes. Customer/product deletes now require
