@@ -6,6 +6,7 @@ namespace App\Controllers;
 use App\Database;
 use App\Repositories\AuthRepository;
 use App\Repositories\CustomerRequestRepository;
+use App\Repositories\NotificationsRepository;
 use App\Repositories\SalesInquiryRepository;
 use App\Repositories\SalesReturnRepository;
 use App\Support\Exceptions\HttpException;
@@ -55,7 +56,37 @@ final class CustomerWorkflowController
     {
         [$mainId, $userId] = $this->context($query, $body);
         if (!is_array($body['payload'] ?? null)) throw new HttpException(422, 'Request payload is required');
-        return (new CustomerRequestRepository($this->db))->create($mainId, rawurldecode($params['contactId']), $userId, (string) ($body['kind'] ?? ''), $body['payload']);
+        $contactId = rawurldecode($params['contactId']);
+        $kind = (string) ($body['kind'] ?? '');
+        $requests = new CustomerRequestRepository($this->db);
+        $result = $requests->create($mainId, $contactId, $userId, $kind, $body['payload']);
+
+        if ($kind === 'customer_update') {
+            $customer = $requests->customer($mainId, $contactId);
+            $agent = $this->auth->findUserById($userId) ?: [];
+            $agentName = trim((string) ($agent['lfname'] ?? '') . ' ' . (string) ($agent['llname'] ?? '')) ?: 'A sales agent';
+            $customerName = trim((string) ($customer['company'] ?? '')) ?: 'a customer';
+            (new NotificationsRepository($this->db))->create([
+                'recipient_id' => (string) $mainId,
+                'title' => 'Customer Detail Update Request',
+                'message' => sprintf('%s submitted a customer detail update request for %s.', $agentName, $customerName),
+                'type' => 'info',
+                'category' => 'notification',
+                'main_id' => (string) $mainId,
+                'metadata' => [
+                    'entity_type' => 'customer_detail_update_request',
+                    'entity_id' => (string) $result['id'],
+                    'action' => 'review',
+                    'status' => 'pending',
+                    'action_url' => 'sales-transaction-daily-call-monitoring',
+                    'refno' => 'customer-detail-update-request:' . (string) $result['id'],
+                    'idempotency_key' => 'customer-detail-update-request:' . (string) $result['id'] . ':' . $mainId,
+                    'category' => 'notification',
+                ],
+            ]);
+        }
+
+        return $result;
     }
 
     public function reviewRequest(array $params, array $query, array $body): array
