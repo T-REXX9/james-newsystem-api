@@ -48,6 +48,7 @@ final class ProductRepository
         $where = [
             'itm.lmain_id = :main_id',
             'COALESCE(itm.lnot_inventory, 0) = 0',
+            'COALESCE(itm.ldeleted, 0) = 0',
         ];
 
         if ($status === 'active') {
@@ -496,6 +497,7 @@ LEFT JOIN tblbrand brnd ON brnd.lid = itm.lbrand
 WHERE itm.lmain_id = :main_id
   AND itm.lsession = :session
   AND COALESCE(itm.lnot_inventory, 0) = 0
+  AND COALESCE(itm.ldeleted, 0) = 0
 LIMIT 1
 SQL;
 
@@ -627,7 +629,7 @@ SQL;
         }
 
         if (count($sets) > 0) {
-            $sql = 'UPDATE tblinventory_item SET ' . implode(', ', $sets) . ' WHERE lmain_id = :main_id AND lsession = :session LIMIT 1';
+            $sql = 'UPDATE tblinventory_item SET ' . implode(', ', $sets) . ' WHERE lmain_id = :main_id AND lsession = :session AND COALESCE(ldeleted, 0) = 0 LIMIT 1';
             $stmt = $this->db->pdo()->prepare($sql);
             $stmt->execute($params);
         }
@@ -672,8 +674,16 @@ SQL;
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
-            (new LocalRecycleBinRepository($this->db))->capture($mainId, 'product', $productSession);
-            $stmt = $pdo->prepare('UPDATE tblinventory_item SET lstatus = 0, lnot_inventory = 1 WHERE lmain_id = ? AND lsession = ? LIMIT 1');
+            $stmt = $pdo->prepare(
+                'UPDATE tblinventory_item
+                 SET lstatus = 0,
+                     lnot_inventory = 1,
+                     ldeleted = 1,
+                     ldeleted_at = NOW(),
+                     ldeleted_by = NULL,
+                     ldelete_reason = ""
+                 WHERE lmain_id = ? AND lsession = ? AND COALESCE(ldeleted, 0) = 0 LIMIT 1'
+            );
             $stmt->execute([$mainId, $productSession]);
             $pdo->commit();
             return true;
@@ -1047,7 +1057,7 @@ SQL;
             $targets = $pdo->prepare(
                 'SELECT CAST(lsession AS CHAR) AS session, litemcode AS item_code, lpartno AS part_no
                  FROM tblinventory_item
-                 WHERE lmain_id = :main_id AND lpartno = :part_no AND COALESCE(lnot_inventory, 0) = 0'
+                 WHERE lmain_id = :main_id AND lpartno = :part_no AND COALESCE(lnot_inventory, 0) = 0 AND COALESCE(ldeleted, 0) = 0'
             );
             $targets->execute([
                 'main_id' => $mainId,

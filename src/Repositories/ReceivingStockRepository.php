@@ -34,6 +34,7 @@ SELECT
 FROM tblpo_list po
 INNER JOIN tblpo_itemlist poi ON poi.lrefno = po.lrefno
 WHERE po.lmain_id = :main_id
+  AND COALESCE(po.ldeleted, 0) = 0
   AND LOWER(COALESCE(po.ltransaction_status, '')) IN ('posted', 'approved')
   AND (COALESCE(po.lpr_refno, '') <> '' OR COALESCE(po.lpr_no, '') <> '')
   AND COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)
@@ -461,9 +462,8 @@ SQL;
         if (!in_array($status, ['posted', 'delivered'], true)) throw new RuntimeException('Only a posted receiving report can be unposted');
         $this->assertReason($reason);
         $this->assertPrivilegedAction($mainId, $userId);
-        $dependency = $this->db->pdo()->prepare('SELECT COUNT(*) FROM tblreturn_supplier rs WHERE rs.lmainid = :main_id AND rs.ltransaction_refno = :refno AND LOWER(COALESCE(rs.lstatus, "pending")) NOT IN ("cancelled", "deleted")');
-        $dependency->execute(['main_id' => $mainId, 'refno' => $receivingRefno]);
-        if ((int) $dependency->fetchColumn() > 0) throw new RuntimeException('Receiving report cannot be unposted because a return-to-supplier transaction depends on it');
+        $returnDependencies = $this->activeReturnToSupplierDependencies($mainId, $receivingRefno);
+        if ($returnDependencies !== []) throw new RuntimeException('Receiving report cannot be unposted because ' . $this->formatReturnToSupplierDependencies($returnDependencies) . ' depends on it');
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
@@ -504,6 +504,51 @@ SQL;
         $stmt->execute(['user_id' => $userId, 'main_id1' => $mainId, 'main_id2' => $mainId]);
         $row = $stmt->fetch(PDO::FETCH_NUM);
         if ($row === false || ((string) ($row[0] ?? '') !== '1' && !in_array((string) ($row[1] ?? ''), ['owner', 'company owner', 'administrator', 'warehouse manager'], true))) throw new RuntimeException('You do not have permission to recover receiving reports');
+    }
+
+    /**
+     * @return array<int, array<string, string>>
+     */
+    private function activeReturnToSupplierDependencies(int $mainId, string $receivingRefno): array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT COALESCE(rs.lcredit_no, rs.lrefno, "") AS number,
+                    COALESCE(rs.lstatus, "Pending") AS status
+             FROM tblreturn_supplier rs
+             WHERE rs.lmainid = :main_id
+               AND rs.ltransaction_refno = :refno
+               AND LOWER(COALESCE(rs.lstatus, "pending")) NOT IN ("cancelled", "canceled", "deleted")
+             ORDER BY rs.lid DESC
+             LIMIT 5'
+        );
+        $stmt->execute(['main_id' => $mainId, 'refno' => $receivingRefno]);
+        return array_map(
+            static fn (array $row): array => [
+                'number' => (string) ($row['number'] ?? ''),
+                'status' => (string) ($row['status'] ?? ''),
+            ],
+            $stmt->fetchAll(PDO::FETCH_ASSOC)
+        );
+    }
+
+    /**
+     * @param array<int, array<string, string>> $dependencies
+     */
+    private function formatReturnToSupplierDependencies(array $dependencies): string
+    {
+        $labels = array_values(array_filter(array_map(
+            static function (array $row): string {
+                $number = trim((string) ($row['number'] ?? ''));
+                $status = trim((string) ($row['status'] ?? ''));
+                if ($number === '') return '';
+                return $status !== '' ? $number . ' (' . $status . ')' : $number;
+            },
+            $dependencies
+        )));
+
+        if ($labels === []) return 'an active return-to-supplier transaction';
+        if (count($labels) === 1) return 'return-to-supplier ' . $labels[0];
+        return 'return-to-supplier transactions ' . implode(', ', $labels);
     }
 
     public function addReceivingStockItem(int $mainId, int $userId, string $receivingRefno, array $payload): array
@@ -857,7 +902,11 @@ SQL;
         $stmt = $this->db->pdo()->prepare(
             'SELECT lrefno AS refno, lpurchaseno AS po_number, lpr_refno AS pr_refno, lpr_no AS pr_number,
                     lsupplier AS supplier_id, ltransaction_status AS status
-             FROM tblpo_list WHERE lmain_id = :main_id AND lrefno = :po_refno LIMIT 1'
+             FROM tblpo_list
+             WHERE lmain_id = :main_id
+               AND lrefno = :po_refno
+               AND COALESCE(ldeleted, 0) = 0
+             LIMIT 1'
         );
         $stmt->execute(['main_id' => $mainId, 'po_refno' => $poRefno]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -881,7 +930,11 @@ SQL;
                     poi.lqty AS qty, poi.lreceiving_qty AS receiving_qty
              FROM tblpo_itemlist poi
              INNER JOIN tblpo_list po ON po.lrefno = poi.lrefno
-             WHERE po.lmain_id = :main_id AND poi.lrefno = :po_refno AND poi.lid = :po_item_id LIMIT 1'
+             WHERE po.lmain_id = :main_id
+               AND COALESCE(po.ldeleted, 0) = 0
+               AND poi.lrefno = :po_refno
+               AND poi.lid = :po_item_id
+             LIMIT 1'
         );
         $stmt->execute(['main_id' => $mainId, 'po_refno' => $poRefno, 'po_item_id' => $poItemId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);

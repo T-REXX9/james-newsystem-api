@@ -107,6 +107,7 @@ SELECT
 FROM tblpatient p
 LEFT JOIN tblaccount agent ON agent.lid = p.lsales_person
 WHERE p.lsessionid = :session_id
+  AND COALESCE(p.ldeleted, 0) = 0
 LIMIT 1
 SQL;
 

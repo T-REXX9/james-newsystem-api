@@ -38,7 +38,7 @@ final class CustomerDatabaseRepository
             'limit' => $perPage,
             'offset' => $offset,
         ];
-        $where = ['p.lmain_id = :main_id'];
+        $where = ['p.lmain_id = :main_id', 'COALESCE(p.ldeleted, 0) = 0'];
 
         $normalizedStatus = strtolower(trim($status));
         if ($normalizedStatus !== '' && $normalizedStatus !== 'all') {
@@ -265,6 +265,7 @@ LEFT JOIN tblaccount acc
     ON acc.lid = p.lsales_person
 WHERE p.lmain_id = :main_id
   AND p.lsessionid = :session_id
+  AND COALESCE(p.ldeleted, 0) = 0
 LIMIT 1
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
@@ -584,22 +585,19 @@ SQL;
                 return false;
             }
 
-            (new LocalRecycleBinRepository($this->db))->capture($mainId, 'contact', $sessionId);
-
-            $delPatient = $pdo->prepare('DELETE FROM tblpatient WHERE lmain_id = :main_id AND lsessionid = :session_id');
-            $delPatient->execute([
+            $deleteCustomer = $pdo->prepare(
+                'UPDATE tblpatient
+                 SET ldeleted = 1,
+                     ldeleted_at = NOW(),
+                     ldeleted_by = NULL,
+                     ldelete_reason = "",
+                     lstatus = 0
+                 WHERE lmain_id = :main_id AND lsessionid = :session_id'
+            );
+            $deleteCustomer->execute([
                 'main_id' => $mainId,
                 'session_id' => $sessionId,
             ]);
-
-            $delContacts = $pdo->prepare('DELETE FROM tblcontact_person WHERE lrefno = :session_id');
-            $delContacts->execute(['session_id' => $sessionId]);
-
-            $delTerms = $pdo->prepare('DELETE FROM tblpatient_terms WHERE lpatient = :session_id');
-            $delTerms->execute(['session_id' => $sessionId]);
-
-            $delImages = $pdo->prepare('DELETE FROM tblpatient_image WHERE lrefno = :session_id');
-            $delImages->execute(['session_id' => $sessionId]);
 
             $pdo->commit();
             return true;

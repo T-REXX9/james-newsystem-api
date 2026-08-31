@@ -15,6 +15,10 @@ final class PurchaseOrderRepository
     {
     }
 
+    private const ACTIVE_RECEIVING_DEPENDENCY_SQL = 'lmain_id = :main_id AND lpo_refno = :po_refno
+               AND COALESCE(ldeleted, 0) = 0
+               AND LOWER(COALESCE(ltransaction_status, "pending")) NOT IN ("cancelled", "canceled", "deleted")';
+
     /**
      * @return array{
      *   items: array<int, array<string, mixed>>,
@@ -23,8 +27,8 @@ final class PurchaseOrderRepository
      */
     public function listPurchaseOrders(
         int $mainId,
-        int $month,
-        int $year,
+        ?int $month = null,
+        ?int $year = null,
         string $status = 'all',
         string $search = '',
         int $page = 1,
@@ -36,17 +40,21 @@ final class PurchaseOrderRepository
 
         $params = [
             'main_id' => $mainId,
-            'month' => $month,
-            'year' => $year,
             'limit' => $perPage,
             'offset' => $offset,
         ];
         $where = [
             'po.lmain_id = :main_id',
             'COALESCE(po.ldeleted, 0) = 0',
-            'MONTH(po.ldate) = :month',
-            'YEAR(po.ldate) = :year',
         ];
+        if ($month !== null) {
+            $params['month'] = $month;
+            $where[] = 'MONTH(po.ldate) = :month';
+        }
+        if ($year !== null) {
+            $params['year'] = $year;
+            $where[] = 'YEAR(po.ldate) = :year';
+        }
 
         $trimmedStatus = strtolower(trim($status));
         if ($trimmedStatus === 'approved') {
@@ -380,14 +388,9 @@ SQL;
         
         $newStatus = $this->normalizeStatus((string) ($payload['status'] ?? $order['status'] ?? 'Pending'));
         if (strtolower($newStatus) === 'cancelled' || strtolower($newStatus) !== strtolower((string) $order['status'])) {
-            $dependencyStmt = $this->db->pdo()->prepare(
-                'SELECT COUNT(*) FROM tblpurchase_order
-                 WHERE lmain_id = :main_id AND lpo_refno = :po_refno
-                   AND LOWER(COALESCE(ltransaction_status, "pending")) <> "cancelled"'
-            );
-            $dependencyStmt->execute(['main_id' => $mainId, 'po_refno' => $purchaseRefno]);
-            if ((int) $dependencyStmt->fetchColumn() > 0) {
-                throw new RuntimeException('Purchase order cannot be modified because a receiving report already depends on it');
+            $receivingDependencies = $this->activeReceivingDependencies($mainId, $purchaseRefno);
+            if ($receivingDependencies !== []) {
+                throw new RuntimeException('Purchase order cannot be modified because ' . $this->formatReceivingDependencies($receivingDependencies) . ' already depends on it');
             }
         }
 
@@ -447,18 +450,19 @@ SQL;
             throw new RuntimeException('You do not have permission to unpost purchase orders');
         }
 
-        $dependencyStmt = $this->db->pdo()->prepare(
-            'SELECT COUNT(*) FROM tblpurchase_order
-             WHERE lmain_id = :main_id AND lpo_refno = :po_refno
-               AND LOWER(COALESCE(ltransaction_status, "pending")) <> "cancelled"'
-        );
-        $dependencyStmt->execute(['main_id' => $mainId, 'po_refno' => $purchaseRefno]);
-        if ((int) $dependencyStmt->fetchColumn() > 0) {
-            throw new RuntimeException('Purchase order cannot be unposted because a receiving report already depends on it');
+        $receivingDependencies = $this->activeReceivingDependencies($mainId, $purchaseRefno);
+        if ($receivingDependencies !== []) {
+            throw new RuntimeException('Purchase order cannot be unposted because ' . $this->formatReceivingDependencies($receivingDependencies) . ' already depends on it');
         }
 
         $receivedStmt = $this->db->pdo()->prepare(
-            'SELECT COALESCE(SUM(lreceiving_qty), 0) FROM tblpo_itemlist WHERE lrefno = :refno'
+            'SELECT COALESCE(SUM(poi.lreceiving_qty), 0)
+             FROM tblpo_itemlist poi
+             INNER JOIN tblpurchase_order rr
+               ON rr.lrefno = poi.lreceiving_refno
+             WHERE poi.lrefno = :refno
+               AND COALESCE(rr.ldeleted, 0) = 0
+               AND LOWER(COALESCE(rr.ltransaction_status, "pending")) NOT IN ("cancelled", "canceled", "deleted")'
         );
         $receivedStmt->execute(['refno' => $purchaseRefno]);
         if ((float) $receivedStmt->fetchColumn() > 0) {
@@ -511,15 +515,9 @@ SQL;
         $this->assertReason($reason);
         $this->assertPrivilegedAction($mainId, $userId, 'delete');
 
-        $dependencyStmt = $this->db->pdo()->prepare(
-            'SELECT COUNT(*) FROM tblpurchase_order
-             WHERE lmain_id = :main_id AND lpo_refno = :po_refno
-               AND COALESCE(ldeleted, 0) = 0
-               AND LOWER(COALESCE(ltransaction_status, "pending")) NOT IN ("cancelled", "deleted")'
-        );
-        $dependencyStmt->execute(['main_id' => $mainId, 'po_refno' => $purchaseRefno]);
-        if ((int) $dependencyStmt->fetchColumn() > 0) {
-            throw new RuntimeException('Purchase order cannot be deleted because a receiving report depends on it');
+        $receivingDependencies = $this->activeReceivingDependencies($mainId, $purchaseRefno);
+        if ($receivingDependencies !== []) {
+            throw new RuntimeException('Purchase order cannot be deleted because ' . $this->formatReceivingDependencies($receivingDependencies) . ' depends on it');
         }
 
         $pdo = $this->db->pdo();
@@ -547,6 +545,49 @@ SQL;
         if (trim($reason) === '') throw new RuntimeException('A reason is required for this action');
         // Keep recovery actions available on PHP deployments without ext-mbstring.
         if (strlen(trim($reason)) > 500) throw new RuntimeException('Reason must be 500 characters or fewer');
+    }
+
+    /**
+     * @return array<int, array<string, string>>
+     */
+    private function activeReceivingDependencies(int $mainId, string $purchaseRefno): array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT COALESCE(lpurchaseno, lrefno, "") AS number,
+                    COALESCE(ltransaction_status, "Pending") AS status
+             FROM tblpurchase_order
+             WHERE ' . self::ACTIVE_RECEIVING_DEPENDENCY_SQL . '
+             ORDER BY lid DESC
+             LIMIT 5'
+        );
+        $stmt->execute(['main_id' => $mainId, 'po_refno' => $purchaseRefno]);
+        return array_map(
+            static fn (array $row): array => [
+                'number' => (string) ($row['number'] ?? ''),
+                'status' => (string) ($row['status'] ?? ''),
+            ],
+            $stmt->fetchAll(PDO::FETCH_ASSOC)
+        );
+    }
+
+    /**
+     * @param array<int, array<string, string>> $dependencies
+     */
+    private function formatReceivingDependencies(array $dependencies): string
+    {
+        $labels = array_values(array_filter(array_map(
+            static function (array $row): string {
+                $number = trim((string) ($row['number'] ?? ''));
+                $status = trim((string) ($row['status'] ?? ''));
+                if ($number === '') return '';
+                return $status !== '' ? $number . ' (' . $status . ')' : $number;
+            },
+            $dependencies
+        )));
+
+        if ($labels === []) return 'a receiving report';
+        if (count($labels) === 1) return 'receiving report ' . $labels[0];
+        return 'receiving reports ' . implode(', ', $labels);
     }
 
     private function assertPrivilegedAction(int $mainId, int $userId, string $action): void

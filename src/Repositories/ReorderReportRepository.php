@@ -102,6 +102,7 @@ EXISTS (
 SQL;
         $where = [
             'itm.lmain_id = :main_id',
+            'COALESCE(itm.ldeleted, 0) = 0',
             // Normal reorder candidates are below threshold. An incomplete PO
             // remains visible as an exception so its receiving progress is not
             // lost once stock reaches the reorder level.
@@ -140,11 +141,13 @@ SELECT
     MAX(COALESCE(ldescription, '')) AS ldescription,
     MAX(COALESCE(lbrand, '')) AS lbrand,
     MAX(COALESCE(lstatus, 0)) AS lstatus,
+    MAX(COALESCE(ldeleted, 0)) AS ldeleted,
     MAX(COALESCE(NULLIF(lreorder_amt, ''), '0')) AS lreorder_amt,
     MAX(COALESCE(NULLIF(lreplenish, ''), '0')) AS lreplenish
 FROM tblinventory_item
 WHERE lmain_id = :canonical_main_id
   AND TRIM(COALESCE(lsession, '')) <> ''
+  AND COALESCE(ldeleted, 0) = 0
 GROUP BY lsession
 SQL;
         $params['canonical_main_id'] = $mainId;

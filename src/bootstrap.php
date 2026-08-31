@@ -387,7 +387,7 @@ function app_router(): Router
     $router = new Router();
     $router->get('/api/v1/health', [$healthController, 'index']);
     $router->get('/api/v1/recycle-bin', $requireBearerAuthWithClaims([$customerWorkflowController, 'recycleBin']));
-    $router->post('/api/v1/recycle-bin/{id}', $requireBearerAuthWithClaims([$customerWorkflowController, 'recycleAction']));
+    $router->post('/api/v1/recycle-bin/{type}/{itemId}/restore', $requireBearerAuthWithClaims([$customerWorkflowController, 'restoreRecycleBinItem']));
     $router->post('/api/v1/activity-logs', $requireBearerAuthWithClaims([$customerWorkflowController, 'logActivity']));
     $router->get('/api/v1/customer-workflows/{contactId}/inquiries', $requireBearerAuthWithClaims([$customerWorkflowController, 'inquiries']));
     $router->get('/api/v1/customer-workflows/{contactId}/returns', $requireBearerAuthWithClaims([$customerWorkflowController, 'returns']));

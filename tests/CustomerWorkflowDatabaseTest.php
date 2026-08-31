@@ -16,7 +16,7 @@ use App\Support\Exceptions\HttpException;
 
 $db = new Database(app_config());
 $pdo = $db->pdo();
-foreach (['customer_requests','local_recycle_bin','tblpatient','tblcontact_person','tblpatient_terms','tblpatient_image','tblaccount','tblusertype','tblaudit_trail','tblinventory_item','tblinquiry','tblinquiry_item','tblcredit_memo','tblcredit_return_item'] as $table) {
+foreach (['customer_requests','tblpatient','tblcontact_person','tblpatient_terms','tblpatient_image','tblaccount','tblusertype','tblaudit_trail','tblinventory_item','tblinquiry','tblinquiry_item','tblcredit_memo','tblcredit_return_item','tblpr_list','tblpo_list','tblpurchase_order'] as $table) {
     $ddl = $pdo->query("SHOW CREATE TABLE {$table}")->fetch(PDO::FETCH_NUM)[1];
     $pdo->exec(preg_replace('/^CREATE TABLE/', 'CREATE TEMPORARY TABLE', $ddl));
 }
@@ -95,29 +95,37 @@ $assert(count($returns['items'])===1 && $returns['items'][0]['lrefno']==='LOCAL-
 
 $recovery = new LocalRecycleBinRepository($db);
 $customers = new CustomerDatabaseRepository($db);
-$assert($customers->deleteCustomer($main,$customer),'customer deletion creates a recovery snapshot');
+$assert($customers->deleteCustomer($main,$customer),'customer deletion marks the row as deleted');
 $entries=$recovery->list($main);
-$assert(count($entries)===1 && !isset($entries[0]['snapshot']),'recovery list does not expose raw customer snapshots');
-$reject(fn()=> $controller->recycleBin([], $query, $agentClaims),403,'agents cannot inspect recovery snapshots');
-$reject(fn()=> $recovery->act($outsider,$outsider,(string)$entries[0]['id'],true),404,'other tenant cannot restore a snapshot');
-$insert('tblpatient', ['lid'=>910002,'lmain_id'=>$main,'lsessionid'=>$customer,'lcompany'=>'Conflicting new customer','lstatus'=>1]);
-$reject(fn()=> $recovery->act($main,$main,(string)$entries[0]['id'],true),409,'restore refuses to overwrite a reused customer reference');
-$assert(count($recovery->list($main))===1,'failed restoration preserves its recovery snapshot');
-$pdo->prepare('DELETE FROM tblpatient WHERE lid=?')->execute([910002]);
-$recovery->act($main,$main,(string)$entries[0]['id'],true);
-$assert($repo->customer($main,$customer)['company']==='Newer','customer is restored from actual saved data');
-$assert(count($repo->customer($main,$customer)['contacts'])===1,'customer contact people are restored');
-$assert(count($recovery->list($main))===0,'successful restore removes the recovery entry');
+$assert(count($entries)===1 && ($entries[0]['item_type'] ?? '')==='contact','recycle bin includes soft-deleted customers');
+$assert($customers->getCustomer($main,$customer)===null,'soft-deleted customer is hidden from normal detail lookups');
+$assert((int)$pdo->query("SELECT COUNT(*) FROM tblcontact_person WHERE lrefno='{$customer}'")->fetchColumn()===1,'customer contact people remain attached after soft delete');
+$reject(fn()=> $controller->recycleBin([], $query, $agentClaims),403,'agents cannot inspect deleted records');
+$restoredCustomer=$controller->restoreRecycleBinItem(['type'=>'contact','itemId'=>$customer], $query, $ownerClaims);
+$assert($restoredCustomer['restored']===true,'owners can restore soft-deleted customers');
+$assert($customers->getCustomer($main,$customer)!==null,'restored customer is visible again');
+$customers->deleteCustomer($main,$customer);
 $insert('tblinventory_item',['lid'=>950001,'lmain_id'=>$main,'lsession'=>'LOCAL-PRODUCT-1','litemcode'=>'LOCAL-P1','lstatus'=>1,'lnot_inventory'=>0]);
 (new ProductRepository($db))->deleteProduct($main,'LOCAL-PRODUCT-1');
-$entry=$recovery->list($main)[0];
-$recovery->act($main,$main,(string)$entry['id'],true);
-$assert((int)$pdo->query('SELECT lstatus FROM tblinventory_item WHERE lid=950001')->fetchColumn()===1,'product restoration restores its previous enabled state');
-(new ProductRepository($db))->deleteProduct($main,'LOCAL-PRODUCT-1');
-$entry=$recovery->list($main)[0];
-$recovery->act($main,$main,(string)$entry['id'],false);
-$assert((int)$pdo->query('SELECT COUNT(*) FROM tblinventory_item WHERE lid=950001')->fetchColumn()===1,'discard preserves product transaction references');
-$assert(count($recovery->list($main))===0,'discard permanently removes recovery data');
+$productEntries=array_filter($recovery->list($main), fn($entry)=>($entry['item_type'] ?? '')==='product');
+$assert(count($productEntries)===1,'recycle bin includes soft-deleted products');
+$assert((int)$pdo->query('SELECT lstatus FROM tblinventory_item WHERE lid=950001')->fetchColumn()===0,'product deletion marks the product inactive');
+$assert((int)$pdo->query('SELECT ldeleted FROM tblinventory_item WHERE lid=950001')->fetchColumn()===1,'product deletion marks the product deleted');
+$assert($recovery->restore($main,'product','LOCAL-PRODUCT-1'),'recycle bin restores soft-deleted products');
+$assert((int)$pdo->query('SELECT ldeleted FROM tblinventory_item WHERE lid=950001')->fetchColumn()===0,'restored product clears the deleted flag');
+$assert((int)$pdo->query('SELECT lnot_inventory FROM tblinventory_item WHERE lid=950001')->fetchColumn()===0,'restored product returns to inventory lists');
+$insert('tblpr_list',['lid'=>960001,'lrefno'=>'LOCAL-PR-DELETED','lprno'=>'PR-DEL','lstatus'=>'Deleted','ldeleted'=>1,'ldeleted_at'=>'2026-08-30 08:00:00','ldelete_reason'=>'Test deleted PR']);
+$insert('tblpo_list',['lid'=>960002,'lmain_id'=>$main,'lrefno'=>'LOCAL-PO-DELETED','lpurchaseno'=>'PO-DEL','ltransaction_status'=>'Deleted','ldeleted'=>1,'ldeleted_at'=>'2026-08-30 09:00:00','ldelete_reason'=>'Test deleted PO']);
+$insert('tblpurchase_order',['lid'=>960003,'lmain_id'=>$main,'lrefno'=>'LOCAL-RR-DELETED','lpurchaseno'=>'RR-DEL','ltransaction_status'=>'Deleted','ldeleted'=>1,'ldeleted_at'=>'2026-08-30 10:00:00','ldelete_reason'=>'Test deleted RR']);
+$deletedEntries=$recovery->list($main);
+$assert(count(array_filter($deletedEntries, fn($entry)=>($entry['item_type'] ?? '')==='purchase_request'))===1,'recycle bin includes deleted purchase requests');
+$assert(count(array_filter($deletedEntries, fn($entry)=>($entry['item_type'] ?? '')==='purchase_order'))===1,'recycle bin includes deleted purchase orders');
+$assert(count(array_filter($deletedEntries, fn($entry)=>($entry['item_type'] ?? '')==='receiving_report'))===1,'recycle bin includes deleted receiving reports');
+$assert(count(array_filter($deletedEntries, fn($entry)=>in_array($entry['item_type'] ?? '', ['purchase_request','purchase_order','receiving_report'], true)))===3,'soft-deleted procurement entries are listed');
+$assert($recovery->restore($main,'purchase_request','LOCAL-PR-DELETED'),'recycle bin restores deleted purchase requests');
+$assert($recovery->restore($main,'purchase_order','LOCAL-PO-DELETED'),'recycle bin restores deleted purchase orders');
+$assert($recovery->restore($main,'receiving_report','LOCAL-RR-DELETED'),'recycle bin restores deleted receiving reports');
+$assert(count(array_filter($recovery->list($main), fn($entry)=>in_array($entry['item_id'] ?? '', ['LOCAL-PR-DELETED','LOCAL-PO-DELETED','LOCAL-RR-DELETED'], true)))===0,'restored procurement entries leave the recycle bin');
 $logged=$controller->logActivity([], $query, $agentClaims + ['entity_type'=>'Authentication','entity_id'=>'session','action'=>'LOGOUT']);
 $assert($logged['saved']===true,'frontend audit logging is persisted locally');
 echo "{$passed} assertions passed; all writes were confined to temporary tables.\n";

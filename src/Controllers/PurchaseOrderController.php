@@ -21,13 +21,15 @@ final class PurchaseOrderController
             throw new HttpException(422, 'main_id is required');
         }
 
-        $month = (int) ($query['month'] ?? (int) date('m'));
-        if ($month < 1 || $month > 12) {
+        $monthParam = trim((string) ($query['month'] ?? ''));
+        $month = $monthParam === '' || strtolower($monthParam) === 'all' ? null : (int) $monthParam;
+        if ($month !== null && ($month < 1 || $month > 12)) {
             throw new HttpException(422, 'month must be between 1 and 12');
         }
 
-        $year = (int) ($query['year'] ?? (int) date('Y'));
-        if ($year < 2000 || $year > 2100) {
+        $yearParam = trim((string) ($query['year'] ?? ''));
+        $year = $yearParam === '' || strtolower($yearParam) === 'all' ? null : (int) $yearParam;
+        if ($year !== null && ($year < 2000 || $year > 2100)) {
             throw new HttpException(422, 'year must be between 2000 and 2100');
         }
 

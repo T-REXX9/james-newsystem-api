@@ -110,12 +110,15 @@ final class CustomerWorkflowController
         return (new \App\Repositories\LocalRecycleBinRepository($this->db))->list($mainId);
     }
 
-    public function recycleAction(array $params, array $query, array $body): array
+    public function restoreRecycleBinItem(array $params, array $query, array $body): array
     {
-        [$mainId, $userId, $owner] = $this->context($query, $body);
-        if (!$owner) throw new HttpException(403, 'Only an owner can manage recovery records');
-        if (!in_array($body['action'] ?? '', ['restore','discard'], true)) throw new HttpException(422, 'Invalid recovery action');
-        return (new \App\Repositories\LocalRecycleBinRepository($this->db))->act($mainId, $userId, $params['id'], $body['action'] === 'restore');
+        [$mainId, , $owner] = $this->context($query, $body);
+        if (!$owner) throw new HttpException(403, 'Only an owner can restore deleted records');
+        $type = rawurldecode((string) ($params['type'] ?? ''));
+        $itemId = rawurldecode((string) ($params['itemId'] ?? ''));
+        $restored = (new \App\Repositories\LocalRecycleBinRepository($this->db))->restore($mainId, $type, $itemId);
+        if (!$restored) throw new HttpException(404, 'Deleted record was not found or is already restored');
+        return ['restored' => true, 'item_type' => $type, 'item_id' => $itemId];
     }
 
     public function logActivity(array $params, array $query, array $body): array

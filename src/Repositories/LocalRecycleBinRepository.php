@@ -1,93 +1,294 @@
 <?php
 
 declare(strict_types=1);
+
 namespace App\Repositories;
 
 use App\Database;
-use App\Support\Exceptions\HttpException;
 use PDO;
-use Throwable;
 
 final class LocalRecycleBinRepository
 {
-    private const CUSTOMER_TABLES = ['tblpatient' => 'lsessionid', 'tblcontact_person' => 'lrefno', 'tblpatient_terms' => 'lpatient', 'tblpatient_image' => 'lrefno'];
-    public function __construct(private readonly Database $db) {}
+    private const RESTORABLE_TYPES = [
+        'contact',
+        'product',
+        'purchase_request',
+        'purchase_order',
+        'receiving_report',
+    ];
 
-    /** Called inside the source deletion transaction, before anything is changed. */
-    public function capture(int $mainId, string $type, string $itemId): void
+    public function __construct(private readonly Database $db)
     {
-        $pdo = $this->db->pdo();
-        if (!$pdo->inTransaction()) throw new \LogicException('Recovery capture requires the deletion transaction');
-        $table = $type === 'contact' ? 'tblpatient' : 'tblinventory_item';
-        $key = $type === 'contact' ? 'lsessionid' : 'lsession';
-        $stmt = $pdo->prepare("SELECT * FROM {$table} WHERE lmain_id = ? AND {$key} = ? FOR UPDATE");
-        $stmt->execute([$mainId, $itemId]);
-        $row = $stmt->fetch();
-        if (!$row) throw new HttpException(404, 'Record not found');
-        $snapshot = [$table => [$row]];
-        if ($type === 'contact') {
-            foreach (self::CUSTOMER_TABLES as $child => $foreignKey) {
-                if ($child === 'tblpatient') continue;
-                $stmt = $pdo->prepare("SELECT * FROM {$child} WHERE {$foreignKey} = ? FOR UPDATE");
-                $stmt->execute([$itemId]);
-                $snapshot[$child] = $stmt->fetchAll();
-            }
-        }
-        $label = (string) ($row[$type === 'contact' ? 'lcompany' : 'litemcode'] ?? $itemId);
-        // Repeated deletes must not overwrite the original recovery state.
-        $stmt = $pdo->prepare('INSERT INTO local_recycle_bin (main_id,item_type,item_id,label,snapshot) VALUES (?,?,?,?,?) ON DUPLICATE KEY UPDATE id=id');
-        $stmt->execute([$mainId, $type, $itemId, $label, json_encode($snapshot, JSON_THROW_ON_ERROR)]);
     }
 
+    /**
+     * @return array<int, array<string, mixed>>
+     */
     public function list(int $mainId): array
     {
-        $stmt = $this->db->pdo()->prepare('SELECT id,item_type,item_id,label,deleted_at FROM local_recycle_bin WHERE main_id = ? ORDER BY deleted_at DESC,id DESC');
-        $stmt->execute([$mainId]);
-        // Never send raw customer snapshots (which contain legacy credential columns).
-        return $stmt->fetchAll();
+        $rows = array_merge(
+            $this->listDeletedCustomers($mainId),
+            $this->listDeletedProducts($mainId),
+            $this->listDeletedProcurementRecords($mainId)
+        );
+
+        usort($rows, static function (array $a, array $b): int {
+            $dateCompare = strcmp((string) ($b['deleted_at'] ?? ''), (string) ($a['deleted_at'] ?? ''));
+            if ($dateCompare !== 0) return $dateCompare;
+            return strcmp((string) ($b['id'] ?? ''), (string) ($a['id'] ?? ''));
+        });
+
+        return $rows;
     }
 
-    public function act(int $mainId, int $userId, string $id, bool $restore): array
+    public function restore(int $mainId, string $type, string $itemId): bool
     {
-        $pdo = $this->db->pdo();
-        $pdo->beginTransaction();
-        try {
-            $stmt = $pdo->prepare('SELECT * FROM local_recycle_bin WHERE main_id = ? AND id = ? FOR UPDATE');
-            $stmt->execute([$mainId, $id]);
-            $item = $stmt->fetch();
-            if (!$item) throw new HttpException(404, 'Recovery entry not found');
-            if ($restore) {
-                $snapshot = json_decode($item['snapshot'], true, 512, JSON_THROW_ON_ERROR);
-                if ($item['item_type'] === 'contact') {
-                    foreach (self::CUSTOMER_TABLES as $table => $key) {
-                        $check = $pdo->prepare("SELECT lid FROM {$table} WHERE {$key} = ? LIMIT 1 FOR UPDATE");
-                        $check->execute([$item['item_id']]);
-                        if ($check->fetch()) throw new HttpException(409, 'A record already uses this customer reference; restoration would overwrite data');
-                        foreach ($snapshot[$table] ?? [] as $row) {
-                            // Column names originate from a server-created snapshot, never a client payload.
-                            $columns = array_keys($row);
-                            if (array_filter($columns, fn($column) => !preg_match('/^[A-Za-z0-9_]+$/', $column))) throw new \RuntimeException('Invalid recovery schema');
-                            $sql = 'INSERT INTO ' . $table . ' (`' . implode('`,`', $columns) . '`) VALUES (' . implode(',', array_fill(0, count($columns), '?')) . ')';
-                            $pdo->prepare($sql)->execute(array_values($row));
-                        }
-                    }
-                } else {
-                    $old = $snapshot['tblinventory_item'][0];
-                    $stmt = $pdo->prepare('SELECT lid,lstatus,lnot_inventory FROM tblinventory_item WHERE lmain_id = ? AND lsession = ? FOR UPDATE');
-                    $stmt->execute([$mainId, $item['item_id']]);
-                    $current = $stmt->fetch();
-                    if (!$current || (string) $current['lid'] !== (string) $old['lid'] || (int) $current['lstatus'] !== 0 || (int) $current['lnot_inventory'] !== 1) throw new HttpException(409, 'Product state changed; review it in Product Database');
-                    $stmt = $pdo->prepare('UPDATE tblinventory_item SET lstatus = ?, lnot_inventory = ? WHERE lmain_id = ? AND lsession = ?');
-                    $stmt->execute([$old['lstatus'], $old['lnot_inventory'], $mainId, $item['item_id']]);
-                }
-            }
-            $pdo->prepare('DELETE FROM local_recycle_bin WHERE main_id = ? AND id = ?')->execute([$mainId, $id]);
-            $pdo->prepare('INSERT INTO tblaudit_trail (lmain_id,luser_id,lpage,laction,lrefno,ldatetime) VALUES (?,?,?,?,?,NOW())')->execute([$mainId, $userId, 'Server Maintenance', $restore ? 'Restore' : 'Discard Recovery', $item['item_type'] . ':' . $item['item_id']]);
-            $pdo->commit();
-            return ['success' => true];
-        } catch (Throwable $e) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
-            throw $e;
+        $normalizedType = strtolower(trim($type));
+        $normalizedItemId = trim($itemId);
+        if ($mainId <= 0 || $normalizedItemId === '' || !in_array($normalizedType, self::RESTORABLE_TYPES, true)) {
+            return false;
         }
+
+        return match ($normalizedType) {
+            'contact' => $this->restoreCustomer($mainId, $normalizedItemId),
+            'product' => $this->restoreProduct($mainId, $normalizedItemId),
+            'purchase_request' => $this->restorePurchaseRequest($normalizedItemId),
+            'purchase_order' => $this->restorePurchaseOrder($mainId, $normalizedItemId),
+            'receiving_report' => $this->restoreReceivingReport($mainId, $normalizedItemId),
+            default => false,
+        };
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function listDeletedCustomers(int $mainId): array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT
+                COALESCE(lsessionid, "") AS item_id,
+                COALESCE(NULLIF(lcompany, ""), lsessionid, "") AS record_number,
+                CASE WHEN COALESCE(lstatus, 1) = 0 THEN "Deleted" ELSE CAST(COALESCE(lstatus, "") AS CHAR) END AS status,
+                COALESCE(ldelete_reason, "") AS delete_reason,
+                ldeleted_at AS deleted_at,
+                ldeleted_by AS deleted_by
+             FROM tblpatient
+             WHERE lmain_id = :main_id
+               AND COALESCE(ldeleted, 0) = 1
+             ORDER BY COALESCE(ldeleted_at, ldatetime, ldatereg) DESC, lid DESC
+             LIMIT 500'
+        );
+        $stmt->execute(['main_id' => $mainId]);
+        return array_map(
+            fn (array $row): array => $this->formatSoftDeletedRecord('contact', 'Customer', $row),
+            $stmt->fetchAll(PDO::FETCH_ASSOC)
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function listDeletedProducts(int $mainId): array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT
+                COALESCE(lsession, "") AS item_id,
+                COALESCE(NULLIF(litemcode, ""), lsession, "") AS record_number,
+                CASE WHEN COALESCE(lstatus, 0) = 0 THEN "Deleted" ELSE CAST(COALESCE(lstatus, "") AS CHAR) END AS status,
+                COALESCE(ldelete_reason, "") AS delete_reason,
+                ldeleted_at AS deleted_at,
+                ldeleted_by AS deleted_by
+             FROM tblinventory_item
+             WHERE lmain_id = :main_id
+               AND COALESCE(ldeleted, 0) = 1
+             ORDER BY COALESCE(ldeleted_at, ldateadded) DESC, lid DESC
+             LIMIT 500'
+        );
+        $stmt->execute(['main_id' => $mainId]);
+        return array_map(
+            fn (array $row): array => $this->formatSoftDeletedRecord('product', 'Product', $row),
+            $stmt->fetchAll(PDO::FETCH_ASSOC)
+        );
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function listDeletedProcurementRecords(int $mainId): array
+    {
+        $records = [];
+
+        $prStmt = $this->db->pdo()->query(
+            'SELECT
+                COALESCE(lrefno, "") AS item_id,
+                COALESCE(lprno, lrefno, "") AS record_number,
+                COALESCE(lstatus, "Deleted") AS status,
+                COALESCE(ldelete_reason, "") AS delete_reason,
+                ldeleted_at AS deleted_at,
+                ldeleted_by AS deleted_by
+             FROM tblpr_list
+             WHERE COALESCE(ldeleted, 0) = 1
+                OR LOWER(COALESCE(lstatus, "")) = "deleted"
+             ORDER BY COALESCE(ldeleted_at, ldatetime) DESC, lid DESC
+             LIMIT 500'
+        );
+        foreach ($prStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $records[] = $this->formatSoftDeletedRecord('purchase_request', 'Purchase Request', $row);
+        }
+
+        $poStmt = $this->db->pdo()->prepare(
+            'SELECT
+                COALESCE(lrefno, "") AS item_id,
+                COALESCE(lpurchaseno, lrefno, "") AS record_number,
+                COALESCE(ltransaction_status, "Deleted") AS status,
+                COALESCE(ldelete_reason, "") AS delete_reason,
+                ldeleted_at AS deleted_at,
+                ldeleted_by AS deleted_by
+             FROM tblpo_list
+             WHERE lmain_id = :main_id
+               AND (COALESCE(ldeleted, 0) = 1
+                    OR LOWER(COALESCE(ltransaction_status, "")) = "deleted")
+             ORDER BY COALESCE(ldeleted_at, ldate) DESC, lid DESC
+             LIMIT 500'
+        );
+        $poStmt->execute(['main_id' => $mainId]);
+        foreach ($poStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $records[] = $this->formatSoftDeletedRecord('purchase_order', 'Purchase Order', $row);
+        }
+
+        $rrStmt = $this->db->pdo()->prepare(
+            'SELECT
+                COALESCE(lrefno, "") AS item_id,
+                COALESCE(lpurchaseno, lrefno, "") AS record_number,
+                COALESCE(ltransaction_status, "Deleted") AS status,
+                COALESCE(ldelete_reason, "") AS delete_reason,
+                ldeleted_at AS deleted_at,
+                ldeleted_by AS deleted_by
+             FROM tblpurchase_order
+             WHERE lmain_id = :main_id
+               AND (COALESCE(ldeleted, 0) = 1
+                    OR LOWER(COALESCE(ltransaction_status, "")) = "deleted")
+             ORDER BY COALESCE(ldeleted_at, ldate) DESC, lid DESC
+             LIMIT 500'
+        );
+        $rrStmt->execute(['main_id' => $mainId]);
+        foreach ($rrStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $records[] = $this->formatSoftDeletedRecord('receiving_report', 'Receiving Report', $row);
+        }
+
+        return $records;
+    }
+
+    private function restoreCustomer(int $mainId, string $sessionId): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'UPDATE tblpatient
+             SET ldeleted = 0,
+                 ldeleted_at = NULL,
+                 ldeleted_by = NULL,
+                 ldelete_reason = "",
+                 lstatus = 1
+             WHERE lmain_id = :main_id
+               AND lsessionid = :session_id
+               AND COALESCE(ldeleted, 0) = 1
+             LIMIT 1'
+        );
+        $stmt->execute(['main_id' => $mainId, 'session_id' => $sessionId]);
+        return $stmt->rowCount() > 0;
+    }
+
+    private function restoreProduct(int $mainId, string $sessionId): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'UPDATE tblinventory_item
+             SET ldeleted = 0,
+                 ldeleted_at = NULL,
+                 ldeleted_by = NULL,
+                 ldelete_reason = "",
+                 lnot_inventory = 0,
+                 lstatus = 1
+             WHERE lmain_id = :main_id
+               AND lsession = :session_id
+               AND COALESCE(ldeleted, 0) = 1
+             LIMIT 1'
+        );
+        $stmt->execute(['main_id' => $mainId, 'session_id' => $sessionId]);
+        return $stmt->rowCount() > 0;
+    }
+
+    private function restorePurchaseRequest(string $refno): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'UPDATE tblpr_list
+             SET ldeleted = 0,
+                 ldeleted_at = NULL,
+                 ldeleted_by = NULL,
+                 ldelete_reason = "",
+                 lstatus = CASE WHEN LOWER(COALESCE(lstatus, "")) = "deleted" THEN "Pending" ELSE lstatus END
+             WHERE lrefno = :refno
+               AND (COALESCE(ldeleted, 0) = 1 OR LOWER(COALESCE(lstatus, "")) = "deleted")
+             LIMIT 1'
+        );
+        $stmt->execute(['refno' => $refno]);
+        return $stmt->rowCount() > 0;
+    }
+
+    private function restorePurchaseOrder(int $mainId, string $refno): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'UPDATE tblpo_list
+             SET ldeleted = 0,
+                 ldeleted_at = NULL,
+                 ldeleted_by = NULL,
+                 ldelete_reason = "",
+                 ltransaction_status = CASE WHEN LOWER(COALESCE(ltransaction_status, "")) = "deleted" THEN "Pending" ELSE ltransaction_status END
+             WHERE lmain_id = :main_id
+               AND lrefno = :refno
+               AND (COALESCE(ldeleted, 0) = 1 OR LOWER(COALESCE(ltransaction_status, "")) = "deleted")
+             LIMIT 1'
+        );
+        $stmt->execute(['main_id' => $mainId, 'refno' => $refno]);
+        return $stmt->rowCount() > 0;
+    }
+
+    private function restoreReceivingReport(int $mainId, string $refno): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'UPDATE tblpurchase_order
+             SET ldeleted = 0,
+                 ldeleted_at = NULL,
+                 ldeleted_by = NULL,
+                 ldelete_reason = "",
+                 ltransaction_status = CASE WHEN LOWER(COALESCE(ltransaction_status, "")) = "deleted" THEN "Pending" ELSE ltransaction_status END
+             WHERE lmain_id = :main_id
+               AND lrefno = :refno
+               AND (COALESCE(ldeleted, 0) = 1 OR LOWER(COALESCE(ltransaction_status, "")) = "deleted")
+             LIMIT 1'
+        );
+        $stmt->execute(['main_id' => $mainId, 'refno' => $refno]);
+        return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private function formatSoftDeletedRecord(string $type, string $module, array $row): array
+    {
+        $recordNumber = trim((string) ($row['record_number'] ?? ''));
+        $itemId = trim((string) ($row['item_id'] ?? ''));
+        return [
+            'id' => $type . ':' . $itemId,
+            'item_type' => $type,
+            'record_type' => $type,
+            'item_id' => $itemId,
+            'label' => $recordNumber !== '' ? $recordNumber : $itemId,
+            'record_number' => $recordNumber !== '' ? $recordNumber : $itemId,
+            'module' => $module,
+            'status' => (string) ($row['status'] ?? 'Deleted'),
+            'delete_reason' => (string) ($row['delete_reason'] ?? ''),
+            'deleted_at' => (string) ($row['deleted_at'] ?? ''),
+            'deleted_by' => $row['deleted_by'] ?? null,
+        ];
     }
 }

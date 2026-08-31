@@ -472,7 +472,7 @@ SQL;
         }
 
         $checkStmt = $this->db->pdo()->prepare(
-            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted") LIMIT 1'
+            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted") LIMIT 1'
         );
         $checkStmt->execute(['refno' => $prRefno]);
         $poNo = $checkStmt->fetchColumn();
@@ -532,9 +532,8 @@ SQL;
 
         $this->assertReason($reason);
         $this->assertPrivilegedAction($mainId, $userId);
-        $dependency = $this->db->pdo()->prepare('SELECT COUNT(*) FROM tblpo_list WHERE lmain_id = :main_id AND lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted")');
-        $dependency->execute(['main_id' => $mainId, 'refno' => $prRefno]);
-        if ((int) $dependency->fetchColumn() > 0) throw new RuntimeException('Purchase request cannot be deleted because an active purchase order depends on it');
+        $poDependencies = $this->activePurchaseOrderDependencies($mainId, $prRefno);
+        if ($poDependencies !== []) throw new RuntimeException('Purchase request cannot be deleted because ' . $this->formatPurchaseOrderDependencies($poDependencies) . ' depends on it');
 
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -559,7 +558,7 @@ SQL;
         }
 
         $checkStmt = $this->db->pdo()->prepare(
-            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted") LIMIT 1'
+            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted") LIMIT 1'
         );
         $checkStmt->execute(['refno' => $prRefno]);
         $poNo = $checkStmt->fetchColumn();
@@ -617,7 +616,7 @@ SQL;
         $prRefno = (string) ($item['pr_refno'] ?? '');
         if ($prRefno !== '') {
             $checkStmt = $this->db->pdo()->prepare(
-                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted") LIMIT 1'
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted") LIMIT 1'
             );
             $checkStmt->execute(['refno' => $prRefno]);
             $poNo = $checkStmt->fetchColumn();
@@ -675,7 +674,7 @@ SQL;
         $prRefno = (string) ($item['pr_refno'] ?? '');
         if ($prRefno !== '') {
             $checkStmt = $this->db->pdo()->prepare(
-                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted") LIMIT 1'
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted") LIMIT 1'
             );
             $checkStmt->execute(['refno' => $prRefno]);
             $poNo = $checkStmt->fetchColumn();
@@ -697,9 +696,8 @@ SQL;
         if (!in_array($status, ['submitted', 'approved'], true)) throw new RuntimeException('Only a submitted or approved purchase request can be unposted');
         $this->assertReason($reason);
         $this->assertPrivilegedAction($mainId, $userId);
-        $dependency = $this->db->pdo()->prepare('SELECT COUNT(*) FROM tblpo_list WHERE lmain_id = :main_id AND lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted")');
-        $dependency->execute(['main_id' => $mainId, 'refno' => $prRefno]);
-        if ((int) $dependency->fetchColumn() > 0) throw new RuntimeException('Purchase request cannot be unposted while an active purchase order depends on it');
+        $poDependencies = $this->activePurchaseOrderDependencies($mainId, $prRefno);
+        if ($poDependencies !== []) throw new RuntimeException('Purchase request cannot be unposted because ' . $this->formatPurchaseOrderDependencies($poDependencies) . ' depends on it');
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
@@ -726,6 +724,52 @@ SQL;
         if ($row === false || ((string) ($row[0] ?? '') !== '1' && !in_array((string) ($row[1] ?? ''), ['owner', 'company owner', 'administrator', 'purchasing manager'], true))) throw new RuntimeException('You do not have permission to recover purchase requests');
     }
 
+    /**
+     * @return array<int, array<string, string>>
+     */
+    private function activePurchaseOrderDependencies(int $mainId, string $prRefno): array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT COALESCE(lpurchaseno, lrefno, "") AS number,
+                    COALESCE(ltransaction_status, "Pending") AS status
+             FROM tblpo_list
+             WHERE lmain_id = :main_id
+               AND lpr_refno = :refno
+               AND COALESCE(ldeleted, 0) = 0
+               AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted")
+             ORDER BY lid DESC
+             LIMIT 5'
+        );
+        $stmt->execute(['main_id' => $mainId, 'refno' => $prRefno]);
+        return array_map(
+            static fn (array $row): array => [
+                'number' => (string) ($row['number'] ?? ''),
+                'status' => (string) ($row['status'] ?? ''),
+            ],
+            $stmt->fetchAll(PDO::FETCH_ASSOC)
+        );
+    }
+
+    /**
+     * @param array<int, array<string, string>> $dependencies
+     */
+    private function formatPurchaseOrderDependencies(array $dependencies): string
+    {
+        $labels = array_values(array_filter(array_map(
+            static function (array $row): string {
+                $number = trim((string) ($row['number'] ?? ''));
+                $status = trim((string) ($row['status'] ?? ''));
+                if ($number === '') return '';
+                return $status !== '' ? $number . ' (' . $status . ')' : $number;
+            },
+            $dependencies
+        )));
+
+        if ($labels === []) return 'an active purchase order';
+        if (count($labels) === 1) return 'purchase order ' . $labels[0];
+        return 'purchase orders ' . implode(', ', $labels);
+    }
+
     public function applyAction(int $mainId, int $userId, string $prRefno, string $action, array $payload): array
     {
         $normalized = strtolower(trim($action));
@@ -735,7 +779,7 @@ SQL;
 
         if ($normalized === 'cancel' || $normalized === 'submit') {
             $checkStmt = $this->db->pdo()->prepare(
-                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted") LIMIT 1'
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted") LIMIT 1'
             );
             $checkStmt->execute(['refno' => $prRefno]);
             $poNo = $checkStmt->fetchColumn();

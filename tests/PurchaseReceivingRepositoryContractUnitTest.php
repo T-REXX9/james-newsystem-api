@@ -18,8 +18,13 @@ $checks = [
     'short receipt reason is retained on the receiving report' => "'Short receipt reason: ' . \$shortReceiptReason",
     'short receipt can complete the PO without inflating received quantity' => 'if (!$hasRemainingPoQty || $closeRemainingPoQty)',
     'eligible PO list requires a PR link' => "COALESCE(po.lpr_refno, '') <> ''",
+    'eligible PO list ignores deleted PO headers' => 'COALESCE(po.ldeleted, 0) = 0',
+    'receiving PO resolution ignores deleted PO headers' => 'AND COALESCE(ldeleted, 0) = 0',
+    'receiving PO item resolution ignores deleted PO headers' => 'AND COALESCE(po.ldeleted, 0) = 0',
     'eligible PO list only includes remaining quantities' => 'COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)',
     'eligible PO ordering is valid with ONLY_FULL_GROUP_BY' => 'ORDER BY MAX(po.lid) DESC',
+    'RR unpost names active return-to-supplier dependency' => 'formatReturnToSupplierDependencies($returnDependencies)',
+    'RR unpost ignores canceled or deleted return-to-supplier records' => 'NOT IN ("cancelled", "canceled", "deleted")',
 ];
 
 $failed = 0;

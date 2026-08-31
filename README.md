@@ -34,10 +34,11 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
    - `mysql -u root topnotch < migrations/020_create_call_logs_v2.sql`
    - `mysql -u root topnotch < migrations/022_add_lbc_rto_to_incident_reports.sql`
      *(Required before users can create LBC RTO incident reports.)*
-   - Apply `migrations/017_create_customer_requests.sql` and
-     `migrations/018_create_local_recycle_bin.sql` to your configured database before
-     deploying the customer workflow changes. Customer/product deletes now require
-     the recovery table so snapshots and deletion remain transactional.
+  - Apply `migrations/017_create_customer_requests.sql`,
+    `migrations/019_add_procurement_recovery_columns.sql`, and
+    `migrations/023_add_customer_product_soft_delete_columns.sql` to your configured
+    database before deploying the customer/procurement workflow changes. Deleted
+    records are tracked with soft-delete metadata on their source tables.
    - Run `php tests/CustomerWorkflowDatabaseTest.php` for the temporary-table
      customer request/history/recovery regression checks (no persistent business writes).
 4. Run local server:
