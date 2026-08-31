@@ -45,7 +45,8 @@ SELECT
 FROM tblpr_item pri
 INNER JOIN tblpr_list prl ON prl.lrefno = pri.lrefno
 WHERE ({$identifierSql})
-  AND LOWER(COALESCE(prl.lstatus, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
+  AND COALESCE(prl.ldeleted, 0) = 0
+  AND LOWER(COALESCE(prl.lstatus, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed', 'deleted')
   AND (
       TRIM(COALESCE(pri.lpo_refno, '')) = ''
       OR EXISTS (
@@ -54,7 +55,8 @@ WHERE ({$identifierSql})
           INNER JOIN tblpo_itemlist active_po_item
               ON active_po_item.lrefno = active_po.lrefno
           WHERE active_po.lrefno = pri.lpo_refno
-            AND LOWER(COALESCE(active_po.ltransaction_status, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
+            AND COALESCE(active_po.ldeleted, 0) = 0
+            AND LOWER(COALESCE(active_po.ltransaction_status, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed', 'deleted')
             AND (active_po_item.litem_refno = pri.litem_refno OR active_po_item.litem_code = pri.litem_code)
             AND COALESCE(active_po_item.lqty, 0) > COALESCE(active_po_item.lreceiving_qty, 0)
       )
@@ -82,7 +84,8 @@ SELECT
 FROM tblpo_itemlist poi
 INNER JOIN tblpo_list pol ON pol.lrefno = poi.lrefno
 WHERE ({$identifierSql})
-  AND LOWER(COALESCE(pol.ltransaction_status, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
+  AND COALESCE(pol.ldeleted, 0) = 0
+  AND LOWER(COALESCE(pol.ltransaction_status, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed', 'deleted')
   AND COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)
 ORDER BY poi.lid DESC
 LIMIT 1

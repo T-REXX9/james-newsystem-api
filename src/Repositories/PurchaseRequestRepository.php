@@ -472,7 +472,7 @@ SQL;
         }
 
         $checkStmt = $this->db->pdo()->prepare(
-            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND LOWER(COALESCE(ltransaction_status, "")) <> "cancelled" LIMIT 1'
+            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted") LIMIT 1'
         );
         $checkStmt->execute(['refno' => $prRefno]);
         $poNo = $checkStmt->fetchColumn();
@@ -559,7 +559,7 @@ SQL;
         }
 
         $checkStmt = $this->db->pdo()->prepare(
-            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND LOWER(COALESCE(ltransaction_status, "")) <> "cancelled" LIMIT 1'
+            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted") LIMIT 1'
         );
         $checkStmt->execute(['refno' => $prRefno]);
         $poNo = $checkStmt->fetchColumn();
@@ -617,7 +617,7 @@ SQL;
         $prRefno = (string) ($item['pr_refno'] ?? '');
         if ($prRefno !== '') {
             $checkStmt = $this->db->pdo()->prepare(
-                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND LOWER(COALESCE(ltransaction_status, "")) <> "cancelled" LIMIT 1'
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted") LIMIT 1'
             );
             $checkStmt->execute(['refno' => $prRefno]);
             $poNo = $checkStmt->fetchColumn();
@@ -675,7 +675,7 @@ SQL;
         $prRefno = (string) ($item['pr_refno'] ?? '');
         if ($prRefno !== '') {
             $checkStmt = $this->db->pdo()->prepare(
-                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND LOWER(COALESCE(ltransaction_status, "")) <> "cancelled" LIMIT 1'
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted") LIMIT 1'
             );
             $checkStmt->execute(['refno' => $prRefno]);
             $poNo = $checkStmt->fetchColumn();
@@ -714,7 +714,8 @@ SQL;
     private function assertReason(string $reason): void
     {
         if (trim($reason) === '') throw new RuntimeException('A reason is required for this action');
-        if (mb_strlen(trim($reason)) > 500) throw new RuntimeException('Reason must be 500 characters or fewer');
+        // Keep recovery actions available on PHP deployments without ext-mbstring.
+        if (strlen(trim($reason)) > 500) throw new RuntimeException('Reason must be 500 characters or fewer');
     }
 
     private function assertPrivilegedAction(int $mainId, int $userId): void
@@ -734,7 +735,7 @@ SQL;
 
         if ($normalized === 'cancel' || $normalized === 'submit') {
             $checkStmt = $this->db->pdo()->prepare(
-                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND LOWER(COALESCE(ltransaction_status, "")) <> "cancelled" LIMIT 1'
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "deleted") LIMIT 1'
             );
             $checkStmt->execute(['refno' => $prRefno]);
             $poNo = $checkStmt->fetchColumn();

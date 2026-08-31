@@ -493,7 +493,8 @@ SQL;
     private function assertReason(string $reason): void
     {
         if (trim($reason) === '') throw new RuntimeException('A reason is required for this action');
-        if (mb_strlen(trim($reason)) > 500) throw new RuntimeException('Reason must be 500 characters or fewer');
+        // Keep recovery actions available on PHP deployments without ext-mbstring.
+        if (strlen(trim($reason)) > 500) throw new RuntimeException('Reason must be 500 characters or fewer');
     }
 
     private function assertPrivilegedAction(int $mainId, int $userId): void

@@ -27,6 +27,7 @@ $checks = [
     'PO delete is soft delete' => str_contains($source('po'), 'ldeleted = 1'),
     'RR has unpost action' => str_contains($source('rr'), 'unpostReceivingStock'),
     'RR delete is soft delete' => str_contains($source('rr'), 'ldeleted = 1'),
+    'recovery reasons work without mbstring' => !str_contains($source('pr'), 'mb_strlen(') && !str_contains($source('po'), 'mb_strlen(') && !str_contains($source('rr'), 'mb_strlen('),
     'audit accepts reason and statuses' => str_contains($source('audit'), 'reason =') && str_contains($source('audit'), 'oldStatus'),
     'deployment setup applies procurement recovery migration' => str_contains($source('setup'), '019_add_procurement_recovery_columns.sql'),
 ];
