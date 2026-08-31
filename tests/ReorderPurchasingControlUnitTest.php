@@ -13,6 +13,17 @@ if (!is_string($report) || !is_string($products) || !is_string($productControlle
     exit(1);
 }
 
+$deleteReceivingMethod = '';
+$deleteReceivingStart = strpos($receiving, 'public function deleteReceivingStock');
+if ($deleteReceivingStart !== false) {
+    $deleteReceivingEnd = strpos($receiving, 'public function unpostReceivingStock', $deleteReceivingStart);
+    $deleteReceivingMethod = substr(
+        $receiving,
+        $deleteReceivingStart,
+        $deleteReceivingEnd === false ? null : $deleteReceivingEnd - $deleteReceivingStart
+    );
+}
+
 $assertions = [
     'report does not subtract sales reservations from stock' => !str_contains($report, 'reservationSubquery')
         && !str_contains($report, 'AS reserved_qty')
@@ -32,7 +43,13 @@ $assertions = [
         && str_contains($report, 'COALESCE(active_pol.ldeleted, 0) = 0'),
     'deleted PR, PO, and RR headers do not appear in purchasing control' => str_contains($report, 'COALESCE(prl.ldeleted, 0) = 0')
         && str_contains($report, 'COALESCE(pol.ldeleted, 0) = 0')
-        && str_contains($report, 'COALESCE(rr.ldeleted, 0) = 0'),
+        && str_contains($report, 'COALESCE(rr.ldeleted, 0) = 0')
+        && str_contains($report, "LOWER(COALESCE(rr.ltransaction_status, 'pending')) <> 'deleted'"),
+    'latest RR lookup ignores deleted receiving headers before choosing the latest row' => str_contains($report, 'po_latest.lrefno = pi_latest.lrefno')
+        && str_contains($report, 'COALESCE(po_latest.ldeleted, 0) = 0')
+        && str_contains($report, "LOWER(COALESCE(po_latest.ltransaction_status, 'pending')) <> 'deleted'"),
+    'receiving delete clears reorder report cache immediately' => str_contains($deleteReceivingMethod, '$this->clearReorderReportCache();')
+        && strpos($deleteReceivingMethod, 'UPDATE tblpurchase_order SET ldeleted = 1') < strpos($deleteReceivingMethod, '$this->clearReorderReportCache();'),
     'pending PR lines remain open until linked to a PO' => str_contains($report, "TRIM(COALESCE(pri.lpo_refno, '')) = ''"),
     'only the unreceived PO balance remains on order' => str_contains($report, 'COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)'),
     'accepted receiving quantities require a finalized RR status' => str_contains($report, "IN ('posted', 'received', 'delivered', 'completed')"),

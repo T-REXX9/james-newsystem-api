@@ -633,6 +633,7 @@ FROM tblpurchase_item pi
 INNER JOIN tblpurchase_order rr ON rr.lrefno = pi.lrefno
 WHERE rr.lpo_refno IN ({$poClause})
   AND COALESCE(rr.ldeleted, 0) = 0
+  AND LOWER(COALESCE(rr.ltransaction_status, 'pending')) <> 'deleted'
   AND (%s)
 GROUP BY pi.litem_refno, pi.litem_code, rr.lrefno, rr.lpurchaseno, rr.ltransaction_status,
     rr.lpo_refno, rr.lpo_number, rr.ldate_recieved, rr.ldate, rr.luser
@@ -730,6 +731,7 @@ FROM tblpurchase_item pi
 INNER JOIN tblpurchase_order rr ON rr.lrefno = pi.lrefno
 WHERE pi.litem_refno IN ({$inClause})
   AND COALESCE(rr.ldeleted, 0) = 0
+  AND LOWER(COALESCE(rr.ltransaction_status, 'pending')) <> 'deleted'
 GROUP BY pi.litem_refno
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
@@ -883,10 +885,14 @@ SELECT
     SUM(COALESCE(pi2.lqty, 0)) AS last_arrival_qty
 FROM tblpurchase_item pi
 INNER JOIN (
-    SELECT litem_code, MAX(lid) AS max_lid
-    FROM tblpurchase_item
-    WHERE litem_code IN ({$inClause})
-    GROUP BY litem_code
+    SELECT pi_latest.litem_code, MAX(pi_latest.lid) AS max_lid
+    FROM tblpurchase_item pi_latest
+    INNER JOIN tblpurchase_order po_latest
+        ON po_latest.lrefno = pi_latest.lrefno
+    WHERE pi_latest.litem_code IN ({$inClause})
+      AND COALESCE(po_latest.ldeleted, 0) = 0
+      AND LOWER(COALESCE(po_latest.ltransaction_status, 'pending')) <> 'deleted'
+    GROUP BY pi_latest.litem_code
 ) latest ON latest.max_lid = pi.lid
 LEFT JOIN tblpurchase_item pi2
     ON pi2.litem_code = pi.litem_code
@@ -894,6 +900,7 @@ LEFT JOIN tblpurchase_item pi2
 LEFT JOIN tblpurchase_order po
     ON po.lrefno = pi.lrefno
 WHERE COALESCE(po.ldeleted, 0) = 0
+  AND LOWER(COALESCE(po.ltransaction_status, 'pending')) <> 'deleted'
 GROUP BY pi.litem_code, pi.lrefno, po.lpurchaseno, po.ltransaction_status, po.ldate
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);

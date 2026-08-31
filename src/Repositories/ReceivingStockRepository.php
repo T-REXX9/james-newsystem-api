@@ -445,6 +445,7 @@ SQL;
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Receiving Report', 'Delete', $receivingRefno, $reason, (string) ($existing['record']['status'] ?? ''), 'Deleted');
 
             $pdo->commit();
+            $this->clearReorderReportCache();
             return true;
         } catch (\Throwable $e) {
             $pdo->rollBack();
