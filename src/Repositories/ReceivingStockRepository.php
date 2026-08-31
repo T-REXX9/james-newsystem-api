@@ -66,8 +66,8 @@ SQL;
      */
     public function listReceivingStocks(
         int $mainId,
-        int $month,
-        int $year,
+        ?int $month = null,
+        ?int $year = null,
         string $status = 'all',
         string $search = '',
         int $page = 1,
@@ -79,17 +79,23 @@ SQL;
 
         $params = [
             'main_id' => (string) $mainId,
-            'month' => $month,
-            'year' => $year,
             'limit' => $perPage,
             'offset' => $offset,
         ];
         $where = [
             'rr.lmain_id = :main_id',
             'COALESCE(rr.ldeleted, 0) = 0',
-            'MONTH(rr.ldate) = :month',
-            'YEAR(rr.ldate) = :year',
         ];
+
+        if ($month !== null) {
+            $params['month'] = $month;
+            $where[] = 'MONTH(rr.ldate) = :month';
+        }
+
+        if ($year !== null) {
+            $params['year'] = $year;
+            $where[] = 'YEAR(rr.ldate) = :year';
+        }
 
         $normalizedStatus = strtolower(trim($status));
         if ($normalizedStatus !== '' && $normalizedStatus !== 'all') {

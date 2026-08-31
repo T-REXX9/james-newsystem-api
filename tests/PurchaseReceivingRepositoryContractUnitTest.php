@@ -7,6 +7,11 @@ if ($source === false) {
     fwrite(STDERR, "FAIL unable to read ReceivingStockRepository\n");
     exit(1);
 }
+$controller = file_get_contents(dirname(__DIR__) . '/src/Controllers/ReceivingStockController.php');
+if ($controller === false) {
+    fwrite(STDERR, "FAIL unable to read ReceivingStockController\n");
+    exit(1);
+}
 
 $checks = [
     'creation resolves the PO before saving' => 'resolvePurchaseOrder($mainId, $payload)',
@@ -25,11 +30,16 @@ $checks = [
     'eligible PO ordering is valid with ONLY_FULL_GROUP_BY' => 'ORDER BY MAX(po.lid) DESC',
     'RR unpost names active return-to-supplier dependency' => 'formatReturnToSupplierDependencies($returnDependencies)',
     'RR unpost ignores canceled or deleted return-to-supplier records' => 'NOT IN ("cancelled", "canceled", "deleted")',
+    'RR list allows all months and years' => str_contains($source, '?int $month = null')
+        && str_contains($source, '?int $year = null')
+        && str_contains($controller, 'strtolower($monthParam) === \'all\'')
+        && str_contains($controller, 'strtolower($yearParam) === \'all\''),
 ];
 
 $failed = 0;
 foreach ($checks as $name => $needle) {
-    if (!str_contains($source, $needle)) {
+    $passed = is_bool($needle) ? $needle : str_contains($source, $needle);
+    if (!$passed) {
         echo "  FAIL {$name}\n";
         $failed++;
     } else {
