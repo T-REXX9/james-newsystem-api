@@ -39,7 +39,7 @@ final class ReorderReportRepository
     ): array {
         $normalizedWarehouseType = $this->normalizeWarehouseType($warehouseType);
         $cacheKey = $this->buildCacheKey([
-            'purchasing_control_version' => 18,
+            'purchasing_control_version' => 19,
             'main_id' => $mainId,
             'warehouse_type' => $normalizedWarehouseType,
             'search' => trim($search),
@@ -225,7 +225,16 @@ SQL;
                 if ($refno !== '') $openPoRefnos[$refno] = true;
             }
         }
+        $poProgressByRefno = $this->fetchPoProgressByRefno($mainId, array_keys($openPoRefnos));
         $rrDocumentsByItem = $this->fetchReceivingDocuments($sessions, $itemCodes, array_keys($openPoRefnos));
+        $openRrRefnos = [];
+        foreach ($rrDocumentsByItem as $documents) {
+            foreach ($documents as $document) {
+                $refno = trim((string) ($document['refno'] ?? ''));
+                if ($refno !== '') $openRrRefnos[$refno] = true;
+            }
+        }
+        $rrProgressByRefno = $this->fetchRrProgressByRefno($mainId, array_keys($openRrRefnos));
         $latestRrByItem = $this->fetchLatestRrByItemCode($itemCodes);
         $lastArrivalByItem = $isWarehouseSpecific
             ? $this->fetchLastTransferByItemCode($itemCodes, $selectedWarehouse)
@@ -248,6 +257,24 @@ SQL;
                 static fn (array $document): string => trim((string) ($document['refno'] ?? '')),
                 $poDocuments
             )));
+            $poTotalOrderedQty = 0.0;
+            $poTotalReceivedQty = 0.0;
+            foreach ($rowOpenPoRefnos as $poRefno) {
+                $poProgress = $poProgressByRefno[$poRefno] ?? null;
+                if ($poProgress === null) continue;
+                $poTotalOrderedQty += (float) ($poProgress['ordered_qty'] ?? 0);
+                $poTotalReceivedQty += (float) ($poProgress['received_qty'] ?? 0);
+            }
+            $rowRrRefnos = array_values(array_unique(array_filter(array_map(
+                static fn (array $document): string => trim((string) ($document['refno'] ?? '')),
+                $rrDocuments
+            ))));
+            $rrTotalReceivedQty = 0.0;
+            foreach ($rowRrRefnos as $rrRefno) {
+                $rrProgress = $rrProgressByRefno[$rrRefno] ?? null;
+                if ($rrProgress === null) continue;
+                $rrTotalReceivedQty += (float) ($rrProgress['received_qty'] ?? 0);
+            }
             $rrDocuments = $rowOpenPoRefnos === []
                 ? []
                 : array_values(array_filter(
@@ -312,12 +339,12 @@ SQL;
                 $openPoQty
             );
 
-            $completionPercent = $orderedQty > 0
-                ? min(100.0, max(0.0, ($acceptedQty / $orderedQty) * 100))
+            $completionPercent = $poTotalOrderedQty > 0
+                ? min(100.0, max(0.0, ($poTotalReceivedQty / $poTotalOrderedQty) * 100))
                 : 0.0;
             $completionLabel = rtrim(rtrim(number_format($completionPercent, 2, '.', ''), '0'), '.');
-            $pendingReceiptPercent = $orderedQty > 0
-                ? min(100.0, max(0.0, ($physicallyReceivedQty / $orderedQty) * 100))
+            $pendingReceiptPercent = $poTotalOrderedQty > 0
+                ? min(100.0, max(0.0, ($rrTotalReceivedQty / $poTotalOrderedQty) * 100))
                 : 0.0;
             $pendingReceiptLabel = rtrim(rtrim(number_format($pendingReceiptPercent, 2, '.', ''), '0'), '.');
 
@@ -368,9 +395,9 @@ SQL;
                 'suggested_reorder_qty' => $suggestedReorderQty,
                 'pr_requested_qty' => $requestedPrQty,
                 'open_pr_qty' => $openPrQty,
-                'po_ordered_qty' => $orderedQty,
+                'po_ordered_qty' => $poTotalOrderedQty,
                 'open_po_qty' => $openPoQty,
-                'received_qty' => $physicallyReceivedQty,
+                'received_qty' => $rrTotalReceivedQty,
                 'accepted_qty' => $acceptedQty,
                 'remaining_qty' => $recordedOutstandingQty,
                 'preferred_supplier_id' => (string) ($preferredSupplier['supplier_id'] ?? ''),
@@ -598,6 +625,76 @@ SQL;
         $this->bindParams($stmt, $bind);
         $stmt->execute();
         return $this->indexDocumentsByItem($stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    /**
+     * @param array<int, string> $poRefnos
+     * @return array<string, array{ordered_qty: float, received_qty: float}>
+     */
+    private function fetchPoProgressByRefno(int $mainId, array $poRefnos): array
+    {
+        if ($poRefnos === []) return [];
+        [$poClause, $bind] = $this->buildInClause($poRefnos, 'progress_po');
+        $bind['progress_main_id'] = $mainId;
+        $sql = <<<SQL
+SELECT
+    poi.lrefno AS po_refno,
+    SUM(COALESCE(poi.lqty, 0)) AS ordered_qty,
+    SUM(COALESCE(poi.lreceiving_qty, 0)) AS received_qty
+FROM tblpo_itemlist poi
+INNER JOIN tblpo_list pol ON pol.lrefno = poi.lrefno
+WHERE pol.lmain_id = :progress_main_id
+  AND poi.lrefno IN ({$poClause})
+  AND COALESCE(pol.ldeleted, 0) = 0
+  AND LOWER(COALESCE(pol.ltransaction_status, 'pending')) NOT IN ('cancelled', 'canceled', 'rejected', 'disapproved', 'completed', 'closed')
+GROUP BY poi.lrefno
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $this->bindParams($stmt, $bind);
+        $stmt->execute();
+
+        $map = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $map[(string) ($row['po_refno'] ?? '')] = [
+                'ordered_qty' => (float) ($row['ordered_qty'] ?? 0),
+                'received_qty' => (float) ($row['received_qty'] ?? 0),
+            ];
+        }
+        return $map;
+    }
+
+    /**
+     * @param array<int, string> $rrRefnos
+     * @return array<string, array{received_qty: float}>
+     */
+    private function fetchRrProgressByRefno(int $mainId, array $rrRefnos): array
+    {
+        if ($rrRefnos === []) return [];
+        [$rrClause, $bind] = $this->buildInClause($rrRefnos, 'progress_rr');
+        $bind['progress_rr_main_id'] = $mainId;
+        $sql = <<<SQL
+SELECT
+    pi.lrefno AS rr_refno,
+    SUM(COALESCE(pi.lqty, 0)) AS received_qty
+FROM tblpurchase_item pi
+INNER JOIN tblpurchase_order rr ON rr.lrefno = pi.lrefno
+WHERE rr.lmain_id = :progress_rr_main_id
+  AND pi.lrefno IN ({$rrClause})
+  AND COALESCE(rr.ldeleted, 0) = 0
+  AND LOWER(COALESCE(rr.ltransaction_status, 'pending')) <> 'deleted'
+GROUP BY pi.lrefno
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $this->bindParams($stmt, $bind);
+        $stmt->execute();
+
+        $map = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $map[(string) ($row['rr_refno'] ?? '')] = [
+                'received_qty' => (float) ($row['received_qty'] ?? 0),
+            ];
+        }
+        return $map;
     }
 
     /**

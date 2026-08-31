@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use InvalidArgumentException;
 use PDO;
 
 final class ProductRepository
@@ -529,7 +530,7 @@ SQL;
         $status = $this->mapStatusToLegacy($payload['status'] ?? 'Active');
         $itemCode = trim((string) ($payload['item_code'] ?? ''));
         if ($itemCode === '') {
-            $itemCode = 'API-' . substr(preg_replace('/\D+/', '', $session), -8);
+            throw new InvalidArgumentException('item_code is required when creating a product');
         }
 
         $sql = <<<SQL

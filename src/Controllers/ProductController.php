@@ -78,6 +78,9 @@ final class ProductController
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
+        if (trim((string) ($body['item_code'] ?? '')) === '') {
+            throw new HttpException(422, 'item_code is required when creating a product');
+        }
         $userId = (int) ($body['user_id'] ?? 0);
 
         return $this->repo->createProduct($mainId, $userId, $body);

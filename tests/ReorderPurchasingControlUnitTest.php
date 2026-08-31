@@ -65,6 +65,13 @@ $assertions = [
         && str_contains($report, "'remaining_qty' => \$recordedOutstandingQty"),
     'partial receipt status reports actual completion progress' => str_contains($report, "'Partially Received — ' . \$completionLabel . '% Complete'"),
     'overdue partial receipt retains its completion progress' => str_contains($report, "'Overdue — ' . \$completionLabel . '% Complete'"),
+    'completion progress aggregates every line on the active PO' => str_contains($report, '$this->fetchPoProgressByRefno($mainId, array_keys($openPoRefnos))')
+        && str_contains($report, '$poTotalOrderedQty +=')
+        && str_contains($report, '$poTotalReceivedQty +=')
+        && str_contains($report, '($poTotalReceivedQty / $poTotalOrderedQty) * 100'),
+    'report quantity columns use whole PO and RR totals' => str_contains($report, "'po_ordered_qty' => \$poTotalOrderedQty")
+        && str_contains($report, "'received_qty' => \$rrTotalReceivedQty")
+        && str_contains($report, '$this->fetchRrProgressByRefno($mainId, array_keys($openRrRefnos))'),
     'pending RR status reports entered receiving progress' => str_contains($report, "'RR Pending — ' . \$pendingReceiptLabel . '% Received'"),
     'active PO balance blocks a duplicate PR regardless of status label' => str_contains($report, "'can_create_pr' => !(\$hasPendingPr || \$hasApprovedPr || \$hasPendingPo || \$openPoQty > 0)"),
     'report obtains pagination totals in the same database pass' => str_contains($report, 'COUNT(*) OVER() AS report_total')
