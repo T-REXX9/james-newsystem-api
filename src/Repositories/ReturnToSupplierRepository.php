@@ -25,7 +25,9 @@ final class ReturnToSupplierRepository
         string $status = 'all',
         string $search = '',
         int $page = 1,
-        int $perPage = 100
+        int $perPage = 100,
+        string $itemRefno = '',
+        string $itemCode = ''
     ): array {
         $page = max(1, $page);
         $perPage = min(500, max(1, $perPage));
@@ -56,7 +58,21 @@ final class ReturnToSupplierRepository
         }
 
         $trimmedSearch = trim($search);
-        if ($trimmedSearch !== '') {
+        $trimmedItemRefno = trim($itemRefno);
+        $trimmedItemCode = trim($itemCode);
+        if ($trimmedItemRefno !== '' || $trimmedItemCode !== '') {
+            $identity = [];
+            if ($trimmedItemRefno !== '') {
+                $identity[] = '(rsi.linv_refno = :item_refno_inv OR rsi.litem_refno = :item_refno_item)';
+                $params['item_refno_inv'] = $trimmedItemRefno;
+                $params['item_refno_item'] = $trimmedItemRefno;
+            }
+            if ($trimmedItemCode !== '') {
+                $identity[] = 'rsi.litemcode = :item_code';
+                $params['item_code'] = $trimmedItemCode;
+            }
+            $where[] = 'EXISTS (SELECT 1 FROM tblreturn_supplier_item rsi WHERE rsi.lrefno = rs.lrefno AND (' . implode(' OR ', $identity) . '))';
+        } elseif ($trimmedSearch !== '') {
             $params['search_credit_no'] = '%' . $trimmedSearch . '%';
             $params['search_refno'] = '%' . $trimmedSearch . '%';
             $params['search_supplier'] = '%' . $trimmedSearch . '%';

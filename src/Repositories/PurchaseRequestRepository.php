@@ -28,7 +28,9 @@ final class PurchaseRequestRepository
         int $page = 1,
         int $perPage = 100,
         ?int $month = null,
-        ?int $year = null
+        ?int $year = null,
+        bool $availableForPo = false,
+        bool $includeSubmitted = false
     ): array {
         $page = max(1, $page);
         $perPage = min(500, max(1, $perPage));
@@ -39,6 +41,27 @@ final class PurchaseRequestRepository
             'offset' => $offset,
         ];
         $where = ['COALESCE(pr.ldeleted, 0) = 0'];
+
+        if ($availableForPo) {
+            $where[] = $includeSubmitted
+                ? '(LOWER(COALESCE(pr.lapproval, "")) = "approved" OR LOWER(COALESCE(pr.lstatus, "")) = "submitted")'
+                : 'LOWER(COALESCE(pr.lapproval, "")) = "approved"';
+            $where[] = 'EXISTS (
+                SELECT 1
+                FROM tblpr_item pri_available
+                WHERE pri_available.lrefno = pr.lrefno
+                  AND (
+                      TRIM(COALESCE(pri_available.lpo_refno, "")) = ""
+                      OR NOT EXISTS (
+                          SELECT 1
+                          FROM tblpo_list linked_po
+                          WHERE linked_po.lrefno = pri_available.lpo_refno
+                            AND COALESCE(linked_po.ldeleted, 0) = 0
+                            AND LOWER(COALESCE(linked_po.ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted")
+                      )
+                  )
+            )';
+        }
 
         if ($month !== null && $year !== null) {
             $params['month'] = $month;
@@ -51,13 +74,14 @@ final class PurchaseRequestRepository
         }
 
         $trimmedStatus = strtolower(trim($status));
-        if ($trimmedStatus !== '' && $trimmedStatus !== 'all') {
+        if (!$availableForPo && $trimmedStatus !== '' && $trimmedStatus !== 'all') {
             $params['status'] = $trimmedStatus;
             $where[] = 'LOWER(
                 CASE
                     WHEN LOWER(COALESCE(pr.lstatus, "")) = "cancelled" THEN "Cancelled"
-                    WHEN LOWER(COALESCE(pr.lstatus, "")) = "submitted" THEN "Submitted"
+                    WHEN LOWER(COALESCE(pr.lstatus, "")) = "unposted" THEN "Unposted"
                     WHEN LOWER(COALESCE(pr.lapproval, "")) = "approved" THEN "Approved"
+                    WHEN LOWER(COALESCE(pr.lstatus, "")) = "submitted" THEN "Submitted"
                     WHEN LOWER(COALESCE(pr.lstatus, "")) = "draft" THEN "Draft"
                     ELSE "Pending"
                 END
@@ -109,8 +133,8 @@ SELECT
         WHEN LOWER(COALESCE(pr.lstatus, "")) = "deleted" THEN "Deleted"
         WHEN LOWER(COALESCE(pr.lstatus, "")) = "unposted" THEN "Unposted"
         WHEN LOWER(COALESCE(pr.lstatus, "")) = "cancelled" THEN "Cancelled"
-        WHEN LOWER(COALESCE(pr.lstatus, "")) = "submitted" THEN "Submitted"
         WHEN LOWER(COALESCE(pr.lapproval, "")) = "approved" THEN "Approved"
+        WHEN LOWER(COALESCE(pr.lstatus, "")) = "submitted" THEN "Submitted"
         WHEN LOWER(COALESCE(pr.lstatus, "")) = "draft" THEN "Draft"
         ELSE "Pending"
     END AS status,
@@ -157,6 +181,8 @@ SQL;
                     'month' => $month,
                     'year' => $year,
                     'main_id' => $mainId,
+                    'available_for_po' => $availableForPo,
+                    'include_submitted' => $includeSubmitted,
                 ],
             ],
         ];
@@ -184,9 +210,10 @@ SELECT
     COALESCE(pr.lapproval, 'Pending') AS approval_status,
     COALESCE(pr.lstatus, 'Pending') AS status_raw,
     CASE
+        WHEN LOWER(COALESCE(pr.lstatus, "")) = "unposted" THEN "Unposted"
         WHEN LOWER(COALESCE(pr.lstatus, "")) = "cancelled" THEN "Cancelled"
-        WHEN LOWER(COALESCE(pr.lstatus, "")) = "submitted" THEN "Submitted"
         WHEN LOWER(COALESCE(pr.lapproval, "")) = "approved" THEN "Approved"
+        WHEN LOWER(COALESCE(pr.lstatus, "")) = "submitted" THEN "Submitted"
         WHEN LOWER(COALESCE(pr.lstatus, "")) = "draft" THEN "Draft"
         ELSE "Pending"
     END AS status,
@@ -220,14 +247,18 @@ SELECT
     COALESCE(itm.lsupp_id, '') AS supplier_id,
     COALESCE(itm.lsupp_name, '') AS supplier_name,
     COALESCE(itm.lsupp_code, '') AS supplier_code,
-    COALESCE(itm.lpo_refno, '') AS po_refno,
-    COALESCE(itm.lpo_no, '') AS po_number,
+    CASE WHEN linked_po.lrefno IS NOT NULL THEN COALESCE(itm.lpo_refno, '') ELSE '' END AS po_refno,
+    CASE WHEN linked_po.lrefno IS NOT NULL THEN COALESCE(itm.lpo_no, '') ELSE '' END AS po_number,
     COALESCE(itm.lremark, '') AS notes,
     CASE
         WHEN itm.lremark REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN itm.lremark
         ELSE NULL
     END AS eta_date
 FROM tblpr_item itm
+LEFT JOIN tblpo_list linked_po
+    ON linked_po.lrefno = itm.lpo_refno
+   AND COALESCE(linked_po.ldeleted, 0) = 0
+   AND LOWER(COALESCE(linked_po.ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted")
 WHERE itm.lrefno = :refno
 ORDER BY itm.lid ASC
 SQL;
@@ -472,7 +503,7 @@ SQL;
         }
 
         $checkStmt = $this->db->pdo()->prepare(
-            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted") LIMIT 1'
+            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted", "unposted") LIMIT 1'
         );
         $checkStmt->execute(['refno' => $prRefno]);
         $poNo = $checkStmt->fetchColumn();
@@ -488,6 +519,9 @@ SQL;
             if ($newStatus !== '') {
                 if (strcasecmp($newStatus, 'Approved') === 0) {
                     $approvalRaw = 'Approved';
+                    if (strcasecmp($statusRaw, 'Unposted') === 0) {
+                        $statusRaw = 'Submitted';
+                    }
                 } else {
                     $statusRaw = $newStatus;
                 }
@@ -558,7 +592,7 @@ SQL;
         }
 
         $checkStmt = $this->db->pdo()->prepare(
-            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted") LIMIT 1'
+            'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted", "unposted") LIMIT 1'
         );
         $checkStmt->execute(['refno' => $prRefno]);
         $poNo = $checkStmt->fetchColumn();
@@ -584,8 +618,8 @@ SELECT
     COALESCE(itm.lsupp_id, '') AS supplier_id,
     COALESCE(itm.lsupp_name, '') AS supplier_name,
     COALESCE(itm.lsupp_code, '') AS supplier_code,
-    COALESCE(itm.lpo_refno, '') AS po_refno,
-    COALESCE(itm.lpo_no, '') AS po_number,
+    CASE WHEN linked_po.lrefno IS NOT NULL THEN COALESCE(itm.lpo_refno, '') ELSE '' END AS po_refno,
+    CASE WHEN linked_po.lrefno IS NOT NULL THEN COALESCE(itm.lpo_no, '') ELSE '' END AS po_number,
     COALESCE(itm.lremark, '') AS notes,
     CASE
         WHEN itm.lremark REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN itm.lremark
@@ -616,7 +650,7 @@ SQL;
         $prRefno = (string) ($item['pr_refno'] ?? '');
         if ($prRefno !== '') {
             $checkStmt = $this->db->pdo()->prepare(
-                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted") LIMIT 1'
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted", "unposted") LIMIT 1'
             );
             $checkStmt->execute(['refno' => $prRefno]);
             $poNo = $checkStmt->fetchColumn();
@@ -674,7 +708,7 @@ SQL;
         $prRefno = (string) ($item['pr_refno'] ?? '');
         if ($prRefno !== '') {
             $checkStmt = $this->db->pdo()->prepare(
-                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted") LIMIT 1'
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted", "unposted") LIMIT 1'
             );
             $checkStmt->execute(['refno' => $prRefno]);
             $poNo = $checkStmt->fetchColumn();
@@ -716,12 +750,16 @@ SQL;
         if (strlen(trim($reason)) > 500) throw new RuntimeException('Reason must be 500 characters or fewer');
     }
 
-    private function assertPrivilegedAction(int $mainId, int $userId): void
+    private function assertPrivilegedAction(
+        int $mainId,
+        int $userId,
+        string $message = 'You do not have permission to recover purchase requests'
+    ): void
     {
         $stmt = $this->db->pdo()->prepare('SELECT COALESCE(acc.ltype, ""), LOWER(COALESCE(role.ltype_name, "")) FROM tblaccount acc LEFT JOIN tblusertype role ON role.lid = acc.ltype WHERE acc.lid = :user_id AND (acc.lid = :main_id1 OR acc.lmother_id = :main_id2) LIMIT 1');
         $stmt->execute(['user_id' => $userId, 'main_id1' => $mainId, 'main_id2' => $mainId]);
         $row = $stmt->fetch(PDO::FETCH_NUM);
-        if ($row === false || ((string) ($row[0] ?? '') !== '1' && !in_array((string) ($row[1] ?? ''), ['owner', 'company owner', 'administrator', 'purchasing manager'], true))) throw new RuntimeException('You do not have permission to recover purchase requests');
+        if ($row === false || ((string) ($row[0] ?? '') !== '1' && !in_array((string) ($row[1] ?? ''), ['owner', 'company owner', 'administrator', 'purchasing manager'], true))) throw new RuntimeException($message);
     }
 
     /**
@@ -736,7 +774,7 @@ SQL;
              WHERE lmain_id = :main_id
                AND lpr_refno = :refno
                AND COALESCE(ldeleted, 0) = 0
-               AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted")
+               AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted", "unposted")
              ORDER BY lid DESC
              LIMIT 5'
         );
@@ -779,7 +817,7 @@ SQL;
 
         if ($normalized === 'cancel' || $normalized === 'submit') {
             $checkStmt = $this->db->pdo()->prepare(
-                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted") LIMIT 1'
+                'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted", "unposted") LIMIT 1'
             );
             $checkStmt->execute(['refno' => $prRefno]);
             $poNo = $checkStmt->fetchColumn();
@@ -790,7 +828,7 @@ SQL;
         }
 
         if ($normalized === 'approve') {
-            $stmt = $this->db->pdo()->prepare('UPDATE tblpr_list SET lapproval = "Approved" WHERE lrefno = :refno');
+            $stmt = $this->db->pdo()->prepare('UPDATE tblpr_list SET lapproval = "Approved", lstatus = CASE WHEN LOWER(COALESCE(lstatus, "")) = "unposted" THEN "Submitted" ELSE lstatus END WHERE lrefno = :refno');
             $stmt->execute(['refno' => $prRefno]);
             $this->clearReorderReportCache();
             $record = $this->getPurchaseRequest($mainId, $prRefno);
@@ -832,7 +870,20 @@ SQL;
             throw new RuntimeException('Purchase request not found');
         }
 
-        if (strcasecmp((string) ($record['request']['status'] ?? ''), 'Approved') !== 0) {
+        $requestStatus = (string) ($record['request']['status'] ?? '');
+        if (strcasecmp($requestStatus, 'Submitted') === 0) {
+            $this->assertPrivilegedAction(
+                $mainId,
+                $userId,
+                'You do not have permission to approve a submitted purchase request while creating a purchase order'
+            );
+            $approve = $this->db->pdo()->prepare('UPDATE tblpr_list SET lapproval = "Approved" WHERE lrefno = :refno');
+            $approve->execute(['refno' => $prRefno]);
+            $record = $this->getPurchaseRequest($mainId, $prRefno) ?? $record;
+            $requestStatus = (string) ($record['request']['status'] ?? '');
+        }
+
+        if (strcasecmp($requestStatus, 'Approved') !== 0) {
             throw new RuntimeException('Only an approved purchase request can generate a purchase order');
         }
 
@@ -851,6 +902,7 @@ SQL;
             }
         }
 
+        $requestedSupplierId = trim((string) ($payload['supplier_id'] ?? ''));
         $convertItems = [];
         foreach ($items as $item) {
             $itemId = (int) ($item['id'] ?? 0);
@@ -863,90 +915,111 @@ SQL;
             if ((string) ($item['po_refno'] ?? '') !== '') {
                 continue;
             }
+            if ($requestedSupplierId !== '' && trim((string) ($item['supplier_id'] ?? '')) !== $requestedSupplierId) {
+                continue;
+            }
             $convertItems[] = $item;
         }
 
         if ($convertItems === []) {
-            throw new RuntimeException('No convertible purchase request items found');
+            throw new RuntimeException('No remaining purchase request items are available for PO creation.');
         }
 
         $pdo = $this->db->pdo();
-        $poRefno = $this->generateRefno();
-        $poSequence = $this->nextSequence('Purchase Order');
-        $poNumber = sprintf('PO-%s%s', date('y'), str_pad((string) $poSequence, 2, '0', STR_PAD_LEFT));
-
         $requestHeader = $record['request'] ?? [];
-        $supplierName = '';
-        $supplierCode = '';
-        $supplierId = '';
+        $groups = [];
         foreach ($convertItems as $item) {
             $supplierId = trim((string) ($item['supplier_id'] ?? ''));
-            if ($supplierId !== '') {
-                $supplierName = (string) ($item['supplier_name'] ?? '');
-                $supplier = $this->getSupplierById($supplierId);
-                $supplierCode = $supplier['code'];
-                $supplierName = $supplier['name'] !== '' ? $supplier['name'] : $supplierName;
-                break;
-            }
+            $supplierName = trim((string) ($item['supplier_name'] ?? ''));
+            $groupKey = $supplierId !== '' ? 'id:' . $supplierId : 'name:' . ($supplierName !== '' ? $supplierName : 'NO_SUPPLIER');
+            $groups[$groupKey][] = $item;
         }
 
-        $insertPo = $pdo->prepare(
-            'INSERT INTO tblpo_list
-            (lpurchaseno, ldate, ltime, lmain_id, luser, lrefno, ltransaction_status, lsupplier, lsupplier_name, lsupplier_code, lpr_no, lpr_refno)
-            VALUES
-            (:po_number, :order_date, CURRENT_TIME(), :main_id, :user_id, :refno, "Pending", :supplier_id, :supplier_name, :supplier_code, :pr_no, :pr_refno)'
-        );
-        $insertPo->execute([
-            'po_number' => $poNumber,
-            'order_date' => date('Y-m-d'),
-            'main_id' => (string) $mainId,
-            'user_id' => (string) $userId,
-            'refno' => $poRefno,
-            'supplier_id' => $supplierId,
-            'supplier_name' => $supplierName,
-            'supplier_code' => $supplierCode,
-            'pr_no' => (string) ($requestHeader['pr_number'] ?? ''),
-            'pr_refno' => $prRefno,
-        ]);
+        $conversions = [];
+        foreach ($groups as $groupItems) {
+            $poRefno = $this->generateRefno();
+            $poSequence = $this->nextSequence('Purchase Order', $pdo);
+            $poNumber = sprintf('PO-%s%s', date('y'), str_pad((string) $poSequence, 2, '0', STR_PAD_LEFT));
 
-        foreach ($convertItems as $item) {
-            $inventory = $this->findInventoryBySession((string) ($item['item_id'] ?? ''));
-            $insertPoItem = $pdo->prepare(
-                'INSERT INTO tblpo_itemlist
-                (lrefno, litemid, ldesc, lqty, luser, lpartno, litem_code, litem_refno, lopn_number, lsup_price, lbrand, lsupp_id, lsupp_code, lsupp_name, leta_date)
+            $supplierName = '';
+            $supplierCode = '';
+            $supplierId = '';
+            foreach ($groupItems as $item) {
+                $supplierId = trim((string) ($item['supplier_id'] ?? ''));
+                $supplierName = (string) ($item['supplier_name'] ?? '');
+                if ($supplierId !== '') {
+                    $supplier = $this->getSupplierById($supplierId);
+                    $supplierCode = $supplier['code'];
+                    $supplierName = $supplier['name'] !== '' ? $supplier['name'] : $supplierName;
+                }
+                break;
+            }
+
+            $insertPo = $pdo->prepare(
+                'INSERT INTO tblpo_list
+                (lpurchaseno, ldate, ltime, lmain_id, luser, lrefno, ltransaction_status, lsupplier, lsupplier_name, lsupplier_code, lpr_no, lpr_refno)
                 VALUES
-                (:refno, :itemid, :description, :qty, :user_id, :part_no, :item_code, :item_refno, :opn_no, :sup_price, :brand, :supp_id, :supp_code, :supp_name, :eta_date)'
+                (:po_number, :order_date, CURRENT_TIME(), :main_id, :user_id, :refno, "Pending", :supplier_id, :supplier_name, :supplier_code, :pr_no, :pr_refno)'
             );
-            $insertPoItem->execute([
-                'refno' => $poRefno,
-                'itemid' => (int) ($inventory['legacy_id'] ?? 0),
-                'description' => (string) ($item['description'] ?? ''),
-                'qty' => (string) ((float) ($item['quantity'] ?? 0)),
+            $insertPo->execute([
+                'po_number' => $poNumber,
+                'order_date' => date('Y-m-d'),
+                'main_id' => (string) $mainId,
                 'user_id' => (string) $userId,
-                'part_no' => (string) ($item['part_number'] ?? ''),
-                'item_code' => (string) ($item['item_code'] ?? ''),
-                'item_refno' => (string) ($item['item_id'] ?? ''),
-                'opn_no' => (string) ($inventory['opn_number'] ?? ''),
-                'sup_price' => (string) ((float) ($item['unit_cost'] ?? 0)),
-                'brand' => (string) ($inventory['brand'] ?? ''),
-                'supp_id' => (string) ($item['supplier_id'] ?? ''),
-                'supp_code' => (string) ($item['supplier_code'] ?? ''),
-                'supp_name' => (string) ($item['supplier_name'] ?? ''),
-                'eta_date' => $this->normalizeNullableDate((string) ($item['eta_date'] ?? '')) ?? date('Y-m-d'),
+                'refno' => $poRefno,
+                'supplier_id' => $supplierId,
+                'supplier_name' => $supplierName,
+                'supplier_code' => $supplierCode,
+                'pr_no' => (string) ($requestHeader['pr_number'] ?? ''),
+                'pr_refno' => $prRefno,
             ]);
 
-            $updatePrItem = $pdo->prepare('UPDATE tblpr_item SET lpo_refno = :po_refno, lpo_no = :po_no WHERE lid = :id');
-            $updatePrItem->execute([
+            foreach ($groupItems as $item) {
+                $inventory = $this->findInventoryBySession((string) ($item['item_id'] ?? ''));
+                $insertPoItem = $pdo->prepare(
+                    'INSERT INTO tblpo_itemlist
+                    (lrefno, litemid, ldesc, lqty, luser, lpartno, litem_code, litem_refno, lopn_number, lsup_price, lbrand, lsupp_id, lsupp_code, lsupp_name, leta_date)
+                    VALUES
+                    (:refno, :itemid, :description, :qty, :user_id, :part_no, :item_code, :item_refno, :opn_no, :sup_price, :brand, :supp_id, :supp_code, :supp_name, :eta_date)'
+                );
+                $insertPoItem->execute([
+                    'refno' => $poRefno,
+                    'itemid' => (int) ($inventory['legacy_id'] ?? 0),
+                    'description' => (string) ($item['description'] ?? ''),
+                    'qty' => (string) ((float) ($item['quantity'] ?? 0)),
+                    'user_id' => (string) $userId,
+                    'part_no' => (string) ($item['part_number'] ?? ''),
+                    'item_code' => (string) ($item['item_code'] ?? ''),
+                    'item_refno' => (string) ($item['item_id'] ?? ''),
+                    'opn_no' => (string) ($inventory['opn_number'] ?? ''),
+                    'sup_price' => (string) ((float) ($item['unit_cost'] ?? 0)),
+                    'brand' => (string) ($inventory['brand'] ?? ''),
+                    'supp_id' => (string) ($item['supplier_id'] ?? ''),
+                    'supp_code' => (string) ($item['supplier_code'] ?? ''),
+                    'supp_name' => (string) ($item['supplier_name'] ?? ''),
+                    'eta_date' => $this->normalizeNullableDate((string) ($item['eta_date'] ?? '')) ?? date('Y-m-d'),
+                ]);
+
+                $updatePrItem = $pdo->prepare('UPDATE tblpr_item SET lpo_refno = :po_refno, lpo_no = :po_no WHERE lid = :id');
+                $updatePrItem->execute([
+                    'po_refno' => $poRefno,
+                    'po_no' => $poNumber,
+                    'id' => (int) ($item['id'] ?? 0),
+                ]);
+            }
+
+            $this->incrementSequence('Purchase Order', $pdo);
+            $conversions[] = [
                 'po_refno' => $poRefno,
-                'po_no' => $poNumber,
-                'id' => (int) ($item['id'] ?? 0),
-            ]);
+                'po_number' => $poNumber,
+                'supplier_id' => $supplierId,
+                'supplier_name' => $supplierName,
+                'converted_count' => count($groupItems),
+            ];
         }
 
         $updatePr = $pdo->prepare('UPDATE tblpr_list SET lstatus = "Submitted" WHERE lrefno = :refno');
         $updatePr->execute(['refno' => $prRefno]);
-
-        $this->incrementSequence('Purchase Order');
 
         $updated = $this->getPurchaseRequest($mainId, $prRefno);
         if ($updated === null) {
@@ -959,9 +1032,11 @@ SQL;
             'items' => $updated['items'],
             'summary' => $updated['summary'],
             'conversion' => [
-                'po_refno' => $poRefno ?? '',
-                'po_number' => $poNumber ?? '',
+                'po_refno' => (string) ($conversions[0]['po_refno'] ?? ''),
+                'po_number' => (string) ($conversions[0]['po_number'] ?? ''),
                 'converted_count' => count($convertItems),
+                'po_count' => count($conversions),
+                'purchase_orders' => $conversions,
             ],
         ];
     }
@@ -984,14 +1059,18 @@ SELECT
     COALESCE(itm.lsupp_id, '') AS supplier_id,
     COALESCE(itm.lsupp_name, '') AS supplier_name,
     COALESCE(itm.lsupp_code, '') AS supplier_code,
-    COALESCE(itm.lpo_refno, '') AS po_refno,
-    COALESCE(itm.lpo_no, '') AS po_number,
+    CASE WHEN linked_po.lrefno IS NOT NULL THEN COALESCE(itm.lpo_refno, '') ELSE '' END AS po_refno,
+    CASE WHEN linked_po.lrefno IS NOT NULL THEN COALESCE(itm.lpo_no, '') ELSE '' END AS po_number,
     COALESCE(itm.lremark, '') AS notes,
     CASE
         WHEN itm.lremark REGEXP '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' THEN itm.lremark
         ELSE NULL
     END AS eta_date
 FROM tblpr_item itm
+LEFT JOIN tblpo_list linked_po
+    ON linked_po.lrefno = itm.lpo_refno
+   AND COALESCE(linked_po.ldeleted, 0) = 0
+   AND LOWER(COALESCE(linked_po.ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted")
 WHERE itm.lid = :item_id
 LIMIT 1
 SQL;

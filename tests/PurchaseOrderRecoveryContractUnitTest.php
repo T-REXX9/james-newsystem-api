@@ -15,16 +15,16 @@ $checks = [
         && str_contains($pr, 'formatPurchaseOrderDependencies')
         && str_contains($pr, 'Purchase request cannot be unposted because'),
     'unpost is permission controlled' => str_contains($po, 'canUnpostPurchaseOrder'),
-    'unpost is blocked by receiving dependency' => str_contains($po, 'activeReceivingDependencies')
-        && str_contains($po, 'formatReceivingDependencies')
-        && str_contains($po, 'already depends on it'),
-    'receiving dependency ignores deleted RR records' => str_contains($po, 'ACTIVE_RECEIVING_DEPENDENCY_SQL')
+    'unpost cascades through receiving dependency' => str_contains($po, 'activeReceivingReportsForCascade')
+        && str_contains($po, 'unpostReceivingReportWithinPurchaseOrder')
+        && str_contains($po, "'Receiving Report',")
+        && str_contains($po, "'Unpost'"),
+    'receiving dependency ignores deleted and unposted RR records' => str_contains($po, 'ACTIVE_RECEIVING_DEPENDENCY_SQL')
         && str_contains($po, 'COALESCE(ldeleted, 0) = 0')
-        && str_contains($po, 'NOT IN ("cancelled", "canceled", "deleted")'),
-    'unpost only blocks received quantities from active RR records' => str_contains($po, 'SUM(poi.lreceiving_qty)')
-        && str_contains($po, 'rr.lrefno = poi.lreceiving_refno')
-        && str_contains($po, 'COALESCE(rr.ldeleted, 0) = 0')
-        && str_contains($po, 'quantities have already been received'),
+        && str_contains($po, 'NOT IN ("cancelled", "canceled", "deleted", "unposted")'),
+    'unpost reverses received quantities and inventory logs' => str_contains($po, 'GREATEST(0, COALESCE(lreceiving_qty, 0) - :qty)')
+        && str_contains($po, 'DELETE FROM tblinventory_logs WHERE lrefno = :refno AND ltransaction_type = "Receiving"')
+        && str_contains($po, 'ldate_recieved = NULL'),
     'PO list allows all months and years' => str_contains($po, '?int $month = null')
         && str_contains($po, '?int $year = null')
         && str_contains($poController, 'strtolower($monthParam) === \'all\'')

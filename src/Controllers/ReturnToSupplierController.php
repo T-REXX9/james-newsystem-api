@@ -27,10 +27,12 @@ final class ReturnToSupplierController
 
         $status = trim((string) ($query['status'] ?? 'all'));
         $search = trim((string) ($query['search'] ?? ''));
+        $itemRefno = trim((string) ($query['item_refno'] ?? ''));
+        $itemCode = trim((string) ($query['item_code'] ?? ''));
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, (int) ($query['per_page'] ?? 100));
 
-        return $this->repo->listReturns($mainId, $month, $year, $status, $search, $page, $perPage);
+        return $this->repo->listReturns($mainId, $month, $year, $status, $search, $page, $perPage, $itemRefno, $itemCode);
     }
 
     public function show(array $params = [], array $query = [], array $body = []): array

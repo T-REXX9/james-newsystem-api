@@ -45,6 +45,8 @@ final class SalesReturnReportController
             'date_to' => trim((string) ($query['date_to'] ?? '')),
             'status' => trim((string) ($query['status'] ?? '')),
             'search' => trim((string) ($query['search'] ?? '')),
+            'item_refno' => trim((string) ($query['item_refno'] ?? '')),
+            'item_code' => trim((string) ($query['item_code'] ?? '')),
         ];
 
         return $this->repo->report($mainId, $filters, $page, $perPage);

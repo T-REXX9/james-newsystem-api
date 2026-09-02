@@ -169,6 +169,50 @@ final class DailyCallMonitoringController
         }
     }
 
+    public function reviewIncidentReport(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $authenticatedUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($authenticatedUserId <= 0 || $mainId <= 0) {
+            throw new HttpException(422, 'main_id and an authenticated reviewer are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        if ((string) ($claims['user_type'] ?? '') !== '1') {
+            throw new HttpException(403, 'Only the Master User can approve or reject incident returns');
+        }
+
+        $reportId = trim((string) ($params['reportId'] ?? ''));
+        $decision = strtolower(trim((string) ($body['decision'] ?? '')));
+        $disposition = isset($body['disposition']) ? strtolower(trim((string) $body['disposition'])) : null;
+        $reviewerName = trim((string) ($body['reviewer_name'] ?? 'Master User')) ?: 'Master User';
+        $note = trim((string) ($body['note'] ?? ''));
+        if ($reportId === '') {
+            throw new HttpException(422, 'reportId is required');
+        }
+        if (strlen($note) > 2000) {
+            throw new HttpException(422, 'Decision note cannot exceed 2000 characters');
+        }
+
+        try {
+            return $this->repo->reviewIncidentReport(
+                $mainId,
+                $authenticatedUserId,
+                $reviewerName,
+                $reportId,
+                $decision,
+                $disposition,
+                $note
+            );
+        } catch (InvalidArgumentException $error) {
+            throw new HttpException(422, $error->getMessage());
+        } catch (\RuntimeException $error) {
+            throw new HttpException(409, $error->getMessage());
+        }
+    }
+
     /**
      * Get call logs for a contact
      * Replaces Supabase call_logs queries

@@ -34,6 +34,8 @@ final class PurchaseRequestController
 
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, (int) ($query['per_page'] ?? 100));
+        $availableForPo = filter_var($query['available_for_po'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $includeSubmitted = filter_var($query['include_submitted'] ?? false, FILTER_VALIDATE_BOOLEAN);
 
         return $this->repo->listPurchaseRequests(
             $mainId,
@@ -42,7 +44,9 @@ final class PurchaseRequestController
             $page,
             $perPage,
             $month,
-            $year
+            $year,
+            $availableForPo,
+            $includeSubmitted
         );
     }
 
@@ -241,4 +245,3 @@ final class PurchaseRequestController
         }
     }
 }
-

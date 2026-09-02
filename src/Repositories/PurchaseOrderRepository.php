@@ -17,7 +17,7 @@ final class PurchaseOrderRepository
 
     private const ACTIVE_RECEIVING_DEPENDENCY_SQL = 'lmain_id = :main_id AND lpo_refno = :po_refno
                AND COALESCE(ldeleted, 0) = 0
-               AND LOWER(COALESCE(ltransaction_status, "pending")) NOT IN ("cancelled", "canceled", "deleted")';
+               AND LOWER(COALESCE(ltransaction_status, "pending")) NOT IN ("cancelled", "canceled", "deleted", "unposted")';
 
     /**
      * @return array{
@@ -442,36 +442,22 @@ SQL;
         if ($existing === null) return null;
 
         $status = strtolower(trim((string) ($existing['order']['status'] ?? '')));
-        if ($status !== 'posted') {
-            throw new RuntimeException('Only a posted purchase order can be unposted');
+        if (!in_array($status, ['posted', 'completed'], true)) {
+            throw new RuntimeException('Only a posted or completed purchase order can be unposted');
         }
         $this->assertReason($reason);
         if (!$this->canUnpostPurchaseOrder($mainId, $userId)) {
             throw new RuntimeException('You do not have permission to unpost purchase orders');
         }
 
-        $receivingDependencies = $this->activeReceivingDependencies($mainId, $purchaseRefno);
-        if ($receivingDependencies !== []) {
-            throw new RuntimeException('Purchase order cannot be unposted because ' . $this->formatReceivingDependencies($receivingDependencies) . ' already depends on it');
-        }
-
-        $receivedStmt = $this->db->pdo()->prepare(
-            'SELECT COALESCE(SUM(poi.lreceiving_qty), 0)
-             FROM tblpo_itemlist poi
-             INNER JOIN tblpurchase_order rr
-               ON rr.lrefno = poi.lreceiving_refno
-             WHERE poi.lrefno = :refno
-               AND COALESCE(rr.ldeleted, 0) = 0
-               AND LOWER(COALESCE(rr.ltransaction_status, "pending")) NOT IN ("cancelled", "canceled", "deleted")'
-        );
-        $receivedStmt->execute(['refno' => $purchaseRefno]);
-        if ((float) $receivedStmt->fetchColumn() > 0) {
-            throw new RuntimeException('Purchase order cannot be unposted because quantities have already been received');
-        }
-
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
+            $receivingReports = $this->activeReceivingReportsForCascade($pdo, $mainId, $purchaseRefno);
+            foreach ($receivingReports as $receivingReport) {
+                $this->unpostReceivingReportWithinPurchaseOrder($pdo, $mainId, $userId, $receivingReport, trim($reason));
+            }
+
             $update = $pdo->prepare(
                 'UPDATE tblpo_list
                  SET ltransaction_status = "Unposted", lunposted_at = NOW(),
@@ -488,6 +474,121 @@ SQL;
         }
 
         return $this->getPurchaseOrder($mainId, $purchaseRefno);
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function activeReceivingReportsForCascade(PDO $pdo, int $mainId, string $purchaseRefno): array
+    {
+        $stmt = $pdo->prepare(
+            'SELECT lrefno AS refno,
+                    COALESCE(lpurchaseno, lrefno, "") AS number,
+                    COALESCE(ltransaction_status, "Pending") AS status
+             FROM tblpurchase_order
+             WHERE ' . self::ACTIVE_RECEIVING_DEPENDENCY_SQL . '
+             ORDER BY lid ASC'
+        );
+        $stmt->execute(['main_id' => $mainId, 'po_refno' => $purchaseRefno]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * @param array<string, mixed> $receivingReport
+     */
+    private function unpostReceivingReportWithinPurchaseOrder(PDO $pdo, int $mainId, int $userId, array $receivingReport, string $reason): void
+    {
+        $receivingRefno = trim((string) ($receivingReport['refno'] ?? ''));
+        if ($receivingRefno === '') {
+            return;
+        }
+
+        $returnDependencies = $this->activeReturnToSupplierDependencies($pdo, $mainId, $receivingRefno);
+        if ($returnDependencies !== []) {
+            $number = trim((string) ($receivingReport['number'] ?? $receivingRefno));
+            throw new RuntimeException('Purchase order cannot be unposted because receiving report ' . $number . ' has ' . $this->formatReturnToSupplierDependencies($returnDependencies) . ' depending on it');
+        }
+
+        $items = $pdo->prepare('SELECT lpo_itemid, lqty FROM tblpurchase_item WHERE lrefno = :refno AND COALESCE(lpo_itemid, "") <> ""');
+        $items->execute(['refno' => $receivingRefno]);
+        $restore = $pdo->prepare('UPDATE tblpo_itemlist SET lreceiving_qty = GREATEST(0, COALESCE(lreceiving_qty, 0) - :qty), lreceiving_refno = "", lreceiving_no = "" WHERE lid = :po_item_id');
+        while ($item = $items->fetch(PDO::FETCH_ASSOC)) {
+            $restore->execute([
+                'qty' => (int) ($item['lqty'] ?? 0),
+                'po_item_id' => (int) ($item['lpo_itemid'] ?? 0),
+            ]);
+        }
+
+        $pdo->prepare('DELETE FROM tblinventory_logs WHERE lrefno = :refno AND ltransaction_type = "Receiving"')->execute(['refno' => $receivingRefno]);
+
+        $update = $pdo->prepare(
+            'UPDATE tblpurchase_order
+             SET ltransaction_status = "Unposted", lunposted_at = NOW(),
+                 lunposted_by = :user_id, lunpost_reason = :reason, ldate_recieved = NULL
+             WHERE lmain_id = :main_id AND lrefno = :refno'
+        );
+        $update->execute([
+            'user_id' => $userId,
+            'reason' => $reason,
+            'main_id' => (string) $mainId,
+            'refno' => $receivingRefno,
+        ]);
+
+        (new AuditTrailWriter($pdo))->write(
+            $mainId,
+            $userId,
+            'Receiving Report',
+            'Unpost',
+            $receivingRefno,
+            $reason,
+            (string) ($receivingReport['status'] ?? ''),
+            'Unposted'
+        );
+    }
+
+    /**
+     * @return array<int, array<string, string>>
+     */
+    private function activeReturnToSupplierDependencies(PDO $pdo, int $mainId, string $receivingRefno): array
+    {
+        $stmt = $pdo->prepare(
+            'SELECT COALESCE(rs.lcredit_no, rs.lrefno, "") AS number,
+                    COALESCE(rs.lstatus, "Pending") AS status
+             FROM tblreturn_supplier rs
+             WHERE rs.lmainid = :main_id
+               AND rs.ltransaction_refno = :refno
+               AND LOWER(COALESCE(rs.lstatus, "pending")) NOT IN ("cancelled", "canceled", "deleted")
+             ORDER BY rs.lid DESC
+             LIMIT 5'
+        );
+        $stmt->execute(['main_id' => $mainId, 'refno' => $receivingRefno]);
+        return array_map(
+            static fn (array $row): array => [
+                'number' => (string) ($row['number'] ?? ''),
+                'status' => (string) ($row['status'] ?? ''),
+            ],
+            $stmt->fetchAll(PDO::FETCH_ASSOC)
+        );
+    }
+
+    /**
+     * @param array<int, array<string, string>> $dependencies
+     */
+    private function formatReturnToSupplierDependencies(array $dependencies): string
+    {
+        $labels = array_values(array_filter(array_map(
+            static function (array $row): string {
+                $number = trim((string) ($row['number'] ?? ''));
+                $status = trim((string) ($row['status'] ?? ''));
+                if ($number === '') return '';
+                return $status !== '' ? $number . ' (' . $status . ')' : $number;
+            },
+            $dependencies
+        )));
+
+        if ($labels === []) return 'an active return-to-supplier transaction';
+        if (count($labels) === 1) return 'return-to-supplier ' . $labels[0];
+        return 'return-to-supplier transactions ' . implode(', ', $labels);
     }
 
     private function canUnpostPurchaseOrder(int $mainId, int $userId): bool
@@ -530,6 +631,8 @@ SQL;
                  WHERE lmain_id = :main_id AND lrefno = :refno'
             );
             $update->execute(['user_id' => $userId, 'reason' => trim($reason), 'main_id' => $mainId, 'refno' => $purchaseRefno]);
+            $clearPrLinks = $pdo->prepare('UPDATE tblpr_item SET lpo_refno = "", lpo_no = "" WHERE lpo_refno = :po_refno');
+            $clearPrLinks->execute(['po_refno' => $purchaseRefno]);
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Order', 'Delete', $purchaseRefno, $reason, (string) ($exists['order']['status'] ?? ''), 'Deleted');
             $pdo->commit();
         } catch (\Throwable $e) {
@@ -668,6 +771,25 @@ SQL;
 
         $stmt = $this->db->pdo()->prepare('DELETE FROM tblpo_itemlist WHERE lid = :item_id');
         $stmt->execute(['item_id' => $itemId]);
+
+        $poRefno = trim((string) ($existing['po_refno'] ?? ''));
+        $itemSession = trim((string) ($existing['product_session'] ?? ''));
+        $itemCode = trim((string) ($existing['item_code'] ?? ''));
+        if ($poRefno !== '' && ($itemSession !== '' || $itemCode !== '')) {
+            $clearSql = 'UPDATE tblpr_item SET lpo_refno = "", lpo_no = "" WHERE lpo_refno = :po_refno AND (';
+            $params = ['po_refno' => $poRefno];
+            $conditions = [];
+            if ($itemSession !== '') {
+                $conditions[] = 'litem_refno = :item_session';
+                $params['item_session'] = $itemSession;
+            }
+            if ($itemCode !== '') {
+                $conditions[] = 'litem_code = :item_code';
+                $params['item_code'] = $itemCode;
+            }
+            $clear = $this->db->pdo()->prepare($clearSql . implode(' OR ', $conditions) . ')');
+            $clear->execute($params);
+        }
 
         $this->clearReorderReportCache();
 

@@ -317,6 +317,7 @@ SQL);
         $where = [
             'p.lmain_id = :main_id',
         ];
+        $mainIdStr = (string) $mainId;
         $params = [
             'main_id' => $mainId,
             'priority_from_date' => $normalizedFromDate,
@@ -325,8 +326,8 @@ SQL);
             'current_year' => (int) date('Y'),
             'current_year_month' => (int) date('Y'),
             'current_month' => date('Y-m'),
-            'ledger_main_id' => $mainId,
-            'historical_ledger_main_id' => $mainId,
+            'ledger_main_id' => $mainIdStr,
+            'historical_ledger_main_id' => $mainIdStr,
             'verification_main_id' => $mainId,
         ];
 
@@ -429,14 +430,14 @@ LEFT JOIN (
             historical.lmainid,
             MAX(YEAR(historical.ldatetime)) AS last_active_year
         FROM tblledger historical
-        WHERE historical.lmainid = CAST(:historical_ledger_main_id AS CHAR)
+        WHERE historical.lmainid = :historical_ledger_main_id
           AND historical.ldatetime < :historical_before_date
           AND COALESCE(historical.ldebit, 0) > 0
           AND COALESCE(historical.lcustomerid, '') <> ''
         GROUP BY historical.lcustomerid, historical.lmainid
     ) ly ON ly.lcustomerid = lg.lcustomerid
         AND ly.lmainid = lg.lmainid
-    WHERE lg.lmainid = CAST(:ledger_main_id AS CHAR)
+    WHERE lg.lmainid = :ledger_main_id
       AND lg.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
       AND COALESCE(lg.lcustomerid, '') <> ''
     GROUP BY lg.lcustomerid, lg.lmainid, ly.last_active_year
@@ -995,23 +996,56 @@ SQL;
     {
         $incidentStmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT
-    id,
-    contact_id,
-    report_date,
-    incident_date,
-    issue_type,
-    description,
-    reported_by,
-    attachments,
-    related_transactions,
-    approval_status,
-    approved_by,
-    approval_date,
-    notes
-FROM incident_reports
-WHERE main_id = :main_id
-  AND contact_id = :contact_id
-ORDER BY report_date DESC, created_at DESC
+    ir.id,
+    'incident_report' AS record_source,
+    ir.contact_id,
+    ir.report_date,
+    ir.incident_date,
+    ir.issue_type,
+    ir.description,
+    ir.reported_by,
+    ir.attachments,
+    ir.related_transactions,
+    ir.approval_status,
+    ir.approved_by,
+    ir.approval_date,
+    ir.decision_note,
+    ir.notes,
+    iri.product_id,
+    iri.item_code,
+    iri.part_no,
+    iri.description AS item_description,
+    iri.quantity AS affected_quantity,
+    iri.supplier_id,
+    iri.supplier_name,
+    ira.id AS return_action_id,
+    ira.disposition AS return_disposition,
+    ira.status AS return_action_status,
+    ira.authorized_by_name,
+    ira.authorized_at,
+    (
+      SELECT COUNT(*) FROM incident_reports customer_incidents
+      WHERE customer_incidents.main_id = ir.main_id
+        AND customer_incidents.contact_id = ir.contact_id
+    ) AS customer_incident_count,
+    (
+      SELECT COUNT(DISTINCT matching_items.incident_report_id)
+      FROM incident_report_items matching_items
+      WHERE matching_items.main_id = ir.main_id
+        AND (
+          (NULLIF(iri.product_id, '') IS NOT NULL AND matching_items.product_id = iri.product_id)
+          OR (NULLIF(iri.part_no, '') IS NOT NULL AND matching_items.part_no = iri.part_no)
+          OR (NULLIF(iri.item_code, '') IS NOT NULL AND matching_items.item_code = iri.item_code)
+        )
+    ) AS item_incident_count
+FROM incident_reports ir
+LEFT JOIN incident_report_items iri
+  ON iri.main_id = ir.main_id AND iri.incident_report_id = ir.id
+LEFT JOIN incident_return_actions ira
+  ON ira.main_id = ir.main_id AND ira.incident_report_id = ir.id
+WHERE ir.main_id = :main_id
+  AND ir.contact_id = :contact_id
+ORDER BY ir.report_date DESC, ir.created_at DESC
 LIMIT 150
 SQL);
         $incidentStmt->execute([
@@ -1022,6 +1056,22 @@ SQL);
         foreach ($incidentRows as &$incidentRow) {
             $incidentRow['attachments'] = $this->decodeJsonArray($incidentRow['attachments'] ?? null);
             $incidentRow['related_transactions'] = $this->decodeJsonArray($incidentRow['related_transactions'] ?? null);
+            $incidentRow['customer_incident_count'] = (int) ($incidentRow['customer_incident_count'] ?? 0);
+            $incidentRow['item_incident_count'] = (int) ($incidentRow['item_incident_count'] ?? 0);
+            $incidentRow['return_action'] = !empty($incidentRow['return_action_id']) ? [
+                'id' => (string) $incidentRow['return_action_id'],
+                'disposition' => (string) ($incidentRow['return_disposition'] ?? ''),
+                'status' => (string) ($incidentRow['return_action_status'] ?? ''),
+                'authorized_by_name' => (string) ($incidentRow['authorized_by_name'] ?? ''),
+                'authorized_at' => (string) ($incidentRow['authorized_at'] ?? ''),
+            ] : null;
+            unset(
+                $incidentRow['return_action_id'],
+                $incidentRow['return_disposition'],
+                $incidentRow['return_action_status'],
+                $incidentRow['authorized_by_name'],
+                $incidentRow['authorized_at']
+            );
         }
         unset($incidentRow);
 
@@ -1030,6 +1080,7 @@ SQL);
         $sql = <<<SQL
 SELECT
     CAST(cl.lid AS CHAR) AS id,
+    'customer_log' AS record_source,
     cl.lcustomer_id AS contact_id,
     cl.ldatetime AS report_date,
     cl.ldatetime AS incident_date,
@@ -1064,7 +1115,19 @@ SQL;
         }
         unset($row);
 
-        return array_merge($incidentRows, $rows);
+        $combined = array_merge($incidentRows, $rows);
+        $customerIncidentCount = count($combined);
+        foreach ($combined as &$combinedRow) {
+            $combinedRow['customer_incident_count'] = max(
+                $customerIncidentCount,
+                (int) ($combinedRow['customer_incident_count'] ?? 0)
+            );
+            $combinedRow['item_incident_count'] = (int) ($combinedRow['item_incident_count'] ?? 0);
+            $combinedRow['return_action'] = $combinedRow['return_action'] ?? null;
+        }
+        unset($combinedRow);
+
+        return $combined;
     }
 
     public function createIncidentReport(int $mainId, int $createdByUserId, array $data): array
@@ -1120,6 +1183,117 @@ SQL;
             throw new \RuntimeException('Failed to load created incident report');
         }
         return $created;
+    }
+
+    public function reviewIncidentReport(
+        int $mainId,
+        int $reviewerUserId,
+        string $reviewerName,
+        string $reportId,
+        string $decision,
+        ?string $disposition,
+        string $note
+    ): array {
+        $decision = strtolower(trim($decision));
+        if (!in_array($decision, ['approved', 'rejected'], true)) {
+            throw new InvalidArgumentException('decision must be approved or rejected');
+        }
+        if ($decision === 'approved' && !in_array($disposition, ['return_to_stock', 'return_to_factory'], true)) {
+            throw new InvalidArgumentException('Approved incidents require return_to_stock or return_to_factory');
+        }
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $reportStmt = $pdo->prepare(
+                'SELECT * FROM incident_reports WHERE main_id = :main_id AND id = :id LIMIT 1 FOR UPDATE'
+            );
+            $reportStmt->execute(['main_id' => $mainId, 'id' => $reportId]);
+            $report = $reportStmt->fetch(PDO::FETCH_ASSOC);
+            if ($report === false) {
+                throw new \RuntimeException('Incident report not found');
+            }
+            if (strtolower((string) ($report['approval_status'] ?? 'pending')) !== 'pending') {
+                throw new \RuntimeException('This incident has already been reviewed');
+            }
+
+            if ($decision === 'approved') {
+                $itemStmt = $pdo->prepare(
+                    'SELECT * FROM incident_report_items
+                     WHERE main_id = :main_id AND incident_report_id = :incident_report_id
+                     ORDER BY id ASC LIMIT 1'
+                );
+                $itemStmt->execute(['main_id' => $mainId, 'incident_report_id' => $reportId]);
+                $item = $itemStmt->fetch(PDO::FETCH_ASSOC);
+                if ($item === false) {
+                    throw new \RuntimeException('Add an affected item before approving a sales return');
+                }
+                if (
+                    $disposition === 'return_to_factory'
+                    && trim((string) ($item['supplier_id'] ?? '')) === ''
+                    && trim((string) ($item['supplier_name'] ?? '')) === ''
+                ) {
+                    throw new \RuntimeException('A supplier must be linked before approving a return to factory');
+                }
+
+                $returnActionId = 'IRA-' . bin2hex(random_bytes(12));
+                $actionStmt = $pdo->prepare(<<<'SQL'
+INSERT INTO incident_return_actions (
+    id, main_id, incident_report_id, contact_id, disposition, status,
+    product_id, item_code, part_no, description, quantity,
+    supplier_id, supplier_name, authorized_by_user_id,
+    authorized_by_name, notes
+) VALUES (
+    :id, :main_id, :incident_report_id, :contact_id, :disposition, 'authorized',
+    :product_id, :item_code, :part_no, :description, :quantity,
+    :supplier_id, :supplier_name, :authorized_by_user_id,
+    :authorized_by_name, :notes
+)
+SQL);
+                $actionStmt->execute([
+                    'id' => $returnActionId,
+                    'main_id' => $mainId,
+                    'incident_report_id' => $reportId,
+                    'contact_id' => (string) $report['contact_id'],
+                    'disposition' => $disposition,
+                    'product_id' => $item['product_id'] ?? null,
+                    'item_code' => $item['item_code'] ?? null,
+                    'part_no' => $item['part_no'] ?? null,
+                    'description' => (string) ($item['description'] ?? $report['description']),
+                    'quantity' => $item['quantity'] ?? null,
+                    'supplier_id' => $item['supplier_id'] ?? null,
+                    'supplier_name' => $item['supplier_name'] ?? null,
+                    'authorized_by_user_id' => $reviewerUserId,
+                    'authorized_by_name' => $reviewerName,
+                    'notes' => $note !== '' ? $note : null,
+                ]);
+            }
+
+            $updateStmt = $pdo->prepare(<<<'SQL'
+UPDATE incident_reports
+SET approval_status = :decision,
+    approved_by = :approved_by,
+    approval_date = CURRENT_TIMESTAMP(3),
+    decision_note = :decision_note,
+    updated_at = CURRENT_TIMESTAMP(3)
+WHERE main_id = :main_id AND id = :id
+SQL);
+            $updateStmt->execute([
+                'decision' => $decision,
+                'approved_by' => $reviewerName,
+                'decision_note' => $note !== '' ? $note : null,
+                'main_id' => $mainId,
+                'id' => $reportId,
+            ]);
+
+            $pdo->commit();
+            return $this->getIncidentReportById($mainId, $reportId) ?? [];
+        } catch (\Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
     }
 
     private function getOwnerContacts(int $mainId): array
@@ -2116,11 +2290,55 @@ SQL;
     {
         $stmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT
-    id, contact_id, report_date, incident_date, issue_type, description,
-    reported_by, attachments, related_transactions, approval_status,
-    approved_by, approval_date, notes
-FROM incident_reports
-WHERE main_id = :main_id AND id = :id
+    ir.id,
+    'incident_report' AS record_source,
+    ir.contact_id,
+    ir.report_date,
+    ir.incident_date,
+    ir.issue_type,
+    ir.description,
+    ir.reported_by,
+    ir.attachments,
+    ir.related_transactions,
+    ir.approval_status,
+    ir.approved_by,
+    ir.approval_date,
+    ir.decision_note,
+    ir.notes,
+    iri.product_id,
+    iri.item_code,
+    iri.part_no,
+    iri.description AS item_description,
+    iri.quantity AS affected_quantity,
+    iri.supplier_id,
+    iri.supplier_name,
+    ira.id AS return_action_id,
+    ira.disposition AS return_disposition,
+    ira.status AS return_action_status,
+    ira.authorized_by_name,
+    ira.authorized_at,
+    (
+      SELECT COUNT(*) FROM incident_reports customer_incidents
+      WHERE customer_incidents.main_id = ir.main_id
+        AND customer_incidents.contact_id = ir.contact_id
+    ) AS customer_incident_count,
+    (
+      SELECT COUNT(DISTINCT matching_items.incident_report_id)
+      FROM incident_report_items matching_items
+      WHERE matching_items.main_id = ir.main_id
+        AND (
+          (NULLIF(iri.product_id, '') IS NOT NULL AND matching_items.product_id = iri.product_id)
+          OR (NULLIF(iri.part_no, '') IS NOT NULL AND matching_items.part_no = iri.part_no)
+          OR (NULLIF(iri.item_code, '') IS NOT NULL AND matching_items.item_code = iri.item_code)
+        )
+    ) AS item_incident_count
+FROM incident_reports ir
+LEFT JOIN incident_report_items iri
+  ON iri.main_id = ir.main_id AND iri.incident_report_id = ir.id
+LEFT JOIN incident_return_actions ira
+  ON ira.main_id = ir.main_id AND ira.incident_report_id = ir.id
+WHERE ir.main_id = :main_id AND ir.id = :id
+ORDER BY iri.id ASC
 LIMIT 1
 SQL);
         $stmt->execute(['main_id' => $mainId, 'id' => $reportId]);
@@ -2131,6 +2349,22 @@ SQL);
 
         $row['attachments'] = $this->decodeJsonArray($row['attachments'] ?? null);
         $row['related_transactions'] = $this->decodeJsonArray($row['related_transactions'] ?? null);
+        $row['customer_incident_count'] = (int) ($row['customer_incident_count'] ?? 0);
+        $row['item_incident_count'] = (int) ($row['item_incident_count'] ?? 0);
+        $row['return_action'] = !empty($row['return_action_id']) ? [
+            'id' => (string) $row['return_action_id'],
+            'disposition' => (string) ($row['return_disposition'] ?? ''),
+            'status' => (string) ($row['return_action_status'] ?? ''),
+            'authorized_by_name' => (string) ($row['authorized_by_name'] ?? ''),
+            'authorized_at' => (string) ($row['authorized_at'] ?? ''),
+        ] : null;
+        unset(
+            $row['return_action_id'],
+            $row['return_disposition'],
+            $row['return_action_status'],
+            $row['authorized_by_name'],
+            $row['authorized_at']
+        );
         return $row;
     }
 

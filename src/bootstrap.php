@@ -499,6 +499,7 @@ function app_router(): Router
     $router->post('/api/v1/daily-call-monitoring/call-claims/{contactId}/release', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'releaseCallClaim']));
     $router->post('/api/v1/daily-call-monitoring/call-logs', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createCallLog']));
     $router->post('/api/v1/daily-call-monitoring/incident-reports', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createIncidentReport']));
+    $router->patch('/api/v1/daily-call-monitoring/incident-reports/{reportId}/decision', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'reviewIncidentReport']));
     $router->post('/api/v1/call-system/devices/register', $requireBearerAuthWithClaims([$callSystemController, 'registerDevice']));
     $router->post('/api/v1/call-system/devices/heartbeat', $requireBearerAuthWithClaims([$callSystemController, 'heartbeat']));
     $router->post('/api/v1/call-system/call-logs', $requireBearerAuthWithClaims([$callSystemController, 'createCallLog']));

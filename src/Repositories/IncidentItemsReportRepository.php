@@ -236,6 +236,7 @@ SELECT
     COALESCE(part_no, '') AS part_no,
     COALESCE(description, '') AS description,
     COUNT(*) AS incident_count,
+    COUNT(DISTINCT NULLIF(contact_id, '')) AS affected_customer_count,
     MAX(created_at) AS latest_incident_date,
     ROUND(AVG(COALESCE(confidence_score, 0)), 4) AS average_confidence,
     GROUP_CONCAT(DISTINCT match_source ORDER BY match_source SEPARATOR ', ') AS match_sources,
@@ -245,12 +246,20 @@ SELECT
             '|',
             DATE_FORMAT(created_at, '%Y-%m-%d'),
             '|',
+            COALESCE(NULLIF(contact_id, ''), 'Unknown customer'),
+            '|',
+            REPLACE(REPLACE(COALESCE(customer_name, contact_id, 'Unknown customer'), '|', '/'), '\n', ' '),
+            '|',
             REPLACE(REPLACE(LEFT(COALESCE(issue_summary, ''), 160), '\n', ' '), '|', '/')
         )
         ORDER BY created_at DESC
         SEPARATOR ';;'
     ) AS recent_incidents
-FROM incident_report_items
+FROM (
+    SELECT iri.*, COALESCE(NULLIF(customer.lcompany, ''), iri.contact_id, 'Unknown customer') AS customer_name
+    FROM incident_report_items iri
+    LEFT JOIN tblpatient customer ON customer.lsessionid = iri.contact_id
+) incident_report_items
 WHERE {$whereSql}
 GROUP BY
     COALESCE(NULLIF(supplier_id, ''), 'unassigned'),
@@ -302,10 +311,12 @@ SQL;
             if ($entry === '') {
                 continue;
             }
-            [$id, $date, $summary] = array_pad(explode('|', $entry, 3), 3, '');
+            [$id, $date, $contactId, $customerName, $summary] = array_pad(explode('|', $entry, 5), 5, '');
             $recent[] = [
                 'incident_report_id' => $id,
                 'date' => $date,
+                'contact_id' => $contactId,
+                'customer_name' => $customerName,
                 'summary' => $summary,
             ];
         }
@@ -318,6 +329,7 @@ SQL;
             'part_no' => (string) ($row['part_no'] ?? ''),
             'description' => (string) ($row['description'] ?? ''),
             'incident_count' => (int) ($row['incident_count'] ?? 0),
+            'affected_customer_count' => (int) ($row['affected_customer_count'] ?? 0),
             'latest_incident_date' => (string) ($row['latest_incident_date'] ?? ''),
             'average_confidence' => (float) ($row['average_confidence'] ?? 0),
             'match_sources' => (string) ($row['match_sources'] ?? ''),

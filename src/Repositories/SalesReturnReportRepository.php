@@ -150,16 +150,35 @@ SQL;
         }
 
         $search = trim((string) ($filters['search'] ?? ''));
-        if ($search !== '') {
+        $itemRefno = trim((string) ($filters['item_refno'] ?? ''));
+        $itemCode = trim((string) ($filters['item_code'] ?? ''));
+        if ($itemRefno !== '' || $itemCode !== '') {
+            $identity = [];
+            if ($itemRefno !== '') {
+                $identity[] = 'i.linv_refno = :item_refno';
+                $params['item_refno'] = $itemRefno;
+            }
+            if ($itemCode !== '') {
+                $identity[] = 'i.litemcode = :item_code';
+                $params['item_code'] = $itemCode;
+            }
+            $where[] = '(' . implode(' OR ', $identity) . ')';
+        } elseif ($search !== '') {
             $where[] = '('
-                . 'tr.lcredit_no LIKE :search '
-                . 'OR tr.linvoice_no LIKE :search '
-                . 'OR tr.clname LIKE :search '
-                . 'OR i.litemcode LIKE :search '
-                . 'OR i.lpartno LIKE :search '
-                . 'OR i.lbrand LIKE :search'
+                . 'tr.lcredit_no LIKE :search_return_no '
+                . 'OR tr.linvoice_no LIKE :search_transaction_no '
+                . 'OR tr.clname LIKE :search_customer '
+                . 'OR i.litemcode LIKE :search_item_code '
+                . 'OR i.lpartno LIKE :search_part_no '
+                . 'OR i.lbrand LIKE :search_brand'
                 . ')';
-            $params['search'] = '%' . $search . '%';
+            $like = '%' . $search . '%';
+            $params['search_return_no'] = $like;
+            $params['search_transaction_no'] = $like;
+            $params['search_customer'] = $like;
+            $params['search_item_code'] = $like;
+            $params['search_part_no'] = $like;
+            $params['search_brand'] = $like;
         }
 
         return [implode(' AND ', $where), $params];
