@@ -83,7 +83,11 @@ final class ProductController
         }
         $userId = (int) ($body['user_id'] ?? 0);
 
-        return $this->repo->createProduct($mainId, $userId, $body);
+        try {
+            return $this->repo->createProduct($mainId, $userId, $body);
+        } catch (\InvalidArgumentException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
     }
 
     public function update(array $params = [], array $query = [], array $body = []): array

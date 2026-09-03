@@ -326,6 +326,7 @@ SQL);
             'current_year' => (int) date('Y'),
             'current_year_month' => (int) date('Y'),
             'current_month' => date('Y-m'),
+            'last_month' => date('Y-m', strtotime('-1 month')),
             'ledger_main_id' => $mainIdStr,
             'historical_ledger_main_id' => $mainIdStr,
             'verification_main_id' => $mainId,
@@ -368,6 +369,8 @@ SELECT
         ''
     ) AS contact_number,
     TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))) AS assigned_to,
+    p.ldate_assigned AS assigned_date_raw,
+    CAST(COALESCE(p.lsales_person, '') AS CHAR) AS assigned_agent_id,
     COALESCE(p.lprofile_type, '') AS profile_type,
     COALESCE(p.lverification, '') AS verification,
     COALESCE(p.lstatus, 1) AS customer_status,
@@ -388,6 +391,7 @@ SELECT
     COALESCE(ledger_summary.last_active_year_purchase_month_count, 0) AS last_active_year_purchase_month_count,
     ledger_summary.last_active_year,
     COALESCE(ledger_summary.current_month_sales, 0) AS current_month_sales,
+    COALESCE(ledger_summary.last_month_sales, 0) AS last_month_sales,
     COALESCE(ledger_summary.recent_three_month_sales, 0) AS recent_three_month_sales,
     COALESCE(ledger_summary.previous_three_month_sales, 0) AS previous_three_month_sales,
     ledger_summary.days_since_last_purchase,
@@ -419,6 +423,7 @@ LEFT JOIN (
         COUNT(DISTINCT CASE WHEN ly.last_active_year IS NOT NULL AND YEAR(lg.ldatetime) = ly.last_active_year AND COALESCE(lg.ldebit, 0) > 0 THEN DATE_FORMAT(lg.ldatetime, '%Y-%m') END) AS last_active_year_purchase_month_count,
         ly.last_active_year,
         SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :current_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS current_month_sales,
+        SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :last_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS last_month_sales,
         SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS recent_three_month_sales,
         SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) AND lg.ldatetime < DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS previous_three_month_sales,
         DATEDIFF(CURDATE(), DATE(MAX(lg.ldatetime))) AS days_since_last_purchase,
@@ -505,6 +510,11 @@ SQL;
                 'city' => $this->cleanDisplayText($row['city'] ?? '', '—'),
                 'contactNumber' => $this->cleanDisplayText($row['contact_number'] ?? '', '—'),
                 'assignedTo' => $this->cleanDisplayText($row['assigned_to'] ?? '', 'Unassigned'),
+                'assigned_to' => $this->cleanDisplayText($row['assigned_to'] ?? '', 'Unassigned'),
+                'assignedDate' => $this->formatDateText($row['assigned_date_raw'] ?? null),
+                'assigned_date' => $this->formatDateText($row['assigned_date_raw'] ?? null),
+                'assignedAgentId' => trim((string) ($row['assigned_agent_id'] ?? '')),
+                'assigned_agent_id' => trim((string) ($row['assigned_agent_id'] ?? '')),
                 'profileType' => (string) ($row['profile_type'] ?? ''),
                 'profile_type' => (string) ($row['profile_type'] ?? ''),
                 'verification' => (string) ($row['verification'] ?? ''),
@@ -538,6 +548,8 @@ SQL;
                 'total_sales' => $totalSales,
                 'currentMonthSales' => (float) ($row['current_month_sales'] ?? 0),
                 'current_month_sales' => (float) ($row['current_month_sales'] ?? 0),
+                'lastMonthSales' => (float) ($row['last_month_sales'] ?? 0),
+                'last_month_sales' => (float) ($row['last_month_sales'] ?? 0),
                 'averageMonthlySales' => $averageMonthlySales,
                 'average_monthly_sales' => $averageMonthlySales,
                 'recentThreeMonthSales' => $recentThreeMonthSales,
@@ -700,12 +712,37 @@ SQL;
             throw new \RuntimeException('Failed to load created call log');
         }
 
+        $created['duration_seconds'] = max(0, (int) ($data['duration_seconds'] ?? 0));
+        if (!empty($data['occurred_at'])) {
+            $created['occurred_at'] = (string) $data['occurred_at'];
+        }
+
         return $created;
     }
 
     public function claimCustomerCall(int $mainId, string $contactId, int $agentUserId): array
     {
         $pdo = $this->db->pdo();
+        $pendingStmt = $pdo->prepare(
+            "SELECT contact_id, agent_name FROM daily_call_claims
+             WHERE main_id = :main_id AND agent_user_id = :agent_user_id
+               AND claim_date = CURDATE() AND status = 'in_progress'
+               AND contact_id <> :contact_id
+             LIMIT 1"
+        );
+        $pendingStmt->execute([
+            'main_id' => $mainId,
+            'agent_user_id' => $agentUserId,
+            'contact_id' => $contactId,
+        ]);
+        $pendingClaim = $pendingStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        if ($pendingClaim !== null) {
+            throw new HttpException(
+                409,
+                'Submit the pending call report for your current customer before starting another call.'
+            );
+        }
+
         $agentStmt = $pdo->prepare(
             "SELECT COALESCE(NULLIF(TRIM(CONCAT(COALESCE(lfname, ''), ' ', COALESCE(llname, ''))), ''), lemail, CONCAT('User ', lid))
              FROM tblaccount WHERE lid = :agent_user_id LIMIT 1"
@@ -769,6 +806,21 @@ SQL;
 
     public function releaseCustomerCall(int $mainId, string $contactId, int $agentUserId): bool
     {
+        $claimStmt = $this->db->pdo()->prepare(
+            "SELECT status FROM daily_call_claims
+             WHERE main_id = :main_id AND contact_id = :contact_id AND claim_date = CURDATE()
+               AND agent_user_id = :agent_user_id
+             LIMIT 1"
+        );
+        $claimStmt->execute(['main_id' => $mainId, 'contact_id' => $contactId, 'agent_user_id' => $agentUserId]);
+        $claimStatus = trim((string) $claimStmt->fetchColumn());
+        if ($claimStatus === 'in_progress') {
+            throw new HttpException(
+                409,
+                'A call report must be submitted before closing this customer call.'
+            );
+        }
+
         $stmt = $this->db->pdo()->prepare(
             "DELETE FROM daily_call_claims
              WHERE main_id = :main_id AND contact_id = :contact_id AND claim_date = CURDATE()
@@ -1000,10 +1052,13 @@ SELECT
     'incident_report' AS record_source,
     ir.contact_id,
     ir.report_date,
+    ir.report_time,
     ir.incident_date,
+    ir.incident_time,
     ir.issue_type,
     ir.description,
     ir.reported_by,
+    ir.done_by,
     ir.attachments,
     ir.related_transactions,
     ir.approval_status,
@@ -1082,12 +1137,15 @@ SELECT
     CAST(cl.lid AS CHAR) AS id,
     'customer_log' AS record_source,
     cl.lcustomer_id AS contact_id,
-    cl.ldatetime AS report_date,
-    cl.ldatetime AS incident_date,
+    DATE(cl.ldatetime) AS report_date,
+    TIME(cl.ldatetime) AS report_time,
+    DATE(cl.ldatetime) AS incident_date,
+    TIME(cl.ldatetime) AS incident_time,
     cl.ltype AS issue_type_raw,
     cl.lstatus AS status_raw,
     cl.lnotes AS description,
     CAST(cl.luser AS CHAR) AS reported_by,
+    CAST(cl.luser AS CHAR) AS done_by,
     cl.lfile AS attachment,
     cl.comments AS notes
 FROM tblcustomer_logs cl
@@ -1133,7 +1191,9 @@ SQL;
     public function createIncidentReport(int $mainId, int $createdByUserId, array $data): array
     {
         $reportDate = $this->normalizeDate($data['report_date'] ?? null, 'report_date');
+        $reportTime = $this->normalizeTime($data['report_time'] ?? null, 'report_time');
         $incidentDate = $this->normalizeDate($data['incident_date'] ?? null, 'incident_date');
+        $incidentTime = $this->normalizeTime($data['incident_time'] ?? null, 'incident_time');
         $attachments = json_encode(array_values((array) ($data['attachments'] ?? [])), JSON_UNESCAPED_SLASHES);
         $relatedTransactions = json_encode(array_values((array) ($data['related_transactions'] ?? [])), JSON_UNESCAPED_SLASHES);
         if ($attachments === false || $relatedTransactions === false) {
@@ -1142,21 +1202,24 @@ SQL;
 
         $sql = <<<'SQL'
 INSERT INTO incident_reports (
-    id, main_id, contact_id, report_date, incident_date, issue_type,
-    description, reported_by, attachments, related_transactions,
+    id, main_id, contact_id, report_date, report_time, incident_date, incident_time, issue_type,
+    description, reported_by, done_by, attachments, related_transactions,
     approval_status, notes, created_by_user_id
 ) VALUES (
-    :id, :main_id, :contact_id, :report_date, :incident_date, :issue_type,
-    :description, :reported_by, :attachments, :related_transactions,
+    :id, :main_id, :contact_id, :report_date, :report_time, :incident_date, :incident_time, :issue_type,
+    :description, :reported_by, :done_by, :attachments, :related_transactions,
     'pending', :notes, :created_by_user_id
 )
 ON DUPLICATE KEY UPDATE
     contact_id = VALUES(contact_id),
     report_date = VALUES(report_date),
+    report_time = VALUES(report_time),
     incident_date = VALUES(incident_date),
+    incident_time = VALUES(incident_time),
     issue_type = VALUES(issue_type),
     description = VALUES(description),
     reported_by = VALUES(reported_by),
+    done_by = VALUES(done_by),
     attachments = VALUES(attachments),
     related_transactions = VALUES(related_transactions),
     notes = VALUES(notes),
@@ -1168,10 +1231,13 @@ SQL;
             'main_id' => $mainId,
             'contact_id' => (string) $data['contact_id'],
             'report_date' => $reportDate,
+            'report_time' => $reportTime,
             'incident_date' => $incidentDate,
+            'incident_time' => $incidentTime,
             'issue_type' => (string) $data['issue_type'],
             'description' => (string) $data['description'],
             'reported_by' => (string) $data['reported_by'],
+            'done_by' => (string) $data['done_by'],
             'attachments' => $attachments,
             'related_transactions' => $relatedTransactions,
             'notes' => $data['notes'] ?? null,
@@ -2294,10 +2360,13 @@ SELECT
     'incident_report' AS record_source,
     ir.contact_id,
     ir.report_date,
+    ir.report_time,
     ir.incident_date,
+    ir.incident_time,
     ir.issue_type,
     ir.description,
     ir.reported_by,
+    ir.done_by,
     ir.attachments,
     ir.related_transactions,
     ir.approval_status,
@@ -2389,6 +2458,18 @@ SQL);
             throw new InvalidArgumentException("{$field} must use YYYY-MM-DD format");
         }
         return $date->format('Y-m-d');
+    }
+
+    private function normalizeTime(mixed $value, string $field): string
+    {
+        $text = trim((string) $value);
+        $time = DateTimeImmutable::createFromFormat('!H:i', $text)
+            ?: DateTimeImmutable::createFromFormat('!H:i:s', $text);
+        $errors = DateTimeImmutable::getLastErrors();
+        if ($time === false || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))) {
+            throw new InvalidArgumentException("{$field} must use HH:MM format");
+        }
+        return $time->format('H:i:s');
     }
 
     /**

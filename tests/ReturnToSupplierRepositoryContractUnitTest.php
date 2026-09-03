@@ -13,6 +13,7 @@ $checks = [
     'posting writes an inventory out movement' => "'lout' => \$qty",
     'posting identifies the movement type' => '"Return to Supplier"',
     'unposting removes the stock movement' => 'DELETE FROM tblinventory_logs WHERE lrefno = :refno AND ltransaction_type = "Return to Supplier"',
+    'items must exist on the linked receiving report' => 'assertItemReceivedOnRr',
 ];
 
 $failed = 0;

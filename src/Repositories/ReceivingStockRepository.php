@@ -587,11 +587,24 @@ SQL;
             return null;
         }
 
+        $status = strtolower(trim((string) ($existing['status'] ?? '')));
+        if (in_array($status, ['posted', 'delivered', 'cancelled', 'canceled', 'deleted'], true)) {
+            throw new RuntimeException('Posted receiving reports must be unposted before items can be edited');
+        }
+
         $qty = isset($payload['qty']) ? (int) $payload['qty'] : (int) ($existing['qty'] ?? 0);
-        if ($qty < 0) {
-            throw new RuntimeException('qty must be zero or greater');
+        if ($qty <= 0) {
+            throw new RuntimeException('qty must be greater than zero');
         }
         $cost = isset($payload['unit_cost']) ? (float) $payload['unit_cost'] : (float) ($existing['unit_cost'] ?? 0);
+        $poRefno = trim((string) ($existing['po_refno'] ?? ''));
+        $poItemId = (int) ($existing['po_item_id'] ?? 0);
+        if ($poRefno !== '' && $poItemId > 0) {
+            PurchaseReceivingPolicy::assertReceivableLine(
+                $this->resolvePurchaseOrderItem($mainId, ['po_refno' => $poRefno, 'po_item_id' => $poItemId]),
+                $qty
+            );
+        }
 
         $sql = <<<SQL
 UPDATE tblpurchase_item
@@ -614,6 +627,8 @@ SQL;
             'warehouse_id' => (string) ($payload['warehouse_id'] ?? ($existing['warehouse_id'] ?? '')),
             'item_id' => $itemId,
         ]);
+
+        $this->clearReorderReportCache();
 
         return $this->getReceivingStockItem($mainId, $itemId);
     }
@@ -795,6 +810,9 @@ SQL;
 SELECT
     itm.lid AS id,
     COALESCE(itm.lrefno, '') AS receiving_refno,
+    COALESCE(rr.lpo_refno, '') AS po_refno,
+    COALESCE(rr.ltransaction_status, 'Pending') AS status,
+    COALESCE(itm.lpo_itemid, '') AS po_item_id,
     CAST(COALESCE(itm.litemid, 0) AS SIGNED) AS product_id,
     COALESCE(itm.litem_refno, '') AS product_session,
     COALESCE(itm.litem_code, '') AS item_code,

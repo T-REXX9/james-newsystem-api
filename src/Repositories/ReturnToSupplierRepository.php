@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\PurchasedItemMatcher;
 use App\Support\ReturnToSupplierStockPolicy;
 use PDO;
 use RuntimeException;
@@ -340,7 +341,14 @@ SQL;
                     if (!is_array($item)) {
                         continue;
                     }
-                    $this->insertReturnItem($pdo, $refno, $userId, (int) ($supplier['lid'] ?? 0), $item);
+                    $this->insertReturnItem(
+                        $pdo,
+                        $refno,
+                        $userId,
+                        (int) ($supplier['lid'] ?? 0),
+                        trim((string) ($payload['rr_refno'] ?? $payload['rr_id'] ?? '')),
+                        $item
+                    );
                 }
             }
 
@@ -477,7 +485,14 @@ SQL;
         $insertedId = 0;
         $this->db->pdo()->beginTransaction();
         try {
-            $insertedId = $this->insertReturnItem($this->db->pdo(), $returnRefno, $userId, $supplierId, $payload);
+            $insertedId = $this->insertReturnItem(
+                $this->db->pdo(),
+                $returnRefno,
+                $userId,
+                $supplierId,
+                trim((string) ($header['ltransaction_refno'] ?? '')),
+                $payload
+            );
             $this->db->pdo()->commit();
         } catch (\Throwable $e) {
             if ($this->db->pdo()->inTransaction()) {
@@ -855,15 +870,68 @@ SQL;
         }
     }
 
-    private function insertReturnItem(PDO $pdo, string $returnRefno, int $userId, int $supplierId, array $payload): int
+    private function assertItemReceivedOnRr(
+        PDO $pdo,
+        string $rrRefno,
+        string $invRefno,
+        string $itemCode,
+        string $partNo
+    ): void {
+        $rrRefno = trim($rrRefno);
+        if ($rrRefno === '') {
+            throw new RuntimeException('Link a receiving report first. Only items purchased from that supplier can be returned.');
+        }
+
+        $stmt = $pdo->prepare(
+            'SELECT
+                COALESCE(itm.litem_refno, "") AS item_refno,
+                COALESCE(itm.litem_code, "") AS item_code,
+                COALESCE(itm.lpartno, "") AS part_no
+             FROM tblpurchase_item itm
+             WHERE itm.lrefno = :rr_refno'
+        );
+        $stmt->execute(['rr_refno' => $rrRefno]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($rows as $row) {
+            $receivedRefno = trim((string) ($row['item_refno'] ?? ''));
+            if ($invRefno !== '' && $receivedRefno !== '' && $invRefno === $receivedRefno) {
+                return;
+            }
+            if (PurchasedItemMatcher::identifiersMatch(
+                $itemCode,
+                $partNo,
+                (string) ($row['item_code'] ?? ''),
+                (string) ($row['part_no'] ?? '')
+            )) {
+                return;
+            }
+        }
+
+        $label = $partNo !== '' ? $partNo : $itemCode;
+        throw new RuntimeException(PurchasedItemMatcher::notPurchasedMessage($label));
+    }
+
+    private function insertReturnItem(PDO $pdo, string $returnRefno, int $userId, int $supplierId, string $rrRefno, array $payload): int
     {
         $invRefno = trim((string) ($payload['inv_refno'] ?? $payload['item_refno'] ?? $payload['linv_refno'] ?? ''));
         $itemCode = trim((string) ($payload['item_code'] ?? $payload['litemcode'] ?? ''));
+        $partNo = trim((string) ($payload['part_no'] ?? $payload['lpartno'] ?? $payload['part_number'] ?? ''));
 
         $item = $this->resolveInventoryItem($invRefno, $itemCode);
         if ($item === null) {
             throw new RuntimeException('Inventory item not found');
         }
+
+        if ($partNo === '') {
+            $partNo = trim((string) ($item['lpartno'] ?? ''));
+        }
+        $this->assertItemReceivedOnRr(
+            $pdo,
+            $rrRefno,
+            $invRefno !== '' ? $invRefno : (string) ($item['lsession'] ?? ''),
+            $itemCode !== '' ? $itemCode : (string) ($item['litemcode'] ?? ''),
+            $partNo
+        );
 
         $qty = (float) ($payload['qty_returned'] ?? $payload['qty'] ?? $payload['lqty'] ?? 0);
         if ($qty <= 0) {

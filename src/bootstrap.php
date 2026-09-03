@@ -81,6 +81,7 @@ require __DIR__ . '/Support/InternalChatTypingStore.php';
 require __DIR__ . '/Support/DailyCallClaimPolicy.php';
 require __DIR__ . '/Support/PhoneNumberNormalizer.php';
 require __DIR__ . '/Support/PurchaseReceivingPolicy.php';
+require __DIR__ . '/Support/PurchasedItemMatcher.php';
 require __DIR__ . '/Support/ReturnToSupplierStockPolicy.php';
 require __DIR__ . '/Support/AuditTrailWriter.php';
 require __DIR__ . '/Config.php';
@@ -102,6 +103,7 @@ require __DIR__ . '/Repositories/MessagesRepository.php';
 require __DIR__ . '/Repositories/NotificationsRepository.php';
 require __DIR__ . '/Repositories/ProfilesRepository.php';
 require __DIR__ . '/Repositories/DailyCallMonitoringRepository.php';
+require __DIR__ . '/Repositories/CallReportRepository.php';
 require __DIR__ . '/Repositories/CallSystemRepositoryInterface.php';
 require __DIR__ . '/Repositories/CallSystemRepository.php';
 require __DIR__ . '/Repositories/FastSlowInventoryReportRepository.php';
@@ -294,7 +296,10 @@ function app_router(): Router
         $internalChatReactionStore,
         $internalChatTypingStore
     );
-    $dailyCallMonitoringController = new DailyCallMonitoringController(new App\Repositories\DailyCallMonitoringRepository($db));
+    $dailyCallMonitoringController = new DailyCallMonitoringController(
+        new App\Repositories\DailyCallMonitoringRepository($db),
+        new App\Repositories\CallReportRepository($db)
+    );
     $callSystemController = new CallSystemController(
         new App\Repositories\CallSystemRepository($db),
         $internalChatRealtimeNotifier
@@ -397,6 +402,7 @@ function app_router(): Router
     $router->post('/api/v1/customer-workflows/{contactId}/requests/{requestId}/review', $requireBearerAuthWithClaims([$customerWorkflowController, 'reviewRequest']));
     $router->get('/api/v1/customers/{sessionId}', [$customerController, 'show']);
     $router->get('/api/v1/customers/{sessionId}/purchase-history', [$customerController, 'purchaseHistory']);
+    $router->get('/api/v1/customers/{sessionId}/purchased-items', [$customerController, 'purchasedItems']);
     $router->get('/api/v1/customers/{sessionId}/ledger', [$customerController, 'ledger']);
     $router->get('/api/v1/statements/customers', [$statementOfAccountController, 'customers']);
     $router->get('/api/v1/statements/of-account', [$statementOfAccountController, 'report']);
@@ -498,6 +504,9 @@ function app_router(): Router
     $router->post('/api/v1/daily-call-monitoring/call-claims', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'claimCall']));
     $router->post('/api/v1/daily-call-monitoring/call-claims/{contactId}/release', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'releaseCallClaim']));
     $router->post('/api/v1/daily-call-monitoring/call-logs', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createCallLog']));
+    $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/call-report-threads', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'callReportThreads']));
+    $router->post('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/messages', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createCallReportReply']));
+    $router->patch('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/read', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'markCallReportThreadRead']));
     $router->post('/api/v1/daily-call-monitoring/incident-reports', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createIncidentReport']));
     $router->patch('/api/v1/daily-call-monitoring/incident-reports/{reportId}/decision', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'reviewIncidentReport']));
     $router->post('/api/v1/call-system/devices/register', $requireBearerAuthWithClaims([$callSystemController, 'registerDevice']));
@@ -526,6 +535,7 @@ function app_router(): Router
     $router->get('/api/v1/suggested-stock-report/summary', [$suggestedStockReportController, 'summary']);
     $router->get('/api/v1/suggested-stock-report/details', [$suggestedStockReportController, 'details']);
     $router->patch('/api/v1/suggested-stock-report/remark', [$suggestedStockReportController, 'updateRemark']);
+    $router->post('/api/v1/suggested-stock-report/clear-not-listed', [$suggestedStockReportController, 'clearNotListed']);
     $router->get('/api/v1/suggested-stock-report/suppliers', [$suggestedStockReportController, 'suppliers']);
     $router->get('/api/v1/suggested-stock-report/purchase-orders', [$suggestedStockReportController, 'purchaseOrders']);
     $router->post('/api/v1/suggested-stock-report/purchase-orders', [$suggestedStockReportController, 'createPurchaseOrder']);

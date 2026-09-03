@@ -90,6 +90,28 @@ final class CustomerController
         ];
     }
 
+    public function purchasedItems(array $params, array $query = [], array $body = []): array
+    {
+        $sessionId = $params['sessionId'] ?? '';
+        if ($sessionId === '') {
+            throw new HttpException(422, 'sessionId is required');
+        }
+
+        $customer = $this->repo->findCustomerBySession($sessionId);
+        if ($customer === null) {
+            throw new HttpException(404, 'Customer not found');
+        }
+
+        return [
+            'customer_session' => $sessionId,
+            'items' => $this->repo->searchPurchasedItems(
+                $sessionId,
+                trim((string) ($query['search'] ?? '')),
+                max(1, min(200, (int) ($query['limit'] ?? 50)))
+            ),
+        ];
+    }
+
     public function inquiryHistory(array $params, array $query = [], array $body = []): array
     {
         $sessionId = $params['sessionId'] ?? '';

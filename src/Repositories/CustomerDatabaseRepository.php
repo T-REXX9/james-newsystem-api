@@ -386,6 +386,12 @@ SQL;
             'mobile' => (string) ($payload['mobile'] ?? $existing['mobile'] ?? ''),
         ]);
 
+        $nextSalesPerson = (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? '');
+        $currentSalesPerson = (string) ($existing['sales_person_id'] ?? '');
+        $salesPersonChanged = array_key_exists('sales_person_id', $payload)
+            && $nextSalesPerson !== $currentSalesPerson;
+        $assignmentDateClause = $salesPersonChanged ? ",\n    ldate_assigned = CURDATE()" : '';
+
         $sql = <<<SQL
 UPDATE tblpatient
 SET
@@ -393,7 +399,7 @@ SET
     lemail = :email,
     lphone = :phone,
     lmobile = :mobile,
-    lsales_person = :sales_person,
+    lsales_person = :sales_person{$assignmentDateClause},
     lrefer_by = :refer_by,
     laddress = :address,
     ldelivery_address = :delivery_address,
@@ -522,6 +528,10 @@ SQL;
             $paramKey = 'set_' . $apiField;
             $assignments[] = sprintf('%s = :%s', $config['column'], $paramKey);
             $params[$paramKey] = $config['value']($payload[$apiField]);
+        }
+
+        if (array_key_exists('sales_person_id', $payload)) {
+            $assignments[] = 'ldate_assigned = CURDATE()';
         }
 
         if ($assignments === []) {

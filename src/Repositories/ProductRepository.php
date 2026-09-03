@@ -533,6 +533,9 @@ SQL;
             throw new InvalidArgumentException('item_code is required when creating a product');
         }
 
+        $partNo = $this->strVal($payload['part_no'] ?? '');
+        $this->assertNoDuplicateCatalogProduct($mainId, $itemCode, $partNo);
+
         $sql = <<<SQL
 INSERT INTO tblinventory_item (
     lsession, lmain_id, litemcode, ldescription, lpartno, loem_number, lbrand, lbarcode,
@@ -550,7 +553,7 @@ SQL;
             'lmain_id' => $mainId,
             'litemcode' => $itemCode,
             'ldescription' => $this->strVal($payload['description'] ?? ''),
-            'lpartno' => $this->strVal($payload['part_no'] ?? ''),
+            'lpartno' => $partNo,
             'loem_number' => $this->strVal($payload['oem_no'] ?? ''),
             'lbrand' => $this->strVal($payload['brand'] ?? ''),
             'lbarcode' => $this->strVal($payload['barcode'] ?? ''),
@@ -571,11 +574,59 @@ SQL;
         ]);
 
         $this->syncPrices($mainId, $session, $payload, $userId);
-        $this->syncSupplierCosts($mainId, $session, $itemCode, $this->strVal($payload['part_no'] ?? ''), $payload, $userId);
+        $this->syncSupplierCosts($mainId, $session, $itemCode, $partNo, $payload, $userId);
         $this->syncWarehouseStocks($mainId, $session, $payload, $userId);
 
         $item = $this->getProductBySession($mainId, $session);
         return $item ?? ['id' => $session];
+    }
+
+    /**
+     * Prevent duplicate catalog rows for the same item code or part number.
+     */
+    private function assertNoDuplicateCatalogProduct(int $mainId, string $itemCode, string $partNo): void
+    {
+        $conditions = [];
+        $params = ['main_id' => $mainId];
+        if ($itemCode !== '') {
+            $conditions[] = 'litemcode = :item_code';
+            $params['item_code'] = $itemCode;
+        }
+        if ($partNo !== '') {
+            $conditions[] = 'lpartno = :part_no';
+            $params['part_no'] = $partNo;
+        }
+        if ($conditions === []) {
+            return;
+        }
+
+        $matchSql = implode(' OR ', $conditions);
+        $sql = <<<SQL
+SELECT litemcode, lpartno
+FROM tblinventory_item
+WHERE lmain_id = :main_id
+  AND COALESCE(lnot_inventory, 0) = 0
+  AND COALESCE(ldeleted, 0) = 0
+  AND ({$matchSql})
+LIMIT 1
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute($params);
+        $existing = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($existing === false) {
+            return;
+        }
+
+        $existingCode = trim((string) ($existing['litemcode'] ?? ''));
+        $existingPart = trim((string) ($existing['lpartno'] ?? ''));
+        if ($itemCode !== '' && strcasecmp($existingCode, $itemCode) === 0) {
+            throw new InvalidArgumentException(
+                sprintf('A product with item code "%s" is already listed. Open the existing product instead of creating a duplicate.', $itemCode)
+            );
+        }
+        throw new InvalidArgumentException(
+            sprintf('A product with part number "%s" is already listed. Open the existing product instead of creating a duplicate.', $partNo !== '' ? $partNo : $existingPart)
+        );
     }
 
     public function updateProduct(int $mainId, string $productSession, array $payload): ?array

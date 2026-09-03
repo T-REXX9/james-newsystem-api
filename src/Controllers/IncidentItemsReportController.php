@@ -77,6 +77,10 @@ final class IncidentItemsReportController
         }
 
         $userId = (int) ($claims['sub'] ?? 0);
-        return $this->repo->create($mainId, $userId > 0 ? $userId : null, $body);
+        try {
+            return $this->repo->create($mainId, $userId > 0 ? $userId : null, $body);
+        } catch (\RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
     }
 }

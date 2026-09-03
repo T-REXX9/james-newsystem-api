@@ -593,6 +593,13 @@ SQL;
             throw new RuntimeException('Quantity must be greater than 0');
         }
 
+        $customerId = trim((string) ($cm['lcustomer'] ?? ''));
+        $isNoReference = $sourceRefno === ''
+            || strcasecmp(trim((string) ($cm['ltype'] ?? '')), 'No Reference') === 0;
+        if ($isNoReference) {
+            (new CustomerRepository($this->db))->assertCustomerPurchasedItem($customerId, $itemCode, $partNo);
+        }
+
         $insert = $pdo->prepare(<<<'SQL'
 INSERT INTO tblcredit_return_item (
     lrefno, litemcode, lpartno, lbrand, ldesc, lprice, lqty,

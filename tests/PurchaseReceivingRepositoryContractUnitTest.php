@@ -29,6 +29,9 @@ $checks = [
     'eligible PO list only includes remaining quantities' => 'COALESCE(poi.lqty, 0) > COALESCE(poi.lreceiving_qty, 0)',
     'eligible PO ordering is valid with ONLY_FULL_GROUP_BY' => 'ORDER BY MAX(po.lid) DESC',
     'RR unpost names active return-to-supplier dependency' => 'formatReturnToSupplierDependencies($returnDependencies)',
+    'item edits require an unposted receiving report' => 'Posted receiving reports must be unposted before items can be edited',
+    'item edits refresh the reorder report cache' => str_contains($source, 'function updateReceivingStockItem')
+        && substr_count($source, '$this->clearReorderReportCache();') >= 4,
     'RR unpost ignores canceled or deleted return-to-supplier records' => 'NOT IN ("cancelled", "canceled", "deleted")',
     'RR list allows all months and years' => str_contains($source, '?int $month = null')
         && str_contains($source, '?int $year = null')

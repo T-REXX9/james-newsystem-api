@@ -43,6 +43,19 @@ final class IncidentItemsReportRepository
         $productId = $nullableString($payload['product_id'] ?? null);
         $itemCode = $nullableString($payload['item_code'] ?? null);
         $partNo = $nullableString($payload['part_no'] ?? null);
+        $issueType = strtolower(trim((string) ($payload['issue_type'] ?? 'other')));
+        $requiresPurchasedItem = in_array($issueType, ['product_quality', 'delivery'], true)
+            || $productId !== null
+            || $itemCode !== null
+            || $partNo !== null;
+        if ($requiresPurchasedItem) {
+            $customers = new CustomerRepository($this->db);
+            $customers->assertCustomerPurchasedItem(
+                (string) ($payload['contact_id'] ?? ''),
+                (string) ($itemCode ?? ''),
+                (string) ($partNo ?? '')
+            );
+        }
         $supplierId = $nullableString($payload['supplier_id'] ?? null);
         $supplierName = $nullableString($payload['supplier_name'] ?? null);
         $contactId = $nullableString($payload['contact_id'] ?? null);

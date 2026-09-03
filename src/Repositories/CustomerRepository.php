@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\CustomerLedgerCalculator;
+use App\Support\PurchasedItemMatcher;
 use DateTimeImmutable;
 use PDO;
 use RuntimeException;
@@ -23,7 +24,9 @@ final class CustomerRepository
      */
     public function getNormalizedPriceGroup(string $dbValue): string
     {
-        return match (strtolower(trim($dbValue))) {
+        $canonical = preg_replace('/[\s_-]+/', '', strtolower(trim($dbValue))) ?? '';
+
+        return match ($canonical) {
             'aaa' => 'regular',
             'vip1' => 'silver',
             'vip2' => 'gold',
@@ -211,6 +214,162 @@ SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute($params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Distinct items this customer has actually bought (invoices + order slips).
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function searchPurchasedItems(string $sessionId, string $search = '', int $limit = 50): array
+    {
+        $limit = max(1, min(200, $limit));
+        $params = [
+            'customer_id_invoice' => $sessionId,
+            'customer_id_or' => $sessionId,
+        ];
+        $searchSql = '';
+        $trimmedSearch = trim($search);
+        if ($trimmedSearch !== '') {
+            $searchSql = <<<SQL
+ AND (
+    COALESCE(src.litemcode, '') LIKE :search_item_code
+    OR COALESCE(src.lpartno, '') LIKE :search_part_no
+    OR COALESCE(src.ldesc, '') LIKE :search_description
+ )
+SQL;
+            $like = '%' . $trimmedSearch . '%';
+            $params['search_item_code'] = $like;
+            $params['search_part_no'] = $like;
+            $params['search_description'] = $like;
+        }
+
+        $sql = <<<SQL
+SELECT
+    COALESCE(src.litemcode, '') AS item_code,
+    COALESCE(src.lpartno, '') AS part_no,
+    MAX(COALESCE(src.ldesc, '')) AS description,
+    MAX(COALESCE(src.lbrand, '')) AS brand,
+    MAX(COALESCE(src.lprice, 0)) AS unit_price,
+    SUM(COALESCE(src.lqty, 0)) AS purchased_qty,
+    SUM(COALESCE(ret.return_qty, 0)) AS returned_qty
+FROM (
+    SELECT
+        inv.lrefno AS source_refno,
+        item.litemcode,
+        item.lpartno,
+        item.ldesc,
+        item.lbrand,
+        item.lqty,
+        item.lprice
+    FROM tblinvoice_list inv
+    INNER JOIN tblinvoice_itemrec item ON item.linvoice_refno = inv.lrefno
+    WHERE inv.lcustomerid = :customer_id_invoice
+      AND COALESCE(inv.lcancel_invoice, 0) = 0
+
+    UNION ALL
+
+    SELECT
+        dr.lrefno AS source_refno,
+        dri.litemcode,
+        dri.lpartno,
+        dri.ldesc,
+        dri.lbrand,
+        dri.lqty,
+        dri.lprice
+    FROM tbldelivery_receipt dr
+    INNER JOIN tbldelivery_receipt_items dri ON dri.lor_refno = dr.lrefno
+    WHERE dr.lcustomerid = :customer_id_or
+      AND COALESCE(dr.lcancel, 0) = 0
+) src
+LEFT JOIN (
+    SELECT
+        cm.linvoice_refno AS source_refno,
+        cri.litemcode,
+        cri.lpartno,
+        SUM(COALESCE(cri.lqty, 0)) AS return_qty
+    FROM tblcredit_return_item cri
+    INNER JOIN tblcredit_memo cm ON cm.lrefno = cri.lrefno
+    WHERE COALESCE(cm.lstatus, '') IN ('Posted', 'Approved')
+    GROUP BY cm.linvoice_refno, cri.litemcode, cri.lpartno
+) ret ON ret.source_refno = src.source_refno
+     AND ret.litemcode = src.litemcode
+     AND ret.lpartno = src.lpartno
+WHERE COALESCE(src.litemcode, '') <> '' OR COALESCE(src.lpartno, '') <> ''
+{$searchSql}
+GROUP BY COALESCE(src.litemcode, ''), COALESCE(src.lpartno, '')
+ORDER BY MAX(src.source_refno) DESC
+LIMIT {$limit}
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $items = [];
+        foreach ($rows as $row) {
+            $purchasedQty = (float) ($row['purchased_qty'] ?? 0);
+            $returnedQty = (float) ($row['returned_qty'] ?? 0);
+            $items[] = [
+                'item_code' => (string) ($row['item_code'] ?? ''),
+                'part_no' => (string) ($row['part_no'] ?? ''),
+                'description' => (string) ($row['description'] ?? ''),
+                'brand' => (string) ($row['brand'] ?? ''),
+                'unit_price' => (float) ($row['unit_price'] ?? 0),
+                'purchased_qty' => $purchasedQty,
+                'returned_qty' => $returnedQty,
+                'remaining_qty' => max(0, $purchasedQty - $returnedQty),
+            ];
+        }
+
+        return $items;
+    }
+
+    public function customerPurchasedItem(string $sessionId, string $itemCode, string $partNo): bool
+    {
+        $itemCode = trim($itemCode);
+        $partNo = trim($partNo);
+        if ($itemCode === '' && $partNo === '') {
+            return false;
+        }
+
+        $searches = array_values(array_unique(array_filter([$itemCode, $partNo], static fn (string $value): bool => $value !== '')));
+        $seen = [];
+        foreach ($searches as $search) {
+            foreach ($this->searchPurchasedItems($sessionId, $search, 80) as $row) {
+                $key = ($row['item_code'] ?? '') . '|' . ($row['part_no'] ?? '');
+                if (isset($seen[$key])) {
+                    continue;
+                }
+                $seen[$key] = true;
+                if (PurchasedItemMatcher::identifiersMatch(
+                    $itemCode,
+                    $partNo,
+                    (string) ($row['item_code'] ?? ''),
+                    (string) ($row['part_no'] ?? '')
+                )) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public function assertCustomerPurchasedItem(string $sessionId, string $itemCode, string $partNo): void
+    {
+        $sessionId = trim($sessionId);
+        $itemCode = trim($itemCode);
+        $partNo = trim($partNo);
+        if ($sessionId === '') {
+            throw new RuntimeException('A customer is required before an item can be selected.');
+        }
+        if ($itemCode === '' && $partNo === '') {
+            throw new RuntimeException('Select an item from this customer\'s purchase history.');
+        }
+        if (!$this->customerPurchasedItem($sessionId, $itemCode, $partNo)) {
+            $label = $partNo !== '' ? $partNo : $itemCode;
+            throw new RuntimeException(PurchasedItemMatcher::notPurchasedMessage($label));
+        }
     }
 
     public function getInquiryHistory(string $sessionId, ?string $dateFrom, ?string $dateTo): array

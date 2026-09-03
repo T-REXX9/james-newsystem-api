@@ -83,6 +83,29 @@ final class SuggestedStockReportController
         return ['updated' => true, 'item_id' => $itemId, 'remark' => $remark];
     }
 
+    public function clearNotListed(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $inquiryItemId = isset($body['inquiry_item_id']) ? (int) $body['inquiry_item_id'] : null;
+        $partNo = trim((string) ($body['part_no'] ?? ''));
+        $itemCode = trim((string) ($body['item_code'] ?? ''));
+
+        if (($inquiryItemId === null || $inquiryItemId <= 0) && $partNo === '' && $itemCode === '') {
+            throw new HttpException(422, 'inquiry_item_id, part_no, or item_code is required');
+        }
+
+        return $this->repo->clearNotListedRemarks(
+            $mainId,
+            $inquiryItemId !== null && $inquiryItemId > 0 ? $inquiryItemId : null,
+            $partNo,
+            $itemCode
+        );
+    }
+
     public function suppliers(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);

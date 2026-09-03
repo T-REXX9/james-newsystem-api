@@ -22,18 +22,20 @@ final class SuggestedStockReportRepository
     {
         [$from, $to] = $this->resolveDateRange($dateFrom, $dateTo);
 
+        $unlistedSql = $this->unlistedInventoryMatchSql('unlisted_cust');
         $sql = <<<SQL
 SELECT
     COALESCE(tr.lcustomerid, '') AS id,
-    TRIM(COALESCE(tr.lcompany, '')) AS company,
+    TRIM(COALESCE(MAX(tr.lcompany), '')) AS company,
     COUNT(*) AS inquiry_count
 FROM tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
 WHERE tr.lmain_id = :main_id
-  AND COALESCE(i.lremark, '') = 'NotListed'
+  AND i.lremark = 'NotListed'
   AND tr.ldate >= :date_from
   AND tr.ldate <= :date_to
-GROUP BY tr.lcustomerid, tr.lcompany
+  AND {$unlistedSql}
+GROUP BY tr.lcustomerid
 ORDER BY inquiry_count DESC, company ASC
 SQL;
 
@@ -42,6 +44,7 @@ SQL;
             'main_id' => (string) $mainId,
             'date_from' => $from,
             'date_to' => $to,
+            'unlisted_cust_main_id' => (string) $mainId,
         ]);
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -61,27 +64,12 @@ SQL;
         [$from, $to] = $this->resolveDateRange($dateFrom, $dateTo);
         [$whereSql, $params] = $this->buildFilters($mainId, $from, $to, $customerId);
 
-        $countSql = <<<SQL
-SELECT COUNT(*)
-FROM (
-    SELECT i.lpartno, i.litem_code, i.ldesc
-    FROM tblinquiry_item i
-    INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
-    WHERE {$whereSql}
-    GROUP BY i.lpartno, i.litem_code, i.ldesc
-) x
-SQL;
-        $countStmt = $this->db->pdo()->prepare($countSql);
-        foreach ($params as $key => $value) {
-            $countStmt->bindValue($key, $value, PDO::PARAM_STR);
-        }
-        $countStmt->execute();
-        $total = (int) ($countStmt->fetchColumn() ?: 0);
-
         $offset = ($page - 1) * $perPage;
+        $fetchLimit = $perPage + 1;
+        // Unlisted-only report: inventory soft-match columns stay empty by construction.
         $sql = <<<SQL
 SELECT
-    MIN(i.lid) AS id,
+    CAST(MIN(i.lid) AS CHAR) AS id,
     COALESCE(i.lpartno, '') AS part_no,
     COALESCE(i.litem_code, '') AS item_code,
     COALESCE(i.ldesc, '') AS description,
@@ -91,42 +79,9 @@ SELECT
     GROUP_CONCAT(DISTINCT CONCAT(COALESCE(tr.lcustomerid, ''), '::', TRIM(COALESCE(tr.lcompany, ''))) SEPARATOR '||') AS customers,
     COALESCE(MAX(i.lreport_remark), '') AS report_remark,
     COALESCE(MAX(tr.ldate), '') AS last_inquiry_date,
-    COALESCE((
-        SELECT matched.lbrand
-        FROM tblinventory_item matched
-        WHERE matched.lmain_id = :match_main_id_brand
-          AND COALESCE(matched.lnot_inventory, 0) = 0
-          AND (
-              (COALESCE(i.litem_code, '') <> '' AND matched.litemcode = i.litem_code)
-              OR (COALESCE(i.lpartno, '') <> '' AND matched.lpartno = i.lpartno)
-          )
-        ORDER BY (matched.litemcode = i.litem_code) DESC, matched.lid DESC
-        LIMIT 1
-    ), '') AS brand,
-    COALESCE((
-        SELECT matched.litemcode
-        FROM tblinventory_item matched
-        WHERE matched.lmain_id = :match_main_id_code
-          AND COALESCE(matched.lnot_inventory, 0) = 0
-          AND (
-              (COALESCE(i.litem_code, '') <> '' AND matched.litemcode = i.litem_code)
-              OR (COALESCE(i.lpartno, '') <> '' AND matched.lpartno = i.lpartno)
-          )
-        ORDER BY (matched.litemcode = i.litem_code) DESC, matched.lid DESC
-        LIMIT 1
-    ), '') AS database_item_code,
-    COALESCE((
-        SELECT matched.lpartno
-        FROM tblinventory_item matched
-        WHERE matched.lmain_id = :match_main_id_part
-          AND COALESCE(matched.lnot_inventory, 0) = 0
-          AND (
-              (COALESCE(i.litem_code, '') <> '' AND matched.litemcode = i.litem_code)
-              OR (COALESCE(i.lpartno, '') <> '' AND matched.lpartno = i.lpartno)
-          )
-        ORDER BY (matched.litemcode = i.litem_code) DESC, matched.lid DESC
-        LIMIT 1
-    ), '') AS database_part_no
+    '' AS brand,
+    '' AS database_item_code,
+    '' AS database_part_no
 FROM tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
 WHERE {$whereSql}
@@ -139,22 +94,22 @@ SQL;
         foreach ($params as $key => $value) {
             $stmt->bindValue($key, $value, PDO::PARAM_STR);
         }
-        $stmt->bindValue('match_main_id_brand', (string) $mainId, PDO::PARAM_STR);
-        $stmt->bindValue('match_main_id_code', (string) $mainId, PDO::PARAM_STR);
-        $stmt->bindValue('match_main_id_part', (string) $mainId, PDO::PARAM_STR);
-        $stmt->bindValue('limit', $perPage, PDO::PARAM_INT);
+        $stmt->bindValue('limit', $fetchLimit, PDO::PARAM_INT);
         $stmt->bindValue('offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
 
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $hasMore = count($rows) > $perPage;
+        if ($hasMore) {
+            array_pop($rows);
+        }
 
         return [
             'items' => $rows,
             'meta' => [
                 'page' => $page,
                 'per_page' => $perPage,
-                'total' => $total,
-                'total_pages' => (int) ceil($total / max(1, $perPage)),
+                'has_more' => $hasMore,
                 'date_from' => $from,
                 'date_to' => $to,
             ],
@@ -250,6 +205,73 @@ SQL;
         ]);
 
         return $stmt->rowCount() > 0;
+    }
+
+    /**
+     * Clear NotListed inquiry remarks after a product is created from Suggested Stock.
+     * Prefer inquiry item id when provided; otherwise match by part no and/or item code.
+     *
+     * @return array{cleared:int}
+     */
+    public function clearNotListedRemarks(
+        int $mainId,
+        ?int $inquiryItemId = null,
+        string $partNo = '',
+        string $itemCode = ''
+    ): array {
+        $partNo = trim($partNo);
+        $itemCode = trim($itemCode);
+        $cleared = 0;
+
+        if ($inquiryItemId !== null && $inquiryItemId > 0) {
+            $sql = <<<SQL
+UPDATE tblinquiry_item i
+INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
+SET i.lremark = 'Listed'
+WHERE i.lid = :item_id
+  AND tr.lmain_id = :main_id
+  AND COALESCE(i.lremark, '') = 'NotListed'
+SQL;
+            $stmt = $this->db->pdo()->prepare($sql);
+            $stmt->execute([
+                'item_id' => $inquiryItemId,
+                'main_id' => $mainId,
+            ]);
+            $cleared += $stmt->rowCount();
+
+            if ($cleared > 0) {
+                return ['cleared' => $cleared];
+            }
+        }
+
+        if ($partNo !== '' || $itemCode !== '') {
+            $matchParts = [];
+            $params = [
+                'main_id' => $mainId,
+            ];
+            if ($itemCode !== '') {
+                $matchParts[] = 'COALESCE(i.litem_code, "") = :item_code';
+                $params['item_code'] = $itemCode;
+            }
+            if ($partNo !== '') {
+                $matchParts[] = 'COALESCE(i.lpartno, "") = :part_no';
+                $params['part_no'] = $partNo;
+            }
+            $matchSql = implode(' OR ', $matchParts);
+            $sql = <<<SQL
+UPDATE tblinquiry_item i
+INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
+SET i.lremark = 'Listed'
+WHERE tr.lmain_id = :main_id
+  AND COALESCE(i.lremark, '') = 'NotListed'
+  AND ({$matchSql})
+SQL;
+            $stmt = $this->db->pdo()->prepare($sql);
+            $stmt->execute($params);
+            $cleared += $stmt->rowCount();
+        }
+
+        return ['cleared' => $cleared];
     }
 
     /**
@@ -467,14 +489,16 @@ SQL;
     {
         $where = [
             'tr.lmain_id = :main_id',
-            'COALESCE(i.lremark, "") = "NotListed"',
+            'i.lremark = \'NotListed\'',
             'tr.ldate >= :date_from',
             'tr.ldate <= :date_to',
+            $this->unlistedInventoryMatchSql('unlisted'),
         ];
         $params = [
             'main_id' => (string) $mainId,
             'date_from' => $dateFrom,
             'date_to' => $dateTo,
+            'unlisted_main_id' => (string) $mainId,
         ];
 
         $customer = trim((string) $customerId);
@@ -484,6 +508,28 @@ SQL;
         }
 
         return [implode(' AND ', $where), $params];
+    }
+
+    /**
+     * Exclude inquiry lines that already soft-match an inventory product
+     * (same item code or part number under the same main).
+     */
+    private function unlistedInventoryMatchSql(string $paramPrefix): string
+    {
+        $mainParam = $paramPrefix . '_main_id';
+        return <<<SQL
+NOT EXISTS (
+    SELECT 1
+    FROM tblinventory_item matched
+    WHERE matched.lmain_id = :{$mainParam}
+      AND COALESCE(matched.lnot_inventory, 0) = 0
+      AND COALESCE(matched.ldeleted, 0) = 0
+      AND (
+          (COALESCE(i.litem_code, '') <> '' AND matched.litemcode = i.litem_code)
+          OR (COALESCE(i.lpartno, '') <> '' AND matched.lpartno = i.lpartno)
+      )
+)
+SQL;
     }
 
     private function normalizeDate(?string $value): ?string

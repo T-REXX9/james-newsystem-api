@@ -11,8 +11,8 @@ final class VipTierSettingsRepository
 {
     private const PAGE = 'VIP Tier Settings';
     private const ACTION_CONFIG_UPDATE = 'VIP_CONFIG_UPDATE';
-    private const DEFAULT_ONE_TIME_DISCOUNT_THRESHOLD = 50000;
-    private const DEFAULT_UNLIMITED_DISCOUNT_THRESHOLD = 100000;
+    private const DEFAULT_ONE_TIME_DISCOUNT_THRESHOLD = 10000;
+    private const DEFAULT_UNLIMITED_DISCOUNT_THRESHOLD = 30000;
     private const DEFAULT_DISCOUNT_PERCENTAGE = 10;
 
     public function __construct(private readonly Database $db)

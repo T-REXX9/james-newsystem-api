@@ -14,6 +14,7 @@ $checks = [
     'outstanding balance and credit limit are returned' => str_contains($controller, "'outstanding_balance'") && str_contains($controller, "'credit_limit'"),
     'returns are linked to their source transaction' => str_contains($repository, 'ret.source_refno = src.source_refno'),
     'only finalized returns affect totals' => str_contains($repository, "IN ('Posted', 'Approved')"),
+    'purchased item lookup is available for complaints and returns' => str_contains($repository, 'function searchPurchasedItems') && str_contains($repository, 'function assertCustomerPurchasedItem'),
 ];
 
 foreach ($checks as $label => $passed) {

@@ -4,14 +4,17 @@ declare(strict_types=1);
 
 namespace App\Controllers;
 
+use App\Repositories\CallReportRepository;
 use App\Repositories\DailyCallMonitoringRepository;
 use App\Support\Exceptions\HttpException;
 use InvalidArgumentException;
 
 final class DailyCallMonitoringController
 {
-    public function __construct(private readonly DailyCallMonitoringRepository $repo)
-    {
+    public function __construct(
+        private readonly DailyCallMonitoringRepository $repo,
+        private readonly CallReportRepository $callReportRepo
+    ) {
     }
 
     public function excelRows(array $params = [], array $query = [], array $body = []): array
@@ -139,7 +142,7 @@ final class DailyCallMonitoringController
             throw new HttpException(403, 'Invalid account scope');
         }
 
-        $required = ['id', 'contact_id', 'report_date', 'incident_date', 'issue_type', 'description', 'reported_by'];
+        $required = ['id', 'contact_id', 'report_date', 'report_time', 'incident_date', 'incident_time', 'issue_type', 'description', 'reported_by', 'done_by'];
         foreach ($required as $field) {
             if (trim((string) ($body[$field] ?? '')) === '') {
                 throw new HttpException(422, "{$field} is required");
@@ -156,10 +159,13 @@ final class DailyCallMonitoringController
                 'id' => trim((string) $body['id']),
                 'contact_id' => trim((string) $body['contact_id']),
                 'report_date' => $body['report_date'],
+                'report_time' => $body['report_time'],
                 'incident_date' => $body['incident_date'],
+                'incident_time' => $body['incident_time'],
                 'issue_type' => $issueType,
                 'description' => trim((string) $body['description']),
                 'reported_by' => trim((string) $body['reported_by']),
+                'done_by' => trim((string) $body['done_by']),
                 'attachments' => $body['attachments'] ?? [],
                 'related_transactions' => $body['related_transactions'] ?? [],
                 'notes' => isset($body['notes']) ? trim((string) $body['notes']) : null,
@@ -294,7 +300,7 @@ final class DailyCallMonitoringController
             throw new HttpException(422, 'notes is required');
         }
 
-        return $this->repo->createCallLog($mainId, [
+        $result = $this->repo->createCallLog($mainId, [
             'contact_id' => $contactId,
             'user_id' => $authenticatedUserId,
             'agent_name' => $body['agent_name'] ?? null,
@@ -302,7 +308,34 @@ final class DailyCallMonitoringController
             'outcome' => $body['outcome'] ?? 'logged',
             'notes' => $notes,
             'occurred_at' => $body['occurred_at'] ?? null,
+            'duration_seconds' => (int) ($body['duration_seconds'] ?? 0),
         ]);
+
+        if (str_starts_with($notes, '[Sales Agent Report]')) {
+            $reportBody = trim(substr($notes, strlen('[Sales Agent Report]')));
+            $agentName = trim((string) ($body['agent_name'] ?? $result['agent_name'] ?? 'Sales Agent')) ?: 'Sales Agent';
+            try {
+                $thread = $this->callReportRepo->createThreadFromCallLog(
+                    $mainId,
+                    array_merge($result, [
+                        'duration_seconds' => max(
+                            (int) ($result['duration_seconds'] ?? 0),
+                            (int) ($body['duration_seconds'] ?? 0)
+                        ),
+                        'occurred_at' => $body['occurred_at'] ?? ($result['occurred_at'] ?? null),
+                    ]),
+                    $authenticatedUserId,
+                    $agentName,
+                    $reportBody,
+                    (string) ($body['outcome'] ?? $result['outcome'] ?? 'note')
+                );
+                $result['report_thread_id'] = $thread['id'] ?? null;
+            } catch (\Throwable $threadError) {
+                error_log('Call report thread creation failed: ' . $threadError->getMessage());
+            }
+        }
+
+        return $result;
     }
 
     public function claimCall(array $params = [], array $query = [], array $body = []): array
@@ -383,5 +416,71 @@ final class DailyCallMonitoringController
         } catch (InvalidArgumentException $error) {
             throw new HttpException(422, $error->getMessage());
         }
+    }
+
+    public function callReportThreads(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $viewerUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($query['main_id'] ?? 0);
+        $contactId = trim((string) ($params['contactId'] ?? ''));
+        if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '') {
+            throw new HttpException(422, 'main_id, contactId, and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+
+        try {
+            $this->callReportRepo->backfillThreadsFromCallLogs($mainId, $contactId, $viewerUserId);
+            return $this->callReportRepo->getThreadsByContact($mainId, $contactId, $viewerUserId);
+        } catch (\Throwable $error) {
+            error_log('Call report threads unavailable: ' . $error->getMessage());
+            return [];
+        }
+    }
+
+    public function createCallReportReply(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $senderUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $threadId = (int) ($params['threadId'] ?? 0);
+        if ($senderUserId <= 0 || $mainId <= 0 || $threadId <= 0) {
+            throw new HttpException(422, 'main_id, threadId, and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+
+        $senderName = trim((string) ($body['sender_name'] ?? 'Master User')) ?: 'Master User';
+        $messageBody = trim((string) ($body['body'] ?? ''));
+        $userType = (string) ($claims['user_type'] ?? '');
+        $senderRole = $userType === '1' ? 'master' : 'agent';
+
+        return $this->callReportRepo->addReply(
+            $mainId,
+            $threadId,
+            $senderUserId,
+            $senderName,
+            $senderRole,
+            $messageBody
+        );
+    }
+
+    public function markCallReportThreadRead(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $viewerUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $threadId = (int) ($params['threadId'] ?? 0);
+        if ($viewerUserId <= 0 || $mainId <= 0 || $threadId <= 0) {
+            throw new HttpException(422, 'main_id, threadId, and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+
+        return ['read' => $this->callReportRepo->markThreadRead($mainId, $threadId, $viewerUserId)];
     }
 }
