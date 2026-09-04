@@ -7,6 +7,7 @@ require_once __DIR__ . '/../src/bootstrap.php';
 use App\Config;
 use App\Controllers\DailyCallMonitoringController;
 use App\Database;
+use App\Repositories\CallReportRepository;
 use App\Repositories\DailyCallMonitoringRepository;
 use App\Support\Exceptions\HttpException;
 
@@ -50,7 +51,7 @@ $config = new Config('test', true, '*', 'secret', 3600, $dbHost, $dbPort, $dbNam
 $db = new Database($config);
 $pdo = $db->pdo();
 $repo = new DailyCallMonitoringRepository($db);
-$controller = new DailyCallMonitoringController($repo);
+$controller = new DailyCallMonitoringController($repo, new CallReportRepository($db));
 
 $cleanup = static function () use ($pdo, $mainId, $prefix, $contactA, $contactB): void {
     $pdo->prepare('DELETE FROM incident_return_actions WHERE main_id = :main_id AND incident_report_id LIKE :prefix')
@@ -66,11 +67,11 @@ $cleanup = static function () use ($pdo, $mainId, $prefix, $contactA, $contactB)
 $insertReport = static function (string $id, string $contactId, string $description) use ($pdo, $mainId): void {
     $stmt = $pdo->prepare(
         'INSERT INTO incident_reports (
-            id, main_id, contact_id, report_date, incident_date, issue_type,
-            description, reported_by, approval_status
+            id, main_id, contact_id, report_date, report_time, incident_date, incident_time, issue_type,
+            description, reported_by, done_by, approval_status
         ) VALUES (
-            :id, :main_id, :contact_id, CURDATE(), CURDATE(), "product_quality",
-            :description, "Unit Test", "pending"
+            :id, :main_id, :contact_id, CURDATE(), CURTIME(), CURDATE(), CURTIME(), "product_quality",
+            :description, "Unit Test", "Unit Test", "pending"
         )'
     );
     $stmt->execute([

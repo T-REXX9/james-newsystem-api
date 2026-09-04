@@ -91,7 +91,65 @@ if (($health['http_code'] ?? 0) === 0 || ($health['body']['ok'] ?? false) !== tr
 }
 
 echo "\n--- 2. Report Shape ---\n";
-$report = request('GET', "{$API_BASE}/api/v1/incident-items-report?main_id={$MAIN_ID}&page=1&per_page=5", $authHeaders);
+$vars = file_exists(__DIR__ . '/../.env') ? (parse_ini_file(__DIR__ . '/../.env') ?: []) : [];
+$dbHost = (string) ($vars['DB_HOST'] ?? '127.0.0.1');
+$dbPort = (int) ($vars['DB_PORT'] ?? 3306);
+$dbName = (string) ($vars['DB_NAME'] ?? 'topnotch_migrate');
+$dbUser = (string) ($vars['DB_USER'] ?? 'root');
+$dbPass = (string) ($vars['DB_PASS'] ?? '');
+$pdo = new PDO(
+    "mysql:host={$dbHost};port={$dbPort};dbname={$dbName};charset=utf8mb4",
+    $dbUser,
+    $dbPass,
+    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+);
+
+$seedReportId = 'UT-INC-ITEMS-' . bin2hex(random_bytes(4));
+$seedContactId = 'UT-INC-CONTACT-' . bin2hex(random_bytes(3));
+$seedCleanup = static function () use ($pdo, $seedReportId): void {
+    $pdo->prepare('DELETE FROM incident_report_items WHERE incident_report_id = :id')->execute(['id' => $seedReportId]);
+    $pdo->prepare('DELETE FROM incident_reports WHERE id = :id')->execute(['id' => $seedReportId]);
+};
+$seedCleanup();
+
+$pdo->prepare(
+    'INSERT INTO incident_reports (
+        id, main_id, contact_id, report_date, report_time, incident_date, incident_time,
+        issue_type, description, reported_by, done_by, approval_status
+    ) VALUES (
+        :id, :main_id, :contact_id, CURDATE(), CURTIME(), CURDATE(), CURTIME(),
+        "product_quality", "API test nozzle leak", "Unit Test", "Unit Test", "pending"
+    )'
+)->execute([
+    'id' => $seedReportId,
+    'main_id' => $MAIN_ID,
+    'contact_id' => $seedContactId,
+]);
+
+$pdo->prepare(
+    'INSERT INTO incident_report_items (
+        main_id, incident_report_id, contact_id, product_id, item_code, part_no,
+        description, supplier_id, supplier_name, quantity, issue_summary, match_source, confidence_score, metadata
+    ) VALUES (
+        :main_id, :incident_report_id, :contact_id, :product_id, :item_code, :part_no,
+        :description, :supplier_id, :supplier_name, 1, :issue_summary, "manual", 1,
+        JSON_OBJECT("seed", "incident-items-api-test")
+    )'
+)->execute([
+    'main_id' => $MAIN_ID,
+    'incident_report_id' => $seedReportId,
+    'contact_id' => $seedContactId,
+    'product_id' => 'ut-product-1',
+    'item_code' => 'UT-NOZZLE',
+    'part_no' => 'UT-PN-1',
+    'description' => 'Unit Test Nozzle',
+    'supplier_id' => 'ut-supplier-1',
+    'supplier_name' => 'UT Supplier',
+    'issue_summary' => 'API test nozzle leak',
+]);
+
+try {
+$report = request('GET', "{$API_BASE}/api/v1/incident-items-report?main_id={$MAIN_ID}&page=1&per_page=5&search=UT-NOZZLE", $authHeaders);
 assert_eq(200, $report['http_code'], 'Incident items report returns 200', $passed, $failed, $errors);
 assert_eq(true, $report['body']['ok'] ?? false, 'Incident items response ok=true', $passed, $failed, $errors);
 assert_true(is_array($report['body']['data']['items'] ?? null), 'Response includes items array', $passed, $failed, $errors);
@@ -153,10 +211,11 @@ if (count($items) > 0) {
 }
 
 echo "\n--- 4. Search and Supplier Filters ---\n";
-$filtered = request('GET', "{$API_BASE}/api/v1/incident-items-report?main_id={$MAIN_ID}&page=1&per_page=5&search=NOZZLE&supplier=QK9N", $authHeaders);
+$filtered = request('GET', "{$API_BASE}/api/v1/incident-items-report?main_id={$MAIN_ID}&page=1&per_page=5&search=UT-NOZZLE&supplier=UT%20Supplier", $authHeaders);
 assert_eq(200, $filtered['http_code'], 'Search and supplier filters return 200', $passed, $failed, $errors);
 assert_eq(true, $filtered['body']['ok'] ?? false, 'Filtered response ok=true', $passed, $failed, $errors);
 assert_true(is_array($filtered['body']['data']['items'] ?? null), 'Filtered response includes items array', $passed, $failed, $errors);
+assert_true(count($filtered['body']['data']['items'] ?? []) > 0, 'Search filter finds the seeded item', $passed, $failed, $errors);
 
 echo "\n--- 5. Authenticated Tenant Fallback ---\n";
 $missingMain = request('GET', "{$API_BASE}/api/v1/incident-items-report", $authHeaders);
@@ -166,6 +225,9 @@ assert_eq(true, $missingMain['body']['ok'] ?? false, 'Authenticated tenant fallb
 echo "\n--- 6. Synchronization Authentication ---\n";
 $unauthorizedSync = request('POST', "{$API_BASE}/api/v1/incident-report-items");
 assert_eq(401, $unauthorizedSync['http_code'], 'Incident item synchronization requires authentication', $passed, $failed, $errors);
+} finally {
+    $seedCleanup();
+}
 
 echo "\n==========================================================\n";
 echo "Passed: {$passed} | Failed: {$failed}\n";

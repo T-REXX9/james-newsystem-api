@@ -62,18 +62,6 @@ final class IncidentItemsReportRepository
         $quantity = $payload['quantity'] ?? null;
         $quantityValue = $quantity === null || $quantity === '' ? null : (float) $quantity;
         $confidence = min(1, max(0, (float) ($payload['confidence_score'] ?? 1)));
-        // #region agent log
-        $this->debugLog('B', 'IncidentItemsReportRepository.php:create', 'storing incident item confidence', [
-            'payload_has_confidence_score' => array_key_exists('confidence_score', $payload),
-            'payload_confidence_score' => $payload['confidence_score'] ?? null,
-            'stored_confidence' => $confidence,
-            'match_source' => 'manual',
-            'has_product_id' => $productId !== null,
-            'has_item_code' => $itemCode !== null,
-            'has_part_no' => $partNo !== null,
-            'issue_type' => $issueType,
-        ]);
-        // #endregion
         $metadata = json_encode([
             'source' => 'customer_incident_report',
             'issue_type' => trim((string) ($payload['issue_type'] ?? 'other')),
@@ -175,31 +163,6 @@ SQL;
         $rowsStmt->bindValue('offset', $offset, PDO::PARAM_INT);
         $rowsStmt->execute();
         $rows = $rowsStmt->fetchAll(PDO::FETCH_ASSOC);
-        // #region agent log
-        $this->debugLog('A', 'IncidentItemsReportRepository.php:report', 'grouped confidence aggregation', [
-            'row_count' => count($rows),
-            'min_count' => $minCount,
-            'groups' => array_map(static function (array $row): array {
-                return [
-                    'item_code' => (string) ($row['item_code'] ?? ''),
-                    'part_no' => (string) ($row['part_no'] ?? ''),
-                    'incident_count' => (int) ($row['incident_count'] ?? 0),
-                    'affected_customer_count' => (int) ($row['affected_customer_count'] ?? 0),
-                    'average_confidence' => (float) ($row['average_confidence'] ?? 0),
-                    'evidence_count' => (int) ($row['debug_evidence_count'] ?? 0),
-                    'legacy_match_average' => isset($row['debug_match_average_confidence']) ? (float) $row['debug_match_average_confidence'] : null,
-                    'avg_skip_null' => isset($row['debug_avg_skip_null']) ? (float) $row['debug_avg_skip_null'] : null,
-                    'null_scores' => (int) ($row['debug_null_confidence_count'] ?? 0),
-                    'min_score' => $row['debug_min_confidence'] ?? null,
-                    'max_score' => $row['debug_max_confidence'] ?? null,
-                    'scores' => (string) ($row['debug_confidence_values'] ?? ''),
-                    'match_sources' => (string) ($row['match_sources'] ?? ''),
-                    'demo_rows' => (int) ($row['debug_demo_rows'] ?? 0),
-                    'customer_rows' => (int) ($row['debug_customer_rows'] ?? 0),
-                ];
-            }, array_slice($rows, 0, 15)),
-        ]);
-        // #endregion
 
         return [
             'items' => array_map(fn(array $row): array => $this->mapRow($row), $rows),
@@ -480,18 +443,6 @@ SELECT
         ),
         4
     ) AS average_confidence,
-    (
-        COUNT(DISTINCT NULLIF(contact_id, ''))
-        + SUM(CASE WHEN NULLIF(contact_id, '') IS NULL THEN 1 ELSE 0 END)
-    ) AS debug_evidence_count,
-    ROUND(AVG(COALESCE(confidence_score, 0)), 4) AS debug_match_average_confidence,
-    ROUND(AVG(confidence_score), 4) AS debug_avg_skip_null,
-    SUM(CASE WHEN confidence_score IS NULL THEN 1 ELSE 0 END) AS debug_null_confidence_count,
-    MIN(confidence_score) AS debug_min_confidence,
-    MAX(confidence_score) AS debug_max_confidence,
-    GROUP_CONCAT(COALESCE(CAST(confidence_score AS CHAR), 'NULL') ORDER BY created_at SEPARATOR ',') AS debug_confidence_values,
-    SUM(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.seed')) = 'incident-items-demo' THEN 1 ELSE 0 END) AS debug_demo_rows,
-    SUM(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.source')) = 'customer_incident_report' THEN 1 ELSE 0 END) AS debug_customer_rows,
     GROUP_CONCAT(DISTINCT match_source ORDER BY match_source SEPARATOR ', ') AS match_sources,
     GROUP_CONCAT(
         CONCAT(
@@ -604,38 +555,6 @@ SQL;
             }
             $stmt->bindValue($key, $value, $type);
         }
-    }
-
-    /**
-     * @param array<string, mixed> $data
-     */
-    private function debugLog(string $hypothesisId, string $location, string $message, array $data): void
-    {
-        // #region agent log
-        $payload = json_encode([
-            'sessionId' => '924957',
-            'runId' => 'post-fix',
-            'hypothesisId' => $hypothesisId,
-            'location' => $location,
-            'message' => $message,
-            'data' => $data,
-            'timestamp' => (int) round(microtime(true) * 1000),
-        ], JSON_UNESCAPED_UNICODE);
-        if ($payload === false) {
-            return;
-        }
-        @file_put_contents('/Users/melsonleanbacuen/james-system/.cursor/debug-924957.log', $payload . "\n", FILE_APPEND | LOCK_EX);
-        $context = stream_context_create([
-            'http' => [
-                'method' => 'POST',
-                'header' => "Content-Type: application/json\r\nX-Debug-Session-Id: 924957\r\n",
-                'content' => $payload,
-                'timeout' => 0.4,
-                'ignore_errors' => true,
-            ],
-        ]);
-        @file_get_contents('http://127.0.0.1:7586/ingest/8c501c88-a103-4e50-912c-b3b44d4a265a', false, $context);
-        // #endregion
     }
 
     /**
