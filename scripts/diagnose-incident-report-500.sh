@@ -90,6 +90,7 @@ fi
 
 if [[ "$SCHEMA_RED$LIST_RED$CREATE_RED" != "000" ]]; then
   echo "VERDICT: RED (incident report workflow broken)"
+  echo "Fix: ./scripts/fix-incident-report-schema.sh"
   exit 1
 fi
 echo "VERDICT: GREEN"
