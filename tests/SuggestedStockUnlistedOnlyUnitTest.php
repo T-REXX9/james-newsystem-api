@@ -9,10 +9,16 @@ if ($source === false) {
 }
 
 $checks = [
-    'unlistedInventoryMatchSql' => 'unlisted inventory exclusion helper must exist',
-    'NOT EXISTS' => 'suggested stock queries must exclude inventory soft-matches',
-    'clearNotListedRemarks' => 'clearing NotListed remarks after product create must exist',
-    "SET i.lremark = 'Listed'" => 'NotListed remarks must be settled to Listed',
+    'ProductCreated' => 'product creation must keep suggestions in the active workflow',
+    'AddedToPR' => 'adding a suggestion to a PR must remove it from the active workflow',
+    'markAddedToPurchaseRequest' => 'suggestions must be marked only after PR creation',
+    "SET i.lremark = 'ProductCreated'" => 'product creation must preserve the active suggestion',
+    'addToKiv' => 'KIV folder add must persist parked items',
+    'removeFromKiv' => 'KIV folder restore must exist',
+    'suggested_stock_kiv' => 'KIV matching must use the dedicated folder table',
+    'part_no_search' => 'summary must support part-number search',
+    'qty-desc' => 'summary must support qty requested sort',
+    "(\$kivFolder ? '' : 'NOT ')" => 'main report must hide parked KIV items',
 ];
 
 $failed = 0;
@@ -59,9 +65,30 @@ if (!str_contains($controller, 'function clearNotListed') || !str_contains($boot
     echo "  PASS clear-not-listed endpoint is wired\n";
 }
 
+if (
+    !str_contains($controller, 'function addToKiv')
+    || !str_contains($controller, 'function removeFromKiv')
+    || !str_contains($bootstrap, 'suggested-stock-report/kiv')
+    || !str_contains($bootstrap, 'suggested-stock-report/kiv/remove')
+) {
+    fwrite(STDERR, "FAIL KIV folder endpoints must be wired\n");
+    $failed++;
+} else {
+    echo "  PASS KIV folder endpoints are wired\n";
+}
+
+if (!str_contains($controller, 'function markAddedToPurchaseRequest') || !str_contains($bootstrap, 'suggested-stock-report/added-to-pr')) {
+    fwrite(STDERR, "FAIL add-to-PR completion endpoint must be wired\n");
+    $failed++;
+} else {
+    echo "  PASS add-to-PR completion endpoint is wired\n";
+}
+
+$endpointChecks = 3;
+
 if ($failed > 0) {
-    echo "Results: " . (count($checks) + count($productChecks) + 1 - $failed) . " passed, {$failed} failed\n";
+    echo "Results: " . (count($checks) + count($productChecks) + $endpointChecks - $failed) . " passed, {$failed} failed\n";
     exit(1);
 }
 
-echo 'Results: ' . (count($checks) + count($productChecks) + 1) . " passed, 0 failed\n";
+echo 'Results: ' . (count($checks) + count($productChecks) + $endpointChecks) . " passed, 0 failed\n";

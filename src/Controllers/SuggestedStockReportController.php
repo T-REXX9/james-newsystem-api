@@ -39,10 +39,23 @@ final class SuggestedStockReportController
         $dateFrom = isset($query['date_from']) ? (string) $query['date_from'] : null;
         $dateTo = isset($query['date_to']) ? (string) $query['date_to'] : null;
         $customerId = isset($query['customer_id']) ? (string) $query['customer_id'] : null;
+        $partNo = trim((string) ($query['part_no'] ?? $query['search'] ?? ''));
+        $sortBy = trim((string) ($query['sort_by'] ?? 'inquiries-desc'));
+        $kivFolder = $this->toBool($query['kiv'] ?? false) || $sortBy === 'kiv-folder';
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, min(200, (int) ($query['per_page'] ?? 100)));
 
-        return $this->repo->summary($mainId, $dateFrom, $dateTo, $customerId, $page, $perPage);
+        return $this->repo->summary(
+            $mainId,
+            $dateFrom,
+            $dateTo,
+            $customerId,
+            $page,
+            $perPage,
+            $partNo !== '' ? $partNo : null,
+            $sortBy !== '' ? $sortBy : 'inquiries-desc',
+            $kivFolder
+        );
     }
 
     public function details(array $params = [], array $query = [], array $body = []): array
@@ -106,6 +119,57 @@ final class SuggestedStockReportController
         );
     }
 
+    public function addToKiv(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $items = is_array($body['items'] ?? null) ? $body['items'] : [];
+        if ($items === []) {
+            throw new HttpException(422, 'items is required');
+        }
+
+        $createdBy = trim((string) ($body['user_id'] ?? ''));
+        $result = $this->repo->addToKiv($mainId, $items, $createdBy);
+        if ($result['requested'] === 0) {
+            throw new HttpException(422, 'items must include a part number, item code, or description');
+        }
+
+        return $result;
+    }
+
+    public function removeFromKiv(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $items = is_array($body['items'] ?? null) ? $body['items'] : [];
+        if ($items === []) {
+            throw new HttpException(422, 'items is required');
+        }
+
+        $result = $this->repo->removeFromKiv($mainId, $items);
+        if ($result['requested'] === 0) {
+            throw new HttpException(422, 'items must include a part number, item code, or description');
+        }
+
+        return $result;
+    }
+
+    public function markAddedToPurchaseRequest(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $items = is_array($body['items'] ?? null) ? $body['items'] : [];
+        if ($mainId <= 0 || $items === []) {
+            throw new HttpException(422, 'main_id and items are required');
+        }
+        return $this->repo->markAddedToPurchaseRequest($mainId, $items);
+    }
+
     public function suppliers(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);
@@ -163,5 +227,14 @@ final class SuggestedStockReportController
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());
         }
+    }
+
+    private function toBool(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+        $text = strtolower(trim((string) $value));
+        return in_array($text, ['1', 'true', 'yes', 'on'], true);
     }
 }

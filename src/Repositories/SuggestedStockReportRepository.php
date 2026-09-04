@@ -21,8 +21,8 @@ final class SuggestedStockReportRepository
     public function listCustomers(int $mainId, ?string $dateFrom, ?string $dateTo): array
     {
         [$from, $to] = $this->resolveDateRange($dateFrom, $dateTo);
+        $kivSql = $this->kivExistsSql('kiv_cust_main_id');
 
-        $unlistedSql = $this->unlistedInventoryMatchSql('unlisted_cust');
         $sql = <<<SQL
 SELECT
     COALESCE(tr.lcustomerid, '') AS id,
@@ -30,11 +30,40 @@ SELECT
     COUNT(*) AS inquiry_count
 FROM tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
+LEFT JOIN (
+    SELECT inv.litemcode AS litemcode
+    FROM tblinventory_item inv
+    WHERE inv.lmain_id = :inv_code_main_id
+      AND COALESCE(inv.lnot_inventory, 0) = 0
+      AND COALESCE(inv.ldeleted, 0) = 0
+      AND COALESCE(inv.litemcode, '') <> ''
+    GROUP BY inv.litemcode
+) inv_by_code
+  ON COALESCE(i.litem_code, '') <> ''
+ AND inv_by_code.litemcode = i.litem_code
+LEFT JOIN (
+    SELECT inv.lpartno AS lpartno
+    FROM tblinventory_item inv
+    WHERE inv.lmain_id = :inv_part_main_id
+      AND COALESCE(inv.lnot_inventory, 0) = 0
+      AND COALESCE(inv.ldeleted, 0) = 0
+      AND COALESCE(inv.lpartno, '') <> ''
+    GROUP BY inv.lpartno
+) inv_by_part
+  ON COALESCE(i.lpartno, '') <> ''
+ AND inv_by_part.lpartno = i.lpartno
 WHERE tr.lmain_id = :main_id
-  AND i.lremark = 'NotListed'
+  AND (
+    COALESCE(i.lremark, '') = 'ProductCreated'
+    OR (
+      COALESCE(i.lremark, '') = 'NotListed'
+      AND inv_by_code.litemcode IS NULL
+      AND inv_by_part.lpartno IS NULL
+    )
+  )
   AND tr.ldate >= :date_from
   AND tr.ldate <= :date_to
-  AND {$unlistedSql}
+  AND NOT {$kivSql}
 GROUP BY tr.lcustomerid
 ORDER BY inquiry_count DESC, company ASC
 SQL;
@@ -44,7 +73,9 @@ SQL;
             'main_id' => (string) $mainId,
             'date_from' => $from,
             'date_to' => $to,
-            'unlisted_cust_main_id' => (string) $mainId,
+            'inv_code_main_id' => (string) $mainId,
+            'inv_part_main_id' => (string) $mainId,
+            'kiv_cust_main_id' => (string) $mainId,
         ]);
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -59,14 +90,61 @@ SQL;
         ?string $dateTo,
         ?string $customerId,
         int $page,
-        int $perPage
+        int $perPage,
+        ?string $partNo = null,
+        string $sortBy = 'inquiries-desc',
+        bool $kivFolder = false
     ): array {
         [$from, $to] = $this->resolveDateRange($dateFrom, $dateTo);
-        [$whereSql, $params] = $this->buildFilters($mainId, $from, $to, $customerId);
-
+        $orderSql = $this->summaryOrderSql($sortBy, $kivFolder);
         $offset = ($page - 1) * $perPage;
         $fetchLimit = $perPage + 1;
-        // Unlisted-only report: inventory soft-match columns stay empty by construction.
+
+        $where = [
+            'tr.lmain_id = :main_id',
+            "COALESCE(i.lremark, '') IN ('NotListed', 'ProductCreated')",
+            'tr.ldate >= :date_from',
+            'tr.ldate <= :date_to',
+            ($kivFolder ? '' : 'NOT ') . $this->kivExistsSql('kiv_main_id'),
+        ];
+        $params = [
+            'main_id' => (string) $mainId,
+            'date_from' => $from,
+            'date_to' => $to,
+            'kiv_main_id' => (string) $mainId,
+            'inv_code_main_id' => (string) $mainId,
+            'inv_part_main_id' => (string) $mainId,
+        ];
+
+        $customer = trim((string) $customerId);
+        if ($customer !== '' && strtolower($customer) !== 'all') {
+            $where[] = 'tr.lcustomerid = :customer_id';
+            $params['customer_id'] = $customer;
+        }
+
+        $partSearch = trim((string) $partNo);
+        if ($partSearch !== '') {
+            $where[] = 'LOWER(COALESCE(i.lpartno, \'\')) LIKE :part_no_search';
+            $params['part_no_search'] = '%' . strtolower($partSearch) . '%';
+        }
+
+        // Keep NotListed rows that soft-match inventory out of the active report,
+        // while ProductCreated rows stay visible for the PR workflow.
+        $where[] = <<<SQL
+(
+  COALESCE(i.lremark, '') = 'ProductCreated'
+  OR (
+    COALESCE(i.lremark, '') = 'NotListed'
+    AND inv_by_code.lsession IS NULL
+    AND inv_by_part.lsession IS NULL
+  )
+)
+SQL;
+
+        $whereSql = implode(' AND ', $where);
+
+        // Pre-aggregate inventory matches (one row per code/part) so joins cannot
+        // multiply inquiry lines and inflate qty/inquiry counts.
         $sql = <<<SQL
 SELECT
     CAST(MIN(i.lid) AS CHAR) AS id,
@@ -80,13 +158,51 @@ SELECT
     COALESCE(MAX(i.lreport_remark), '') AS report_remark,
     COALESCE(MAX(tr.ldate), '') AS last_inquiry_date,
     '' AS brand,
-    '' AS database_item_code,
-    '' AS database_part_no
+    COALESCE(MAX(inv_by_code.lsession), MAX(inv_by_part.lsession), '') AS database_item_id,
+    COALESCE(MAX(inv_by_code.litemcode), MAX(inv_by_part.litemcode), '') AS database_item_code,
+    COALESCE(MAX(inv_by_code.lpartno), MAX(inv_by_part.lpartno), '') AS database_part_no,
+    CASE
+      WHEN SUM(CASE WHEN COALESCE(i.lremark, '') = 'ProductCreated' THEN 1 ELSE 0 END) > 0
+       AND (
+         MAX(inv_by_code.lsession) IS NOT NULL
+         OR MAX(inv_by_part.lsession) IS NOT NULL
+       )
+      THEN 1 ELSE 0
+    END AS product_created,
+    :kiv_flag AS is_kiv
 FROM tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
+LEFT JOIN (
+    SELECT
+        inv.litemcode AS litemcode,
+        CAST(MIN(inv.lsession) AS CHAR) AS lsession,
+        SUBSTRING_INDEX(GROUP_CONCAT(inv.lpartno ORDER BY inv.lsession SEPARATOR '\n'), '\n', 1) AS lpartno
+    FROM tblinventory_item inv
+    WHERE inv.lmain_id = :inv_code_main_id
+      AND COALESCE(inv.lnot_inventory, 0) = 0
+      AND COALESCE(inv.ldeleted, 0) = 0
+      AND COALESCE(inv.litemcode, '') <> ''
+    GROUP BY inv.litemcode
+) inv_by_code
+  ON COALESCE(i.litem_code, '') <> ''
+ AND inv_by_code.litemcode = i.litem_code
+LEFT JOIN (
+    SELECT
+        inv.lpartno AS lpartno,
+        CAST(MIN(inv.lsession) AS CHAR) AS lsession,
+        SUBSTRING_INDEX(GROUP_CONCAT(inv.litemcode ORDER BY inv.lsession SEPARATOR '\n'), '\n', 1) AS litemcode
+    FROM tblinventory_item inv
+    WHERE inv.lmain_id = :inv_part_main_id
+      AND COALESCE(inv.lnot_inventory, 0) = 0
+      AND COALESCE(inv.ldeleted, 0) = 0
+      AND COALESCE(inv.lpartno, '') <> ''
+    GROUP BY inv.lpartno
+) inv_by_part
+  ON COALESCE(i.lpartno, '') <> ''
+ AND inv_by_part.lpartno = i.lpartno
 WHERE {$whereSql}
 GROUP BY i.lpartno, i.litem_code, i.ldesc
-ORDER BY inquiry_count DESC, total_qty DESC, part_no ASC
+ORDER BY {$orderSql}
 LIMIT :limit OFFSET :offset
 SQL;
 
@@ -94,6 +210,7 @@ SQL;
         foreach ($params as $key => $value) {
             $stmt->bindValue($key, $value, PDO::PARAM_STR);
         }
+        $stmt->bindValue('kiv_flag', $kivFolder ? '1' : '0', PDO::PARAM_STR);
         $stmt->bindValue('limit', $fetchLimit, PDO::PARAM_INT);
         $stmt->bindValue('offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
@@ -128,12 +245,70 @@ SQL;
         int $perPage
     ): array {
         [$from, $to] = $this->resolveDateRange($dateFrom, $dateTo);
-        [$whereSql, $params] = $this->buildFilters($mainId, $from, $to, $customerId);
+        $kivSql = $this->kivExistsSql('kiv_main_id');
+
+        $where = [
+            'tr.lmain_id = :main_id',
+            'tr.ldate >= :date_from',
+            'tr.ldate <= :date_to',
+            "NOT {$kivSql}",
+            <<<SQL
+(
+  COALESCE(i.lremark, '') = 'ProductCreated'
+  OR (
+    COALESCE(i.lremark, '') = 'NotListed'
+    AND inv_by_code.litemcode IS NULL
+    AND inv_by_part.lpartno IS NULL
+  )
+)
+SQL,
+        ];
+        $params = [
+            'main_id' => (string) $mainId,
+            'date_from' => $from,
+            'date_to' => $to,
+            'kiv_main_id' => (string) $mainId,
+            'inv_code_main_id' => (string) $mainId,
+            'inv_part_main_id' => (string) $mainId,
+        ];
+
+        $customer = trim((string) $customerId);
+        if ($customer !== '' && strtolower($customer) !== 'all') {
+            $where[] = 'tr.lcustomerid = :customer_id';
+            $params['customer_id'] = $customer;
+        }
+
+        $whereSql = implode(' AND ', $where);
+        $inventoryJoins = <<<SQL
+LEFT JOIN (
+    SELECT inv.litemcode AS litemcode
+    FROM tblinventory_item inv
+    WHERE inv.lmain_id = :inv_code_main_id
+      AND COALESCE(inv.lnot_inventory, 0) = 0
+      AND COALESCE(inv.ldeleted, 0) = 0
+      AND COALESCE(inv.litemcode, '') <> ''
+    GROUP BY inv.litemcode
+) inv_by_code
+  ON COALESCE(i.litem_code, '') <> ''
+ AND inv_by_code.litemcode = i.litem_code
+LEFT JOIN (
+    SELECT inv.lpartno AS lpartno
+    FROM tblinventory_item inv
+    WHERE inv.lmain_id = :inv_part_main_id
+      AND COALESCE(inv.lnot_inventory, 0) = 0
+      AND COALESCE(inv.ldeleted, 0) = 0
+      AND COALESCE(inv.lpartno, '') <> ''
+    GROUP BY inv.lpartno
+) inv_by_part
+  ON COALESCE(i.lpartno, '') <> ''
+ AND inv_by_part.lpartno = i.lpartno
+SQL;
 
         $countSql = <<<SQL
 SELECT COUNT(*)
 FROM tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
+{$inventoryJoins}
 WHERE {$whereSql}
 SQL;
         $countStmt = $this->db->pdo()->prepare($countSql);
@@ -161,6 +336,7 @@ SELECT
 FROM tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
 LEFT JOIN tblaccount acc ON acc.lid = tr.luser
+{$inventoryJoins}
 WHERE {$whereSql}
 ORDER BY tr.ldate DESC, i.lid DESC
 LIMIT :limit OFFSET :offset
@@ -208,7 +384,8 @@ SQL;
     }
 
     /**
-     * Clear NotListed inquiry remarks after a product is created from Suggested Stock.
+     * Keep a suggested-stock row active after its product is created, so it can be
+     * selected and added directly to a purchase request.
      * Prefer inquiry item id when provided; otherwise match by part no and/or item code.
      *
      * @return array{cleared:int}
@@ -227,7 +404,7 @@ SQL;
             $sql = <<<SQL
 UPDATE tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
-SET i.lremark = 'Listed'
+SET i.lremark = 'ProductCreated'
 WHERE i.lid = :item_id
   AND tr.lmain_id = :main_id
   AND COALESCE(i.lremark, '') = 'NotListed'
@@ -239,12 +416,11 @@ SQL;
             ]);
             $cleared += $stmt->rowCount();
 
-            if ($cleared > 0) {
-                return ['cleared' => $cleared];
-            }
         }
 
-        if ($partNo !== '' || $itemCode !== '') {
+        // The product-creation handoff always includes the source inquiry id.
+        // Avoid a broad part/code update after that fast primary-key update.
+        if ($cleared === 0 && ($partNo !== '' || $itemCode !== '')) {
             $matchParts = [];
             $params = [
                 'main_id' => $mainId,
@@ -261,7 +437,7 @@ SQL;
             $sql = <<<SQL
 UPDATE tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
-SET i.lremark = 'Listed'
+SET i.lremark = 'ProductCreated'
 WHERE tr.lmain_id = :main_id
   AND COALESCE(i.lremark, '') = 'NotListed'
   AND ({$matchSql})
@@ -272,6 +448,106 @@ SQL;
         }
 
         return ['cleared' => $cleared];
+    }
+
+    /**
+     * Remove product-created suggestions from the active report once their PR was
+     * successfully created.  Inquiry history is deliberately retained.
+     *
+     * @param array<int, array<string, mixed>> $items
+     * @return array{removed:int,requested:int}
+     */
+    public function markAddedToPurchaseRequest(int $mainId, array $items): array
+    {
+        $normalized = $this->normalizeKivItems($items);
+        if ($normalized === []) return ['removed' => 0, 'requested' => 0];
+
+        $stmt = $this->db->pdo()->prepare(<<<SQL
+UPDATE tblinquiry_item i
+INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
+SET i.lremark = 'AddedToPR'
+WHERE tr.lmain_id = :main_id
+  AND COALESCE(i.lremark, '') IN ('NotListed', 'ProductCreated')
+  AND i.lpartno = :part_no
+  AND i.litem_code = :item_code
+  AND i.ldesc = :description
+SQL);
+        $removed = 0;
+        foreach ($normalized as $item) {
+            $stmt->execute([
+                'main_id' => (string) $mainId,
+                'part_no' => $item['part_no'],
+                'item_code' => $item['item_code'],
+                'description' => $item['description'],
+            ]);
+            $removed += $stmt->rowCount();
+        }
+        return ['removed' => $removed, 'requested' => count($normalized)];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $items
+     * @return array{added:int,requested:int}
+     */
+    public function addToKiv(int $mainId, array $items, string $createdBy = ''): array
+    {
+        $normalized = $this->normalizeKivItems($items);
+        if ($normalized === []) {
+            return ['added' => 0, 'requested' => 0];
+        }
+
+        $sql = <<<SQL
+INSERT INTO suggested_stock_kiv (main_id, part_no, item_code, description, item_key, created_by)
+VALUES (:main_id, :part_no, :item_code, :description, :item_key, :created_by)
+ON DUPLICATE KEY UPDATE
+    part_no = VALUES(part_no),
+    item_code = VALUES(item_code),
+    description = VALUES(description)
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $added = 0;
+        foreach ($normalized as $item) {
+            $stmt->execute([
+                'main_id' => (string) $mainId,
+                'part_no' => $item['part_no'],
+                'item_code' => $item['item_code'],
+                'description' => $item['description'],
+                'item_key' => $item['item_key'],
+                'created_by' => $createdBy,
+            ]);
+            $added++;
+        }
+
+        return ['added' => $added, 'requested' => count($normalized)];
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $items
+     * @return array{removed:int,requested:int}
+     */
+    public function removeFromKiv(int $mainId, array $items): array
+    {
+        $normalized = $this->normalizeKivItems($items);
+        if ($normalized === []) {
+            return ['removed' => 0, 'requested' => 0];
+        }
+
+        $sql = <<<SQL
+DELETE FROM suggested_stock_kiv
+WHERE main_id = :main_id
+  AND item_key = :item_key
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $removed = 0;
+        foreach ($normalized as $item) {
+            $stmt->execute([
+                'main_id' => (string) $mainId,
+                'item_key' => $item['item_key'],
+            ]);
+            $removed += $stmt->rowCount();
+        }
+
+        return ['removed' => $removed, 'requested' => count($normalized)];
     }
 
     /**
@@ -485,14 +761,20 @@ SQL;
     /**
      * @return array{0:string,1:array<string,string>}
      */
-    private function buildFilters(int $mainId, string $dateFrom, string $dateTo, ?string $customerId): array
-    {
+    private function buildFilters(
+        int $mainId,
+        string $dateFrom,
+        string $dateTo,
+        ?string $customerId,
+        ?string $partNo = null,
+        bool $kivFolder = false
+    ): array {
+        $unlistedSql = $this->unlistedInventoryMatchSql('unlisted');
         $where = [
             'tr.lmain_id = :main_id',
-            'i.lremark = \'NotListed\'',
+            "(COALESCE(i.lremark, '') = 'ProductCreated' OR (COALESCE(i.lremark, '') = 'NotListed' AND {$unlistedSql}))",
             'tr.ldate >= :date_from',
             'tr.ldate <= :date_to',
-            $this->unlistedInventoryMatchSql('unlisted'),
         ];
         $params = [
             'main_id' => (string) $mainId,
@@ -501,13 +783,91 @@ SQL;
             'unlisted_main_id' => (string) $mainId,
         ];
 
+        // Main report hides parked KIV items. Sort By → KIV folder shows only those rows.
+        $where[] = ($kivFolder ? '' : 'NOT ') . $this->kivExistsSql('kiv_main_id');
+        $params['kiv_main_id'] = (string) $mainId;
+
         $customer = trim((string) $customerId);
         if ($customer !== '' && strtolower($customer) !== 'all') {
             $where[] = 'tr.lcustomerid = :customer_id';
             $params['customer_id'] = $customer;
         }
 
+        $partSearch = trim((string) $partNo);
+        if ($partSearch !== '') {
+            $where[] = 'LOWER(COALESCE(i.lpartno, \'\')) LIKE :part_no_search';
+            $params['part_no_search'] = '%' . strtolower($partSearch) . '%';
+        }
+
         return [implode(' AND ', $where), $params];
+    }
+
+    private function summaryOrderSql(string $sortBy, bool $kivFolder): string
+    {
+        if ($kivFolder || $sortBy === 'kiv-folder') {
+            return 'total_qty DESC, description ASC, part_no ASC';
+        }
+
+        return match ($sortBy) {
+            'qty-desc' => 'total_qty DESC, inquiry_count DESC, part_no ASC',
+            'inquiries-asc' => 'inquiry_count ASC, total_qty DESC, part_no ASC',
+            'description-asc' => 'description ASC, part_no ASC',
+            'description-desc' => 'description DESC, part_no ASC',
+            default => 'inquiry_count DESC, total_qty DESC, part_no ASC',
+        };
+    }
+
+    private function kivExistsSql(string $mainParam): string
+    {
+        return <<<SQL
+EXISTS (
+    SELECT 1
+    FROM suggested_stock_kiv kiv
+    WHERE kiv.main_id = :{$mainParam}
+      AND kiv.part_no = TRIM(COALESCE(i.lpartno, ''))
+      AND kiv.item_code = TRIM(COALESCE(i.litem_code, ''))
+      AND kiv.description = TRIM(COALESCE(i.ldesc, ''))
+)
+SQL;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $items
+     * @return array<int, array{part_no:string,item_code:string,description:string,item_key:string}>
+     */
+    private function normalizeKivItems(array $items): array
+    {
+        $normalized = [];
+        $seen = [];
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $partNo = trim((string) ($item['part_no'] ?? $item['partNo'] ?? ''));
+            $itemCode = trim((string) ($item['item_code'] ?? $item['itemCode'] ?? ''));
+            $description = trim((string) ($item['description'] ?? ''));
+            if ($partNo === '' && $itemCode === '' && $description === '') {
+                continue;
+            }
+            $itemKey = $this->kivItemKey($partNo, $itemCode, $description);
+            if (isset($seen[$itemKey])) {
+                continue;
+            }
+            $seen[$itemKey] = true;
+            $normalized[] = [
+                'part_no' => $partNo,
+                'item_code' => $itemCode,
+                'description' => $description,
+                'item_key' => $itemKey,
+            ];
+        }
+
+        return $normalized;
+    }
+
+    private function kivItemKey(string $partNo, string $itemCode, string $description): string
+    {
+        return hash('sha256', implode("\0", [$partNo, $itemCode, $description]));
     }
 
     /**

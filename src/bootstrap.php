@@ -538,6 +538,9 @@ function app_router(): Router
     $router->get('/api/v1/suggested-stock-report/details', [$suggestedStockReportController, 'details']);
     $router->patch('/api/v1/suggested-stock-report/remark', [$suggestedStockReportController, 'updateRemark']);
     $router->post('/api/v1/suggested-stock-report/clear-not-listed', [$suggestedStockReportController, 'clearNotListed']);
+    $router->post('/api/v1/suggested-stock-report/kiv', [$suggestedStockReportController, 'addToKiv']);
+    $router->post('/api/v1/suggested-stock-report/kiv/remove', [$suggestedStockReportController, 'removeFromKiv']);
+    $router->post('/api/v1/suggested-stock-report/added-to-pr', [$suggestedStockReportController, 'markAddedToPurchaseRequest']);
     $router->get('/api/v1/suggested-stock-report/suppliers', [$suggestedStockReportController, 'suppliers']);
     $router->get('/api/v1/suggested-stock-report/purchase-orders', [$suggestedStockReportController, 'purchaseOrders']);
     $router->post('/api/v1/suggested-stock-report/purchase-orders', [$suggestedStockReportController, 'createPurchaseOrder']);

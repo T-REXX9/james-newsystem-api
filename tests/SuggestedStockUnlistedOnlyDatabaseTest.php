@@ -135,6 +135,8 @@ $cleanup = static function () use (
     $pdo,
     $inquiryRefUnlisted,
     $inquiryRefListed,
+    $partNoUnlisted,
+    $partNoListed,
     &$createdProductSessions,
     &$createdInquiryItemIds
 ): void {
@@ -148,6 +150,8 @@ $cleanup = static function () use (
         ->execute([$inquiryRefUnlisted, $inquiryRefListed]);
     $pdo->prepare('DELETE FROM tblinquiry WHERE lrefno IN (?, ?)')
         ->execute([$inquiryRefUnlisted, $inquiryRefListed]);
+    $pdo->prepare('DELETE FROM suggested_stock_kiv WHERE part_no IN (?, ?)')
+        ->execute([$partNoUnlisted, $partNoListed]);
 
     foreach (array_values(array_unique($createdProductSessions)) as $session) {
         if ($session === '') {
@@ -265,6 +269,66 @@ try {
     ss_assert(in_array($partNoUnlisted, $summaryParts, true), 'summary includes unlisted inquiry item', $passed, $failed, $errors);
     ss_assert(!in_array($partNoListed, $summaryParts, true), 'summary excludes inquiry item already in catalog', $passed, $failed, $errors);
 
+    $kivResult = $suggestedRepo->addToKiv($MAIN_ID, [[
+        'part_no' => $partNoUnlisted,
+        'item_code' => $itemCodeUnlisted,
+        'description' => 'Unlisted suggested stock test part',
+    ]], (string) $USER_ID);
+    ss_assert(($kivResult['added'] ?? 0) >= 1, 'unlisted item can be moved to KIV folder', $passed, $failed, $errors);
+
+    $summaryAfterKiv = $suggestedRepo->summary($MAIN_ID, $today, $today, null, 1, 200);
+    ss_assert(
+        !in_array($partNoUnlisted, ss_summary_part_nos($summaryAfterKiv), true),
+        'main summary hides items parked in KIV folder',
+        $passed,
+        $failed,
+        $errors
+    );
+
+    $customersAfterKiv = $suggestedRepo->listCustomers($MAIN_ID, $today, $today);
+    $customerIdsAfterKiv = array_map(static fn(array $row): string => (string) ($row['id'] ?? ''), $customersAfterKiv);
+    ss_assert(
+        !in_array($customerId, $customerIdsAfterKiv, true),
+        'customer filter excludes demand that only exists in KIV folder',
+        $passed,
+        $failed,
+        $errors
+    );
+
+    $kivSummary = $suggestedRepo->summary($MAIN_ID, $today, $today, null, 1, 200, null, 'qty-desc', true);
+    ss_assert(
+        in_array($partNoUnlisted, ss_summary_part_nos($kivSummary), true),
+        'KIV folder summary includes parked unlisted item',
+        $passed,
+        $failed,
+        $errors
+    );
+
+    $partSearch = $suggestedRepo->summary($MAIN_ID, $today, $today, null, 1, 200, $partNoUnlisted, 'qty-desc', true);
+    ss_assert(
+        in_array($partNoUnlisted, ss_summary_part_nos($partSearch), true),
+        'part-number search finds the parked item in KIV folder',
+        $passed,
+        $failed,
+        $errors
+    );
+
+    $restored = $suggestedRepo->removeFromKiv($MAIN_ID, [[
+        'part_no' => $partNoUnlisted,
+        'item_code' => $itemCodeUnlisted,
+        'description' => 'Unlisted suggested stock test part',
+    ]]);
+    ss_assert(($restored['removed'] ?? 0) >= 1, 'parked item can be restored from KIV folder', $passed, $failed, $errors);
+
+    $summaryAfterRestore = $suggestedRepo->summary($MAIN_ID, $today, $today, null, 1, 200);
+    ss_assert(
+        in_array($partNoUnlisted, ss_summary_part_nos($summaryAfterRestore), true),
+        'restored item returns to the main suggested stock summary',
+        $passed,
+        $failed,
+        $errors
+    );
+
     $details = $suggestedRepo->details($MAIN_ID, $today, $today, null, 1, 200);
     $detailParts = ss_details_part_nos($details);
     ss_assert(in_array($partNoUnlisted, $detailParts, true), 'details include unlisted inquiry item', $passed, $failed, $errors);
@@ -273,6 +337,18 @@ try {
     $customers = $suggestedRepo->listCustomers($MAIN_ID, $today, $today);
     $customerIds = array_map(static fn(array $row): string => (string) ($row['id'] ?? ''), $customers);
     ss_assert(in_array($customerId, $customerIds, true), 'customers list includes seeded unlisted customer', $passed, $failed, $errors);
+
+    $created = $productRepo->createProduct($MAIN_ID, $USER_ID, [
+        'item_code' => $itemCodeUnlisted,
+        'part_no' => $partNoUnlisted,
+        'description' => 'Created from suggested stock DB test',
+        'reorder_quantity' => 4,
+    ]);
+    $createdSession = (string) ($created['id'] ?? $created['product_session'] ?? '');
+    if ($createdSession !== '') {
+        $createdProductSessions[] = $createdSession;
+    }
+    ss_assert($createdSession !== '', 'new product create succeeds for unlisted part', $passed, $failed, $errors);
 
     $health = ss_request('GET', "{$API_BASE}/api/v1/health");
     if (($health['http_code'] ?? 0) === 200 && ($health['body']['ok'] ?? false) === true) {
@@ -290,7 +366,7 @@ try {
                 static fn(array $row): string => (string) ($row['part_no'] ?? ''),
                 $apiSummary['body']['data']['items'] ?? []
             );
-            ss_assert(in_array($partNoUnlisted, $apiParts, true), 'summary API includes seeded unlisted item', $passed, $failed, $errors);
+            ss_assert(!in_array($partNoUnlisted, $apiParts, true), 'summary API excludes a matching product before it is marked ProductCreated', $passed, $failed, $errors);
             ss_assert(!in_array($partNoListed, $apiParts, true), 'summary API excludes already-listed match', $passed, $failed, $errors);
         }
 
@@ -314,22 +390,31 @@ try {
         }
     } else {
         echo "\nAPI server not reachable — repository/database checks only\n";
+        $clearResult = $suggestedRepo->clearNotListedRemarks($MAIN_ID, $unlistedItemId, $partNoUnlisted, $itemCodeUnlisted);
+        ss_assert(($clearResult['cleared'] ?? 0) >= 1, 'repository marks the created product suggestion', $passed, $failed, $errors);
     }
 
     $remarkStmt = $pdo->prepare('SELECT lremark FROM tblinquiry_item WHERE lid = :id');
     $remarkStmt->execute(['id' => $unlistedItemId]);
-    ss_assert_eq('Listed', (string) $remarkStmt->fetchColumn(), 'unlisted inquiry item remark becomes Listed after clear', $passed, $failed, $errors);
+    ss_assert_eq('ProductCreated', (string) $remarkStmt->fetchColumn(), 'unlisted inquiry item remains active as ProductCreated after product create', $passed, $failed, $errors);
 
     $summaryAfterClear = $suggestedRepo->summary($MAIN_ID, $today, $today, null, 1, 200);
     ss_assert(
-        !in_array($partNoUnlisted, ss_summary_part_nos($summaryAfterClear), true),
-        'summary no longer includes inquiry item after NotListed is cleared',
+        in_array($partNoUnlisted, ss_summary_part_nos($summaryAfterClear), true),
+        'summary retains inquiry item after its product is created',
         $passed,
         $failed,
         $errors
     );
 
-    $pdo->prepare('UPDATE tblinquiry_item SET lremark = "NotListed" WHERE lid = :id')->execute(['id' => $unlistedItemId]);
+    $markedForPr = $suggestedRepo->markAddedToPurchaseRequest($MAIN_ID, [[
+        'part_no' => $partNoUnlisted,
+        'item_code' => $itemCodeUnlisted,
+        'description' => 'Unlisted suggested stock test part',
+    ]]);
+    ss_assert(($markedForPr['removed'] ?? 0) >= 1, 'product-created suggestion is removed after PR completion', $passed, $failed, $errors);
+    $summaryAfterPr = $suggestedRepo->summary($MAIN_ID, $today, $today, null, 1, 200);
+    ss_assert(!in_array($partNoUnlisted, ss_summary_part_nos($summaryAfterPr), true), 'summary hides a suggestion only after PR completion', $passed, $failed, $errors);
 
     try {
         $productRepo->createProduct($MAIN_ID, $USER_ID, [
@@ -354,27 +439,6 @@ try {
     } catch (InvalidArgumentException $error) {
         ss_assert(str_contains($error->getMessage(), 'already listed'), 'duplicate part_no create is rejected', $passed, $failed, $errors);
     }
-
-    $created = $productRepo->createProduct($MAIN_ID, $USER_ID, [
-        'item_code' => $itemCodeUnlisted,
-        'part_no' => $partNoUnlisted,
-        'description' => 'Created from suggested stock DB test',
-        'reorder_quantity' => 4,
-    ]);
-    $createdSession = (string) ($created['id'] ?? $created['product_session'] ?? '');
-    if ($createdSession !== '') {
-        $createdProductSessions[] = $createdSession;
-    }
-    ss_assert($createdSession !== '', 'new product create succeeds for unlisted part', $passed, $failed, $errors);
-
-    $summaryAfterCreate = $suggestedRepo->summary($MAIN_ID, $today, $today, null, 1, 200);
-    ss_assert(
-        !in_array($partNoUnlisted, ss_summary_part_nos($summaryAfterCreate), true),
-        'summary excludes unlisted inquiry after matching product is created',
-        $passed,
-        $failed,
-        $errors
-    );
 
     if (($health['http_code'] ?? 0) === 200) {
         $dupCreate = ss_request('POST', "{$API_BASE}/api/v1/products", [
