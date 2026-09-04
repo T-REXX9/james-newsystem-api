@@ -62,6 +62,18 @@ final class IncidentItemsReportRepository
         $quantity = $payload['quantity'] ?? null;
         $quantityValue = $quantity === null || $quantity === '' ? null : (float) $quantity;
         $confidence = min(1, max(0, (float) ($payload['confidence_score'] ?? 1)));
+        // #region agent log
+        $this->debugLog('B', 'IncidentItemsReportRepository.php:create', 'storing incident item confidence', [
+            'payload_has_confidence_score' => array_key_exists('confidence_score', $payload),
+            'payload_confidence_score' => $payload['confidence_score'] ?? null,
+            'stored_confidence' => $confidence,
+            'match_source' => 'manual',
+            'has_product_id' => $productId !== null,
+            'has_item_code' => $itemCode !== null,
+            'has_part_no' => $partNo !== null,
+            'issue_type' => $issueType,
+        ]);
+        // #endregion
         $metadata = json_encode([
             'source' => 'customer_incident_report',
             'issue_type' => trim((string) ($payload['issue_type'] ?? 'other')),
@@ -163,6 +175,31 @@ SQL;
         $rowsStmt->bindValue('offset', $offset, PDO::PARAM_INT);
         $rowsStmt->execute();
         $rows = $rowsStmt->fetchAll(PDO::FETCH_ASSOC);
+        // #region agent log
+        $this->debugLog('A', 'IncidentItemsReportRepository.php:report', 'grouped confidence aggregation', [
+            'row_count' => count($rows),
+            'min_count' => $minCount,
+            'groups' => array_map(static function (array $row): array {
+                return [
+                    'item_code' => (string) ($row['item_code'] ?? ''),
+                    'part_no' => (string) ($row['part_no'] ?? ''),
+                    'incident_count' => (int) ($row['incident_count'] ?? 0),
+                    'affected_customer_count' => (int) ($row['affected_customer_count'] ?? 0),
+                    'average_confidence' => (float) ($row['average_confidence'] ?? 0),
+                    'evidence_count' => (int) ($row['debug_evidence_count'] ?? 0),
+                    'legacy_match_average' => isset($row['debug_match_average_confidence']) ? (float) $row['debug_match_average_confidence'] : null,
+                    'avg_skip_null' => isset($row['debug_avg_skip_null']) ? (float) $row['debug_avg_skip_null'] : null,
+                    'null_scores' => (int) ($row['debug_null_confidence_count'] ?? 0),
+                    'min_score' => $row['debug_min_confidence'] ?? null,
+                    'max_score' => $row['debug_max_confidence'] ?? null,
+                    'scores' => (string) ($row['debug_confidence_values'] ?? ''),
+                    'match_sources' => (string) ($row['match_sources'] ?? ''),
+                    'demo_rows' => (int) ($row['debug_demo_rows'] ?? 0),
+                    'customer_rows' => (int) ($row['debug_customer_rows'] ?? 0),
+                ];
+            }, array_slice($rows, 0, 15)),
+        ]);
+        // #endregion
 
         return [
             'items' => array_map(fn(array $row): array => $this->mapRow($row), $rows),
@@ -178,6 +215,183 @@ SQL;
                 'min_count' => $minCount,
             ],
         ];
+    }
+
+    /**
+     * List every Incident Report for one Incident Item group (no 5-row cap).
+     *
+     * @param array<string, string|int> $filters
+     * @return array{incidents: array<int, array<string, string>>}
+     */
+    public function listItemIncidents(int $mainId, array $filters): array
+    {
+        [$whereSql, $params] = $this->buildWhere($mainId, $filters);
+        $groupKeys = $this->buildItemGroupWhere($filters);
+        $whereSql = $whereSql === '' ? $groupKeys['sql'] : ($whereSql . ' AND ' . $groupKeys['sql']);
+        $params = array_merge($params, $groupKeys['params']);
+
+        $sql = <<<SQL
+SELECT
+    incident_report_items.incident_report_id,
+    DATE_FORMAT(incident_report_items.created_at, '%Y-%m-%d') AS date,
+    COALESCE(NULLIF(incident_report_items.contact_id, ''), '') AS contact_id,
+    COALESCE(NULLIF(customer.lcompany, ''), incident_report_items.contact_id, 'Unknown customer') AS customer_name,
+    LEFT(COALESCE(incident_report_items.issue_summary, ''), 160) AS summary
+FROM incident_report_items
+LEFT JOIN tblpatient customer ON customer.lsessionid = incident_report_items.contact_id
+WHERE {$whereSql}
+ORDER BY incident_report_items.created_at DESC, incident_report_items.id DESC
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $this->bind($stmt, $params);
+        $stmt->execute();
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        return [
+            'incidents' => array_map(static function (array $row): array {
+                return [
+                    'incident_report_id' => (string) ($row['incident_report_id'] ?? ''),
+                    'date' => (string) ($row['date'] ?? ''),
+                    'contact_id' => (string) ($row['contact_id'] ?? ''),
+                    'customer_name' => (string) ($row['customer_name'] ?? 'Unknown customer'),
+                    'summary' => (string) ($row['summary'] ?? ''),
+                ];
+            }, $rows),
+        ];
+    }
+
+    /**
+     * Full Incident Report for warehouse detail (Master User may approve via daily-call decision API).
+     *
+     * @return array<string, mixed>|null
+     */
+    public function getIncidentReport(int $mainId, string $reportId): ?array
+    {
+        $stmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT
+    ir.id,
+    'incident_report' AS record_source,
+    ir.contact_id,
+    COALESCE(NULLIF(customer.lcompany, ''), ir.contact_id, 'Unknown customer') AS customer_name,
+    ir.report_date,
+    ir.report_time,
+    ir.incident_date,
+    ir.incident_time,
+    ir.issue_type,
+    ir.description,
+    ir.reported_by,
+    ir.done_by,
+    ir.attachments,
+    ir.related_transactions,
+    ir.approval_status,
+    ir.approved_by,
+    ir.approval_date,
+    ir.decision_note,
+    ir.notes,
+    iri.product_id,
+    iri.item_code,
+    iri.part_no,
+    iri.description AS item_description,
+    iri.quantity AS affected_quantity,
+    iri.supplier_id,
+    iri.supplier_name,
+    ira.id AS return_action_id,
+    ira.disposition AS return_disposition,
+    ira.status AS return_action_status,
+    ira.authorized_by_name,
+    ira.authorized_at,
+    (
+      SELECT COUNT(*) FROM incident_reports customer_incidents
+      WHERE customer_incidents.main_id = ir.main_id
+        AND customer_incidents.contact_id = ir.contact_id
+    ) AS customer_incident_count,
+    (
+      SELECT COUNT(DISTINCT matching_items.incident_report_id)
+      FROM incident_report_items matching_items
+      WHERE matching_items.main_id = ir.main_id
+        AND (
+          (NULLIF(iri.product_id, '') IS NOT NULL AND matching_items.product_id = iri.product_id)
+          OR (NULLIF(iri.part_no, '') IS NOT NULL AND matching_items.part_no = iri.part_no)
+          OR (NULLIF(iri.item_code, '') IS NOT NULL AND matching_items.item_code = iri.item_code)
+        )
+    ) AS item_incident_count
+FROM incident_reports ir
+LEFT JOIN tblpatient customer ON customer.lsessionid = ir.contact_id
+LEFT JOIN incident_report_items iri
+  ON iri.main_id = ir.main_id AND iri.incident_report_id = ir.id
+LEFT JOIN incident_return_actions ira
+  ON ira.main_id = ir.main_id AND ira.incident_report_id = ir.id
+WHERE ir.main_id = :main_id AND ir.id = :id
+ORDER BY iri.id ASC
+LIMIT 1
+SQL);
+        $stmt->execute(['main_id' => $mainId, 'id' => $reportId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            return null;
+        }
+
+        $row['attachments'] = $this->decodeJsonArray($row['attachments'] ?? null);
+        $row['related_transactions'] = $this->decodeJsonArray($row['related_transactions'] ?? null);
+        $row['customer_incident_count'] = (int) ($row['customer_incident_count'] ?? 0);
+        $row['item_incident_count'] = (int) ($row['item_incident_count'] ?? 0);
+        $row['return_action'] = !empty($row['return_action_id']) ? [
+            'id' => (string) $row['return_action_id'],
+            'disposition' => (string) ($row['return_disposition'] ?? ''),
+            'status' => (string) ($row['return_action_status'] ?? ''),
+            'authorized_by_name' => (string) ($row['authorized_by_name'] ?? ''),
+            'authorized_at' => (string) ($row['authorized_at'] ?? ''),
+        ] : null;
+        unset(
+            $row['return_action_id'],
+            $row['return_disposition'],
+            $row['return_action_status'],
+            $row['authorized_by_name'],
+            $row['authorized_at']
+        );
+
+        return $row;
+    }
+
+    /**
+     * Match one Incident Item group using the same COALESCE identity as the grouped report.
+     *
+     * @param array<string, string|int> $filters
+     * @return array{sql: string, params: array<string, string>}
+     */
+    private function buildItemGroupWhere(array $filters): array
+    {
+        $params = [
+            'group_supplier_id' => (string) ($filters['supplier_id'] ?? 'unassigned'),
+            'group_supplier_name' => (string) ($filters['supplier_name'] ?? 'Unassigned Supplier'),
+            'group_product_id' => (string) ($filters['product_id'] ?? ''),
+            'group_item_code' => (string) ($filters['item_code'] ?? ''),
+            'group_part_no' => (string) ($filters['part_no'] ?? ''),
+            'group_description' => (string) ($filters['description'] ?? ''),
+        ];
+
+        $sql = '('
+            . 'COALESCE(NULLIF(supplier_id, \'\'), \'unassigned\') = :group_supplier_id '
+            . 'AND COALESCE(NULLIF(supplier_name, \'\'), \'Unassigned Supplier\') = :group_supplier_name '
+            . 'AND COALESCE(product_id, \'\') = :group_product_id '
+            . 'AND COALESCE(item_code, \'\') = :group_item_code '
+            . 'AND COALESCE(part_no, \'\') = :group_part_no '
+            . 'AND COALESCE(description, \'\') = :group_description'
+            . ')';
+
+        return ['sql' => $sql, 'params' => $params];
+    }
+
+    private function decodeJsonArray(mixed $value): array
+    {
+        if (is_array($value)) {
+            return array_values($value);
+        }
+        if (!is_string($value) || trim($value) === '') {
+            return [];
+        }
+        $decoded = json_decode($value, true);
+        return is_array($decoded) ? array_values($decoded) : [];
     }
 
     /**
@@ -238,6 +452,11 @@ SQL;
         return [implode(' AND ', $where), $params];
     }
 
+    /**
+     * Problem confidence is independent corroboration, not item-match quality.
+     * Each distinct customer (and each unattributed report) halves remaining uncertainty:
+     * 1 report 50%, 2 reports 75%, 3 reports 87.5%, approaching 100%.
+     */
     private function groupedSql(string $whereSql): string
     {
         return <<<SQL
@@ -251,7 +470,28 @@ SELECT
     COUNT(*) AS incident_count,
     COUNT(DISTINCT NULLIF(contact_id, '')) AS affected_customer_count,
     MAX(created_at) AS latest_incident_date,
-    ROUND(AVG(COALESCE(confidence_score, 0)), 4) AS average_confidence,
+    ROUND(
+        1 - POWER(
+            0.5,
+            (
+                COUNT(DISTINCT NULLIF(contact_id, ''))
+                + SUM(CASE WHEN NULLIF(contact_id, '') IS NULL THEN 1 ELSE 0 END)
+            )
+        ),
+        4
+    ) AS average_confidence,
+    (
+        COUNT(DISTINCT NULLIF(contact_id, ''))
+        + SUM(CASE WHEN NULLIF(contact_id, '') IS NULL THEN 1 ELSE 0 END)
+    ) AS debug_evidence_count,
+    ROUND(AVG(COALESCE(confidence_score, 0)), 4) AS debug_match_average_confidence,
+    ROUND(AVG(confidence_score), 4) AS debug_avg_skip_null,
+    SUM(CASE WHEN confidence_score IS NULL THEN 1 ELSE 0 END) AS debug_null_confidence_count,
+    MIN(confidence_score) AS debug_min_confidence,
+    MAX(confidence_score) AS debug_max_confidence,
+    GROUP_CONCAT(COALESCE(CAST(confidence_score AS CHAR), 'NULL') ORDER BY created_at SEPARATOR ',') AS debug_confidence_values,
+    SUM(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.seed')) = 'incident-items-demo' THEN 1 ELSE 0 END) AS debug_demo_rows,
+    SUM(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.source')) = 'customer_incident_report' THEN 1 ELSE 0 END) AS debug_customer_rows,
     GROUP_CONCAT(DISTINCT match_source ORDER BY match_source SEPARATOR ', ') AS match_sources,
     GROUP_CONCAT(
         CONCAT(
@@ -364,6 +604,38 @@ SQL;
             }
             $stmt->bindValue($key, $value, $type);
         }
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function debugLog(string $hypothesisId, string $location, string $message, array $data): void
+    {
+        // #region agent log
+        $payload = json_encode([
+            'sessionId' => '924957',
+            'runId' => 'post-fix',
+            'hypothesisId' => $hypothesisId,
+            'location' => $location,
+            'message' => $message,
+            'data' => $data,
+            'timestamp' => (int) round(microtime(true) * 1000),
+        ], JSON_UNESCAPED_UNICODE);
+        if ($payload === false) {
+            return;
+        }
+        @file_put_contents('/Users/melsonleanbacuen/james-system/.cursor/debug-924957.log', $payload . "\n", FILE_APPEND | LOCK_EX);
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'header' => "Content-Type: application/json\r\nX-Debug-Session-Id: 924957\r\n",
+                'content' => $payload,
+                'timeout' => 0.4,
+                'ignore_errors' => true,
+            ],
+        ]);
+        @file_get_contents('http://127.0.0.1:7586/ingest/8c501c88-a103-4e50-912c-b3b44d4a265a', false, $context);
+        // #endregion
     }
 
     /**

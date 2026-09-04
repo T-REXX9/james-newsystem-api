@@ -523,6 +523,8 @@ function app_router(): Router
     $router->post('/api/v1/daily-call-monitoring/customer-logs', [$dailyCallMonitoringController, 'createCustomerLog']);
     $router->get('/api/v1/fast-slow-inventory-report', [$fastSlowInventoryReportController, 'report']);
     $router->get('/api/v1/incident-items-report', $requireBearerAuthWithClaims([$incidentItemsReportController, 'report']));
+    $router->get('/api/v1/incident-items-report/incidents', $requireBearerAuthWithClaims([$incidentItemsReportController, 'listItemIncidents']));
+    $router->get('/api/v1/incident-items-report/incidents/{reportId}', $requireBearerAuthWithClaims([$incidentItemsReportController, 'showIncident']));
     $router->post('/api/v1/incident-report-items', $requireBearerAuthWithClaims([$incidentItemsReportController, 'create']));
     $router->get('/api/v1/freight-charges', [$freightChargesController, 'list']);
     $router->get('/api/v1/freight-charges/report', [$freightChargesController, 'report']);

@@ -108,18 +108,62 @@ if (count($items) > 0) {
     assert_true(isset($first['incident_count']), 'Rows include incident_count', $passed, $failed, $errors);
 }
 
-echo "\n--- 3. Search and Supplier Filters ---\n";
+echo "\n--- 3. Item Incident List ---\n";
+if (count($items) > 0) {
+    $first = $items[0];
+    $listParams = http_build_query([
+        'main_id' => $MAIN_ID,
+        'supplier_id' => $first['supplier_id'] ?? '',
+        'supplier_name' => $first['supplier_name'] ?? '',
+        'product_id' => $first['product_id'] ?? '',
+        'item_code' => $first['item_code'] ?? '',
+        'part_no' => $first['part_no'] ?? '',
+        'description' => $first['description'] ?? '',
+    ]);
+    $itemList = request('GET', "{$API_BASE}/api/v1/incident-items-report/incidents?{$listParams}", $authHeaders);
+    assert_eq(200, $itemList['http_code'], 'Item incident list returns 200', $passed, $failed, $errors);
+    assert_eq(true, $itemList['body']['ok'] ?? false, 'Item incident list ok=true', $passed, $failed, $errors);
+    $incidents = $itemList['body']['data']['incidents'] ?? null;
+    assert_true(is_array($incidents), 'Item incident list includes incidents array', $passed, $failed, $errors);
+    assert_eq(
+        (int) ($first['incident_count'] ?? -1),
+        is_array($incidents) ? count($incidents) : -1,
+        'Item incident list length matches incident_count',
+        $passed,
+        $failed,
+        $errors
+    );
+    if (is_array($incidents) && count($incidents) > 0) {
+        $detail = request(
+            'GET',
+            "{$API_BASE}/api/v1/incident-items-report/incidents/" . rawurlencode((string) $incidents[0]['incident_report_id']) . "?main_id={$MAIN_ID}",
+            $authHeaders
+        );
+        assert_eq(200, $detail['http_code'], 'Warehouse incident detail returns 200', $passed, $failed, $errors);
+        assert_eq(true, $detail['body']['ok'] ?? false, 'Warehouse incident detail ok=true', $passed, $failed, $errors);
+        assert_eq(
+            (string) $incidents[0]['incident_report_id'],
+            (string) ($detail['body']['data']['id'] ?? ''),
+            'Warehouse incident detail returns the selected report id',
+            $passed,
+            $failed,
+            $errors
+        );
+    }
+}
+
+echo "\n--- 4. Search and Supplier Filters ---\n";
 $filtered = request('GET', "{$API_BASE}/api/v1/incident-items-report?main_id={$MAIN_ID}&page=1&per_page=5&search=NOZZLE&supplier=QK9N", $authHeaders);
 assert_eq(200, $filtered['http_code'], 'Search and supplier filters return 200', $passed, $failed, $errors);
 assert_eq(true, $filtered['body']['ok'] ?? false, 'Filtered response ok=true', $passed, $failed, $errors);
 assert_true(is_array($filtered['body']['data']['items'] ?? null), 'Filtered response includes items array', $passed, $failed, $errors);
 
-echo "\n--- 4. Authenticated Tenant Fallback ---\n";
+echo "\n--- 5. Authenticated Tenant Fallback ---\n";
 $missingMain = request('GET', "{$API_BASE}/api/v1/incident-items-report", $authHeaders);
 assert_eq(200, $missingMain['http_code'], 'Authenticated report uses tenant from token when main_id is omitted', $passed, $failed, $errors);
 assert_eq(true, $missingMain['body']['ok'] ?? false, 'Authenticated tenant fallback response ok=true', $passed, $failed, $errors);
 
-echo "\n--- 5. Synchronization Authentication ---\n";
+echo "\n--- 6. Synchronization Authentication ---\n";
 $unauthorizedSync = request('POST', "{$API_BASE}/api/v1/incident-report-items");
 assert_eq(401, $unauthorizedSync['http_code'], 'Incident item synchronization requires authentication', $passed, $failed, $errors);
 

@@ -46,6 +46,67 @@ final class IncidentItemsReportController
         return $this->repo->report($mainId, $filters, $page, $perPage);
     }
 
+    public function listItemIncidents(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = $this->resolveMainId($query, $body);
+        $matchSource = strtolower(trim((string) ($query['match_source'] ?? 'all')));
+        if (!in_array($matchSource, ['all', 'manual', 'related_transaction', 'description_match', 'imported'], true)) {
+            throw new HttpException(422, 'match_source must be one of: all, manual, related_transaction, description_match, imported');
+        }
+
+        $filters = [
+            'search' => trim((string) ($query['search'] ?? '')),
+            'supplier' => trim((string) ($query['supplier'] ?? '')),
+            'match_source' => $matchSource,
+            'date_from' => trim((string) ($query['date_from'] ?? '')),
+            'date_to' => trim((string) ($query['date_to'] ?? '')),
+            'supplier_id' => trim((string) ($query['supplier_id'] ?? '')),
+            'supplier_name' => trim((string) ($query['supplier_name'] ?? '')),
+            'product_id' => trim((string) ($query['product_id'] ?? '')),
+            'item_code' => trim((string) ($query['item_code'] ?? '')),
+            'part_no' => trim((string) ($query['part_no'] ?? '')),
+            'description' => trim((string) ($query['description'] ?? '')),
+        ];
+
+        return $this->repo->listItemIncidents($mainId, $filters);
+    }
+
+    public function showIncident(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = $this->resolveMainId($query, $body);
+        $reportId = trim((string) ($params['reportId'] ?? ''));
+        if ($reportId === '') {
+            throw new HttpException(422, 'reportId is required');
+        }
+
+        $report = $this->repo->getIncidentReport($mainId, $reportId);
+        if ($report === null) {
+            throw new HttpException(404, 'Incident Report not found');
+        }
+
+        return $report;
+    }
+
+    /**
+     * @param array<string, mixed> $query
+     * @param array<string, mixed> $body
+     */
+    private function resolveMainId(array $query, array $body): int
+    {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $claimMainId = (int) ($claims['main_userid'] ?? 0);
+        $requestedMainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $requestedMainId > 0 ? $requestedMainId : $claimMainId;
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        if ($claimMainId > 0 && $mainId !== $claimMainId) {
+            throw new HttpException(403, 'main_id does not belong to the authenticated account');
+        }
+
+        return $mainId;
+    }
+
     public function create(array $params = [], array $query = [], array $body = []): array
     {
         $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
