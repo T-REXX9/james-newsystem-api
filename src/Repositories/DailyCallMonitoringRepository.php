@@ -86,6 +86,7 @@ final class DailyCallMonitoringRepository
                 'dealerPriceDate' => $this->formatDateText($customer['dealer_price_date']),
                 'ishinomotoDealerSince' => $this->formatDateText($customer['dealer_since']),
                 'ishinomotoSignageSince' => $this->formatDateText($customer['signage_since']),
+                'preferredBrand' => $this->normalizePreferredBrand((string) ($customer['preferred_brand'] ?? '')),
                 'quota' => (float) ($customer['quota'] ?? 0),
                 'terms' => $customer['mode_of_payment'] ?: '—',
                 'modeOfPayment' => $customer['mode_of_payment'] ?: '—',
@@ -1418,6 +1419,7 @@ SELECT
     p.ldealer_since AS dealer_since,
     p.ldealer_since AS dealer_price_date,
     NULL AS signage_since,
+    COALESCE(p.lpreferred_brand, '') AS preferred_brand,
     p.lprice_group AS code_text,
     p.lprice_group AS dealer_price_group,
     p.ldealer_since AS code_date,
@@ -2004,6 +2006,19 @@ SQL;
         }
 
         return $buckets;
+    }
+
+    private function normalizePreferredBrand(string $value): string
+    {
+        $normalized = strtolower(trim($value));
+        if ($normalized === 'ishinomoto') {
+            return 'Ishinomoto';
+        }
+        if ($normalized === 'others' || $normalized === 'other') {
+            return 'Others';
+        }
+
+        return '';
     }
 
     private function formatDateText(?string $value): string

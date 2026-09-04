@@ -161,6 +161,7 @@ SELECT
     COALESCE(p.ldealer_quota, 0) AS dealer_quota,
     COALESCE(p.lcredit, 0) AS credit_limit,
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
+    COALESCE(p.lpreferred_brand, '') AS preferred_brand,
     COALESCE(p.lnotes, '') AS notes,
     COALESCE(p.ldatereg, '') AS date_registered,
     (SELECT COUNT(*) FROM tblcontact_person cp WHERE cp.lrefno = p.lsessionid) AS contact_count,
@@ -252,6 +253,7 @@ SELECT
     COALESCE(p.ldealer_quota, 0) AS dealer_quota,
     COALESCE(p.lcredit, 0) AS credit_limit,
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
+    COALESCE(p.lpreferred_brand, '') AS preferred_brand,
     COALESCE(p.lnotes, '') AS notes,
     COALESCE(p.ldatereg, '') AS date_registered,
     COALESCE(
@@ -302,9 +304,9 @@ SQL;
         try {
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group, lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lprovince, lcity, ldebt_type, lprofile_type, lverification, lsince)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group, lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group, :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :province, :city, :debt_type, :profile_type, :verification, :since_date)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group, :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
             );
             $insert->execute([
                 'main_id' => $mainId,
@@ -335,6 +337,7 @@ SQL;
                 'province' => (string) ($payload['province'] ?? ''),
                 'city' => (string) ($payload['city'] ?? ''),
                 'debt_type' => (string) (($payload['debt_type'] ?? '') !== '' ? $payload['debt_type'] : 'Good'),
+                'preferred_brand' => $this->normalizePreferredBrand((string) ($payload['preferred_brand'] ?? '')),
                 'profile_type' => (string) (($payload['profile_type'] ?? '') !== '' ? $payload['profile_type'] : 'Old'),
                 'verification' => (string) ($payload['verification'] ?? ''),
                 'since_date' => $this->normalizeDateNullable((string) ($payload['since'] ?? ''), 'since_date') ?? date('Y-m-d'),
@@ -381,10 +384,13 @@ SQL;
             return null;
         }
 
-        $this->assertCustomerPhoneLengths([
-            'phone' => (string) ($payload['phone'] ?? $existing['phone'] ?? ''),
-            'mobile' => (string) ($payload['mobile'] ?? $existing['mobile'] ?? ''),
-        ]);
+        $this->assertCustomerPhoneLengths(
+            [
+                'phone' => (string) ($payload['phone'] ?? $existing['phone'] ?? ''),
+                'mobile' => (string) ($payload['mobile'] ?? $existing['mobile'] ?? ''),
+            ],
+            $existing
+        );
 
         $nextSalesPerson = (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? '');
         $currentSalesPerson = (string) ($existing['sales_person_id'] ?? '');
@@ -419,6 +425,7 @@ SET
     lprovince = :province,
     lcity = :city,
     ldebt_type = :debt_type,
+    lpreferred_brand = :preferred_brand,
     lprofile_type = :profile_type,
     lverification = :verification
 WHERE lmain_id = :main_id
@@ -451,6 +458,7 @@ SQL;
                 'province' => (string) ($payload['province'] ?? $existing['province'] ?? ''),
                 'city' => (string) ($payload['city'] ?? $existing['city'] ?? ''),
                 'debt_type' => (string) ($payload['debt_type'] ?? $existing['debt_type'] ?? 'Good'),
+                'preferred_brand' => $this->normalizePreferredBrand((string) ($payload['preferred_brand'] ?? $existing['preferred_brand'] ?? '')),
                 'profile_type' => (string) ($payload['profile_type'] ?? $existing['profile_type'] ?? 'Old'),
                 'verification' => (string) ($payload['verification'] ?? $existing['verification'] ?? ''),
                 'main_id' => $mainId,
@@ -514,6 +522,7 @@ SQL;
             'status' => ['column' => 'lstatus', 'value' => static fn ($value): int => (int) $value],
             'notes' => ['column' => 'lnotes', 'value' => static fn ($value): string => (string) $value],
             'debt_type' => ['column' => 'ldebt_type', 'value' => static fn ($value): string => (string) $value],
+            'preferred_brand' => ['column' => 'lpreferred_brand', 'value' => fn ($value): string => $this->normalizePreferredBrand((string) $value)],
             'profile_type' => ['column' => 'lprofile_type', 'value' => static fn ($value): string => (string) $value],
         ];
 
@@ -895,16 +904,27 @@ SQL;
         return (string) random_int(10, 15) . date('YmdHis') . (string) random_int(1, 10000) . (string) $mainId;
     }
 
-    private function assertCustomerPhoneLengths(array $payload): void
+    private function assertCustomerPhoneLengths(array $payload, ?array $existing = null): void
     {
         $phone = trim((string) ($payload['phone'] ?? ''));
         $mobile = trim((string) ($payload['mobile'] ?? ''));
+        $existingPhone = $existing !== null ? trim((string) ($existing['phone'] ?? '')) : null;
+        $existingMobile = $existing !== null ? trim((string) ($existing['mobile'] ?? '')) : null;
 
-        if ($phone !== '' && mb_strlen($phone) > self::CUSTOMER_PHONE_MAX_LENGTH) {
+        // Allow unchanged legacy oversize values through on update; only reject newly introduced ones.
+        if (
+            $phone !== ''
+            && mb_strlen($phone) > self::CUSTOMER_PHONE_MAX_LENGTH
+            && $phone !== $existingPhone
+        ) {
             throw new RuntimeException('Please enter a valid telephone number. The customer telephone field allows up to 15 characters only.');
         }
 
-        if ($mobile !== '' && mb_strlen($mobile) > self::CUSTOMER_PHONE_MAX_LENGTH) {
+        if (
+            $mobile !== ''
+            && mb_strlen($mobile) > self::CUSTOMER_PHONE_MAX_LENGTH
+            && $mobile !== $existingMobile
+        ) {
             throw new RuntimeException('Please enter a valid phone number. The customer mobile field allows up to 15 characters only.');
         }
     }
@@ -922,6 +942,19 @@ SQL;
         }
 
         throw $e;
+    }
+
+    private function normalizePreferredBrand(string $value): string
+    {
+        $normalized = strtolower(trim($value));
+        if ($normalized === 'ishinomoto') {
+            return 'Ishinomoto';
+        }
+        if ($normalized === 'others' || $normalized === 'other') {
+            return 'Others';
+        }
+
+        return '';
     }
 
     private function normalizeDateNullable(string $value, string $fieldName = 'date'): ?string

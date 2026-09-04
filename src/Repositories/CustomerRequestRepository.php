@@ -10,7 +10,7 @@ use Throwable;
 
 final class CustomerRequestRepository
 {
-    private const FIELDS = ['company','email','phone','mobile','sales_person_id','refer_by','address','delivery_address','area','city','province','tin','price_group','business_line','terms','transaction_type','vat_type','vat_percent','dealer_since','dealer_quota','credit_limit','status','notes','debt_type','profile_type','verification','contacts'];
+    private const FIELDS = ['company','email','phone','mobile','sales_person_id','refer_by','address','delivery_address','area','city','province','tin','price_group','business_line','terms','transaction_type','vat_type','vat_percent','dealer_since','dealer_quota','credit_limit','status','notes','debt_type','preferred_brand','profile_type','verification','contacts'];
     public function __construct(private readonly Database $db) {}
 
     private function customers(): CustomerDatabaseRepository { return new CustomerDatabaseRepository($this->db); }
