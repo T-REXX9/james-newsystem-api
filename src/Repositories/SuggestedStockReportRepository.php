@@ -11,6 +11,8 @@ use RuntimeException;
 
 final class SuggestedStockReportRepository
 {
+    public const SORT_QTY_DESC = 'qty-desc';
+
     public function __construct(private readonly Database $db)
     {
     }
@@ -92,11 +94,11 @@ SQL;
         int $page,
         int $perPage,
         ?string $partNo = null,
-        string $sortBy = 'inquiries-desc',
+        string $sortBy = self::SORT_QTY_DESC,
         bool $kivFolder = false
     ): array {
         [$from, $to] = $this->resolveDateRange($dateFrom, $dateTo);
-        $orderSql = $this->summaryOrderSql($sortBy, $kivFolder);
+        $orderSql = $this->summaryOrderSql($sortBy);
         $offset = ($page - 1) * $perPage;
         $fetchLimit = $perPage + 1;
 
@@ -758,62 +760,16 @@ SQL;
         return [$from, $to];
     }
 
-    /**
-     * @return array{0:string,1:array<string,string>}
-     */
-    private function buildFilters(
-        int $mainId,
-        string $dateFrom,
-        string $dateTo,
-        ?string $customerId,
-        ?string $partNo = null,
-        bool $kivFolder = false
-    ): array {
-        $unlistedSql = $this->unlistedInventoryMatchSql('unlisted');
-        $where = [
-            'tr.lmain_id = :main_id',
-            "(COALESCE(i.lremark, '') = 'ProductCreated' OR (COALESCE(i.lremark, '') = 'NotListed' AND {$unlistedSql}))",
-            'tr.ldate >= :date_from',
-            'tr.ldate <= :date_to',
-        ];
-        $params = [
-            'main_id' => (string) $mainId,
-            'date_from' => $dateFrom,
-            'date_to' => $dateTo,
-            'unlisted_main_id' => (string) $mainId,
-        ];
-
-        // Main report hides parked KIV items. Sort By → KIV folder shows only those rows.
-        $where[] = ($kivFolder ? '' : 'NOT ') . $this->kivExistsSql('kiv_main_id');
-        $params['kiv_main_id'] = (string) $mainId;
-
-        $customer = trim((string) $customerId);
-        if ($customer !== '' && strtolower($customer) !== 'all') {
-            $where[] = 'tr.lcustomerid = :customer_id';
-            $params['customer_id'] = $customer;
-        }
-
-        $partSearch = trim((string) $partNo);
-        if ($partSearch !== '') {
-            $where[] = 'LOWER(COALESCE(i.lpartno, \'\')) LIKE :part_no_search';
-            $params['part_no_search'] = '%' . strtolower($partSearch) . '%';
-        }
-
-        return [implode(' AND ', $where), $params];
-    }
-
-    private function summaryOrderSql(string $sortBy, bool $kivFolder): string
+    private function summaryOrderSql(string $sortBy): string
     {
-        if ($kivFolder || $sortBy === 'kiv-folder') {
-            return 'total_qty DESC, description ASC, part_no ASC';
-        }
-
+        $qtyDescSql = 'total_qty DESC, inquiry_count DESC, part_no ASC';
         return match ($sortBy) {
-            'qty-desc' => 'total_qty DESC, inquiry_count DESC, part_no ASC',
+            self::SORT_QTY_DESC => $qtyDescSql,
             'inquiries-asc' => 'inquiry_count ASC, total_qty DESC, part_no ASC',
             'description-asc' => 'description ASC, part_no ASC',
             'description-desc' => 'description DESC, part_no ASC',
-            default => 'inquiry_count DESC, total_qty DESC, part_no ASC',
+            'inquiries-desc' => 'inquiry_count DESC, total_qty DESC, part_no ASC',
+            default => $qtyDescSql,
         };
     }
 
@@ -868,28 +824,6 @@ SQL;
     private function kivItemKey(string $partNo, string $itemCode, string $description): string
     {
         return hash('sha256', implode("\0", [$partNo, $itemCode, $description]));
-    }
-
-    /**
-     * Exclude inquiry lines that already soft-match an inventory product
-     * (same item code or part number under the same main).
-     */
-    private function unlistedInventoryMatchSql(string $paramPrefix): string
-    {
-        $mainParam = $paramPrefix . '_main_id';
-        return <<<SQL
-NOT EXISTS (
-    SELECT 1
-    FROM tblinventory_item matched
-    WHERE matched.lmain_id = :{$mainParam}
-      AND COALESCE(matched.lnot_inventory, 0) = 0
-      AND COALESCE(matched.ldeleted, 0) = 0
-      AND (
-          (COALESCE(i.litem_code, '') <> '' AND matched.litemcode = i.litem_code)
-          OR (COALESCE(i.lpartno, '') <> '' AND matched.lpartno = i.lpartno)
-      )
-)
-SQL;
     }
 
     private function normalizeDate(?string $value): ?string

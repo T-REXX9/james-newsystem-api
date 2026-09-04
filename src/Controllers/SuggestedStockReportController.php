@@ -39,9 +39,13 @@ final class SuggestedStockReportController
         $dateFrom = isset($query['date_from']) ? (string) $query['date_from'] : null;
         $dateTo = isset($query['date_to']) ? (string) $query['date_to'] : null;
         $customerId = isset($query['customer_id']) ? (string) $query['customer_id'] : null;
-        $partNo = trim((string) ($query['part_no'] ?? $query['search'] ?? ''));
-        $sortBy = trim((string) ($query['sort_by'] ?? 'inquiries-desc'));
-        $kivFolder = $this->toBool($query['kiv'] ?? false) || $sortBy === 'kiv-folder';
+        $partNo = trim((string) ($query['part_no'] ?? ''));
+        $sortBy = trim((string) ($query['sort_by'] ?? SuggestedStockReportRepository::SORT_QTY_DESC));
+        $kivFolder = $this->toBool($query['kiv'] ?? false);
+        if ($sortBy === 'kiv-folder') {
+            $kivFolder = true;
+            $sortBy = SuggestedStockReportRepository::SORT_QTY_DESC;
+        }
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, min(200, (int) ($query['per_page'] ?? 100)));
 
@@ -53,7 +57,7 @@ final class SuggestedStockReportController
             $page,
             $perPage,
             $partNo !== '' ? $partNo : null,
-            $sortBy !== '' ? $sortBy : 'inquiries-desc',
+            $sortBy !== '' ? $sortBy : SuggestedStockReportRepository::SORT_QTY_DESC,
             $kivFolder
         );
     }
@@ -121,43 +125,15 @@ final class SuggestedStockReportController
 
     public function addToKiv(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($body['main_id'] ?? 0);
-        if ($mainId <= 0) {
-            throw new HttpException(422, 'main_id is required');
-        }
-
-        $items = is_array($body['items'] ?? null) ? $body['items'] : [];
-        if ($items === []) {
-            throw new HttpException(422, 'items is required');
-        }
-
+        [$mainId, $items] = $this->requireKivItems($body);
         $createdBy = trim((string) ($body['user_id'] ?? ''));
-        $result = $this->repo->addToKiv($mainId, $items, $createdBy);
-        if ($result['requested'] === 0) {
-            throw new HttpException(422, 'items must include a part number, item code, or description');
-        }
-
-        return $result;
+        return $this->repo->addToKiv($mainId, $items, $createdBy);
     }
 
     public function removeFromKiv(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($body['main_id'] ?? 0);
-        if ($mainId <= 0) {
-            throw new HttpException(422, 'main_id is required');
-        }
-
-        $items = is_array($body['items'] ?? null) ? $body['items'] : [];
-        if ($items === []) {
-            throw new HttpException(422, 'items is required');
-        }
-
-        $result = $this->repo->removeFromKiv($mainId, $items);
-        if ($result['requested'] === 0) {
-            throw new HttpException(422, 'items must include a part number, item code, or description');
-        }
-
-        return $result;
+        [$mainId, $items] = $this->requireKivItems($body);
+        return $this->repo->removeFromKiv($mainId, $items);
     }
 
     public function markAddedToPurchaseRequest(array $params = [], array $query = [], array $body = []): array
@@ -227,6 +203,41 @@ final class SuggestedStockReportController
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());
         }
+    }
+
+    /**
+     * @return array{0:int,1:array<int, mixed>}
+     */
+    private function requireKivItems(array $body): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $items = is_array($body['items'] ?? null) ? $body['items'] : [];
+        if ($items === []) {
+            throw new HttpException(422, 'items is required');
+        }
+
+        $hasIdentity = false;
+        foreach ($items as $item) {
+            if (!is_array($item)) {
+                continue;
+            }
+            $partNo = trim((string) ($item['part_no'] ?? $item['partNo'] ?? ''));
+            $itemCode = trim((string) ($item['item_code'] ?? $item['itemCode'] ?? ''));
+            $description = trim((string) ($item['description'] ?? ''));
+            if ($partNo !== '' || $itemCode !== '' || $description !== '') {
+                $hasIdentity = true;
+                break;
+            }
+        }
+        if (!$hasIdentity) {
+            throw new HttpException(422, 'items must include a part number, item code, or description');
+        }
+
+        return [$mainId, $items];
     }
 
     private function toBool(mixed $value): bool

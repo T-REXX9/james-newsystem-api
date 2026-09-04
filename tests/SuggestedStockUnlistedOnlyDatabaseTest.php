@@ -44,12 +44,20 @@ $today = date('Y-m-d');
 
 $inquiryRefUnlisted = $prefix . 'inq-unlisted';
 $inquiryRefListed = $prefix . 'inq-listed';
+$inquiryRefSort = $prefix . 'inq-sort';
 $customerId = $prefix . 'customer';
+$customerIdSort = $prefix . 'customer-sort';
 
 $itemCodeUnlisted = $prefix . 'ITEM-UNLISTED';
 $partNoUnlisted = $prefix . 'PN-UNLISTED';
 $itemCodeListed = $prefix . 'ITEM-LISTED';
 $partNoListed = $prefix . 'PN-LISTED';
+$partNoAlpha = $prefix . 'PN-ALPHA';
+$partNoMu = $prefix . 'PN-MU';
+$partNoZulu = $prefix . 'PN-ZULU';
+$itemCodeAlpha = $prefix . 'ITEM-ALPHA';
+$itemCodeMu = $prefix . 'ITEM-MU';
+$itemCodeZulu = $prefix . 'ITEM-ZULU';
 
 $productSessionListed = $prefix . 'product-listed';
 $createdProductSessions = [$productSessionListed];
@@ -135,8 +143,12 @@ $cleanup = static function () use (
     $pdo,
     $inquiryRefUnlisted,
     $inquiryRefListed,
+    $inquiryRefSort,
     $partNoUnlisted,
     $partNoListed,
+    $partNoAlpha,
+    $partNoMu,
+    $partNoZulu,
     &$createdProductSessions,
     &$createdInquiryItemIds
 ): void {
@@ -146,12 +158,12 @@ $cleanup = static function () use (
             ->execute(array_values($createdInquiryItemIds));
     }
 
-    $pdo->prepare('DELETE FROM tblinquiry_item WHERE linq_refno IN (?, ?)')
-        ->execute([$inquiryRefUnlisted, $inquiryRefListed]);
-    $pdo->prepare('DELETE FROM tblinquiry WHERE lrefno IN (?, ?)')
-        ->execute([$inquiryRefUnlisted, $inquiryRefListed]);
-    $pdo->prepare('DELETE FROM suggested_stock_kiv WHERE part_no IN (?, ?)')
-        ->execute([$partNoUnlisted, $partNoListed]);
+    $pdo->prepare('DELETE FROM tblinquiry_item WHERE linq_refno IN (?, ?, ?)')
+        ->execute([$inquiryRefUnlisted, $inquiryRefListed, $inquiryRefSort]);
+    $pdo->prepare('DELETE FROM tblinquiry WHERE lrefno IN (?, ?, ?)')
+        ->execute([$inquiryRefUnlisted, $inquiryRefListed, $inquiryRefSort]);
+    $pdo->prepare('DELETE FROM suggested_stock_kiv WHERE part_no IN (?, ?, ?, ?, ?)')
+        ->execute([$partNoUnlisted, $partNoListed, $partNoAlpha, $partNoMu, $partNoZulu]);
 
     foreach (array_values(array_unique($createdProductSessions)) as $session) {
         if ($session === '') {
@@ -163,7 +175,7 @@ $cleanup = static function () use (
     }
 };
 
-$insertInquiry = static function (string $refno, string $inquiryNo) use ($pdo, $MAIN_ID, $USER_ID, $customerId, $today): void {
+$insertInquiry = static function (string $refno, string $inquiryNo, ?string $forCustomerId = null) use ($pdo, $MAIN_ID, $USER_ID, $customerId, $today): void {
     $stmt = $pdo->prepare(
         'INSERT INTO tblinquiry
         (linqno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lcompany, lsalesperson, ltransaction_status, lsubmitstat, IsCancel)
@@ -173,7 +185,7 @@ $insertInquiry = static function (string $refno, string $inquiryNo) use ($pdo, $
     $stmt->execute([
         'linqno' => $inquiryNo,
         'ldate' => $today,
-        'customer_id' => $customerId,
+        'customer_id' => $forCustomerId ?? $customerId,
         'main_id' => (string) $MAIN_ID,
         'user_id' => (string) $USER_ID,
         'refno' => $refno,
@@ -188,17 +200,19 @@ $insertInquiryItem = static function (
     string $partNo,
     string $itemCode,
     string $description,
-    string $remark
+    string $remark,
+    int $qty = 2
 ) use ($pdo, $today, &$createdInquiryItemIds): int {
     $stmt = $pdo->prepare(
         'INSERT INTO tblinquiry_item
         (linq_no, linq_refno, lqty, lprice, litem_code, lpartno, ldesc, lremark, linquiry_date, lapproved)
         VALUES
-        (:linq_no, :linq_refno, 2, 0, :item_code, :part_no, :description, :remark, :inquiry_date, 1)'
+        (:linq_no, :linq_refno, :qty, 0, :item_code, :part_no, :description, :remark, :inquiry_date, 1)'
     );
     $stmt->execute([
         'linq_no' => $inquiryNo,
         'linq_refno' => $inquiryRefno,
+        'qty' => $qty,
         'item_code' => $itemCode,
         'part_no' => $partNo,
         'description' => $description,
@@ -238,6 +252,7 @@ try {
 
     $insertInquiry($inquiryRefUnlisted, $prefix . 'INQ-1');
     $insertInquiry($inquiryRefListed, $prefix . 'INQ-2');
+    $insertInquiry($inquiryRefSort, $prefix . 'INQ-3', $customerIdSort);
 
     $unlistedItemId = $insertInquiryItem(
         $inquiryRefUnlisted,
@@ -257,6 +272,34 @@ try {
         'NotListed'
     );
 
+    $insertInquiryItem(
+        $inquiryRefSort,
+        $prefix . 'INQ-3',
+        $partNoAlpha,
+        $itemCodeAlpha,
+        'ALPHA PART',
+        'NotListed',
+        1
+    );
+    $insertInquiryItem(
+        $inquiryRefSort,
+        $prefix . 'INQ-3',
+        $partNoMu,
+        $itemCodeMu,
+        'MU PART',
+        'NotListed',
+        5
+    );
+    $insertInquiryItem(
+        $inquiryRefSort,
+        $prefix . 'INQ-3',
+        $partNoZulu,
+        $itemCodeZulu,
+        'ZULU PART',
+        'NotListed',
+        9
+    );
+
     $insertProduct(
         $productSessionListed,
         $itemCodeListed,
@@ -268,6 +311,41 @@ try {
     $summaryParts = ss_summary_part_nos($summary);
     ss_assert(in_array($partNoUnlisted, $summaryParts, true), 'summary includes unlisted inquiry item', $passed, $failed, $errors);
     ss_assert(!in_array($partNoListed, $summaryParts, true), 'summary excludes inquiry item already in catalog', $passed, $failed, $errors);
+
+    $seededOrder = array_values(array_filter(
+        $summaryParts,
+        static fn(string $partNo): bool => str_starts_with($partNo, $prefix)
+    ));
+    ss_assert_eq(
+        [$partNoZulu, $partNoMu, $partNoUnlisted, $partNoAlpha],
+        $seededOrder,
+        'default summary orders by qty requested highest first',
+        $passed,
+        $failed,
+        $errors
+    );
+
+    $descPage1 = $suggestedRepo->summary($MAIN_ID, $today, $today, $customerIdSort, 1, 1, null, 'description-asc');
+    $descPage2 = $suggestedRepo->summary($MAIN_ID, $today, $today, $customerIdSort, 2, 1, null, 'description-asc');
+    ss_assert_eq($partNoAlpha, ss_summary_part_nos($descPage1)[0] ?? '', 'description A→Z page 1 is the first alphabetically', $passed, $failed, $errors);
+    ss_assert_eq($partNoMu, ss_summary_part_nos($descPage2)[0] ?? '', 'description A→Z page 2 continues the global alphabet', $passed, $failed, $errors);
+
+    $descDescPage1 = $suggestedRepo->summary($MAIN_ID, $today, $today, $customerIdSort, 1, 1, null, 'description-desc');
+    $descDescPage2 = $suggestedRepo->summary($MAIN_ID, $today, $today, $customerIdSort, 2, 1, null, 'description-desc');
+    ss_assert_eq($partNoZulu, ss_summary_part_nos($descDescPage1)[0] ?? '', 'description Z→A page 1 is the last alphabetically', $passed, $failed, $errors);
+    ss_assert_eq($partNoMu, ss_summary_part_nos($descDescPage2)[0] ?? '', 'description Z→A page 2 continues the global reverse alphabet', $passed, $failed, $errors);
+
+    $qtyPage1 = $suggestedRepo->summary($MAIN_ID, $today, $today, $customerIdSort, 1, 1, null, 'qty-desc');
+    ss_assert_eq($partNoZulu, ss_summary_part_nos($qtyPage1)[0] ?? '', 'qty-desc page 1 is the highest requested quantity', $passed, $failed, $errors);
+    $partSearchOffPage = $suggestedRepo->summary($MAIN_ID, $today, $today, $customerIdSort, 1, 1, $partNoAlpha, 'qty-desc');
+    ss_assert_eq(
+        [$partNoAlpha],
+        ss_summary_part_nos($partSearchOffPage),
+        'part-number search finds a row that is not on qty-desc page 1',
+        $passed,
+        $failed,
+        $errors
+    );
 
     $kivResult = $suggestedRepo->addToKiv($MAIN_ID, [[
         'part_no' => $partNoUnlisted,

@@ -58,6 +58,27 @@ if ($controller === false || $bootstrap === false) {
     exit(1);
 }
 
+if (str_contains($source, 'private function buildFilters')) {
+    fwrite(STDERR, "FAIL unused filter builder must be removed from the live summary query\n");
+    $failed++;
+} else {
+    echo "  PASS unused filter builder is not present\n";
+}
+
+if (str_contains($controller, "query['search']") || str_contains($controller, '$query[\'search\']')) {
+    fwrite(STDERR, "FAIL summary must not accept an unused search alias\n");
+    $failed++;
+} else {
+    echo "  PASS summary search uses part_no only\n";
+}
+
+if (str_contains($controller, "sort_by'] ?? 'inquiries-desc") || str_contains($controller, "sort_by'] ?? \"inquiries-desc\"")) {
+    fwrite(STDERR, "FAIL summary default sort must be qty-desc\n");
+    $failed++;
+} else {
+    echo "  PASS summary default sort is not inquiries-desc\n";
+}
+
 if (!str_contains($controller, 'function clearNotListed') || !str_contains($bootstrap, 'clear-not-listed')) {
     fwrite(STDERR, "FAIL clear-not-listed endpoint must be wired\n");
     $failed++;
@@ -84,7 +105,7 @@ if (!str_contains($controller, 'function markAddedToPurchaseRequest') || !str_co
     echo "  PASS add-to-PR completion endpoint is wired\n";
 }
 
-$endpointChecks = 3;
+$endpointChecks = 6;
 
 if ($failed > 0) {
     echo "Results: " . (count($checks) + count($productChecks) + $endpointChecks - $failed) . " passed, {$failed} failed\n";
