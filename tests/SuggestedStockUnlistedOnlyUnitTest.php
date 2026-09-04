@@ -12,6 +12,7 @@ $checks = [
     'ProductCreated' => 'product creation must keep suggestions in the active workflow',
     'AddedToPR' => 'adding a suggestion to a PR must remove it from the active workflow',
     'markAddedToPurchaseRequest' => 'suggestions must be marked only after PR creation',
+    'i.litem_code IS NULL AND :match_null_item_code = 1' => 'add-to-PR matching must treat NULL item codes as empty',
     "SET i.lremark = 'ProductCreated'" => 'product creation must preserve the active suggestion',
     'addToKiv' => 'KIV folder add must persist parked items',
     'removeFromKiv' => 'KIV folder restore must exist',

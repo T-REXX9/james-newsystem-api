@@ -471,7 +471,10 @@ SET i.lremark = 'AddedToPR'
 WHERE tr.lmain_id = :main_id
   AND COALESCE(i.lremark, '') IN ('NotListed', 'ProductCreated')
   AND i.lpartno = :part_no
-  AND i.litem_code = :item_code
+  AND (
+    i.litem_code = :item_code
+    OR (i.litem_code IS NULL AND :match_null_item_code = 1)
+  )
   AND i.ldesc = :description
 SQL);
         $removed = 0;
@@ -480,6 +483,7 @@ SQL);
                 'main_id' => (string) $mainId,
                 'part_no' => $item['part_no'],
                 'item_code' => $item['item_code'],
+                'match_null_item_code' => $item['item_code'] === '' ? 1 : 0,
                 'description' => $item['description'],
             ]);
             $removed += $stmt->rowCount();

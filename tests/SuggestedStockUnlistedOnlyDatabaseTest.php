@@ -45,8 +45,10 @@ $today = date('Y-m-d');
 $inquiryRefUnlisted = $prefix . 'inq-unlisted';
 $inquiryRefListed = $prefix . 'inq-listed';
 $inquiryRefSort = $prefix . 'inq-sort';
+$inquiryRefNull = $prefix . 'inq-null';
 $customerId = $prefix . 'customer';
 $customerIdSort = $prefix . 'customer-sort';
+$customerIdNull = $prefix . 'customer-null';
 
 $itemCodeUnlisted = $prefix . 'ITEM-UNLISTED';
 $partNoUnlisted = $prefix . 'PN-UNLISTED';
@@ -58,6 +60,7 @@ $partNoZulu = $prefix . 'PN-ZULU';
 $itemCodeAlpha = $prefix . 'ITEM-ALPHA';
 $itemCodeMu = $prefix . 'ITEM-MU';
 $itemCodeZulu = $prefix . 'ITEM-ZULU';
+$partNoNullCode = $prefix . 'PN-NULLCODE';
 
 $productSessionListed = $prefix . 'product-listed';
 $createdProductSessions = [$productSessionListed];
@@ -144,11 +147,13 @@ $cleanup = static function () use (
     $inquiryRefUnlisted,
     $inquiryRefListed,
     $inquiryRefSort,
+    $inquiryRefNull,
     $partNoUnlisted,
     $partNoListed,
     $partNoAlpha,
     $partNoMu,
     $partNoZulu,
+    $partNoNullCode,
     &$createdProductSessions,
     &$createdInquiryItemIds
 ): void {
@@ -158,12 +163,12 @@ $cleanup = static function () use (
             ->execute(array_values($createdInquiryItemIds));
     }
 
-    $pdo->prepare('DELETE FROM tblinquiry_item WHERE linq_refno IN (?, ?, ?)')
-        ->execute([$inquiryRefUnlisted, $inquiryRefListed, $inquiryRefSort]);
-    $pdo->prepare('DELETE FROM tblinquiry WHERE lrefno IN (?, ?, ?)')
-        ->execute([$inquiryRefUnlisted, $inquiryRefListed, $inquiryRefSort]);
-    $pdo->prepare('DELETE FROM suggested_stock_kiv WHERE part_no IN (?, ?, ?, ?, ?)')
-        ->execute([$partNoUnlisted, $partNoListed, $partNoAlpha, $partNoMu, $partNoZulu]);
+    $pdo->prepare('DELETE FROM tblinquiry_item WHERE linq_refno IN (?, ?, ?, ?)')
+        ->execute([$inquiryRefUnlisted, $inquiryRefListed, $inquiryRefSort, $inquiryRefNull]);
+    $pdo->prepare('DELETE FROM tblinquiry WHERE lrefno IN (?, ?, ?, ?)')
+        ->execute([$inquiryRefUnlisted, $inquiryRefListed, $inquiryRefSort, $inquiryRefNull]);
+    $pdo->prepare('DELETE FROM suggested_stock_kiv WHERE part_no IN (?, ?, ?, ?, ?, ?)')
+        ->execute([$partNoUnlisted, $partNoListed, $partNoAlpha, $partNoMu, $partNoZulu, $partNoNullCode]);
 
     foreach (array_values(array_unique($createdProductSessions)) as $session) {
         if ($session === '') {
@@ -253,6 +258,7 @@ try {
     $insertInquiry($inquiryRefUnlisted, $prefix . 'INQ-1');
     $insertInquiry($inquiryRefListed, $prefix . 'INQ-2');
     $insertInquiry($inquiryRefSort, $prefix . 'INQ-3', $customerIdSort);
+    $insertInquiry($inquiryRefNull, $prefix . 'INQ-4', $customerIdNull);
 
     $unlistedItemId = $insertInquiryItem(
         $inquiryRefUnlisted,
@@ -300,6 +306,22 @@ try {
         9
     );
 
+    $nullCodeStmt = $pdo->prepare(
+        'INSERT INTO tblinquiry_item
+        (linq_no, linq_refno, lqty, lprice, litem_code, lpartno, ldesc, lremark, linquiry_date, lapproved)
+        VALUES
+        (:linq_no, :linq_refno, 4, 0, NULL, :part_no, :description, :remark, :inquiry_date, 1)'
+    );
+    $nullCodeStmt->execute([
+        'linq_no' => $prefix . 'INQ-4',
+        'linq_refno' => $inquiryRefNull,
+        'part_no' => $partNoNullCode,
+        'description' => 'ORING',
+        'remark' => 'ProductCreated',
+        'inquiry_date' => $today,
+    ]);
+    $createdInquiryItemIds[] = (int) $pdo->lastInsertId();
+
     $insertProduct(
         $productSessionListed,
         $itemCodeListed,
@@ -317,7 +339,7 @@ try {
         static fn(string $partNo): bool => str_starts_with($partNo, $prefix)
     ));
     ss_assert_eq(
-        [$partNoZulu, $partNoMu, $partNoUnlisted, $partNoAlpha],
+        [$partNoZulu, $partNoMu, $partNoNullCode, $partNoUnlisted, $partNoAlpha],
         $seededOrder,
         'default summary orders by qty requested highest first',
         $passed,
@@ -480,6 +502,27 @@ try {
     ss_assert(
         in_array($partNoUnlisted, ss_summary_part_nos($summaryAfterClear), true),
         'summary retains inquiry item after its product is created',
+        $passed,
+        $failed,
+        $errors
+    );
+    ss_assert(
+        in_array($partNoNullCode, ss_summary_part_nos($summaryAfterClear), true),
+        'summary includes a Product Created row whose item code is NULL',
+        $passed,
+        $failed,
+        $errors
+    );
+
+    $markedNullCode = $suggestedRepo->markAddedToPurchaseRequest($MAIN_ID, [[
+        'part_no' => $partNoNullCode,
+        'item_code' => '',
+        'description' => 'ORING',
+    ]]);
+    ss_assert(($markedNullCode['removed'] ?? 0) >= 1, 'adding to PR hides a Product Created row with a NULL item code', $passed, $failed, $errors);
+    ss_assert(
+        !in_array($partNoNullCode, ss_summary_part_nos($suggestedRepo->summary($MAIN_ID, $today, $today, null, 1, 200)), true),
+        'summary hides a NULL item-code suggestion after PR completion',
         $passed,
         $failed,
         $errors
