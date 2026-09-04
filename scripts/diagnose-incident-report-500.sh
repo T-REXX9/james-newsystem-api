@@ -85,10 +85,36 @@ if [[ "$CREATE_HTTP" != "200" ]] || [[ "$CREATE_ERR" == *"report_time"* ]] || [[
 else
   echo "GREEN create ok id=${RID}"
   CREATE_RED=0
-  mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_NAME" -e "DELETE FROM incident_reports WHERE id='${RID}'" >/dev/null 2>&1 || true
 fi
 
-if [[ "$SCHEMA_RED$LIST_RED$CREATE_RED" != "000" ]]; then
+echo "== VERIFY CREATED PENDING REPORT IS LISTED =="
+VERIFY_RAW=$(curl -sS -w "\n__HTTP__:%{http_code}" \
+  -H "Authorization: Bearer ${TOKEN}" -H "Accept: application/json" \
+  "${API_BASE}/api/v1/daily-call-monitoring/customers/${CONTACT}/incident-reports?main_id=${MAIN_ID}")
+VERIFY_HTTP=$(printf '%s' "$VERIFY_RAW" | sed -n 's/^__HTTP__://p')
+VERIFY_BODY=$(printf '%s' "$VERIFY_RAW" | sed '/^__HTTP__:/d')
+VERIFY_FOUND=$(printf '%s' "$VERIFY_BODY" | php -r '
+  $payload = json_decode(stream_get_contents(STDIN), true);
+  foreach ((array) ($payload["data"] ?? []) as $row) {
+    if (($row["id"] ?? "") === $argv[1] && ($row["approval_status"] ?? "") === "pending") {
+      echo "yes";
+      exit;
+    }
+  }
+  echo "no";
+' "$RID")
+echo "HTTP=${VERIFY_HTTP} pending_report_listed=${VERIFY_FOUND}"
+if [[ "$CREATE_RED" != "0" ]] || [[ "$VERIFY_HTTP" != "200" ]] || [[ "$VERIFY_FOUND" != "yes" ]]; then
+  echo "RED created pending Incident Report is absent from the customer list"
+  VERIFY_RED=1
+else
+  echo "GREEN created pending Incident Report is visible in the customer list"
+  VERIFY_RED=0
+fi
+
+mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_NAME" -e "DELETE FROM incident_reports WHERE id='${RID}'" >/dev/null 2>&1 || true
+
+if [[ "$SCHEMA_RED$LIST_RED$CREATE_RED$VERIFY_RED" != "0000" ]]; then
   echo "VERDICT: RED (incident report workflow broken)"
   echo "Fix: ./scripts/fix-incident-report-schema.sh"
   exit 1

@@ -8,6 +8,15 @@ use RuntimeException;
 
 final class PurchaseReceivingPolicy
 {
+    public const INCOMPLETE_DELIVERY_REASONS = [
+        'Partial delivery — remaining quantity to follow',
+        'Factory out of stock — unable to complete the full delivery',
+        'Missing item',
+        'Defective item — return to supplier',
+    ];
+
+    public const PARTIAL_DELIVERY_REASON = 'Partial delivery — remaining quantity to follow';
+
     /** @param array<string, mixed> $purchaseOrder */
     public static function assertEligiblePurchaseOrder(array $purchaseOrder): void
     {
@@ -41,5 +50,30 @@ final class PurchaseReceivingPolicy
         if ($quantity > $remaining) {
             throw new RuntimeException("Receiving quantity cannot exceed the remaining purchase order quantity ({$remaining})");
         }
+    }
+
+    public static function assertIncompleteDeliveryReason(string $reason, bool $hasRemainingPoQty): void
+    {
+        if (!$hasRemainingPoQty) {
+            return;
+        }
+
+        $reason = trim($reason);
+        if ($reason === '') {
+            throw new RuntimeException('Select a reason for the incomplete delivery.');
+        }
+        if (!in_array($reason, self::INCOMPLETE_DELIVERY_REASONS, true)) {
+            throw new RuntimeException('Select a valid reason for the incomplete delivery.');
+        }
+    }
+
+    public static function shouldCloseRemainingPoQty(string $reason): bool
+    {
+        $reason = trim($reason);
+        if ($reason === '' || $reason === self::PARTIAL_DELIVERY_REASON) {
+            return false;
+        }
+
+        return in_array($reason, self::INCOMPLETE_DELIVERY_REASONS, true);
     }
 }

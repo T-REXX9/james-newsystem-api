@@ -223,12 +223,17 @@ final class ReceivingStockController
         }
 
         try {
+            $incompleteDeliveryReason = trim((string) (
+                $body['incomplete_delivery_reason']
+                ?? $body['short_receipt_reason']
+                ?? ''
+            ));
             $record = $this->repo->finalizeReceivingStock(
                 $mainId,
                 $refno,
                 trim((string) ($body['status'] ?? 'Delivered')),
                 filter_var($body['close_remaining_po_qty'] ?? false, FILTER_VALIDATE_BOOL),
-                trim((string) ($body['short_receipt_reason'] ?? ''))
+                $incompleteDeliveryReason
             );
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());

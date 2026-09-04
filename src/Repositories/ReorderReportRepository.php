@@ -265,16 +265,10 @@ SQL;
                 $poTotalOrderedQty += (float) ($poProgress['ordered_qty'] ?? 0);
                 $poTotalReceivedQty += (float) ($poProgress['received_qty'] ?? 0);
             }
-            $rowRrRefnos = array_values(array_unique(array_filter(array_map(
-                static fn (array $document): string => trim((string) ($document['refno'] ?? '')),
-                $rrDocuments
-            ))));
-            $rrTotalReceivedQty = 0.0;
-            foreach ($rowRrRefnos as $rrRefno) {
-                $rrProgress = $rrProgressByRefno[$rrRefno] ?? null;
-                if ($rrProgress === null) continue;
-                $rrTotalReceivedQty += (float) ($rrProgress['received_qty'] ?? 0);
-            }
+            // RR documents are initially matched by item session/code across the
+            // report. Keep only records belonging to this row's active PO before
+            // calculating its received total; otherwise an unrelated RR can leave
+            // a quantity behind after its document link is hidden.
             $rrDocuments = $rowOpenPoRefnos === []
                 ? []
                 : array_values(array_filter(
@@ -285,6 +279,16 @@ SQL;
                         true
                     )
                 ));
+            $rowRrRefnos = array_values(array_unique(array_filter(array_map(
+                static fn (array $document): string => trim((string) ($document['refno'] ?? '')),
+                $rrDocuments
+            ))));
+            $rrTotalReceivedQty = 0.0;
+            foreach ($rowRrRefnos as $rrRefno) {
+                $rrProgress = $rrProgressByRefno[$rrRefno] ?? null;
+                if ($rrProgress === null) continue;
+                $rrTotalReceivedQty += (float) ($rrProgress['received_qty'] ?? 0);
+            }
 
             $requestedPrQty = 0.0;
             $openPrQty = 0.0;

@@ -217,12 +217,32 @@ assert_eq(true, $filtered['body']['ok'] ?? false, 'Filtered response ok=true', $
 assert_true(is_array($filtered['body']['data']['items'] ?? null), 'Filtered response includes items array', $passed, $failed, $errors);
 assert_true(count($filtered['body']['data']['items'] ?? []) > 0, 'Search filter finds the seeded item', $passed, $failed, $errors);
 
-echo "\n--- 5. Authenticated Tenant Fallback ---\n";
+echo "\n--- 5. Local calendar date window includes today's report_date ---\n";
+// Align with APP_TIMEZONE / business calendar (Asia/Manila), not PHP process UTC.
+$businessTz = new DateTimeZone((string) (\App\Support\Env::get('APP_TIMEZONE', 'Asia/Manila') ?: 'Asia/Manila'));
+$todayLocal = (new DateTimeImmutable('now', $businessTz))->format('Y-m-d');
+$monthAgoLocal = (new DateTimeImmutable('now', $businessTz))->modify('-30 days')->format('Y-m-d');
+$dateWindow = request(
+    'GET',
+    "{$API_BASE}/api/v1/incident-items-report?main_id={$MAIN_ID}&page=1&per_page=20&search=UT-NOZZLE"
+        . "&date_from={$monthAgoLocal}&date_to={$todayLocal}",
+    $authHeaders
+);
+assert_eq(200, $dateWindow['http_code'], 'Date window report returns 200', $passed, $failed, $errors);
+assert_true(
+    count($dateWindow['body']['data']['items'] ?? []) > 0,
+    'Default local date window includes seeded report_date=today rows',
+    $passed,
+    $failed,
+    $errors
+);
+
+echo "\n--- 6. Authenticated Tenant Fallback ---\n";
 $missingMain = request('GET', "{$API_BASE}/api/v1/incident-items-report", $authHeaders);
 assert_eq(200, $missingMain['http_code'], 'Authenticated report uses tenant from token when main_id is omitted', $passed, $failed, $errors);
 assert_eq(true, $missingMain['body']['ok'] ?? false, 'Authenticated tenant fallback response ok=true', $passed, $failed, $errors);
 
-echo "\n--- 6. Synchronization Authentication ---\n";
+echo "\n--- 7. Synchronization Authentication ---\n";
 $unauthorizedSync = request('POST', "{$API_BASE}/api/v1/incident-report-items");
 assert_eq(401, $unauthorizedSync['http_code'], 'Incident item synchronization requires authentication', $passed, $failed, $errors);
 } finally {

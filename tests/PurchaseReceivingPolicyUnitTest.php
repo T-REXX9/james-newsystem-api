@@ -39,6 +39,23 @@ $expectFail('over-receiving is rejected', 'remaining purchase order quantity (6)
 $expectFail('fully received line is rejected', 'already fully received', fn () => PurchaseReceivingPolicy::assertReceivableLine([
     'qty' => 10, 'receiving_qty' => 10,
 ], 1));
+$expectPass('complete delivery does not require an incomplete-delivery reason', fn () => PurchaseReceivingPolicy::assertIncompleteDeliveryReason('', false));
+$expectFail('incomplete delivery requires a reason', 'Select a reason for the incomplete delivery', fn () => PurchaseReceivingPolicy::assertIncompleteDeliveryReason('', true));
+$expectFail('incomplete delivery rejects unknown reasons', 'Select a valid reason', fn () => PurchaseReceivingPolicy::assertIncompleteDeliveryReason('short receipt', true));
+$expectPass('partial delivery is an allowed incomplete-delivery reason', fn () => PurchaseReceivingPolicy::assertIncompleteDeliveryReason(
+    PurchaseReceivingPolicy::PARTIAL_DELIVERY_REASON,
+    true
+));
+$expectPass('partial delivery keeps remaining PO quantity open', function (): void {
+    if (PurchaseReceivingPolicy::shouldCloseRemainingPoQty(PurchaseReceivingPolicy::PARTIAL_DELIVERY_REASON)) {
+        throw new RuntimeException('partial delivery closed remaining quantity');
+    }
+});
+$expectPass('factory out of stock closes remaining PO quantity', function (): void {
+    if (!PurchaseReceivingPolicy::shouldCloseRemainingPoQty('Factory out of stock — unable to complete the full delivery')) {
+        throw new RuntimeException('factory out of stock left remaining quantity open');
+    }
+});
 
 echo "\nPassed: {$passed}; Failed: {$failed}\n";
 exit($failed === 0 ? 0 : 1);

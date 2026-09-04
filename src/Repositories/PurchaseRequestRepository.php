@@ -142,7 +142,18 @@ SELECT
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by_name,
     CAST(COALESCE(agg.item_count, 0) AS SIGNED) AS item_count,
     CAST(COALESCE(agg.total_qty, 0) AS SIGNED) AS total_qty,
-    CAST(COALESCE(agg.total_cost, 0) AS DECIMAL(15,2)) AS total_cost
+    CAST(COALESCE(agg.total_cost, 0) AS DECIMAL(15,2)) AS total_cost,
+    CAST(COALESCE(cycle.po_count, 0) AS SIGNED) AS po_count,
+    COALESCE(cycle.po_refno, '') AS po_refno,
+    COALESCE(cycle.po_numbers, '') AS po_numbers,
+    CAST(COALESCE(cycle.received_qty, 0) AS DECIMAL(15,2)) AS received_qty,
+    GREATEST(0, CAST(COALESCE(agg.total_qty, 0) AS DECIMAL(15,2)) - CAST(COALESCE(cycle.received_qty, 0) AS DECIMAL(15,2))) AS remaining_qty,
+    CASE
+        WHEN COALESCE(cycle.po_count, 0) = 0 THEN 'Pending'
+        WHEN COALESCE(cycle.received_qty, 0) <= 0 THEN 'PO Created'
+        WHEN COALESCE(cycle.received_qty, 0) < COALESCE(agg.total_qty, 0) THEN 'Partially Fulfilled'
+        ELSE 'Completed'
+    END AS cycle_status
 FROM tblpr_list pr
 LEFT JOIN tblaccount acc
     ON acc.lid = pr.luser
@@ -159,6 +170,18 @@ LEFT JOIN (
     GROUP BY lrefno
 ) agg
     ON agg.lrefno = pr.lrefno
+LEFT JOIN (
+    SELECT
+        po.lpr_refno,
+        COUNT(DISTINCT po.lrefno) AS po_count,
+        GROUP_CONCAT(DISTINCT po.lrefno ORDER BY po.lid SEPARATOR ',') AS po_refno,
+        GROUP_CONCAT(DISTINCT po.lpurchaseno ORDER BY po.lid SEPARATOR ', ') AS po_numbers,
+        SUM(COALESCE(poi.lreceiving_qty, 0)) AS received_qty
+    FROM tblpo_list po
+    LEFT JOIN tblpo_itemlist poi ON poi.lrefno = po.lrefno
+    WHERE COALESCE(po.ldeleted, 0) = 0
+    GROUP BY po.lpr_refno
+) cycle ON cycle.lpr_refno = pr.lrefno
 WHERE {$whereSql}
 ORDER BY pr.lid DESC
 LIMIT :limit OFFSET :offset
@@ -218,7 +241,20 @@ SELECT
         ELSE "Pending"
     END AS status,
     CAST(COALESCE(pr.luser, 0) AS UNSIGNED) AS created_by,
-    TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by_name
+    TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by_name,
+    CAST(COALESCE((SELECT SUM(COALESCE(pri_qty.lqty, 0)) FROM tblpr_item pri_qty WHERE pri_qty.lrefno = pr.lrefno), 0) AS DECIMAL(15,2)) AS ordered_qty,
+    CAST(COALESCE((
+        SELECT SUM(COALESCE(poi_received.lreceiving_qty, 0))
+        FROM tblpo_list po_received
+        INNER JOIN tblpo_itemlist poi_received ON poi_received.lrefno = po_received.lrefno
+        WHERE po_received.lpr_refno = pr.lrefno AND COALESCE(po_received.ldeleted, 0) = 0
+    ), 0) AS DECIMAL(15,2)) AS received_qty,
+    CASE
+        WHEN NOT EXISTS (SELECT 1 FROM tblpo_list po_cycle WHERE po_cycle.lpr_refno = pr.lrefno AND COALESCE(po_cycle.ldeleted, 0) = 0) THEN 'Pending'
+        WHEN COALESCE((SELECT SUM(COALESCE(poi_received.lreceiving_qty, 0)) FROM tblpo_list po_received INNER JOIN tblpo_itemlist poi_received ON poi_received.lrefno = po_received.lrefno WHERE po_received.lpr_refno = pr.lrefno AND COALESCE(po_received.ldeleted, 0) = 0), 0) <= 0 THEN 'PO Created'
+        WHEN COALESCE((SELECT SUM(COALESCE(poi_received.lreceiving_qty, 0)) FROM tblpo_list po_received INNER JOIN tblpo_itemlist poi_received ON poi_received.lrefno = po_received.lrefno WHERE po_received.lpr_refno = pr.lrefno AND COALESCE(po_received.ldeleted, 0) = 0), 0) < COALESCE((SELECT SUM(COALESCE(pri_qty.lqty, 0)) FROM tblpr_item pri_qty WHERE pri_qty.lrefno = pr.lrefno), 0) THEN 'Partially Fulfilled'
+        ELSE 'Completed'
+    END AS cycle_status
 FROM tblpr_list pr
 LEFT JOIN tblaccount acc
     ON acc.lid = pr.luser

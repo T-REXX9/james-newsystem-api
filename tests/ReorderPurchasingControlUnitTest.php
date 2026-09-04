@@ -72,6 +72,8 @@ $assertions = [
     'report quantity columns use whole PO and RR totals' => str_contains($report, "'po_ordered_qty' => \$poTotalOrderedQty")
         && str_contains($report, "'received_qty' => \$rrTotalReceivedQty")
         && str_contains($report, '$this->fetchRrProgressByRefno($mainId, array_keys($openRrRefnos))'),
+    'received quantity only includes RRs linked to the row active PO' => strpos($report, '$rrDocuments = $rowOpenPoRefnos === []')
+        < strpos($report, '$rowRrRefnos = array_values(array_unique(array_filter(array_map('),
     'pending RR status reports entered receiving progress' => str_contains($report, "'RR Pending — ' . \$pendingReceiptLabel . '% Received'"),
     'active PO balance blocks a duplicate PR regardless of status label' => str_contains($report, "'can_create_pr' => !(\$hasPendingPr || \$hasApprovedPr || \$hasPendingPo || \$openPoQty > 0)"),
     'report obtains pagination totals in the same database pass' => str_contains($report, 'COUNT(*) OVER() AS report_total')

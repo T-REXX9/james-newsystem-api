@@ -403,13 +403,20 @@ SQL);
         $dateFrom = trim((string) ($filters['date_from'] ?? ''));
         if ($dateFrom !== '') {
             $params['date_from'] = $dateFrom;
-            $where[] = 'DATE(created_at) >= :date_from';
+            // Prefer the Incident Report calendar date so timezone/created_at drift cannot hide rows.
+            $where[] = 'DATE(COALESCE(
+                (SELECT ir.report_date FROM incident_reports ir WHERE ir.id = incident_report_items.incident_report_id LIMIT 1),
+                incident_report_items.created_at
+            )) >= :date_from';
         }
 
         $dateTo = trim((string) ($filters['date_to'] ?? ''));
         if ($dateTo !== '') {
             $params['date_to'] = $dateTo;
-            $where[] = 'DATE(created_at) <= :date_to';
+            $where[] = 'DATE(COALESCE(
+                (SELECT ir.report_date FROM incident_reports ir WHERE ir.id = incident_report_items.incident_report_id LIMIT 1),
+                incident_report_items.created_at
+            )) <= :date_to';
         }
 
         return [implode(' AND ', $where), $params];

@@ -159,7 +159,15 @@ SELECT
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by,
     CAST(COALESCE(agg.item_count, 0) AS SIGNED) AS item_count,
     CAST(COALESCE(agg.total_qty, 0) AS SIGNED) AS total_qty,
-    CAST(COALESCE(agg.total_cost, 0) AS DECIMAL(15,2)) AS total_cost
+    CAST(COALESCE(agg.total_cost, 0) AS DECIMAL(15,2)) AS total_cost,
+    CAST(COALESCE((
+        SELECT SUM(COALESCE(poi_ordered.lqty, ri_ordered.lqty, 0))
+        FROM tblpurchase_item ri_ordered
+        LEFT JOIN tblpo_itemlist poi_ordered ON poi_ordered.lid = ri_ordered.lpo_itemid
+        WHERE ri_ordered.lrefno = rr.lrefno
+    ), 0) AS DECIMAL(15,2)) AS ordered_qty,
+    COALESCE(rr.lreference, '') AS incomplete_delivery_reason,
+    CAST(COALESCE((SELECT COUNT(*) FROM tblreturn_supplier rs WHERE rs.lmainid = rr.lmain_id AND rs.ltransaction_refno = rr.lrefno AND LOWER(COALESCE(rs.lstatus, '')) NOT IN ('cancelled', 'canceled')), 0) AS SIGNED) AS return_count
 FROM tblpurchase_order rr
 LEFT JOIN tblaccount acc
     ON acc.lid = rr.luser
@@ -264,6 +272,8 @@ SELECT
 FROM tblpurchase_item itm
 LEFT JOIN tblinventory_item inv
     ON inv.lid = itm.litemid
+LEFT JOIN tblpo_itemlist poi
+    ON poi.lid = itm.lpo_itemid
 WHERE itm.lrefno = :refno
 ORDER BY itm.lid ASC
 SQL;
@@ -271,6 +281,26 @@ SQL;
         $itemsStmt->bindValue('refno', $receivingRefno, PDO::PARAM_STR);
         $itemsStmt->execute();
         $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($items as &$item) {
+            $poItemId = (int) ($item['po_item_id'] ?? 0);
+            if ($poItemId > 0) {
+                $ordered = $this->db->pdo()->prepare('SELECT COALESCE(lqty, 0) FROM tblpo_itemlist WHERE lid = :id LIMIT 1');
+                $ordered->execute(['id' => $poItemId]);
+                $item['qty_ordered'] = (float) ($ordered->fetchColumn() ?: 0);
+            }
+        }
+        unset($item);
+
+        $returnStmt = $this->db->pdo()->prepare(
+            'SELECT lrefno AS refno, lcredit_no AS return_no, lstatus AS status
+             FROM tblreturn_supplier
+             WHERE lmainid = :main_id AND ltransaction_refno = :rr_refno
+               AND LOWER(COALESCE(lstatus, "")) NOT IN ("cancelled", "canceled")
+             ORDER BY lid DESC'
+        );
+        $returnStmt->execute(['main_id' => (string) $mainId, 'rr_refno' => $receivingRefno]);
+        $returnRecords = $returnStmt->fetchAll(PDO::FETCH_ASSOC);
 
         $summary = [
             'item_count' => count($items),
@@ -285,6 +315,7 @@ SQL;
         return [
             'record' => $header,
             'items' => $items,
+            'return_records' => $returnRecords,
             'summary' => $summary,
         ];
     }
@@ -665,7 +696,7 @@ SQL;
         string $receivingRefno,
         string $status = 'Delivered',
         bool $closeRemainingPoQty = false,
-        string $shortReceiptReason = ''
+        string $incompleteDeliveryReason = ''
     ): ?array
     {
         $record = $this->getReceivingStock($mainId, $receivingRefno);
@@ -674,10 +705,7 @@ SQL;
         }
 
         $wasDelivered = in_array(strtolower((string) ($record['record']['status'] ?? '')), ['delivered', 'posted'], true);
-        $shortReceiptReason = trim($shortReceiptReason);
-        if ($closeRemainingPoQty && $shortReceiptReason === '') {
-            throw new RuntimeException('A reason is required when closing a PO with undelivered quantity.');
-        }
+        $incompleteDeliveryReason = trim($incompleteDeliveryReason);
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
@@ -761,23 +789,13 @@ SQL;
                 );
                 $remainingPoItems->execute(['po_refno' => $poRefno]);
                 $hasRemainingPoQty = (int) ($remainingPoItems->fetchColumn() ?: 0) > 0;
-                if ($closeRemainingPoQty && !$hasRemainingPoQty) {
-                    throw new RuntimeException('This PO has no remaining quantity to close as a short receipt.');
-                }
-                if ($closeRemainingPoQty) {
-                    $reason = $pdo->prepare(
-                        'UPDATE tblpurchase_order
-                         SET lreference = CASE
-                             WHEN TRIM(COALESCE(lreference, "")) = "" THEN :reason
-                             ELSE CONCAT(lreference, " | ", :reason)
-                         END
-                         WHERE lmain_id = :main_id AND lrefno = :refno'
-                    );
-                    $reason->execute([
-                        'reason' => 'Short receipt reason: ' . $shortReceiptReason,
-                        'main_id' => (string) $mainId,
-                        'refno' => $receivingRefno,
-                    ]);
+                PurchaseReceivingPolicy::assertIncompleteDeliveryReason($incompleteDeliveryReason, $hasRemainingPoQty);
+                // Partial delivery never closes remaining PO qty, even if the client asked to.
+                $closeRemainingPoQty = PurchaseReceivingPolicy::shouldCloseRemainingPoQty($incompleteDeliveryReason);
+                if ($incompleteDeliveryReason !== '') {
+                    $reasonNote = 'Incomplete delivery reason: ' . $incompleteDeliveryReason;
+                    $this->appendReferenceNote($pdo, 'tblpurchase_order', $mainId, $receivingRefno, $reasonNote);
+                    $this->appendReferenceNote($pdo, 'tblpo_list', $mainId, $poRefno, $reasonNote);
                 }
                 if (!$hasRemainingPoQty || $closeRemainingPoQty) {
                     $completePo = $pdo->prepare(
@@ -1085,6 +1103,30 @@ SQL;
             return null;
         }
         return $this->normalizeDate($trimmed);
+    }
+
+    private function appendReferenceNote(PDO $pdo, string $table, int $mainId, string $refno, string $note): void
+    {
+        if (!in_array($table, ['tblpurchase_order', 'tblpo_list'], true)) {
+            throw new RuntimeException('Unsupported table for reference note');
+        }
+
+        $select = $pdo->prepare("SELECT COALESCE(lreference, '') FROM {$table} WHERE lmain_id = :main_id AND lrefno = :refno LIMIT 1");
+        $select->execute([
+            'main_id' => (string) $mainId,
+            'refno' => $refno,
+        ]);
+        $existing = trim((string) ($select->fetchColumn() ?: ''));
+        if ($existing !== '' && str_contains($existing, $note)) {
+            return;
+        }
+
+        $update = $pdo->prepare("UPDATE {$table} SET lreference = :reference WHERE lmain_id = :main_id AND lrefno = :refno");
+        $update->execute([
+            'reference' => $existing === '' ? $note : $existing . ' | ' . $note,
+            'main_id' => (string) $mainId,
+            'refno' => $refno,
+        ]);
     }
 
     private function toMoneyString(float $value): string
