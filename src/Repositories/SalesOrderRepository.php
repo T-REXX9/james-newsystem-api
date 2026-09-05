@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\AuditTrailWriter;
+use App\Support\VipDocumentDiscount;
 use PDO;
 use RuntimeException;
 
@@ -342,6 +343,18 @@ SQL;
             $summary['grand_total'] += (float) ($item['amount'] ?? 0);
         }
 
+        $order = (new VipDocumentDiscountRepository($this->db))->attach(
+            $order,
+            'sales_order',
+            $salesRefno,
+            (float) $summary['grand_total']
+        );
+        $summary['vip_applied'] = (int) ($order['vip_applied'] ?? 0);
+        $summary['vip_tier'] = (string) ($order['vip_tier'] ?? 'regular');
+        $summary['vip_percentage'] = (float) ($order['vip_percentage'] ?? 0);
+        $summary['vip_discount_amount'] = (float) ($order['vip_discount_amount'] ?? 0);
+        $summary['total_to_pay'] = (float) ($order['total_to_pay'] ?? $summary['grand_total']);
+
         return [
             'order' => $order,
             'items' => $items,
@@ -450,7 +463,32 @@ SQL;
             throw new RuntimeException('Failed to create sales order');
         }
 
-        return $record;
+        $grandTotal = (float) ($record['summary']['grand_total'] ?? 0);
+        $inquiryRef = trim((string) ($payload['inquiry_refno'] ?? $payload['inquiry_id'] ?? ''));
+        if ($inquiryRef !== '') {
+            (new VipDocumentDiscountRepository($this->db))->copyTo(
+                $mainId,
+                'sales_inquiry',
+                $inquiryRef,
+                'sales_order',
+                $salesRefno,
+                $contactId,
+                (string) ($record['order']['sales_date'] ?? ''),
+                $grandTotal
+            );
+        } elseif (array_key_exists('vip_applied', $payload) || array_key_exists('vip_tier', $payload)) {
+            (new VipDocumentDiscountRepository($this->db))->upsertFromPayload(
+                $mainId,
+                'sales_order',
+                $salesRefno,
+                $contactId,
+                (string) ($record['order']['sales_date'] ?? ''),
+                $grandTotal,
+                $payload
+            );
+        }
+
+        return $this->getSalesOrder($mainId, $salesRefno) ?? $record;
     }
 
     /**
@@ -864,6 +902,17 @@ SQL;
         $doc = $created['order_slip'] ?? [];
         $docRef = (string) ($doc['order_slip_refno'] ?? '');
         $docNo = (string) ($doc['slip_no'] ?? '');
+        $grandTotal = (float) (($created['summary']['grand_total'] ?? 0));
+        (new VipDocumentDiscountRepository($this->db))->copyTo(
+            $mainId,
+            'sales_order',
+            $salesRefno,
+            'order_slip',
+            $docRef,
+            (string) ($order['contact_id'] ?? ''),
+            (string) ($order['sales_date'] ?? ''),
+            $grandTotal
+        );
         $this->insertDocumentLedgerDebit(
             $mainId,
             $userId,
@@ -963,6 +1012,17 @@ SQL;
         $doc = $created['invoice'] ?? [];
         $docRef = (string) ($doc['invoice_refno'] ?? '');
         $docNo = (string) ($doc['invoice_no'] ?? '');
+        $grandTotal = (float) (($created['summary']['grand_total'] ?? 0));
+        (new VipDocumentDiscountRepository($this->db))->copyTo(
+            $mainId,
+            'sales_order',
+            $salesRefno,
+            'invoice',
+            $docRef,
+            (string) ($order['contact_id'] ?? ''),
+            (string) ($order['sales_date'] ?? ''),
+            $grandTotal
+        );
         $this->insertDocumentLedgerDebit(
             $mainId,
             $userId,
@@ -1337,6 +1397,12 @@ SQL;
         }
 
         $amount = $this->calculateLedgerDebitAmount($items, $referenceName, $taxType);
+        if ($referenceName === 'Invoice') {
+            $vip = (new VipDocumentDiscountRepository($this->db))->get('invoice', $documentRefno);
+            if ($vip !== null && (int) ($vip['vip_applied'] ?? 0) > 0) {
+                $amount = VipDocumentDiscount::billedAmount($amount, (float) ($vip['vip_discount_amount'] ?? 0));
+            }
+        }
         if ($amount <= 0) {
             return;
         }

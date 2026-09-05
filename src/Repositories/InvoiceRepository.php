@@ -337,7 +337,12 @@ SQL;
         }
 
         return [
-            'invoice' => $invoice,
+            'invoice' => (new VipDocumentDiscountRepository($this->db))->attach(
+                $invoice,
+                'invoice',
+                $invoiceRefno,
+                (float) $summary['grand_total']
+            ),
             'items' => $items,
             'summary' => $summary,
         ];
@@ -430,7 +435,34 @@ SQL;
         if ($created === null) {
             throw new RuntimeException('Failed to load created invoice');
         }
-        return $created;
+
+        $grandTotal = (float) ($created['summary']['grand_total'] ?? 0);
+        $orderId = trim((string) ($payload['order_id'] ?? $payload['sales_refno'] ?? ''));
+        $refno = (string) ($created['invoice']['invoice_refno'] ?? $invoiceRefno);
+        if ($orderId !== '') {
+            (new VipDocumentDiscountRepository($this->db))->copyTo(
+                $mainId,
+                'sales_order',
+                $orderId,
+                'invoice',
+                $refno,
+                $contactId,
+                (string) ($created['invoice']['sales_date'] ?? $salesDate),
+                $grandTotal
+            );
+        } elseif (array_key_exists('vip_applied', $payload) || array_key_exists('vip_tier', $payload)) {
+            (new VipDocumentDiscountRepository($this->db))->upsertFromPayload(
+                $mainId,
+                'invoice',
+                $refno,
+                $contactId,
+                (string) ($created['invoice']['sales_date'] ?? $salesDate),
+                $grandTotal,
+                $payload
+            );
+        }
+
+        return $this->getInvoice($mainId, $refno) ?? $created;
     }
 
     /**

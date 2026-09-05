@@ -559,6 +559,7 @@ SQL;
     {
         $salesTotals = $this->loadCustomerSalesTotals($sessionId);
         $monthlySales = (float) ($salesTotals['monthly_sales'] ?? 0);
+        $lastMonthSales = (float) ($salesTotals['last_month_sales'] ?? 0);
         $dealershipSales = (float) ($salesTotals['dealership_sales'] ?? 0);
 
         $ledgerRows = $this->loadLedgerRows($sessionId);
@@ -600,6 +601,7 @@ SQL;
             'dealership_sales' => $dealershipSales,
             'dealership_quota' => (float) ($customer['ldealer_quota'] ?? 0),
             'monthly_sales' => $monthlySales,
+            'last_month_sales' => $lastMonthSales,
             'customer_since' => $customerSince,
             'credit_limit' => (float) ($customer['lcredit'] ?? 0),
             'terms' => $terms,
@@ -626,7 +628,7 @@ SQL;
     }
 
     /**
-     * @return array{dealership_sales:float,monthly_sales:float}
+     * @return array{dealership_sales:float,monthly_sales:float,last_month_sales:float}
      */
     private function loadCustomerSalesTotals(string $sessionId): array
     {
@@ -639,7 +641,14 @@ SELECT
             THEN doc.amount
             ELSE 0
         END
-    ), 0) AS monthly_sales
+    ), 0) AS monthly_sales,
+    COALESCE(SUM(
+        CASE
+            WHEN DATE_FORMAT(doc.doc_date, '%Y-%m') = DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH), '%Y-%m')
+            THEN doc.amount
+            ELSE 0
+        END
+    ), 0) AS last_month_sales
 FROM (
     SELECT
         inv.lrefno AS document_refno,
@@ -713,6 +722,7 @@ SQL;
         return [
             'dealership_sales' => (float) ($row['dealership_sales'] ?? 0),
             'monthly_sales' => (float) ($row['monthly_sales'] ?? 0),
+            'last_month_sales' => (float) ($row['last_month_sales'] ?? 0),
         ];
     }
 

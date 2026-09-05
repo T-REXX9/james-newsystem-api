@@ -139,11 +139,13 @@ SQL;
         )));
 
         $aggregateByRef = $this->fetchListAggregatesByRefnos($refnos);
+        $vipByRef = (new VipDocumentDiscountRepository($this->db))->mapForType('sales_inquiry', $refnos);
         foreach ($items as &$row) {
             $ref = (string) ($row['inquiry_refno'] ?? '');
             $agg = $aggregateByRef[$ref] ?? ['item_count' => 0, 'grand_total' => 0.0];
             $row['item_count'] = (int) ($agg['item_count'] ?? 0);
             $row['grand_total'] = (float) ($agg['grand_total'] ?? 0);
+            $row = $this->withVipFields($row, $vipByRef[$ref] ?? null, (float) $row['grand_total']);
         }
         unset($row);
 
@@ -284,7 +286,12 @@ SQL;
             0.0
         );
 
-        return $record;
+        return (new VipDocumentDiscountRepository($this->db))->attach(
+            $record,
+            'sales_inquiry',
+            $inquiryRefno,
+            (float) $record['grand_total']
+        );
     }
 
     public function createInquiry(int $mainId, int $userId, array $payload): array
@@ -362,7 +369,9 @@ SQL;
             $this->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Sales Inquiry', 'Create', $inquiryRefno);
             $pdo->commit();
-            return $this->getInquiry($mainId, $inquiryRefno) ?? [];
+            $created = $this->getInquiry($mainId, $inquiryRefno) ?? [];
+            $this->persistVipFromPayload($mainId, $inquiryRefno, $payload, $created);
+            return $this->getInquiry($mainId, $inquiryRefno) ?? $created;
         } catch (\Throwable $e) {
             $pdo->rollBack();
             throw $e;
@@ -460,7 +469,50 @@ SQL;
             throw $e;
         }
 
-        return $this->getInquiry($mainId, $inquiryRefno);
+        $updated = $this->getInquiry($mainId, $inquiryRefno);
+        if ($updated !== null) {
+            $this->persistVipFromPayload($mainId, $inquiryRefno, $payload, $updated);
+            $updated = $this->getInquiry($mainId, $inquiryRefno) ?? $updated;
+        }
+        return $updated;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @param array<string, mixed> $record
+     */
+    private function persistVipFromPayload(int $mainId, string $inquiryRefno, array $payload, array $record): void
+    {
+        if (!array_key_exists('vip_applied', $payload) && !array_key_exists('vip_tier', $payload)) {
+            return;
+        }
+        (new VipDocumentDiscountRepository($this->db))->upsertFromPayload(
+            $mainId,
+            'sales_inquiry',
+            $inquiryRefno,
+            (string) ($record['contact_id'] ?? $payload['contact_id'] ?? ''),
+            (string) ($record['sales_date'] ?? $payload['sales_date'] ?? ''),
+            (float) ($record['grand_total'] ?? 0),
+            $payload
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $row
+     * @param array<string, mixed>|null $vip
+     * @return array<string, mixed>
+     */
+    private function withVipFields(array $row, ?array $vip, float $grandTotal): array
+    {
+        if ($vip === null) {
+            $row['vip_applied'] = 0;
+            $row['vip_tier'] = 'regular';
+            $row['vip_percentage'] = 0.0;
+            $row['vip_discount_amount'] = 0.0;
+            $row['total_to_pay'] = $grandTotal;
+            return $row;
+        }
+        return array_merge($row, $vip);
     }
 
     public function cancelInquiry(int $mainId, string $inquiryRefno): bool
@@ -807,7 +859,18 @@ SQL;
         if ($converted === null) {
             throw new RuntimeException('Failed to load converted sales order');
         }
-        return $converted;
+        $summaryTotal = (float) (($converted['summary']['grand_total'] ?? $inquiry['grand_total']) ?? 0);
+        (new VipDocumentDiscountRepository($this->db))->copyTo(
+            $mainId,
+            'sales_inquiry',
+            $inquiryRefno,
+            'sales_order',
+            $salesRefno,
+            (string) ($inquiry['contact_id'] ?? ''),
+            (string) ($inquiry['sales_date'] ?? ''),
+            $summaryTotal
+        );
+        return $salesRepo->getSalesOrder($mainId, $salesRefno) ?? $converted;
     }
 
     private function findLinkedSalesRefno(int $mainId, string $inquiryRefno): string

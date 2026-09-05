@@ -340,6 +340,14 @@ SQL;
 
         $trackingOptions = $this->listTrackingOptions((string) ($orderSlip['contact_id'] ?? ''));
 
+        $orderSlip = (new VipDocumentDiscountRepository($this->db))->attach(
+            $orderSlip,
+            'order_slip',
+            $orderSlipRefno,
+            (float) $summary['grand_total']
+        );
+        $summary['total_to_pay'] = (float) ($orderSlip['total_to_pay'] ?? $summary['grand_total']);
+
         return [
             'order_slip' => $orderSlip,
             'items' => $items,
@@ -470,7 +478,34 @@ SQL;
         if ($created === null) {
             throw new RuntimeException('Failed to load created order slip');
         }
-        return $created;
+
+        $grandTotal = (float) ($created['summary']['grand_total'] ?? 0);
+        $orderId = trim((string) ($payload['order_id'] ?? $payload['sales_refno'] ?? ''));
+        $refno = (string) ($created['order_slip']['order_slip_refno'] ?? '');
+        if ($orderId !== '') {
+            (new VipDocumentDiscountRepository($this->db))->copyTo(
+                $mainId,
+                'sales_order',
+                $orderId,
+                'order_slip',
+                $refno,
+                $contactId,
+                (string) ($created['order_slip']['sales_date'] ?? ''),
+                $grandTotal
+            );
+        } elseif (array_key_exists('vip_applied', $payload) || array_key_exists('vip_tier', $payload)) {
+            (new VipDocumentDiscountRepository($this->db))->upsertFromPayload(
+                $mainId,
+                'order_slip',
+                $refno,
+                $contactId,
+                (string) ($created['order_slip']['sales_date'] ?? ''),
+                $grandTotal,
+                $payload
+            );
+        }
+
+        return $this->getOrderSlip($mainId, $refno) ?? $created;
     }
 
     /**
