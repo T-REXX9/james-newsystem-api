@@ -611,6 +611,7 @@ SQL;
             $update = $pdo->prepare('UPDATE tblpr_list SET ldeleted = 1, ldeleted_at = NOW(), ldeleted_by = :user_id, ldelete_reason = :reason, lstatus = "Deleted" WHERE lrefno = :refno');
             $update->execute(['user_id' => $userId, 'reason' => trim($reason), 'refno' => $prRefno]);
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Request', 'Delete', $prRefno, $reason, (string) ($exists['request']['status'] ?? ''), 'Deleted');
+            (new SuggestedStockReportRepository($this->db))->syncCoverageForPurchaseRequest($mainId, $prRefno);
 
             $pdo->commit();
             return true;
@@ -753,9 +754,22 @@ SQL;
             }
         }
 
-        $stmt = $this->db->pdo()->prepare('DELETE FROM tblpr_item WHERE lid = :item_id');
-        $stmt->execute(['item_id' => $itemId]);
-        return true;
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare('DELETE FROM tblpr_item WHERE lid = :item_id');
+            $stmt->execute(['item_id' => $itemId]);
+            (new SuggestedStockReportRepository($this->db))->syncCoverageForIdentities($mainId, [[
+                'part_no' => (string) ($item['part_number'] ?? ''),
+                'item_code' => (string) ($item['item_code'] ?? ''),
+                'description' => (string) ($item['description'] ?? ''),
+            ]]);
+            $pdo->commit();
+            return true;
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
     }
 
     public function unpostPurchaseRequest(int $mainId, int $userId, string $prRefno, string $reason): ?array

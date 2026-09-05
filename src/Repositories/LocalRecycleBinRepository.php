@@ -52,7 +52,7 @@ final class LocalRecycleBinRepository
         return match ($normalizedType) {
             'contact' => $this->restoreCustomer($mainId, $normalizedItemId),
             'product' => $this->restoreProduct($mainId, $normalizedItemId),
-            'purchase_request' => $this->restorePurchaseRequest($normalizedItemId),
+            'purchase_request' => $this->restorePurchaseRequest($mainId, $normalizedItemId),
             'purchase_order' => $this->restorePurchaseOrder($mainId, $normalizedItemId),
             'receiving_report' => $this->restoreReceivingReport($mainId, $normalizedItemId),
             default => false,
@@ -216,21 +216,33 @@ final class LocalRecycleBinRepository
         return $stmt->rowCount() > 0;
     }
 
-    private function restorePurchaseRequest(string $refno): bool
+    private function restorePurchaseRequest(int $mainId, string $refno): bool
     {
-        $stmt = $this->db->pdo()->prepare(
-            'UPDATE tblpr_list
-             SET ldeleted = 0,
-                 ldeleted_at = NULL,
-                 ldeleted_by = NULL,
-                 ldelete_reason = "",
-                 lstatus = CASE WHEN LOWER(COALESCE(lstatus, "")) = "deleted" THEN "Pending" ELSE lstatus END
-             WHERE lrefno = :refno
-               AND (COALESCE(ldeleted, 0) = 1 OR LOWER(COALESCE(lstatus, "")) = "deleted")
-             LIMIT 1'
-        );
-        $stmt->execute(['refno' => $refno]);
-        return $stmt->rowCount() > 0;
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare(
+                'UPDATE tblpr_list
+                 SET ldeleted = 0,
+                     ldeleted_at = NULL,
+                     ldeleted_by = NULL,
+                     ldelete_reason = "",
+                     lstatus = CASE WHEN LOWER(COALESCE(lstatus, "")) = "deleted" THEN "Pending" ELSE lstatus END
+                 WHERE lrefno = :refno
+                   AND (COALESCE(ldeleted, 0) = 1 OR LOWER(COALESCE(lstatus, "")) = "deleted")
+                 LIMIT 1'
+            );
+            $stmt->execute(['refno' => $refno]);
+            $updated = $stmt->rowCount() > 0;
+            if ($updated) {
+                (new SuggestedStockReportRepository($this->db))->syncCoverageForPurchaseRequest($mainId, $refno);
+            }
+            $pdo->commit();
+            return $updated;
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
     }
 
     private function restorePurchaseOrder(int $mainId, string $refno): bool

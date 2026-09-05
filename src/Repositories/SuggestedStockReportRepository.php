@@ -492,6 +492,67 @@ SQL);
     }
 
     /**
+     * Recompute AddedToPR vs ProductCreated for the given product identities
+     * from current Live Purchase Request coverage.
+     *
+     * @param array<int, array<string, mixed>> $items
+     */
+    public function syncCoverageForIdentities(int $mainId, array $items): void
+    {
+        foreach ($this->normalizeKivItems($items) as $item) {
+            if ($this->hasLivePurchaseRequestCoverage($item['part_no'], $item['item_code'], $item['description'])) {
+                $this->setRemarkForIdentity($mainId, $item, ['ProductCreated', 'AddedToPR'], 'AddedToPR');
+                continue;
+            }
+            $this->setRemarkForIdentity($mainId, $item, ['AddedToPR'], 'ProductCreated');
+        }
+    }
+
+    public function syncCoverageForPurchaseRequest(int $mainId, string $prRefno): void
+    {
+        $refno = trim($prRefno);
+        if ($refno === '') {
+            return;
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT COALESCE(lpart_no, "") AS part_no, COALESCE(litem_code, "") AS item_code, COALESCE(ldesc, "") AS description
+             FROM tblpr_item
+             WHERE lrefno = :refno'
+        );
+        $stmt->execute(['refno' => $refno]);
+        $this->syncCoverageForIdentities($mainId, $stmt->fetchAll(PDO::FETCH_ASSOC));
+    }
+
+    public function repairUncoveredAddedToPr(int $mainId): int
+    {
+        $stmt = $this->db->pdo()->prepare(
+            <<<SQL
+UPDATE tblinquiry_item i
+INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
+SET i.lremark = 'ProductCreated'
+WHERE tr.lmain_id = :main_id
+  AND COALESCE(i.lremark, '') = 'AddedToPR'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM tblpr_item pri
+    INNER JOIN tblpr_list pr ON pr.lrefno = pri.lrefno
+    WHERE COALESCE(pr.ldeleted, 0) = 0
+      AND LOWER(COALESCE(pr.lstatus, '')) <> 'deleted'
+      AND pri.lpart_no = i.lpartno
+      AND (
+        pri.litem_code = i.litem_code
+        OR (COALESCE(pri.litem_code, '') = '' AND COALESCE(i.litem_code, '') = '')
+      )
+      AND pri.ldesc = i.ldesc
+  )
+SQL
+        );
+        $stmt->execute(['main_id' => (string) $mainId]);
+        return $stmt->rowCount();
+    }
+
+    /**
      * @param array<int, array<string, mixed>> $items
      * @return array{added:int,requested:int}
      */
@@ -791,9 +852,73 @@ EXISTS (
 SQL;
     }
 
+    private function hasLivePurchaseRequestCoverage(string $partNo, string $itemCode, string $description): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            <<<SQL
+SELECT 1
+FROM tblpr_item pri
+INNER JOIN tblpr_list pr ON pr.lrefno = pri.lrefno
+WHERE COALESCE(pr.ldeleted, 0) = 0
+  AND LOWER(COALESCE(pr.lstatus, '')) <> 'deleted'
+  AND pri.lpart_no = :part_no
+  AND (
+    pri.litem_code = :item_code
+    OR (COALESCE(pri.litem_code, '') = '' AND :match_null_item_code = 1)
+  )
+  AND pri.ldesc = :description
+LIMIT 1
+SQL
+        );
+        $stmt->execute([
+            'part_no' => $partNo,
+            'item_code' => $itemCode,
+            'match_null_item_code' => $itemCode === '' ? 1 : 0,
+            'description' => $description,
+        ]);
+        return $stmt->fetchColumn() !== false;
+    }
+
+    /**
+     * @param array{part_no:string,item_code:string,description:string} $item
+     * @param array<int, string> $fromRemarks
+     */
+    private function setRemarkForIdentity(int $mainId, array $item, array $fromRemarks, string $toRemark): void
+    {
+        if ($fromRemarks === []) {
+            return;
+        }
+
+        $placeholders = implode(',', array_fill(0, count($fromRemarks), '?'));
+        $sql = <<<SQL
+UPDATE tblinquiry_item i
+INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
+SET i.lremark = ?
+WHERE tr.lmain_id = ?
+  AND COALESCE(i.lremark, '') IN ({$placeholders})
+  AND i.lpartno = ?
+  AND (
+    i.litem_code = ?
+    OR (i.litem_code IS NULL AND ? = 1)
+  )
+  AND i.ldesc = ?
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute(array_merge(
+            [$toRemark, (string) $mainId],
+            $fromRemarks,
+            [
+                $item['part_no'],
+                $item['item_code'],
+                $item['item_code'] === '' ? 1 : 0,
+                $item['description'],
+            ]
+        ));
+    }
+
     /**
      * @param array<int, array<string, mixed>> $items
-     * @return array<int, array{part_no:string,item_code:string,description:string,item_key:string}>
+     * @return array<int, array<string, string>>
      */
     private function normalizeKivItems(array $items): array
     {
