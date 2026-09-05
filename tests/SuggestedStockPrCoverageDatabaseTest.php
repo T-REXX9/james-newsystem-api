@@ -83,6 +83,24 @@ function sspr_summary_parts(array $summary): array
     ));
 }
 
+function sspr_cart_summary(SuggestedStockReportRepository $repo, int $mainId, string $today): array
+{
+    return $repo->summary($mainId, $today, $today, null, 1, 200, null, SuggestedStockReportRepository::SORT_QTY_DESC, false, true);
+}
+
+function sspr_summary_row(array $summary, string $part): array
+{
+    foreach ($summary['items'] ?? [] as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        if ((string) ($row['part_no'] ?? '') === $part) {
+            return $row;
+        }
+    }
+    return [];
+}
+
 $config = new Config('test', true, '*', 'secret', 3600, $dbHost, $dbPort, $dbName, $dbUser, $dbPass);
 $db = new Database($config);
 $pdo = $db->pdo();
@@ -252,6 +270,36 @@ try {
         $failed,
         $errors
     );
+    $cartAfterAdd = sspr_cart_summary($suggestedRepo, $MAIN_ID, $today);
+    sspr_assert(
+        in_array($partNo, sspr_summary_parts($cartAfterAdd), true),
+        'Cart folder lists the AddedToPR suggestion',
+        $passed,
+        $failed,
+        $errors
+    );
+    $cartRow = sspr_summary_row($cartAfterAdd, $partNo);
+    sspr_assert(
+        (string) ($cartRow['covering_pr_id'] ?? '') === $prRefno,
+        'Cart folder names the covering Live Purchase Request',
+        $passed,
+        $failed,
+        $errors
+    );
+    sspr_assert(
+        (string) ($cartRow['covering_pr_number'] ?? '') === (string) ($pr['request']['pr_number'] ?? ''),
+        'Cart folder shows the covering Purchase Request number',
+        $passed,
+        $failed,
+        $errors
+    );
+    sspr_assert(
+        !in_array($strandedPart, sspr_summary_parts($cartAfterAdd), true),
+        'Cart folder hides AddedToPR rows with no Live Purchase Request',
+        $passed,
+        $failed,
+        $errors
+    );
 
     $prRepo->applyAction($MAIN_ID, $USER_ID, $prRefno, 'cancel', []);
     sspr_assert(
@@ -302,6 +350,14 @@ try {
         'INSERT INTO tblpr_item (lrefno, litem_code, lpart_no, lqty, lcost, lstatus, ldesc)
          VALUES (?, ?, ?, 1, 0, "Pending", ?)'
     )->execute([$secondPrRef, $itemCode, $partNo, $description]);
+    $cartNewest = sspr_summary_row(sspr_cart_summary($suggestedRepo, $MAIN_ID, $today), $partNo);
+    sspr_assert(
+        (string) ($cartNewest['covering_pr_id'] ?? '') === $secondPrRef,
+        'Cart folder opens the newest covering Live Purchase Request',
+        $passed,
+        $failed,
+        $errors
+    );
 
     $prRepo->deletePurchaseRequest($MAIN_ID, $USER_ID, $prRefno, 'delete one of two covering requests');
     sspr_assert(
@@ -351,6 +407,20 @@ try {
         'item_code' => $kivCode,
         'description' => $kivDesc,
     ]]);
+    sspr_assert(
+        in_array($kivPart, sspr_summary_parts(sspr_cart_summary($suggestedRepo, $MAIN_ID, $today)), true),
+        'KIV identity added to a PR appears in Cart folder, not as active demand',
+        $passed,
+        $failed,
+        $errors
+    );
+    sspr_assert(
+        !in_array($kivPart, sspr_summary_parts($suggestedRepo->summary($MAIN_ID, $today, $today, null, 1, 200, null, SuggestedStockReportRepository::SORT_QTY_DESC, true)), true),
+        'AddedToPR rows leave the KIV folder view while covered',
+        $passed,
+        $failed,
+        $errors
+    );
     $kivBefore = $kivCount($kivPart);
     $prRepo->deletePurchaseRequest($MAIN_ID, $USER_ID, $kivPrRef, 'kiv coverage delete');
     sspr_assert($kivCount($kivPart) === $kivBefore, 'KIV membership is unchanged when coverage is restored', $passed, $failed, $errors);

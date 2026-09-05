@@ -95,28 +95,36 @@ SQL;
         int $perPage,
         ?string $partNo = null,
         string $sortBy = self::SORT_QTY_DESC,
-        bool $kivFolder = false
+        bool $kivFolder = false,
+        bool $cartFolder = false
     ): array {
         [$from, $to] = $this->resolveDateRange($dateFrom, $dateTo);
         $orderSql = $this->summaryOrderSql($sortBy);
         $offset = ($page - 1) * $perPage;
         $fetchLimit = $perPage + 1;
+        if ($cartFolder) {
+            $kivFolder = false;
+        }
 
         $where = [
             'tr.lmain_id = :main_id',
-            "COALESCE(i.lremark, '') IN ('NotListed', 'ProductCreated')",
+            $cartFolder
+                ? "COALESCE(i.lremark, '') = 'AddedToPR'"
+                : "COALESCE(i.lremark, '') IN ('NotListed', 'ProductCreated')",
             'tr.ldate >= :date_from',
             'tr.ldate <= :date_to',
-            ($kivFolder ? '' : 'NOT ') . $this->kivExistsSql('kiv_main_id'),
         ];
         $params = [
             'main_id' => (string) $mainId,
             'date_from' => $from,
             'date_to' => $to,
-            'kiv_main_id' => (string) $mainId,
             'inv_code_main_id' => (string) $mainId,
             'inv_part_main_id' => (string) $mainId,
         ];
+        if (!$cartFolder) {
+            $where[] = ($kivFolder ? '' : 'NOT ') . $this->kivExistsSql('kiv_main_id');
+            $params['kiv_main_id'] = (string) $mainId;
+        }
 
         $customer = trim((string) $customerId);
         if ($customer !== '' && strtolower($customer) !== 'all') {
@@ -130,9 +138,12 @@ SQL;
             $params['part_no_search'] = '%' . strtolower($partSearch) . '%';
         }
 
-        // Keep NotListed rows that soft-match inventory out of the active report,
-        // while ProductCreated rows stay visible for the PR workflow.
-        $where[] = <<<SQL
+        if ($cartFolder) {
+            $where[] = 'covering_pr.covering_pr_id IS NOT NULL';
+        } else {
+            // Keep NotListed rows that soft-match inventory out of the active report,
+            // while ProductCreated rows stay visible for the PR workflow.
+            $where[] = <<<SQL
 (
   COALESCE(i.lremark, '') = 'ProductCreated'
   OR (
@@ -142,8 +153,10 @@ SQL;
   )
 )
 SQL;
+        }
 
         $whereSql = implode(' AND ', $where);
+        $coveringJoinSql = $this->coveringPurchaseRequestJoinSql();
 
         // Pre-aggregate inventory matches (one row per code/part) so joins cannot
         // multiply inquiry lines and inflate qty/inquiry counts.
@@ -164,14 +177,16 @@ SELECT
     COALESCE(MAX(inv_by_code.litemcode), MAX(inv_by_part.litemcode), '') AS database_item_code,
     COALESCE(MAX(inv_by_code.lpartno), MAX(inv_by_part.lpartno), '') AS database_part_no,
     CASE
-      WHEN SUM(CASE WHEN COALESCE(i.lremark, '') = 'ProductCreated' THEN 1 ELSE 0 END) > 0
+      WHEN SUM(CASE WHEN COALESCE(i.lremark, '') IN ('ProductCreated', 'AddedToPR') THEN 1 ELSE 0 END) > 0
        AND (
          MAX(inv_by_code.lsession) IS NOT NULL
          OR MAX(inv_by_part.lsession) IS NOT NULL
        )
       THEN 1 ELSE 0
     END AS product_created,
-    :kiv_flag AS is_kiv
+    :kiv_flag AS is_kiv,
+    COALESCE(MAX(covering_pr.covering_pr_id), '') AS covering_pr_id,
+    COALESCE(MAX(covering_pr.covering_pr_number), '') AS covering_pr_number
 FROM tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
 LEFT JOIN (
@@ -202,6 +217,7 @@ LEFT JOIN (
 ) inv_by_part
   ON COALESCE(i.lpartno, '') <> ''
  AND inv_by_part.lpartno = i.lpartno
+{$coveringJoinSql}
 WHERE {$whereSql}
 GROUP BY i.lpartno, i.litem_code, i.ldesc
 ORDER BY {$orderSql}
@@ -849,6 +865,28 @@ EXISTS (
       AND kiv.item_code = TRIM(COALESCE(i.litem_code, ''))
       AND kiv.description = TRIM(COALESCE(i.ldesc, ''))
 )
+SQL;
+    }
+
+    private function coveringPurchaseRequestJoinSql(): string
+    {
+        return <<<SQL
+LEFT JOIN (
+    SELECT
+        pri.lpart_no AS part_no,
+        COALESCE(pri.litem_code, '') AS item_code,
+        COALESCE(pri.ldesc, '') AS description,
+        SUBSTRING_INDEX(GROUP_CONCAT(pr.lrefno ORDER BY pr.ldatetime DESC, pr.lrefno DESC SEPARATOR '\n'), '\n', 1) AS covering_pr_id,
+        SUBSTRING_INDEX(GROUP_CONCAT(pr.lprno ORDER BY pr.ldatetime DESC, pr.lrefno DESC SEPARATOR '\n'), '\n', 1) AS covering_pr_number
+    FROM tblpr_item pri
+    INNER JOIN tblpr_list pr ON pr.lrefno = pri.lrefno
+    WHERE COALESCE(pr.ldeleted, 0) = 0
+      AND LOWER(COALESCE(pr.lstatus, '')) <> 'deleted'
+    GROUP BY pri.lpart_no, COALESCE(pri.litem_code, ''), COALESCE(pri.ldesc, '')
+) covering_pr
+  ON covering_pr.part_no = COALESCE(i.lpartno, '')
+ AND covering_pr.item_code = COALESCE(i.litem_code, '')
+ AND covering_pr.description = COALESCE(i.ldesc, '')
 SQL;
     }
 

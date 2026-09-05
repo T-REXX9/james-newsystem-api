@@ -20,6 +20,8 @@ $checks = [
     'part_no_search' => 'summary must support part-number search',
     'qty-desc' => 'summary must support qty requested sort',
     "(\$kivFolder ? '' : 'NOT ')" => 'main report must hide parked KIV items',
+    "COALESCE(i.lremark, '') = 'AddedToPR'" => 'Cart folder must list AddedToPR suggestions',
+    'covering_pr_id' => 'Cart folder must name the covering Purchase Request',
 ];
 
 $failed = 0;
@@ -106,7 +108,14 @@ if (!str_contains($controller, 'function markAddedToPurchaseRequest') || !str_co
     echo "  PASS add-to-PR completion endpoint is wired\n";
 }
 
-$endpointChecks = 6;
+if (!str_contains($controller, "query['cart']") && !str_contains($controller, '$query[\'cart\']')) {
+    fwrite(STDERR, "FAIL summary must accept a cart folder filter\n");
+    $failed++;
+} else {
+    echo "  PASS summary accepts a cart folder filter\n";
+}
+
+$endpointChecks = 7;
 
 if ($failed > 0) {
     echo "Results: " . (count($checks) + count($productChecks) + $endpointChecks - $failed) . " passed, {$failed} failed\n";

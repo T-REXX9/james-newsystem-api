@@ -42,9 +42,13 @@ final class SuggestedStockReportController
         $partNo = trim((string) ($query['part_no'] ?? ''));
         $sortBy = trim((string) ($query['sort_by'] ?? SuggestedStockReportRepository::SORT_QTY_DESC));
         $kivFolder = $this->toBool($query['kiv'] ?? false);
+        $cartFolder = $this->toBool($query['cart'] ?? false);
         if ($sortBy === 'kiv-folder') {
             $kivFolder = true;
             $sortBy = SuggestedStockReportRepository::SORT_QTY_DESC;
+        }
+        if ($cartFolder) {
+            $kivFolder = false;
         }
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, min(200, (int) ($query['per_page'] ?? 100)));
@@ -58,7 +62,8 @@ final class SuggestedStockReportController
             $perPage,
             $partNo !== '' ? $partNo : null,
             $sortBy !== '' ? $sortBy : SuggestedStockReportRepository::SORT_QTY_DESC,
-            $kivFolder
+            $kivFolder,
+            $cartFolder
         );
     }
 
