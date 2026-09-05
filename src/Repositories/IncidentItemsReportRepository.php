@@ -196,12 +196,14 @@ SQL;
         $sql = <<<SQL
 SELECT
     incident_report_items.incident_report_id,
+    COALESCE(ir.ir_number, '') AS ir_number,
     DATE_FORMAT(incident_report_items.created_at, '%Y-%m-%d') AS date,
     COALESCE(NULLIF(incident_report_items.contact_id, ''), '') AS contact_id,
     COALESCE(NULLIF(customer.lcompany, ''), incident_report_items.contact_id, 'Unknown customer') AS customer_name,
     LEFT(COALESCE(incident_report_items.issue_summary, ''), 160) AS summary
 FROM incident_report_items
 LEFT JOIN tblpatient customer ON customer.lsessionid = incident_report_items.contact_id
+LEFT JOIN incident_reports ir ON ir.id = incident_report_items.incident_report_id
 WHERE {$whereSql}
 ORDER BY incident_report_items.created_at DESC, incident_report_items.id DESC
 SQL;
@@ -214,6 +216,7 @@ SQL;
             'incidents' => array_map(static function (array $row): array {
                 return [
                     'incident_report_id' => (string) ($row['incident_report_id'] ?? ''),
+                    'ir_number' => (string) ($row['ir_number'] ?? ''),
                     'date' => (string) ($row['date'] ?? ''),
                     'contact_id' => (string) ($row['contact_id'] ?? ''),
                     'customer_name' => (string) ($row['customer_name'] ?? 'Unknown customer'),
@@ -233,6 +236,7 @@ SQL;
         $stmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT
     ir.id,
+    ir.ir_number,
     'incident_report' AS record_source,
     ir.contact_id,
     COALESCE(NULLIF(customer.lcompany, ''), ir.contact_id, 'Unknown customer') AS customer_name,
@@ -334,12 +338,12 @@ SQL);
         ];
 
         $sql = '('
-            . 'COALESCE(NULLIF(supplier_id, \'\'), \'unassigned\') = :group_supplier_id '
-            . 'AND COALESCE(NULLIF(supplier_name, \'\'), \'Unassigned Supplier\') = :group_supplier_name '
-            . 'AND COALESCE(product_id, \'\') = :group_product_id '
-            . 'AND COALESCE(item_code, \'\') = :group_item_code '
-            . 'AND COALESCE(part_no, \'\') = :group_part_no '
-            . 'AND COALESCE(description, \'\') = :group_description'
+            . 'COALESCE(NULLIF(incident_report_items.supplier_id, \'\'), \'unassigned\') = :group_supplier_id '
+            . 'AND COALESCE(NULLIF(incident_report_items.supplier_name, \'\'), \'Unassigned Supplier\') = :group_supplier_name '
+            . 'AND COALESCE(incident_report_items.product_id, \'\') = :group_product_id '
+            . 'AND COALESCE(incident_report_items.item_code, \'\') = :group_item_code '
+            . 'AND COALESCE(incident_report_items.part_no, \'\') = :group_part_no '
+            . 'AND COALESCE(incident_report_items.description, \'\') = :group_description'
             . ')';
 
         return ['sql' => $sql, 'params' => $params];
@@ -363,7 +367,7 @@ SQL);
      */
     private function buildWhere(int $mainId, array $filters): array
     {
-        $where = ['main_id = :main_id'];
+        $where = ['incident_report_items.main_id = :main_id'];
         $params = ['main_id' => $mainId];
 
         $search = trim((string) ($filters['search'] ?? ''));
@@ -377,12 +381,20 @@ SQL);
             $params['search_part_no'] = $searchLike;
             $params['search_description'] = $searchLike;
             $params['search_issue_summary'] = $searchLike;
+            $params['search_incident_report_id'] = $searchLike;
+            $params['search_ir_number'] = $searchLike;
             $where[] = '('
-                . 'COALESCE(supplier_name, "") LIKE :search_supplier_name '
-                . 'OR COALESCE(item_code, "") LIKE :search_item_code '
-                . 'OR COALESCE(part_no, "") LIKE :search_part_no '
-                . 'OR COALESCE(description, "") LIKE :search_description '
-                . 'OR COALESCE(issue_summary, "") LIKE :search_issue_summary'
+                . 'COALESCE(incident_report_items.supplier_name, "") LIKE :search_supplier_name '
+                . 'OR COALESCE(incident_report_items.item_code, "") LIKE :search_item_code '
+                . 'OR COALESCE(incident_report_items.part_no, "") LIKE :search_part_no '
+                . 'OR COALESCE(incident_report_items.description, "") LIKE :search_description '
+                . 'OR COALESCE(incident_report_items.issue_summary, "") LIKE :search_issue_summary '
+                . 'OR COALESCE(incident_report_items.incident_report_id, "") LIKE :search_incident_report_id '
+                . 'OR EXISTS ('
+                . '  SELECT 1 FROM incident_reports search_ir'
+                . '  WHERE search_ir.id = incident_report_items.incident_report_id'
+                . '    AND COALESCE(search_ir.ir_number, "") LIKE :search_ir_number'
+                . ')'
                 . ')';
         }
 
@@ -391,13 +403,13 @@ SQL);
             $supplierLike = '%' . $supplier . '%';
             $params['supplier_id'] = $supplierLike;
             $params['supplier_name'] = $supplierLike;
-            $where[] = '(COALESCE(supplier_id, "") LIKE :supplier_id OR COALESCE(supplier_name, "") LIKE :supplier_name)';
+            $where[] = '(COALESCE(incident_report_items.supplier_id, "") LIKE :supplier_id OR COALESCE(incident_report_items.supplier_name, "") LIKE :supplier_name)';
         }
 
         $matchSource = trim((string) ($filters['match_source'] ?? 'all'));
         if ($matchSource !== '' && $matchSource !== 'all') {
             $params['match_source'] = $matchSource;
-            $where[] = 'match_source = :match_source';
+            $where[] = 'incident_report_items.match_source = :match_source';
         }
 
         $dateFrom = trim((string) ($filters['date_from'] ?? ''));
@@ -455,6 +467,8 @@ SELECT
         CONCAT(
             incident_report_id,
             '|',
+            COALESCE(NULLIF(incident_report_number, ''), ''),
+            '|',
             DATE_FORMAT(created_at, '%Y-%m-%d'),
             '|',
             COALESCE(NULLIF(contact_id, ''), 'Unknown customer'),
@@ -467,9 +481,13 @@ SELECT
         SEPARATOR ';;'
     ) AS recent_incidents
 FROM (
-    SELECT iri.*, COALESCE(NULLIF(customer.lcompany, ''), iri.contact_id, 'Unknown customer') AS customer_name
+    SELECT
+        iri.*,
+        COALESCE(NULLIF(customer.lcompany, ''), iri.contact_id, 'Unknown customer') AS customer_name,
+        ir.ir_number AS incident_report_number
     FROM incident_report_items iri
     LEFT JOIN tblpatient customer ON customer.lsessionid = iri.contact_id
+    LEFT JOIN incident_reports ir ON ir.id = iri.incident_report_id
 ) incident_report_items
 WHERE {$whereSql}
 GROUP BY
@@ -522,9 +540,10 @@ SQL;
             if ($entry === '') {
                 continue;
             }
-            [$id, $date, $contactId, $customerName, $summary] = array_pad(explode('|', $entry, 5), 5, '');
+            [$id, $irNumber, $date, $contactId, $customerName, $summary] = array_pad(explode('|', $entry, 6), 6, '');
             $recent[] = [
                 'incident_report_id' => $id,
+                'ir_number' => $irNumber,
                 'date' => $date,
                 'contact_id' => $contactId,
                 'customer_name' => $customerName,

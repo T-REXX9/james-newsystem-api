@@ -48,7 +48,7 @@ try {
     exit(1);
 }
 
-$required = ['report_time', 'incident_time', 'done_by', 'decision_note', 'related_transactions'];
+$required = ['report_time', 'incident_time', 'done_by', 'decision_note', 'related_transactions', 'ir_number'];
 $placeholders = implode(',', array_fill(0, count($required), '?'));
 $stmt = $pdo->prepare(
     "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
@@ -69,7 +69,7 @@ if ($failed > 0) {
     foreach ($errors as $error) {
         echo " - {$error}\n";
     }
-    echo "Hint: run api/migrations/026_add_incident_report_times.sql (and earlier incident migrations).\n";
+    echo "Hint: run api/migrations/034_add_incident_report_number.sql (and earlier incident migrations).\n";
     exit(1);
 }
 

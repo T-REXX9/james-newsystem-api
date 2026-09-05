@@ -1050,6 +1050,7 @@ SQL;
         $incidentStmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT
     ir.id,
+    ir.ir_number,
     'incident_report' AS record_source,
     ir.contact_id,
     ir.report_date,
@@ -1136,6 +1137,7 @@ SQL);
         $sql = <<<SQL
 SELECT
     CAST(cl.lid AS CHAR) AS id,
+    NULL AS ir_number,
     'customer_log' AS record_source,
     cl.lcustomer_id AS contact_id,
     DATE(cl.ldatetime) AS report_date,
@@ -1201,34 +1203,24 @@ SQL;
             throw new InvalidArgumentException('Incident attachments or related transactions are invalid');
         }
 
-        $sql = <<<'SQL'
-INSERT INTO incident_reports (
-    id, main_id, contact_id, report_date, report_time, incident_date, incident_time, issue_type,
-    description, reported_by, done_by, attachments, related_transactions,
-    approval_status, notes, created_by_user_id
-) VALUES (
-    :id, :main_id, :contact_id, :report_date, :report_time, :incident_date, :incident_time, :issue_type,
-    :description, :reported_by, :done_by, :attachments, :related_transactions,
-    'pending', :notes, :created_by_user_id
-)
-ON DUPLICATE KEY UPDATE
-    contact_id = VALUES(contact_id),
-    report_date = VALUES(report_date),
-    report_time = VALUES(report_time),
-    incident_date = VALUES(incident_date),
-    incident_time = VALUES(incident_time),
-    issue_type = VALUES(issue_type),
-    description = VALUES(description),
-    reported_by = VALUES(reported_by),
-    done_by = VALUES(done_by),
-    attachments = VALUES(attachments),
-    related_transactions = VALUES(related_transactions),
-    notes = VALUES(notes),
-    updated_at = CURRENT_TIMESTAMP(3)
-SQL;
-        $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute([
-            'id' => (string) $data['id'],
+        $reportId = (string) $data['id'];
+        $pdo = $this->db->pdo();
+        $existingStmt = $pdo->prepare(
+            'SELECT id, ir_number FROM incident_reports WHERE main_id = :main_id AND id = :id LIMIT 1'
+        );
+        $existingStmt->execute(['main_id' => $mainId, 'id' => $reportId]);
+        $existing = $existingStmt->fetch(PDO::FETCH_ASSOC) ?: null;
+
+        $irNumber = trim((string) ($existing['ir_number'] ?? ''));
+        $allocated = false;
+        if ($irNumber === '') {
+            $irNumber = $this->nextIncidentReportNumber($pdo);
+            $allocated = true;
+        }
+
+        $values = [
+            'id' => $reportId,
+            'ir_number' => $irNumber,
             'main_id' => $mainId,
             'contact_id' => (string) $data['contact_id'],
             'report_date' => $reportDate,
@@ -1243,13 +1235,91 @@ SQL;
             'related_transactions' => $relatedTransactions,
             'notes' => $data['notes'] ?? null,
             'created_by_user_id' => $createdByUserId,
-        ]);
+        ];
 
-        $created = $this->getIncidentReportById($mainId, (string) $data['id']);
+        if ($existing) {
+            $stmt = $pdo->prepare(<<<'SQL'
+UPDATE incident_reports SET
+    ir_number = COALESCE(NULLIF(ir_number, ''), :ir_number),
+    contact_id = :contact_id,
+    report_date = :report_date,
+    report_time = :report_time,
+    incident_date = :incident_date,
+    incident_time = :incident_time,
+    issue_type = :issue_type,
+    description = :description,
+    reported_by = :reported_by,
+    done_by = :done_by,
+    attachments = :attachments,
+    related_transactions = :related_transactions,
+    notes = :notes,
+    updated_at = CURRENT_TIMESTAMP(3)
+WHERE main_id = :main_id AND id = :id
+SQL);
+            unset($values['created_by_user_id']);
+            $stmt->execute($values);
+        } else {
+            $stmt = $pdo->prepare(<<<'SQL'
+INSERT INTO incident_reports (
+    id, ir_number, main_id, contact_id, report_date, report_time, incident_date, incident_time, issue_type,
+    description, reported_by, done_by, attachments, related_transactions,
+    approval_status, notes, created_by_user_id
+) VALUES (
+    :id, :ir_number, :main_id, :contact_id, :report_date, :report_time, :incident_date, :incident_time, :issue_type,
+    :description, :reported_by, :done_by, :attachments, :related_transactions,
+    'pending', :notes, :created_by_user_id
+)
+SQL);
+            $stmt->execute($values);
+        }
+
+        if ($allocated) {
+            try {
+                $this->incrementIncidentReportSequence($pdo);
+            } catch (\Throwable $error) {
+                // Some environments have non-transactional tblnumber_generator (MyISAM + GTID).
+                // Keep the Incident Report saved and write the running number separately on best effort.
+                error_log('Incident Report number generator update failed: ' . $error->getMessage());
+            }
+        }
+
+        $created = $this->getIncidentReportById($mainId, $reportId);
         if ($created === null) {
             throw new \RuntimeException('Failed to load created incident report');
         }
         return $created;
+    }
+
+    public function backfillMissingIncidentReportNumbers(): int
+    {
+        $pdo = $this->db->pdo();
+        $stmt = $pdo->query(
+            "SELECT id FROM incident_reports
+             WHERE ir_number IS NULL OR ir_number = ''
+             ORDER BY created_at ASC, id ASC"
+        );
+        $ids = $stmt ? array_map('strval', $stmt->fetchAll(PDO::FETCH_COLUMN) ?: []) : [];
+        if ($ids === []) {
+            return 0;
+        }
+
+        $assigned = 0;
+        $update = $pdo->prepare('UPDATE incident_reports SET ir_number = :ir_number WHERE id = :id AND (ir_number IS NULL OR ir_number = \'\')');
+        foreach ($ids as $id) {
+            $irNumber = $this->nextIncidentReportNumber($pdo);
+            $update->execute(['ir_number' => $irNumber, 'id' => $id]);
+            if ($update->rowCount() > 0) {
+                try {
+                    $this->incrementIncidentReportSequence($pdo);
+                } catch (\Throwable $error) {
+                    // Some environments have non-transactional tblnumber_generator (MyISAM + GTID).
+                    error_log('Incident Report number generator update failed: ' . $error->getMessage());
+                }
+                $assigned++;
+            }
+        }
+
+        return $assigned;
     }
 
     public function reviewIncidentReport(
@@ -2372,6 +2442,7 @@ SQL;
         $stmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT
     ir.id,
+    ir.ir_number,
     'incident_report' AS record_source,
     ir.contact_id,
     ir.report_date,
@@ -2485,6 +2556,37 @@ SQL);
             throw new InvalidArgumentException("{$field} must use HH:MM format");
         }
         return $time->format('H:i:s');
+    }
+
+    private function incidentReportSequenceMax(?PDO $pdo = null): int
+    {
+        $conn = $pdo ?? $this->db->pdo();
+        $stmt = $conn->prepare(
+            'SELECT CAST(COALESCE(MAX(lmax_no), 0) AS SIGNED) AS max_no
+             FROM tblnumber_generator
+             WHERE ltransaction_type = :type'
+        );
+        $stmt->execute(['type' => 'Incident Report']);
+        return (int) ($stmt->fetchColumn() ?: 0);
+    }
+
+    private function nextIncidentReportNumber(?PDO $pdo = null): string
+    {
+        $seq = $this->incidentReportSequenceMax($pdo) + 1;
+        return sprintf('IR-%s%s', date('y'), str_pad((string) $seq, 2, '0', STR_PAD_LEFT));
+    }
+
+    private function incrementIncidentReportSequence(?PDO $pdo = null): void
+    {
+        $conn = $pdo ?? $this->db->pdo();
+        $next = $this->incidentReportSequenceMax($conn) + 1;
+        $insert = $conn->prepare(
+            'INSERT INTO tblnumber_generator (ltransaction_type, lmax_no) VALUES (:type, :max_no)'
+        );
+        $insert->execute([
+            'type' => 'Incident Report',
+            'max_no' => $next,
+        ]);
     }
 
     /**
