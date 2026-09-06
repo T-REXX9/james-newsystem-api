@@ -242,22 +242,36 @@ SELECT
     END AS status,
     CAST(COALESCE(pr.luser, 0) AS UNSIGNED) AS created_by,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by_name,
-    CAST(COALESCE((SELECT SUM(COALESCE(pri_qty.lqty, 0)) FROM tblpr_item pri_qty WHERE pri_qty.lrefno = pr.lrefno), 0) AS DECIMAL(15,2)) AS ordered_qty,
-    CAST(COALESCE((
-        SELECT SUM(COALESCE(poi_received.lreceiving_qty, 0))
-        FROM tblpo_list po_received
-        INNER JOIN tblpo_itemlist poi_received ON poi_received.lrefno = po_received.lrefno
-        WHERE po_received.lpr_refno = pr.lrefno AND COALESCE(po_received.ldeleted, 0) = 0
-    ), 0) AS DECIMAL(15,2)) AS received_qty,
+    CAST(COALESCE(pr_totals.ordered_qty, 0) AS DECIMAL(15,2)) AS ordered_qty,
+    CAST(COALESCE(po_cycle.received_qty, 0) AS DECIMAL(15,2)) AS received_qty,
     CASE
-        WHEN NOT EXISTS (SELECT 1 FROM tblpo_list po_cycle WHERE po_cycle.lpr_refno = pr.lrefno AND COALESCE(po_cycle.ldeleted, 0) = 0) THEN 'Pending'
-        WHEN COALESCE((SELECT SUM(COALESCE(poi_received.lreceiving_qty, 0)) FROM tblpo_list po_received INNER JOIN tblpo_itemlist poi_received ON poi_received.lrefno = po_received.lrefno WHERE po_received.lpr_refno = pr.lrefno AND COALESCE(po_received.ldeleted, 0) = 0), 0) <= 0 THEN 'PO Created'
-        WHEN COALESCE((SELECT SUM(COALESCE(poi_received.lreceiving_qty, 0)) FROM tblpo_list po_received INNER JOIN tblpo_itemlist poi_received ON poi_received.lrefno = po_received.lrefno WHERE po_received.lpr_refno = pr.lrefno AND COALESCE(po_received.ldeleted, 0) = 0), 0) < COALESCE((SELECT SUM(COALESCE(pri_qty.lqty, 0)) FROM tblpr_item pri_qty WHERE pri_qty.lrefno = pr.lrefno), 0) THEN 'Partially Fulfilled'
+        WHEN COALESCE(po_cycle.po_count, 0) = 0 THEN 'Pending'
+        WHEN COALESCE(po_cycle.received_qty, 0) <= 0 THEN 'PO Created'
+        WHEN COALESCE(po_cycle.received_qty, 0) < COALESCE(pr_totals.ordered_qty, 0) THEN 'Partially Fulfilled'
         ELSE 'Completed'
     END AS cycle_status
 FROM tblpr_list pr
 LEFT JOIN tblaccount acc
     ON acc.lid = pr.luser
+LEFT JOIN (
+    SELECT
+        lrefno,
+        SUM(COALESCE(lqty, 0)) AS ordered_qty
+    FROM tblpr_item
+    GROUP BY lrefno
+) pr_totals
+    ON pr_totals.lrefno = pr.lrefno
+LEFT JOIN (
+    SELECT
+        po.lpr_refno,
+        COUNT(DISTINCT po.lrefno) AS po_count,
+        SUM(COALESCE(poi.lreceiving_qty, 0)) AS received_qty
+    FROM tblpo_list po
+    LEFT JOIN tblpo_itemlist poi ON poi.lrefno = po.lrefno
+    WHERE COALESCE(po.ldeleted, 0) = 0
+    GROUP BY po.lpr_refno
+) po_cycle
+    ON po_cycle.lpr_refno = pr.lrefno
 WHERE pr.lrefno = :refno
   AND COALESCE(pr.ldeleted, 0) = 0
 LIMIT 1

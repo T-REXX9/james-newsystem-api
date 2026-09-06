@@ -154,6 +154,9 @@ try {
 
     $repostedPr = $prRepo->updatePurchaseRequest($mainId, $prRefno, ['status' => 'Approved']);
     po_cascade_assert_eq('Approved', $repostedPr['request']['status'] ?? null, 'unposted PR can be posted again');
+    po_cascade_assert_eq('PO Created', $repostedPr['request']['cycle_status'] ?? null, 'live PO with zero received quantity is PO Created');
+    po_cascade_assert_eq(6.0, (float) ($repostedPr['request']['ordered_qty'] ?? 0), 'PR ordered quantity follows the edited line after unpost');
+    po_cascade_assert_eq(0.0, (float) ($repostedPr['request']['received_qty'] ?? 0), 'PR received quantity is zero after PO unpost');
 
     try {
         $prRepo->applyAction($mainId, $userId, $prRefno, 'convert-po', []);
@@ -179,6 +182,7 @@ try {
     po_cascade_assert_eq(2, count($splitConversion['conversion']['purchase_orders'] ?? []), 'split PR conversion returns both created PO records');
     po_cascade_assert_eq(2, po_cascade_table_count($pdo, 'tblpo_list', 'lpr_refno = :refno', ['refno' => $mixedSupplierPrRefno]), 'split PR conversion inserts two PO headers');
     po_cascade_assert_eq(2, po_cascade_table_count($pdo, 'tblpr_item', 'lrefno = :refno AND TRIM(COALESCE(lpo_refno, "")) <> ""', ['refno' => $mixedSupplierPrRefno]), 'split PR conversion links each selected PR item to a PO');
+    po_cascade_assert_eq('PO Created', $splitConversion['request']['cycle_status'] ?? null, 'converted PR with no receipts stays PO Created');
 
     $deletedPoPrRefno = $prefix . 'pr-delete-po';
     $deletedPoRefno = $prefix . 'po-delete';
@@ -239,6 +243,9 @@ try {
     $stalePr = $prRepo->getPurchaseRequest($mainId, $stalePoPrRefno);
     po_cascade_assert_eq('', (string) ($stalePr['items'][0]['po_refno'] ?? 'not-empty'), 'PR detail hides stale deleted PO references');
     po_cascade_assert_eq('', (string) ($stalePr['items'][0]['po_number'] ?? 'not-empty'), 'PR detail hides stale deleted PO numbers');
+    po_cascade_assert_eq('Pending', $stalePr['request']['cycle_status'] ?? null, 'PR with no live PO is Pending');
+    po_cascade_assert_eq(2.0, (float) ($stalePr['request']['ordered_qty'] ?? 0), 'pending PR ordered quantity is the PR line total');
+    po_cascade_assert_eq(0.0, (float) ($stalePr['request']['received_qty'] ?? 0), 'pending PR received quantity is zero');
 
     $editedPoItem = $repo->updatePurchaseOrderItem($mainId, $poItemId, ['qty' => 7, 'supplier_price' => 125]);
     po_cascade_assert_eq(7, (int) ($editedPoItem['qty'] ?? 0), 'unposted PO item quantity is editable');
@@ -268,6 +275,34 @@ try {
     $poAfterRrRepost = $repo->getPurchaseOrder($mainId, $poRefno);
     po_cascade_assert_eq('Completed', $poAfterRrRepost['order']['status'] ?? null, 'PO completes again after corrected RR repost');
     po_cascade_assert_eq(1, po_cascade_table_count($pdo, 'tblinventory_logs', 'lrefno = :refno AND ltransaction_type = "Receiving" AND lin = 7', ['refno' => $rrRefno]), 'corrected RR recreates receiving inventory log');
+
+    $completedPr = $prRepo->getPurchaseRequest($mainId, $prRefno);
+    po_cascade_assert_eq('Completed', $completedPr['request']['cycle_status'] ?? null, 'PR with received quantity covering the order is Completed');
+    po_cascade_assert_eq(6.0, (float) ($completedPr['request']['ordered_qty'] ?? 0), 'completed PR ordered quantity stays the edited line total');
+    po_cascade_assert_eq(7.0, (float) ($completedPr['request']['received_qty'] ?? 0), 'completed PR received quantity follows the reposted RR');
+
+    $partialPrRefno = $prefix . 'pr-partial';
+    $partialPoRefno = $prefix . 'po-partial';
+    $pdo->prepare(
+        'INSERT INTO tblpr_list (lid, lrefno, lprno, ldatetime, luser, lstatus, lremark, lapproval, ldeleted)
+         VALUES (870205, :refno, "PR-UT-PARTIAL", NOW(), :user_id, "Submitted", "Partial PR", "Approved", 0)'
+    )->execute(['refno' => $partialPrRefno, 'user_id' => $userId]);
+    $pdo->prepare(
+        'INSERT INTO tblpr_item (lid, lrefno, litem_refno, litem_code, lpart_no, ldesc, lqty, lcost, lsupp_id, lsupp_name, lsupp_code, lpo_refno, lpo_no)
+         VALUES (880403, :refno, "ITEM-PARTIAL", "ITEM-PARTIAL", "PART-PARTIAL", "Partial item", "10", "25", "7001", "Supplier One", "S1", :po_refno, "PO-UT-PARTIAL")'
+    )->execute(['refno' => $partialPrRefno, 'po_refno' => $partialPoRefno]);
+    $pdo->prepare(
+        'INSERT INTO tblpo_list (lid, lpurchaseno, ldate, ltime, lmain_id, luser, lrefno, ltransaction_status, lsupplier, lsupplier_name, lsupplier_code, lpr_no, lpr_refno, ldeleted)
+         VALUES (870305, "PO-UT-PARTIAL", CURDATE(), CURTIME(), :main_id, :user_id, :refno, "Posted", "7001", "Supplier One", "S1", "PR-UT-PARTIAL", :pr_refno, 0)'
+    )->execute(['main_id' => $mainId, 'user_id' => $userId, 'refno' => $partialPoRefno, 'pr_refno' => $partialPrRefno]);
+    $pdo->prepare(
+        'INSERT INTO tblpo_itemlist (lid, lrefno, litemid, ldesc, lqty, luser, lpartno, litem_code, litem_refno, lsup_price, lreceiving_qty, lsupp_id, lsupp_code, lsupp_name)
+         VALUES (880501, :refno, 104, "Partial item", 10, :user_id, "PART-PARTIAL", "ITEM-PARTIAL", "ITEM-PARTIAL", "25.00", 4, "7001", "S1", "Supplier One")'
+    )->execute(['refno' => $partialPoRefno, 'user_id' => $userId]);
+    $partialPr = $prRepo->getPurchaseRequest($mainId, $partialPrRefno);
+    po_cascade_assert_eq('Partially Fulfilled', $partialPr['request']['cycle_status'] ?? null, 'live PO with partial received quantity is Partially Fulfilled');
+    po_cascade_assert_eq(10.0, (float) ($partialPr['request']['ordered_qty'] ?? 0), 'partial PR ordered quantity is the PR line total');
+    po_cascade_assert_eq(4.0, (float) ($partialPr['request']['received_qty'] ?? 0), 'partial PR received quantity is the live PO receiving total');
 
     $blockedPrUpdate = false;
     try {
