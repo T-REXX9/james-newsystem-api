@@ -94,7 +94,7 @@ SELECT
     COALESCE(iq.lsalesperson, '') AS sales_person,
     COALESCE(iq.lsales_person_id, '') AS sales_person_id,
     COALESCE(iq.lsales_address, '') AS delivery_address,
-    COALESCE(iq.lmy_refno, '') AS reference_no,
+    COALESCE(iq.linqno, '') AS reference_no,
     COALESCE(iq.lyour_refno, '') AS customer_reference,
     COALESCE(iq.lprice_group, '') AS price_group,
     COALESCE(iq.lcredit_limit, 0) AS credit_limit,
@@ -232,7 +232,7 @@ SELECT
     COALESCE(iq.lsalesperson, '') AS sales_person,
     COALESCE(iq.lsales_person_id, '') AS sales_person_id,
     COALESCE(iq.lsales_address, '') AS delivery_address,
-    COALESCE(iq.lmy_refno, '') AS reference_no,
+    COALESCE(iq.linqno, '') AS reference_no,
     COALESCE(iq.lyour_refno, '') AS customer_reference,
     COALESCE(iq.lprice_group, '') AS price_group,
     COALESCE(iq.lcredit_limit, 0) AS credit_limit,
@@ -342,7 +342,7 @@ SQL;
                 'lsales_address' => $this->stringOrFallback($payload['delivery_address'] ?? null, $customer['ldelivery_address'] ?? ''),
                 'lterms' => (string) ($payload['terms'] ?? ($customer['lterms'] ?? '')),
                 'lterms_condition' => (string) ($payload['terms'] ?? ($customer['lterms'] ?? '')),
-                'lmy_refno' => $this->resolveInquiryReferenceNo($payload['reference_no'] ?? null, $inquiryNo),
+                'lmy_refno' => trim($inquiryNo),
                 'lyour_refno' => (string) ($payload['customer_reference'] ?? ''),
                 'lprice_group' => (string) ($payload['price_group'] ?? ($customer['lprice_group'] ?? '')),
                 'lcredit_limit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($customer['lcredit'] ?? 0),
@@ -430,7 +430,7 @@ SQL;
                 'lsales_address' => (string) ($payload['delivery_address'] ?? $existing['delivery_address'] ?? ''),
                 'lterms' => (string) ($payload['terms'] ?? $existing['terms'] ?? ''),
                 'lterms_condition' => (string) ($payload['terms'] ?? $existing['terms'] ?? ''),
-                'lmy_refno' => (string) ($payload['reference_no'] ?? $existing['reference_no'] ?? ''),
+                'lmy_refno' => (string) ($existing['inquiry_no'] ?? ''),
                 'lyour_refno' => (string) ($payload['customer_reference'] ?? $existing['customer_reference'] ?? ''),
                 'lprice_group' => (string) ($payload['price_group'] ?? $existing['price_group'] ?? ''),
                 'lcredit_limit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($existing['credit_limit'] ?? 0),
@@ -783,7 +783,7 @@ SQL;
                 'lrefno' => $salesRefno,
                 'lcompany' => (string) ($inquiry['customer_company'] ?? ''),
                 'lsales_address' => (string) ($inquiry['delivery_address'] ?? ''),
-                'lmy_refno' => (string) ($inquiry['reference_no'] ?? ''),
+                'lmy_refno' => (string) ($inquiry['inquiry_no'] ?? ''),
                 'lyour_refno' => (string) ($inquiry['customer_reference'] ?? ''),
                 'lprice_group' => (string) ($inquiry['price_group'] ?? ''),
                 'lcredit_limit' => (float) ($inquiry['credit_limit'] ?? 0),
@@ -933,7 +933,7 @@ SQL;
                 COALESCE(lsalesperson, "") AS sales_person,
                 COALESCE(lsales_person_id, "") AS sales_person_id,
                 COALESCE(lsales_address, "") AS delivery_address,
-                COALESCE(lmy_refno, "") AS reference_no,
+                COALESCE(linqno, "") AS reference_no,
                 COALESCE(lyour_refno, "") AS customer_reference,
                 COALESCE(lprice_group, "") AS price_group,
                 COALESCE(lcredit_limit, 0) AS credit_limit,
@@ -1048,7 +1048,7 @@ SQL;
                 'lcustomerid' => (string) ($inquiry['contact_id'] ?? ''),
                 'lcompany' => (string) ($inquiry['customer_company'] ?? ''),
                 'lsales_address' => (string) ($inquiry['delivery_address'] ?? ''),
-                'lmy_refno' => (string) ($inquiry['reference_no'] ?? ''),
+                'lmy_refno' => (string) ($inquiry['inquiry_no'] ?? ''),
                 'lyour_refno' => (string) ($inquiry['customer_reference'] ?? ''),
                 'lprice_group' => (string) ($inquiry['price_group'] ?? ''),
                 'lcredit_limit' => (float) ($inquiry['credit_limit'] ?? 0),
@@ -1331,26 +1331,6 @@ SQL;
     private function generateInquiryRefno(): string
     {
         return date('ymdhis') . random_int(1, 10000) . random_int(1, 100000000);
-    }
-
-    private function resolveInquiryReferenceNo(mixed $providedReferenceNo, string $inquiryNo): string
-    {
-        $referenceNo = trim((string) ($providedReferenceNo ?? ''));
-        if ($referenceNo !== '') {
-            return $referenceNo;
-        }
-
-        return $this->generateLegacyInquiryReferenceNo($inquiryNo);
-    }
-
-    private function generateLegacyInquiryReferenceNo(string $inquiryNo): string
-    {
-        $counter = 0;
-        if (preg_match('/(\d+)$/', $inquiryNo, $matches) === 1) {
-            $counter = (int) ($matches[1] ?? 0);
-        }
-
-        return 'REF' . ((int) date('ymd') + $counter);
     }
 
     private function legacyInquiryPrefix(): string

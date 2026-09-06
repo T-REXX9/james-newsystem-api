@@ -138,7 +138,10 @@ $create = request('POST', "{$API_BASE}/api/v1/sales-inquiries", [
 ]);
 assert_eq(200, $create['http_code'], 'Create inquiry returns 200', $p, $f, $e);
 $inquiryRefno = (string) ($create['body']['data']['inquiry_refno'] ?? '');
+$inquiryNo = (string) ($create['body']['data']['inquiry_no'] ?? '');
 assert_true($inquiryRefno !== '', 'Created inquiry has inquiry_refno', $p, $f, $e);
+assert_true($inquiryNo !== '', 'Created inquiry has inquiry_no', $p, $f, $e);
+assert_eq($inquiryNo, (string) ($create['body']['data']['reference_no'] ?? ''), 'Created inquiry reference no is the inquiry no', $p, $f, $e);
 
 $convert = request('POST', "{$API_BASE}/api/v1/sales-inquiries/{$inquiryRefno}/actions/convert-to-order", [
     'main_id' => $MAIN_ID,
@@ -161,12 +164,13 @@ $updateInquiry = request('PATCH', "{$API_BASE}/api/v1/sales-inquiries/{$inquiryR
     'terms' => 'net30',
 ]);
 assert_eq(200, $updateInquiry['http_code'], 'Update inquiry header returns 200', $p, $f, $e);
+assert_eq($inquiryNo, (string) ($updateInquiry['body']['data']['reference_no'] ?? ''), 'Updated inquiry reference no stays the inquiry no', $p, $f, $e);
 
 $salesAfterHeader = request('GET', "{$API_BASE}/api/v1/sales-orders/{$salesRefno}?main_id={$MAIN_ID}");
 assert_eq(200, $salesAfterHeader['http_code'], 'Sales order fetch after header sync returns 200', $p, $f, $e);
 assert_eq('Legacy Sync Header', (string) ($salesAfterHeader['body']['data']['order']['sales_person'] ?? ''), 'Linked sales order sales person is synced from inquiry', $p, $f, $e);
 assert_eq('Legacy Sync Address', (string) ($salesAfterHeader['body']['data']['order']['delivery_address'] ?? ''), 'Linked sales order address is synced from inquiry', $p, $f, $e);
-assert_eq("SYNC-REF-{$seed}", (string) ($salesAfterHeader['body']['data']['order']['reference_no'] ?? ''), 'Linked sales order reference no is synced from inquiry', $p, $f, $e);
+assert_eq($inquiryNo, (string) ($salesAfterHeader['body']['data']['order']['reference_no'] ?? ''), 'Linked sales order reference no is synced from inquiry no', $p, $f, $e);
 assert_eq("SYNC-CUST-{$seed}", (string) ($salesAfterHeader['body']['data']['order']['customer_reference'] ?? ''), 'Linked sales order customer reference is synced from inquiry', $p, $f, $e);
 
 $addApproved = request('POST', "{$API_BASE}/api/v1/sales-inquiries/{$inquiryRefno}/items", [
