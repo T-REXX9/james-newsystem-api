@@ -308,6 +308,7 @@ SQL;
             throw new RuntimeException('company is required');
         }
 
+        $this->assertUniqueCustomerIdentity($mainId, $company, (string) ($payload['tin'] ?? ''));
         $this->assertCustomerPhoneLengths($payload);
 
         $sessionId = trim((string) ($payload['session_id'] ?? ''));
@@ -412,6 +413,13 @@ SQL;
                 'mobile' => (string) ($payload['mobile'] ?? $existing['mobile'] ?? ''),
             ],
             $existing
+        );
+
+        $this->assertUniqueCustomerIdentity(
+            $mainId,
+            (string) ($payload['company'] ?? $existing['company'] ?? ''),
+            (string) ($payload['tin'] ?? $existing['tin'] ?? ''),
+            $sessionId
         );
 
         $nextSalesPerson = (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? '');
@@ -936,6 +944,56 @@ SQL;
     private function generateSessionId(int $mainId): string
     {
         return (string) random_int(10, 15) . date('YmdHis') . (string) random_int(1, 10000) . (string) $mainId;
+    }
+
+    private function normalizeCustomerTin(string $tin): string
+    {
+        return strtoupper(str_replace([' ', '-'], '', trim($tin)));
+    }
+
+    private function assertUniqueCustomerIdentity(
+        int $mainId,
+        string $company,
+        string $tin,
+        string $excludeSessionId = ''
+    ): void {
+        $company = trim($company);
+        $tinNormalized = $this->normalizeCustomerTin($tin);
+
+        $sql = <<<SQL
+SELECT COALESCE(p.lcompany, '') AS company
+FROM tblpatient p
+WHERE p.lmain_id = :main_id
+  AND COALESCE(p.ldeleted, 0) = 0
+  AND (
+    LOWER(TRIM(p.lcompany)) = LOWER(:company)
+    OR (
+      :tin_present = 1
+      AND REPLACE(REPLACE(UPPER(TRIM(p.ltin)), ' ', ''), '-', '') = :tin_normalized
+    )
+  )
+SQL;
+        $params = [
+            'main_id' => $mainId,
+            'company' => $company,
+            'tin_present' => $tinNormalized === '' ? 0 : 1,
+            'tin_normalized' => $tinNormalized,
+        ];
+        if ($excludeSessionId !== '') {
+            $sql .= ' AND p.lsessionid <> :exclude_session_id';
+            $params['exclude_session_id'] = $excludeSessionId;
+        }
+        $sql .= ' LIMIT 1';
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute($params);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) {
+            return;
+        }
+
+        $existingCompany = trim((string) ($row['company'] ?? ''));
+        throw new RuntimeException('This customer is already recorded: ' . $existingCompany . '.');
     }
 
     private function assertCustomerPhoneLengths(array $payload, ?array $existing = null): void
