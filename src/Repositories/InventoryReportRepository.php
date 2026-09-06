@@ -136,6 +136,7 @@ final class InventoryReportRepository
                 'location' => (string) ($item['location'] ?? ''),
                 'last_transaction_date' => (string) ($item['last_transaction_date'] ?? ''),
                 'last_rr_date' => (string) ($item['last_rr_date'] ?? ''),
+                'last_rr_qty' => (float) ($item['last_rr_qty'] ?? 0),
                 'reorder_quantity' => (float) ($item['reorder_quantity'] ?? 0),
                 // Product Database's visible VIP 1 is stored under the legacy AAA price group.
                 'vip1_price' => (float) ($item['vip1_price'] ?? 0),
@@ -219,6 +220,18 @@ SELECT
           AND lg_rr.ltransaction_type = 'Receiving'
           AND COALESCE(lg_rr.lin, 0) > 0
     ), '') AS last_rr_date,
+    COALESCE((
+        SELECT lg_rr.lin
+        FROM tblinventory_logs lg_rr
+        WHERE lg_rr.linvent_id = itm.lsession
+          AND lg_rr.ltransaction_type = 'Receiving'
+          AND COALESCE(lg_rr.lin, 0) > 0
+          AND lg_rr.ldateadded IS NOT NULL
+          AND TRIM(lg_rr.ldateadded) <> ''
+          AND lg_rr.ldateadded NOT LIKE '0000-00-00%'
+        ORDER BY lg_rr.ldateadded DESC, lg_rr.lid DESC
+        LIMIT 1
+    ), 0) AS last_rr_qty,
     COALESCE((
         SELECT ip.lprice_amt
         FROM tblinventory_price ip
