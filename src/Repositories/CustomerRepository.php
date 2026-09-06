@@ -14,6 +14,7 @@ use RuntimeException;
 final class CustomerRepository
 {
     public const PLATINUM_MIN_MONTHS = 3;
+    private ?bool $hasCustomerDiscountCodeColumn = null;
 
     public function __construct(private readonly Database $db)
     {
@@ -31,6 +32,26 @@ final class CustomerRepository
             'vip1' => 'silver',
             'vip2' => 'gold',
             default => 'unknown',
+        };
+    }
+
+    public function normalizeDiscountCode(string $discountCode, string $fallbackPriceGroup = '', string $customerSince = ''): string
+    {
+        $canonical = preg_replace('/[\s_-]+/', ' ', strtolower(trim($discountCode))) ?? '';
+        $canonical = preg_replace('/\s+/', ' ', $canonical) ?? '';
+
+        if (in_array($canonical, ['regular', 'vip silver', 'vip gold', 'vip platinum'], true)) {
+            return $canonical;
+        }
+
+        if ($this->resolvePlatinumEligibility($fallbackPriceGroup, $customerSince)) {
+            return 'vip platinum';
+        }
+
+        return match ($this->getNormalizedPriceGroup($fallbackPriceGroup)) {
+            'silver' => 'vip silver',
+            'gold' => 'vip gold',
+            default => 'regular',
         };
     }
 
@@ -59,9 +80,14 @@ final class CustomerRepository
 
     public function findCustomerBySession(string $sessionId): ?array
     {
+        $discountCodeSelect = $this->hasCustomerDiscountCodeColumn()
+            ? 'p.ldiscount_code AS discount_code,'
+            : "'' AS discount_code,";
+
         $sql = <<<SQL
 SELECT
     p.lsessionid,
+    p.lmain_id,
     p.lpatient_code,
     p.lcompany,
     p.lfname,
@@ -77,6 +103,7 @@ SELECT
     p.lcredit,
     p.lprice_group,
     p.lprice_group AS price_group,
+    {$discountCodeSelect}
     p.lsince,
     p.ldealer_since,
     p.ldealer_quota,
@@ -561,6 +588,7 @@ SQL;
         $monthlySales = (float) ($salesTotals['monthly_sales'] ?? 0);
         $lastMonthSales = (float) ($salesTotals['last_month_sales'] ?? 0);
         $dealershipSales = (float) ($salesTotals['dealership_sales'] ?? 0);
+        $ishinomotoSales = (float) ($salesTotals['ishinomoto_sales'] ?? 0);
 
         $ledgerRows = $this->loadLedgerRows($sessionId);
         $ledgerReport = CustomerLedgerCalculator::buildDetailedReport($ledgerRows, date('Y-m-d'));
@@ -582,6 +610,14 @@ SQL;
         $customerSince = CustomerLedgerCalculator::normalizeDate((string) ($customer['lsince'] ?? ''));
         $platinum = $this->resolvePlatinumEligibility($rawPriceGroup, (string) ($customer['lsince'] ?? ''));
         $vipStatus = $platinum ? 'platinum' : $normalizedPriceGroup;
+        $discountCode = $this->recordQualifiedDiscountCode(
+            (int) ($customer['lmain_id'] ?? 0),
+            $sessionId,
+            (string) ($customer['discount_code'] ?? ''),
+            $rawPriceGroup,
+            (string) ($customer['lsince'] ?? ''),
+            $lastMonthSales
+        );
 
         $oldNameStmt = $this->db->pdo()->prepare(
             'SELECT loldname
@@ -599,6 +635,7 @@ SQL;
         return [
             'dealership_since' => CustomerLedgerCalculator::normalizeDate((string) ($customer['ldealer_since'] ?? '')),
             'dealership_sales' => $dealershipSales,
+            'ishinomoto_sales' => $ishinomotoSales,
             'dealership_quota' => (float) ($customer['ldealer_quota'] ?? 0),
             'monthly_sales' => $monthlySales,
             'last_month_sales' => $lastMonthSales,
@@ -608,9 +645,82 @@ SQL;
             'balance' => $balance,
             'old_name' => $oldName !== '' ? $oldName : null,
             'price_code' => $rawPriceGroup !== '' ? $rawPriceGroup : null,
+            'discount_code' => $discountCode,
             'vip_status' => $vipStatus !== 'unknown' ? $vipStatus : null,
             'aging' => $aging,
         ];
+    }
+
+    private function recordQualifiedDiscountCode(
+        int $mainId,
+        string $sessionId,
+        string $currentDiscountCode,
+        string $priceGroup,
+        string $customerSince,
+        float $benefitMonthBasisSales
+    ): string {
+        if ($this->resolvePlatinumEligibility($priceGroup, $customerSince)) {
+            return $this->persistDiscountCode($mainId, $sessionId, $currentDiscountCode, 'vip platinum');
+        }
+
+        $config = $mainId > 0
+            ? (new VipTierSettingsRepository($this->db))->getConfig($mainId)
+            : [
+                'one_time_discount_threshold' => 10000,
+                'unlimited_discount_threshold' => 30000,
+            ];
+
+        $qualified = null;
+        if ($benefitMonthBasisSales >= (float) $config['unlimited_discount_threshold']) {
+            $qualified = 'vip gold';
+        } elseif ($benefitMonthBasisSales >= (float) $config['one_time_discount_threshold']) {
+            $qualified = 'vip silver';
+        }
+
+        if ($qualified !== null) {
+            return $this->persistDiscountCode($mainId, $sessionId, $currentDiscountCode, $qualified);
+        }
+
+        return $this->normalizeDiscountCode($currentDiscountCode, $priceGroup, $customerSince);
+    }
+
+    private function persistDiscountCode(int $mainId, string $sessionId, string $currentDiscountCode, string $nextDiscountCode): string
+    {
+        $normalizedCurrent = $this->normalizeDiscountCode($currentDiscountCode);
+        if ($mainId <= 0 || $sessionId === '' || $normalizedCurrent === $nextDiscountCode || !$this->hasCustomerDiscountCodeColumn()) {
+            return $nextDiscountCode;
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'UPDATE tblpatient
+             SET ldiscount_code = :discount_code
+             WHERE lmain_id = :main_id
+               AND lsessionid = :session_id
+               AND COALESCE(ldeleted, 0) = 0'
+        );
+        $stmt->execute([
+            'discount_code' => $nextDiscountCode,
+            'main_id' => $mainId,
+            'session_id' => $sessionId,
+        ]);
+
+        return $nextDiscountCode;
+    }
+
+    private function hasCustomerDiscountCodeColumn(): bool
+    {
+        if ($this->hasCustomerDiscountCodeColumn !== null) {
+            return $this->hasCustomerDiscountCodeColumn;
+        }
+
+        try {
+            $stmt = $this->db->pdo()->query('SHOW COLUMNS FROM tblpatient LIKE "ldiscount_code"');
+            $this->hasCustomerDiscountCodeColumn = $stmt !== false && $stmt->fetch(PDO::FETCH_ASSOC) !== false;
+        } catch (\Throwable) {
+            $this->hasCustomerDiscountCodeColumn = false;
+        }
+
+        return $this->hasCustomerDiscountCodeColumn;
     }
 
     /** @return list<array<string,mixed>> */
@@ -628,13 +738,20 @@ SQL;
     }
 
     /**
-     * @return array{dealership_sales:float,monthly_sales:float,last_month_sales:float}
+     * @return array{dealership_sales:float,ishinomoto_sales:float,monthly_sales:float,last_month_sales:float}
      */
     private function loadCustomerSalesTotals(string $sessionId): array
     {
         $sql = <<<'SQL'
 SELECT
     COALESCE(SUM(doc.amount), 0) AS dealership_sales,
+    COALESCE(SUM(
+        CASE
+            WHEN DATE_FORMAT(doc.doc_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+            THEN doc.ishinomoto_amount
+            ELSE 0
+        END
+    ), 0) AS ishinomoto_sales,
     COALESCE(SUM(
         CASE
             WHEN DATE_FORMAT(doc.doc_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
@@ -655,12 +772,20 @@ FROM (
         COALESCE(NULLIF(inv.lsales_refno, ''), CONCAT('INV:', inv.lrefno)) AS sales_refno,
         COALESCE(inv.ldate, DATE(inv.ldatetime), CURDATE()) AS doc_date,
         SUM(COALESCE(ii.lqty, 0) * COALESCE(ii.lprice, 0)) AS amount,
+        SUM(
+            CASE
+                WHEN LOWER(TRIM(COALESCE(inv_brand.lname, ii.lbrand, ''))) = 'ishinomoto'
+                THEN COALESCE(ii.lqty, 0) * COALESCE(ii.lprice, 0)
+                ELSE 0
+            END
+        ) AS ishinomoto_amount,
         2 AS priority
     FROM tblinvoice_list inv
     INNER JOIN tblinvoice_itemrec ii ON ii.linvoice_refno = inv.lrefno
+    LEFT JOIN tblbrand inv_brand ON CAST(inv_brand.lid AS CHAR) = CAST(ii.lbrand AS CHAR)
     WHERE inv.lcustomerid = :customer_id_invoice
       AND COALESCE(inv.lcancel_invoice, 0) = 0
-      AND LOWER(COALESCE(inv.lstatus, '')) <> 'cancelled'
+      AND LOWER(COALESCE(inv.lstatus, '')) = 'posted'
     GROUP BY inv.lrefno, sales_refno, doc_date
 
     UNION ALL
@@ -670,12 +795,20 @@ FROM (
         COALESCE(NULLIF(dr.lsales_refno, ''), CONCAT('DR:', dr.lrefno)) AS sales_refno,
         COALESCE(dr.ldate, DATE(dr.ldatetime), CURDATE()) AS doc_date,
         SUM(COALESCE(dri.lqty, 0) * COALESCE(dri.lprice, 0)) AS amount,
+        SUM(
+            CASE
+                WHEN LOWER(TRIM(COALESCE(dr_brand.lname, dri.lbrand, ''))) = 'ishinomoto'
+                THEN COALESCE(dri.lqty, 0) * COALESCE(dri.lprice, 0)
+                ELSE 0
+            END
+        ) AS ishinomoto_amount,
         1 AS priority
     FROM tbldelivery_receipt dr
     INNER JOIN tbldelivery_receipt_items dri ON dri.lor_refno = dr.lrefno
+    LEFT JOIN tblbrand dr_brand ON CAST(dr_brand.lid AS CHAR) = CAST(dri.lbrand AS CHAR)
     WHERE dr.lcustomerid = :customer_id_order_slip
       AND COALESCE(dr.lcancel, 0) = 0
-      AND LOWER(COALESCE(dr.lstatus, '')) <> 'cancelled'
+      AND LOWER(COALESCE(dr.lstatus, '')) = 'posted'
     GROUP BY dr.lrefno, sales_refno, doc_date
 ) doc
 WHERE NOT EXISTS (
@@ -688,7 +821,7 @@ WHERE NOT EXISTS (
         FROM tblinvoice_list inv2
         WHERE inv2.lcustomerid = :customer_id_invoice_shadow
           AND COALESCE(inv2.lcancel_invoice, 0) = 0
-          AND LOWER(COALESCE(inv2.lstatus, '')) <> 'cancelled'
+          AND LOWER(COALESCE(inv2.lstatus, '')) = 'posted'
 
         UNION ALL
 
@@ -699,7 +832,7 @@ WHERE NOT EXISTS (
         FROM tbldelivery_receipt dr2
         WHERE dr2.lcustomerid = :customer_id_order_slip_shadow
           AND COALESCE(dr2.lcancel, 0) = 0
-          AND LOWER(COALESCE(dr2.lstatus, '')) <> 'cancelled'
+          AND LOWER(COALESCE(dr2.lstatus, '')) = 'posted'
     ) ranked
     WHERE ranked.sales_refno = doc.sales_refno
       AND (
@@ -721,6 +854,7 @@ SQL;
 
         return [
             'dealership_sales' => (float) ($row['dealership_sales'] ?? 0),
+            'ishinomoto_sales' => (float) ($row['ishinomoto_sales'] ?? 0),
             'monthly_sales' => (float) ($row['monthly_sales'] ?? 0),
             'last_month_sales' => (float) ($row['last_month_sales'] ?? 0),
         ];

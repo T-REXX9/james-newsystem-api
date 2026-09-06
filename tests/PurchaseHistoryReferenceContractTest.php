@@ -10,11 +10,14 @@ $checks = [
     'old customer name is returned' => str_contains($repository, "AS old_name"),
     'creating agent name is returned' => str_contains($repository, "AS agent_name"),
     'current month sales is calculated' => str_contains($controller, "'current_month_sales' =>"),
+    'current month Ishinomoto sales is calculated separately' => str_contains($repository, 'AS ishinomoto_sales') && str_contains($repository, 'ishinomoto_amount'),
     'current month sales includes posted documents only' => str_contains($controller, "source_status") && str_contains($controller, "=== 'posted'"),
+    'purchase history returns persisted discount code' => str_contains($controller, "'discount_code' =>"),
     'outstanding balance and credit limit are returned' => str_contains($controller, "'outstanding_balance'") && str_contains($controller, "'credit_limit'"),
     'returns are linked to their source transaction' => str_contains($repository, 'ret.source_refno = src.source_refno'),
     'only finalized returns affect totals' => str_contains($repository, "IN ('Posted', 'Approved')"),
     'purchased item lookup is available for complaints and returns' => str_contains($repository, 'function searchPurchasedItems') && str_contains($repository, 'function assertCustomerPurchasedItem'),
+    'discount code normalization is centralized' => str_contains($repository, 'function normalizeDiscountCode'),
 ];
 
 foreach ($checks as $label => $passed) {

@@ -13,6 +13,7 @@ final class CustomerDatabaseRepository
 {
     private const DEFAULT_VAT_TYPE = 'Zero-Rated';
     private const CUSTOMER_PHONE_MAX_LENGTH = 15;
+    private ?bool $hasCustomerDiscountCodeColumn = null;
 
     public function __construct(private readonly Database $db)
     {
@@ -111,6 +112,10 @@ SQL;
             $total = (int) ($countStmt->fetchColumn() ?: 0);
         }
 
+        $discountCodeSelect = $this->hasCustomerDiscountCodeColumn()
+            ? "COALESCE(p.ldiscount_code, '') AS discount_code,"
+            : "'' AS discount_code,";
+
         $sql = $isPickerMode ? <<<SQL
 SELECT
     p.lid AS id,
@@ -153,6 +158,8 @@ SELECT
     COALESCE(p.lprovince, '') AS province,
     COALESCE(p.ltin, '') AS tin,
     COALESCE(p.lprice_group, '') AS price_group,
+    COALESCE(p.lprice_group, '') AS price_code,
+    {$discountCodeSelect}
     COALESCE(p.lbusiness_line, '') AS business_line,
     COALESCE(p.lterms, '') AS terms,
     COALESCE(p.lvat_type, '') AS vat_type,
@@ -222,6 +229,10 @@ SQL;
      */
     public function getCustomer(int $mainId, string $sessionId): ?array
     {
+        $discountCodeSelect = $this->hasCustomerDiscountCodeColumn()
+            ? "COALESCE(p.ldiscount_code, '') AS discount_code,"
+            : "'' AS discount_code,";
+
         $sql = <<<SQL
 SELECT
     p.lid AS id,
@@ -245,6 +256,8 @@ SELECT
     COALESCE(p.lprovince, '') AS province,
     COALESCE(p.ltin, '') AS tin,
     COALESCE(p.lprice_group, '') AS price_group,
+    COALESCE(p.lprice_group, '') AS price_code,
+    {$discountCodeSelect}
     COALESCE(p.lbusiness_line, '') AS business_line,
     COALESCE(p.lterms, '') AS terms,
     COALESCE(p.lvat_type, '') AS vat_type,
@@ -302,13 +315,15 @@ SQL;
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
+            $discountCodeInsertColumn = $this->hasCustomerDiscountCodeColumn() ? ', ldiscount_code' : '';
+            $discountCodeInsertValue = $this->hasCustomerDiscountCodeColumn() ? ', :discount_code' : '';
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group, lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group, :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
             );
-            $insert->execute([
+            $insertParams = [
                 'main_id' => $mainId,
                 'encoded_by' => $userId,
                 'datereg' => date('Y-m-d H:i:s'),
@@ -341,7 +356,11 @@ SQL;
                 'profile_type' => (string) (($payload['profile_type'] ?? '') !== '' ? $payload['profile_type'] : 'Old'),
                 'verification' => (string) ($payload['verification'] ?? ''),
                 'since_date' => $this->normalizeDateNullable((string) ($payload['since'] ?? ''), 'since_date') ?? date('Y-m-d'),
-            ]);
+            ];
+            if ($this->hasCustomerDiscountCodeColumn()) {
+                $insertParams['discount_code'] = $this->normalizeDiscountCode((string) ($payload['discount_code'] ?? ''));
+            }
+            $insert->execute($insertParams);
 
             $initialTerms = trim((string) ($payload['terms'] ?? ''));
             if ($initialTerms !== '') {
@@ -398,6 +417,8 @@ SQL;
             && $nextSalesPerson !== $currentSalesPerson;
         $assignmentDateClause = $salesPersonChanged ? ",\n    ldate_assigned = CURDATE()" : '';
 
+        $discountCodeAssignment = $this->hasCustomerDiscountCodeColumn() ? ",\n    ldiscount_code = :discount_code" : '';
+
         $sql = <<<SQL
 UPDATE tblpatient
 SET
@@ -411,7 +432,7 @@ SET
     ldelivery_address = :delivery_address,
     larea = :area,
     ltin = :tin,
-    lprice_group = :price_group,
+    lprice_group = :price_group{$discountCodeAssignment},
     lbusiness_line = :business_line,
     lterms = :terms,
     ltransaction_type = :transaction_type,
@@ -433,7 +454,7 @@ WHERE lmain_id = :main_id
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         try {
-            $stmt->execute([
+            $updateParams = [
                 'company' => (string) ($payload['company'] ?? $existing['company'] ?? ''),
                 'email' => (string) ($payload['email'] ?? $existing['email'] ?? ''),
                 'phone' => (string) ($payload['phone'] ?? $existing['phone'] ?? ''),
@@ -463,7 +484,11 @@ SQL;
                 'verification' => (string) ($payload['verification'] ?? $existing['verification'] ?? ''),
                 'main_id' => $mainId,
                 'session_id' => $sessionId,
-            ]);
+            ];
+            if ($this->hasCustomerDiscountCodeColumn()) {
+                $updateParams['discount_code'] = $this->normalizeDiscountCode((string) ($payload['discount_code'] ?? $existing['discount_code'] ?? ''));
+            }
+            $stmt->execute($updateParams);
         } catch (\Throwable $e) {
             $this->rethrowAsFriendlyValidation($e);
         }
@@ -525,6 +550,9 @@ SQL;
             'preferred_brand' => ['column' => 'lpreferred_brand', 'value' => fn ($value): string => $this->normalizePreferredBrand((string) $value)],
             'profile_type' => ['column' => 'lprofile_type', 'value' => static fn ($value): string => (string) $value],
         ];
+        if ($this->hasCustomerDiscountCodeColumn()) {
+            $fieldMap['discount_code'] = ['column' => 'ldiscount_code', 'value' => fn ($value): string => $this->normalizeDiscountCode((string) $value)];
+        }
 
         $assignments = [];
         $params = ['main_id' => $mainId];
@@ -955,6 +983,32 @@ SQL;
         }
 
         return '';
+    }
+
+    private function normalizeDiscountCode(string $value): string
+    {
+        $normalized = preg_replace('/[\s_-]+/', ' ', strtolower(trim($value))) ?? '';
+        $normalized = preg_replace('/\s+/', ' ', $normalized) ?? '';
+
+        return in_array($normalized, ['regular', 'vip silver', 'vip gold', 'vip platinum'], true)
+            ? $normalized
+            : 'regular';
+    }
+
+    private function hasCustomerDiscountCodeColumn(): bool
+    {
+        if ($this->hasCustomerDiscountCodeColumn !== null) {
+            return $this->hasCustomerDiscountCodeColumn;
+        }
+
+        try {
+            $stmt = $this->db->pdo()->query('SHOW COLUMNS FROM tblpatient LIKE "ldiscount_code"');
+            $this->hasCustomerDiscountCodeColumn = $stmt !== false && $stmt->fetch(PDO::FETCH_ASSOC) !== false;
+        } catch (\Throwable) {
+            $this->hasCustomerDiscountCodeColumn = false;
+        }
+
+        return $this->hasCustomerDiscountCodeColumn;
     }
 
     private function normalizeDateNullable(string $value, string $fieldName = 'date'): ?string

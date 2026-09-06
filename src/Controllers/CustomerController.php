@@ -30,6 +30,12 @@ final class CustomerController
         $eligible = $this->repo->resolvePlatinumEligibility($priceGroup, $customerSince);
         $normalized = $this->repo->getNormalizedPriceGroup($priceGroup);
         $customer['pricing_tier'] = $eligible ? 'platinum' : $normalized;
+        $customer['price_code'] = (string) ($customer['price_code'] ?? $customer['price_group'] ?? '');
+        $customer['discount_code'] = $this->repo->normalizeDiscountCode(
+            (string) ($customer['discount_code'] ?? ''),
+            (string) $priceGroup,
+            (string) $customerSince
+        );
 
         return $customer;
     }
@@ -80,6 +86,11 @@ final class CustomerController
                 'customer_since' => (string) ($customer['customer_since'] ?? ''),
                 'vip_status' => $vipStatus,
                 'price_code' => (string) ($customer['price_group'] ?? ''),
+                'discount_code' => $this->repo->normalizeDiscountCode(
+                    (string) ($customer['discount_code'] ?? ''),
+                    (string) ($customer['price_group'] ?? ''),
+                    (string) ($customer['customer_since'] ?? '')
+                ),
                 'current_month_sales' => $currentMonthSales,
                 'outstanding_balance' => (float) ($customer['latest_balance'] ?? 0),
                 'terms' => (string) ($customer['latest_terms'] ?? $customer['lterms'] ?? ''),
