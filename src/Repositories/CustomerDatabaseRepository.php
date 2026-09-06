@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\AuditTrailWriter;
+use App\Support\CustomerLedgerCalculator;
 use PDO;
 use RuntimeException;
 
@@ -164,7 +165,8 @@ SELECT
     COALESCE(p.lterms, '') AS terms,
     COALESCE(p.lvat_type, '') AS vat_type,
     COALESCE(p.lvat_percent, 0) AS vat_percent,
-    COALESCE(p.ldealer_since, NULL) AS dealer_since,
+    NULLIF(NULLIF(NULLIF(CAST(p.lsince AS CHAR), '1970-01-01'), '0000-00-00'), '') AS since,
+    NULLIF(NULLIF(NULLIF(CAST(p.ldealer_since AS CHAR), '1970-01-01'), '0000-00-00'), '') AS dealer_since,
     COALESCE(p.ldealer_quota, 0) AS dealer_quota,
     COALESCE(p.lcredit, 0) AS credit_limit,
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
@@ -262,7 +264,8 @@ SELECT
     COALESCE(p.lterms, '') AS terms,
     COALESCE(p.lvat_type, '') AS vat_type,
     COALESCE(p.lvat_percent, 0) AS vat_percent,
-    COALESCE(p.ldealer_since, NULL) AS dealer_since,
+    NULLIF(NULLIF(NULLIF(CAST(p.lsince AS CHAR), '1970-01-01'), '0000-00-00'), '') AS since,
+    NULLIF(NULLIF(NULLIF(CAST(p.ldealer_since AS CHAR), '1970-01-01'), '0000-00-00'), '') AS dealer_since,
     COALESCE(p.ldealer_quota, 0) AS dealer_quota,
     COALESCE(p.lcredit, 0) AS credit_limit,
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
@@ -439,6 +442,7 @@ SET
     lvat_type = :vat_type,
     lvat_percent = :vat_percent,
     ldealer_since = :dealer_since,
+    lsince = :since_date,
     ldealer_quota = :dealer_quota,
     lcredit = :credit,
     lstatus = :status,
@@ -472,6 +476,7 @@ SQL;
                 'vat_type' => (string) ($payload['vat_type'] ?? $existing['vat_type'] ?? ''),
                 'vat_percent' => isset($payload['vat_percent']) ? ((float) $payload['vat_percent']) : (float) ($existing['vat_percent'] ?? 0),
                 'dealer_since' => $this->normalizeDateNullable((string) ($payload['dealer_since'] ?? $existing['dealer_since'] ?? ''), 'dealer_since'),
+                'since_date' => $this->normalizeDateNullable((string) ($payload['since'] ?? $existing['since'] ?? ''), 'since_date'),
                 'dealer_quota' => isset($payload['dealer_quota']) ? (float) $payload['dealer_quota'] : (float) ($existing['dealer_quota'] ?? 0),
                 'credit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($existing['credit_limit'] ?? 0),
                 'status' => isset($payload['status']) ? (int) $payload['status'] : (int) ($existing['status'] ?? 1),
@@ -542,6 +547,7 @@ SQL;
             'vat_type' => ['column' => 'lvat_type', 'value' => static fn ($value): string => (string) $value],
             'vat_percent' => ['column' => 'lvat_percent', 'value' => static fn ($value): float => (float) $value],
             'dealer_since' => ['column' => 'ldealer_since', 'value' => fn ($value): ?string => $this->normalizeDateNullable((string) $value, 'dealer_since')],
+            'since' => ['column' => 'lsince', 'value' => fn ($value): ?string => $this->normalizeDateNullable((string) $value, 'since')],
             'dealer_quota' => ['column' => 'ldealer_quota', 'value' => static fn ($value): float => (float) $value],
             'credit_limit' => ['column' => 'lcredit', 'value' => static fn ($value): float => (float) $value],
             'status' => ['column' => 'lstatus', 'value' => static fn ($value): int => (int) $value],
@@ -1017,11 +1023,14 @@ SQL;
         if ($trimmed === '') {
             return null;
         }
-        $timestamp = strtotime($trimmed);
-        if ($timestamp === false) {
+        $normalized = CustomerLedgerCalculator::normalizeDate($trimmed);
+        if ($normalized === null) {
+            if (str_starts_with($trimmed, '1970-01-01') || str_starts_with($trimmed, '0000-00-00')) {
+                return null;
+            }
             throw new RuntimeException("Invalid date format for field '{$fieldName}'. Please use YYYY-MM-DD.");
         }
-        return date('Y-m-d', $timestamp);
+        return $normalized;
     }
 
     private function bindParams(\PDOStatement $stmt, array $params, bool $bindLimitOffset): void

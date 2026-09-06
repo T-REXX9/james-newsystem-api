@@ -161,6 +161,13 @@ $run('normalizes custom dates and rejects invalid dates', static function (): vo
     ledgerAssert($to === null, 'Invalid custom date must normalize to null');
 });
 
+$run('treats Unix epoch and zero dates as empty', static function (): void {
+    ledgerAssert(CustomerLedgerCalculator::normalizeDate('2019-05-24') === '2019-05-24', 'Real date must pass through');
+    ledgerAssert(CustomerLedgerCalculator::normalizeDate('1970-01-01') === null, 'Unix epoch must be empty');
+    ledgerAssert(CustomerLedgerCalculator::normalizeDate('1970-01-01 00:00:00') === null, 'Unix epoch datetime must be empty');
+    ledgerAssert(CustomerLedgerCalculator::normalizeDate('0000-00-00') === null, 'Zero date must be empty');
+});
+
 $run('ages unpaid debits after applying credits oldest-first', static function (): void {
     $rows = [
         [

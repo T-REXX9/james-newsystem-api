@@ -61,12 +61,13 @@ final class CustomerRepository
     public function resolvePlatinumEligibility(string $priceGroup, string $customerSince): bool
     {
         $internal = $this->getNormalizedPriceGroup($priceGroup);
-        if ($internal !== 'gold' || trim($customerSince) === '') {
+        $normalizedSince = CustomerLedgerCalculator::normalizeDate($customerSince);
+        if ($internal !== 'gold' || $normalizedSince === null) {
             return false;
         }
 
         try {
-            $since = new DateTimeImmutable($customerSince);
+            $since = new DateTimeImmutable($normalizedSince);
             $now = new DateTimeImmutable();
         } catch (\Exception) {
             return false;
@@ -107,7 +108,7 @@ SELECT
     p.lsince,
     p.ldealer_since,
     p.ldealer_quota,
-    COALESCE(p.ldealer_since, p.ldatereg, '') AS customer_since,
+    NULLIF(NULLIF(NULLIF(CAST(p.lsince AS CHAR), '1970-01-01'), '0000-00-00'), '') AS customer_since,
     p.lsales_person,
     p.lvat_type,
     p.lvat_percent,

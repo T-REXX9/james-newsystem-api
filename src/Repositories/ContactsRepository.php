@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\CustomerLedgerCalculator;
 use PDO;
 
 final class ContactsRepository
@@ -344,13 +345,11 @@ SQL;
 
     private function normalizeDateNullable(string $value): ?string
     {
-        if ($value === '' || $value === null) {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
             return null;
         }
-        try {
-            return (new \DateTime($value))->format('Y-m-d');
-        } catch (\Exception) {
-            return null;
-        }
+
+        return CustomerLedgerCalculator::normalizeDate($trimmed);
     }
 }

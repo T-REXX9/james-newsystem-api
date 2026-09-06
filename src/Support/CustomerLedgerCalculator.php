@@ -49,7 +49,12 @@ final class CustomerLedgerCalculator
     public static function normalizeDate(string $value): ?string
     {
         $trimmed = trim($value);
-        if ($trimmed === '' || $trimmed === '0000-00-00' || $trimmed === '0000-00-00 00:00:00') {
+        if (
+            $trimmed === ''
+            || $trimmed === '0000-00-00'
+            || $trimmed === '0000-00-00 00:00:00'
+            || str_starts_with($trimmed, '1970-01-01')
+        ) {
             return null;
         }
 
