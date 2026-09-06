@@ -58,6 +58,11 @@ $assertions = [
         && str_contains($report, "'open_pr_qty'")
         && str_contains($report, "'open_po_qty'")
         && str_contains($report, "'remaining_qty'"),
+    'report includes every Product Database Supplier COG for PR selection' => str_contains($report, "'supplier_costs'")
+        && str_contains($report, 'supplier_code')
+        && !str_contains($report, 'INNER JOIN (
+    SELECT litemsession, MAX(lid) AS max_lid
+    FROM tblsupplier_cost'),
     'displayed PR quantity includes lines already linked to a PO' => str_contains($report, '$requestedPrQty +=')
         && str_contains($report, "'pr_requested_qty' => \$requestedPrQty"),
     'pending PO quantity remains visible without counting as on order' => strpos($report, '$orderedQty +=') < strpos($report, 'if (!$isOnOrder)'),

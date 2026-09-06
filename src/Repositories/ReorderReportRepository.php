@@ -215,7 +215,7 @@ SQL;
 
         $totalRrBySession = $this->fetchTotalRrBySession($sessions);
         $totalReturnBySession = $this->fetchTotalReturnBySession($sessions);
-        $preferredSuppliers = $this->fetchPreferredSuppliers($mainId, $sessions);
+        $supplierCogsBySession = $this->fetchItemSupplierCogs($mainId, $sessions);
         $prDocumentsByItem = $this->fetchOpenPrDocuments($sessions, $itemCodes);
         $poDocumentsByItem = $this->fetchOpenPoDocuments($mainId, $sessions, $itemCodes);
         $openPoRefnos = [];
@@ -245,11 +245,13 @@ SQL;
             $session = (string) ($row['product_session'] ?? '');
             $itemCode = (string) ($row['item_code'] ?? '');
             $arrival = $lastArrivalByItem[$itemCode] ?? ['last_arrival_date' => '', 'last_arrival_qty' => 0];
-            $preferredSupplier = $preferredSuppliers[$session] ?? [
+            $supplierCogs = $supplierCogsBySession[$session] ?? [];
+            $preferredSupplier = $supplierCogs['preferred'] ?? [
                 'supplier_id' => '',
                 'supplier_name' => '',
                 'supplier_cost' => 0,
             ];
+            $itemSupplierCosts = $supplierCogs['costs'] ?? [];
             $prDocuments = $prDocumentsByItem[$session] ?? $prDocumentsByItem['code:' . $itemCode] ?? [];
             $poDocuments = $poDocumentsByItem[$session] ?? $poDocumentsByItem['code:' . $itemCode] ?? [];
             $rrDocuments = $rrDocumentsByItem[$session] ?? $rrDocumentsByItem['code:' . $itemCode] ?? [];
@@ -407,6 +409,7 @@ SQL;
                 'preferred_supplier_id' => (string) ($preferredSupplier['supplier_id'] ?? ''),
                 'preferred_supplier_name' => (string) ($preferredSupplier['supplier_name'] ?? ''),
                 'preferred_supplier_cost' => (float) ($preferredSupplier['supplier_cost'] ?? 0),
+                'supplier_costs' => $itemSupplierCosts,
                 'overall_status' => $overallStatus,
                 'can_create_pr' => !($hasPendingPr || $hasApprovedPr || $hasPendingPo || $openPoQty > 0),
                 'pr_documents' => $prDocuments,
@@ -490,9 +493,12 @@ SQL;
 
     /**
      * @param array<int, string> $sessions
-     * @return array<string, array{supplier_id:string,supplier_name:string,supplier_cost:float}>
+     * @return array<string, array{
+     *   preferred: array{supplier_id:string,supplier_name:string,supplier_cost:float},
+     *   costs: array<int, array{supplier_id:string,supplier_code:string,supplier_name:string,supplier_cost:float}>
+     * }>
      */
-    private function fetchPreferredSuppliers(int $mainId, array $sessions): array
+    private function fetchItemSupplierCogs(int $mainId, array $sessions): array
     {
         if ($sessions === []) return [];
         [$inClause, $bind] = $this->buildInClause($sessions, 'supplier_session');
@@ -501,17 +507,14 @@ SQL;
 SELECT
     sc.litemsession AS item_session,
     COALESCE(sc.lsupplier_id, '') AS supplier_id,
+    COALESCE(NULLIF(TRIM(s.lname), ''), NULLIF(TRIM(sc.lsupplier_name), ''), '') AS supplier_code,
     COALESCE(NULLIF(TRIM(s.lcompany), ''), NULLIF(TRIM(s.lname), ''), sc.lsupplier_name, '') AS supplier_name,
     CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) AS supplier_cost
 FROM tblsupplier_cost sc
-INNER JOIN (
-    SELECT litemsession, MAX(lid) AS max_lid
-    FROM tblsupplier_cost
-    WHERE lmainid = :supplier_main_id
-      AND litemsession IN ({$inClause})
-    GROUP BY litemsession
-) latest ON latest.max_lid = sc.lid
-LEFT JOIN tblsupplier s ON CAST(s.lid AS CHAR) = sc.lsupplier_id
+LEFT JOIN tblsupplier s ON CAST(s.lid AS CHAR) = CAST(sc.lsupplier_id AS CHAR)
+WHERE sc.lmainid = :supplier_main_id
+  AND sc.litemsession IN ({$inClause})
+ORDER BY sc.litemsession ASC, sc.lid DESC
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $this->bindParams($stmt, $bind);
@@ -521,12 +524,46 @@ SQL;
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $session = trim((string) ($row['item_session'] ?? ''));
             if ($session === '') continue;
-            $result[$session] = [
+
+            $cog = [
                 'supplier_id' => (string) ($row['supplier_id'] ?? ''),
+                'supplier_code' => (string) ($row['supplier_code'] ?? ''),
                 'supplier_name' => (string) ($row['supplier_name'] ?? ''),
                 'supplier_cost' => (float) ($row['supplier_cost'] ?? 0),
             ];
+            if (($cog['supplier_id'] === '') && ($cog['supplier_name'] === '') && ($cog['supplier_code'] === '')) {
+                continue;
+            }
+
+            if (!isset($result[$session])) {
+                $result[$session] = [
+                    'preferred' => [
+                        'supplier_id' => $cog['supplier_id'],
+                        'supplier_name' => $cog['supplier_name'] !== '' ? $cog['supplier_name'] : $cog['supplier_code'],
+                        'supplier_cost' => $cog['supplier_cost'],
+                    ],
+                    'costs' => [],
+                ];
+            }
+
+            $supplierKey = $cog['supplier_id'] !== '' ? $cog['supplier_id'] : $cog['supplier_code'] . ':' . $cog['supplier_name'];
+            if (isset($result[$session]['costs'][$supplierKey])) {
+                continue;
+            }
+            $result[$session]['costs'][$supplierKey] = $cog;
         }
+
+        foreach ($result as $session => $bundle) {
+            $costs = array_values($bundle['costs']);
+            usort(
+                $costs,
+                static fn (array $left, array $right): int =>
+                    $left['supplier_cost'] <=> $right['supplier_cost']
+                    ?: strcasecmp((string) $left['supplier_code'], (string) $right['supplier_code'])
+            );
+            $result[$session]['costs'] = $costs;
+        }
+
         return $result;
     }
 
