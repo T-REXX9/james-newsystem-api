@@ -946,9 +946,10 @@ SQL;
         $existingMobile = $existing !== null ? trim((string) ($existing['mobile'] ?? '')) : null;
 
         // Allow unchanged legacy oversize values through on update; only reject newly introduced ones.
+        // Keep customer save available on PHP deployments without ext-mbstring.
         if (
             $phone !== ''
-            && mb_strlen($phone) > self::CUSTOMER_PHONE_MAX_LENGTH
+            && strlen($phone) > self::CUSTOMER_PHONE_MAX_LENGTH
             && $phone !== $existingPhone
         ) {
             throw new RuntimeException('Please enter a valid telephone number. The customer telephone field allows up to 15 characters only.');
@@ -956,7 +957,7 @@ SQL;
 
         if (
             $mobile !== ''
-            && mb_strlen($mobile) > self::CUSTOMER_PHONE_MAX_LENGTH
+            && strlen($mobile) > self::CUSTOMER_PHONE_MAX_LENGTH
             && $mobile !== $existingMobile
         ) {
             throw new RuntimeException('Please enter a valid phone number. The customer mobile field allows up to 15 characters only.');

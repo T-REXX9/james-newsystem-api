@@ -70,7 +70,8 @@ final class CustomerRequestRepository
                     throw new HttpException(422, "{$key} is too long");
                 }
                 if ($key === 'company' && trim((string) $value) === '') throw new HttpException(422, 'Company name is required');
-                if (in_array($key, ['phone','mobile'], true) && mb_strlen((string) $value) > 15) throw new HttpException(422, 'Phone numbers may contain at most 15 characters');
+                // Keep customer-request validation available on PHP deployments without ext-mbstring.
+                if (in_array($key, ['phone','mobile'], true) && strlen((string) $value) > 15) throw new HttpException(422, 'Phone numbers may contain at most 15 characters');
                 if ($key === 'sales_person_id' && $value !== '') {
                     $agent = (new AuthRepository($this->db))->findUserById((int) $value);
                     if (!$agent || (new AuthRepository($this->db))->resolveMainUserId($agent) !== $mainId) throw new HttpException(422, 'Sales agent must belong to this account');

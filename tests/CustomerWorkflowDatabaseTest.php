@@ -77,6 +77,10 @@ $repo->review($main, $customer, $discount['id'], $main, 'approved', 'Authorized'
 $assert(count(array_filter($repo->list($main, $customer), fn($r)=>$r['kind']==='discount' && $r['status']==='approved')) === 1, 'discount authorization persists');
 $reject(fn()=> $repo->create($main, $customer, $agent, 'discount', ['discount_percentage'=>101,'reason'=>'Test discount request']),422,'out-of-range discount rejected');
 $reject(fn()=> $repo->create($main, $customer, $agent, 'customer_update', ['lpassword'=>'bad']),422,'unsupported customer fields rejected');
+$reject(fn()=> $repo->create($main, $customer, $agent, 'customer_update', ['phone'=>'1234567890123456']),422,'oversize phone customer-update rejected');
+$reject(fn()=> $repo->create($main, $customer, $agent, 'customer_update', ['mobile'=>'1234567890123456']),422,'oversize mobile customer-update rejected');
+$phoneRequest = $repo->create($main, $customer, $agent, 'customer_update', ['phone'=>'09171234567']);
+$assert(($phoneRequest['status'] ?? '') === 'pending', 'valid phone customer-update is accepted');
 $reject(fn()=> $repo->create($main, $customer, $agent, 'customer_update', ['contacts'=>[['id'=>'12345','first_name'=>'Other']]]),422,'foreign contact-person ID rejected');
 $people = $repo->create($main, $customer, $agent, 'customer_update', ['contacts'=>[['id'=>'920001','first_name'=>'Changed']]]);
 $repo->review($main,$customer,$people['id'],$main,'approved','');
