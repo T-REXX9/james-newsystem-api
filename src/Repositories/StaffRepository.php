@@ -201,8 +201,8 @@ SQL;
             }
         }
 
-        // Handle role -> need to find or create user type
-        if (isset($data['role'])) {
+        // Explicit group IDs are canonical; role names remain a legacy fallback.
+        if (isset($data['role']) && !array_key_exists('group_id', $data)) {
             $roleId = $this->findOrCreateUserType($mainId, $data['role']);
             $updates[] = 'ltype = :role_id';
             $params['role_id'] = $roleId;
@@ -259,10 +259,11 @@ SQL;
         }
 
         if (array_key_exists('group_id', $data)) {
-            $updates[] = 'ltype = :group_id';
-            $params['group_id'] = $data['group_id'] === '' || $data['group_id'] === null
+            $groupId = $data['group_id'] === '' || $data['group_id'] === null
                 ? (int) ($existing['role_id'] ?? 0)
-                : (int) $data['group_id'];
+                : $this->assertExistingUserType($mainId, (int) $data['group_id']);
+            $updates[] = 'ltype = :group_id';
+            $params['group_id'] = $groupId;
         }
 
         $effectiveGroupId = isset($params['group_id'])
@@ -315,7 +316,9 @@ SQL;
             throw new HttpException(422, 'email is required');
         }
         $this->assertEmailAvailable($email);
-        $roleId = $this->findOrCreateUserType($mainId, (string) $data['role']);
+        $roleId = array_key_exists('group_id', $data) && $data['group_id'] !== null && $data['group_id'] !== ''
+            ? $this->assertExistingUserType($mainId, (int) $data['group_id'])
+            : $this->findOrCreateUserType($mainId, (string) $data['role']);
         $password = (string) ($data['password'] ?? '');
         $recode = md5($password);
         $hashedPassword = md5($password . $recode);
@@ -394,8 +397,50 @@ SQL;
         return $stmt->rowCount() > 0;
     }
 
+    private function assertExistingUserType(int $mainId, int $groupId): int
+    {
+        if ($groupId <= 0) {
+            throw new HttpException(422, 'group_id must reference an existing access group');
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT lid
+             FROM tblusertype
+             WHERE lid = :group_id
+               AND lid != 7
+               AND (
+                 lmain_id = :main_id
+                 OR COALESCE(lmain_id, 0) = 0
+                 OR EXISTS (
+                   SELECT 1 FROM tblaccount a
+                   WHERE a.ltype = tblusertype.lid
+                     AND a.lmother_id = :account_main_id
+                     AND a.lstatus = 1
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM tblweb_permission wp
+                   WHERE wp.lgroup = tblusertype.lid
+                     AND wp.lmain_id = :permission_main_id
+                 )
+               )
+             LIMIT 1'
+        );
+        $stmt->execute([
+            'group_id' => $groupId,
+            'main_id' => $mainId,
+            'account_main_id' => $mainId,
+            'permission_main_id' => $mainId,
+        ]);
+
+        if (!$stmt->fetchColumn()) {
+            throw new HttpException(422, 'group_id must reference an existing access group');
+        }
+
+        return $groupId;
+    }
+
     /**
-     * Find user type by name or create if not exists
+     * Find user type by name or create if not exists (legacy compatibility).
      */
     private function findOrCreateUserType(int $mainId, string $roleName): int
     {
@@ -437,13 +482,30 @@ SELECT
     CAST(lid AS SIGNED) AS id,
     COALESCE(ltype_name, '') AS name
 FROM tblusertype
-WHERE (lmain_id = :main_id OR ldefault = 0)
-  AND LOWER(TRIM(COALESCE(ltype_name, ''))) IN ('sales agent', 'warehouse personnel', 'company owner', 'warehouse', 'owner')
-ORDER BY FIELD(LOWER(TRIM(COALESCE(ltype_name, ''))), 'sales agent', 'warehouse personnel', 'company owner', 'warehouse', 'owner'), ltype_name ASC
+WHERE lid != 7
+  AND (
+    lmain_id = :main_id
+    OR COALESCE(lmain_id, 0) = 0
+    OR EXISTS (
+      SELECT 1 FROM tblaccount a
+      WHERE a.ltype = tblusertype.lid
+        AND a.lmother_id = :account_main_id
+        AND a.lstatus = 1
+    )
+    OR EXISTS (
+      SELECT 1 FROM tblweb_permission wp
+      WHERE wp.lgroup = tblusertype.lid
+        AND wp.lmain_id = :permission_main_id
+    )
+  )
+  AND LOWER(TRIM(COALESCE(ltype_name, ''))) NOT IN ('sales person', 'salesperson')
+ORDER BY ltype_name ASC, lid ASC
 SQL;
 
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('account_main_id', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('permission_main_id', $mainId, PDO::PARAM_INT);
         $stmt->execute();
 
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
