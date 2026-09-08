@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\PhoneNumberNormalizer;
+use DateTimeImmutable;
 use RuntimeException;
 
 final class CallSystemRepository implements CallSystemRepositoryInterface
@@ -383,7 +384,7 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
                     COALESCE(p.lcompany, \'\') AS customer_company,
                     COALESCE(p.lpatient_code, \'\') AS customer_code,
                     crt.concern,
-                    crt.action,
+                    crt.`action` AS action,
                     crt.report_body
              FROM tblcall_logs_v2 c
              INNER JOIN tblaccount a ON a.lid = c.lagent_id
@@ -391,8 +392,8 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
              LEFT JOIN call_report_threads crt
                ON crt.agent_user_id = c.lagent_id
               AND (
-                crt.contact_id = CAST(c.lcustomer_id AS CHAR)
-                OR (c.lcustomer_id IS NULL AND crt.contact_id = c.lphone_number)
+                crt.contact_id = CAST(c.lcustomer_id AS CHAR) COLLATE utf8mb4_unicode_ci
+                OR (c.lcustomer_id IS NULL AND crt.contact_id = c.lphone_number COLLATE utf8mb4_unicode_ci)
               )
               AND crt.created_at BETWEEN DATE_SUB(c.lcall_timestamp, INTERVAL 30 MINUTE)
                                       AND DATE_ADD(c.lcall_timestamp, INTERVAL 30 MINUTE)

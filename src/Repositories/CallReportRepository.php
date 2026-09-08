@@ -66,7 +66,7 @@ final class CallReportRepository
         $insert = $this->db->pdo()->prepare(
             'INSERT INTO call_report_threads
              (main_id, contact_id, call_log_entry_id, call_log_refno, agent_user_id, agent_name, outcome, report_body,
-              concern, action, call_started_at, call_ended_at, duration_seconds, created_at)
+              concern, `action`, call_started_at, call_ended_at, duration_seconds, created_at)
              VALUES (:main_id, :contact_id, :call_log_entry_id, :call_log_refno, :agent_user_id, :agent_name, :outcome, :report_body,
                      :concern, :action, :call_started_at, :call_ended_at, :duration_seconds, :created_at)'
         );
