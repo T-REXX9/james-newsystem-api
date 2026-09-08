@@ -26,7 +26,7 @@ final class CallRecordReportMatcher
                     && self::isWithinWindow($record, $report)
             ));
             usort($matches, static function (array $left, array $right) use ($record): int {
-                $distance = self::distanceFromRecord($record);
+                $distance = self::timestamp($record);
                 $leftDistance = abs($distance - self::timestamp($left));
                 $rightDistance = abs($distance - self::timestamp($right));
                 return $leftDistance <=> $rightDistance;

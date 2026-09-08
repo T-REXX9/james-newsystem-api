@@ -84,5 +84,15 @@ $legacyAttached = CallRecordReportMatcher::attach([[
 ]]);
 $assert($legacyAttached[0]['concern'] === 'Legacy concern' && $legacyAttached[0]['action'] === 'Legacy action', 'matches and parses legacy daily-call notes');
 
+$closest = CallRecordReportMatcher::attach([[
+    'lcustomer_id' => '101',
+    'customer_session_id' => 'patient-session-101',
+    'lcall_timestamp' => '2026-09-08 10:00:00',
+]], [
+    ['contact_id' => 'patient-session-101', 'created_at' => '2026-09-08 09:50:00', 'report_key' => 'thread:early', 'concern' => 'Earlier'],
+    ['contact_id' => 'patient-session-101', 'created_at' => '2026-09-08 10:05:00', 'report_key' => 'thread:near', 'concern' => 'Nearest'],
+]);
+$assert($closest[0]['concern'] === 'Nearest', 'chooses the closest report when several reports match');
+
 echo "Results: {$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);
