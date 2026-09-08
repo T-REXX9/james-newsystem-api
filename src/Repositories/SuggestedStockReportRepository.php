@@ -12,6 +12,7 @@ use RuntimeException;
 final class SuggestedStockReportRepository
 {
     public const SORT_QTY_DESC = 'qty-desc';
+    public const SORT_CUSTOMERS_DESC = 'customers-desc';
 
     public function __construct(private readonly Database $db)
     {
@@ -94,7 +95,7 @@ SQL;
         int $page,
         int $perPage,
         ?string $partNo = null,
-        string $sortBy = self::SORT_QTY_DESC,
+        string $sortBy = self::SORT_CUSTOMERS_DESC,
         bool $kivFolder = false,
         bool $cartFolder = false
     ): array {
@@ -843,14 +844,13 @@ SQL;
 
     private function summaryOrderSql(string $sortBy): string
     {
-        $qtyDescSql = 'total_qty DESC, inquiry_count DESC, part_no ASC';
+        $qtyDescSql = 'total_qty DESC, customer_count DESC, part_no ASC';
         return match ($sortBy) {
             self::SORT_QTY_DESC => $qtyDescSql,
-            'inquiries-asc' => 'inquiry_count ASC, total_qty DESC, part_no ASC',
             'description-asc' => 'description ASC, part_no ASC',
             'description-desc' => 'description DESC, part_no ASC',
-            'inquiries-desc' => 'inquiry_count DESC, total_qty DESC, part_no ASC',
-            default => $qtyDescSql,
+            'customers-desc' => 'customer_count DESC, total_qty DESC, part_no ASC',
+            default => 'customer_count DESC, total_qty DESC, part_no ASC',
         };
     }
 

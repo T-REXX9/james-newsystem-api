@@ -40,12 +40,12 @@ final class SuggestedStockReportController
         $dateTo = isset($query['date_to']) ? (string) $query['date_to'] : null;
         $customerId = isset($query['customer_id']) ? (string) $query['customer_id'] : null;
         $partNo = trim((string) ($query['part_no'] ?? ''));
-        $sortBy = trim((string) ($query['sort_by'] ?? SuggestedStockReportRepository::SORT_QTY_DESC));
+        $sortBy = trim((string) ($query['sort_by'] ?? SuggestedStockReportRepository::SORT_CUSTOMERS_DESC));
         $kivFolder = $this->toBool($query['kiv'] ?? false);
         $cartFolder = $this->toBool($query['cart'] ?? false);
         if ($sortBy === 'kiv-folder') {
             $kivFolder = true;
-            $sortBy = SuggestedStockReportRepository::SORT_QTY_DESC;
+            $sortBy = SuggestedStockReportRepository::SORT_CUSTOMERS_DESC;
         }
         if ($cartFolder) {
             $kivFolder = false;
@@ -61,7 +61,7 @@ final class SuggestedStockReportController
             $page,
             $perPage,
             $partNo !== '' ? $partNo : null,
-            $sortBy !== '' ? $sortBy : SuggestedStockReportRepository::SORT_QTY_DESC,
+            $sortBy !== '' ? $sortBy : SuggestedStockReportRepository::SORT_CUSTOMERS_DESC,
             $kivFolder,
             $cartFolder
         );

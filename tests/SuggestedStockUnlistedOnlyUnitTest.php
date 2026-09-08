@@ -19,6 +19,8 @@ $checks = [
     'suggested_stock_kiv' => 'KIV matching must use the dedicated folder table',
     'part_no_search' => 'summary must support part-number search',
     'qty-desc' => 'summary must support qty requested sort',
+    'customers-desc' => 'summary must support distinct customer sort',
+    "COUNT(DISTINCT COALESCE(tr.lcustomerid, '')) AS customer_count" => 'summary must expose distinct customer count',
     "(\$kivFolder ? '' : 'NOT ')" => 'main report must hide parked KIV items',
     "COALESCE(i.lremark, '') = 'AddedToPR'" => 'Cart folder must list AddedToPR suggestions',
     'covering_pr_id' => 'Cart folder must name the covering Purchase Request',
@@ -80,6 +82,26 @@ if (str_contains($controller, "sort_by'] ?? 'inquiries-desc") || str_contains($c
     $failed++;
 } else {
     echo "  PASS summary default sort is not inquiries-desc\n";
+}
+
+if (!str_contains($controller, 'SORT_CUSTOMERS_DESC')) {
+    fwrite(STDERR, "FAIL summary default sort must be distinct customers descending\n");
+    $failed++;
+} else {
+    echo "  PASS summary default sort is distinct customers descending\n";
+}
+
+$orderStart = strpos($source, 'private function summaryOrderSql');
+$orderEnd = $orderStart === false ? false : strpos($source, 'private function kivExistsSql', $orderStart);
+$orderBlock = $orderStart === false || $orderEnd === false ? '' : substr($source, $orderStart, $orderEnd - $orderStart);
+if (!str_contains($orderBlock, "'customers-desc' => 'customer_count DESC")) {
+    fwrite(STDERR, "FAIL demand sort must order by distinct customers descending\n");
+    $failed++;
+} elseif (str_contains($orderBlock, 'inquiry_count')) {
+    fwrite(STDERR, "FAIL demand sort must not order by inquiry-line count\n");
+    $failed++;
+} else {
+    echo "  PASS demand sort orders by customer_count without inquiry_count\n";
 }
 
 if (!str_contains($controller, 'function clearNotListed') || !str_contains($bootstrap, 'clear-not-listed')) {
