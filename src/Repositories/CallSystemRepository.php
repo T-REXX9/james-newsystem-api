@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\CallRecordReportMatcher;
 use App\Support\PhoneNumberNormalizer;
 use DateTimeImmutable;
 use RuntimeException;
@@ -381,29 +382,54 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
                     c.ldirection, c.lduration_seconds, c.lcall_timestamp, c.lsource, c.lcreated_at,
                     COALESCE(a.lfname, \'\') AS agent_first_name,
                     COALESCE(a.llname, \'\') AS agent_last_name,
+                    COALESCE(p.lsessionid, \'\') AS customer_session_id,
                     COALESCE(p.lcompany, \'\') AS customer_company,
-                    COALESCE(p.lpatient_code, \'\') AS customer_code,
-                    crt.concern,
-                    crt.`action` AS action,
-                    crt.report_body
+                    COALESCE(p.lpatient_code, \'\') AS customer_code
              FROM tblcall_logs_v2 c
              INNER JOIN tblaccount a ON a.lid = c.lagent_id
              LEFT JOIN tblpatient p ON p.lid = c.lcustomer_id
-             LEFT JOIN call_report_threads crt
-               ON crt.agent_user_id = c.lagent_id
-              AND (
-                crt.contact_id = CAST(c.lcustomer_id AS CHAR) COLLATE utf8mb4_unicode_ci
-                OR (c.lcustomer_id IS NULL AND crt.contact_id = c.lphone_number COLLATE utf8mb4_unicode_ci)
-              )
-              AND crt.created_at BETWEEN DATE_SUB(c.lcall_timestamp, INTERVAL 30 MINUTE)
-                                      AND DATE_ADD(c.lcall_timestamp, INTERVAL 30 MINUTE)
              WHERE ' . implode(' AND ', $conditions) . '
              ORDER BY c.lcall_timestamp DESC, c.lid DESC
              LIMIT 1000'
         );
         $stmt->execute($params);
+        $records = $stmt->fetchAll();
 
-        return $stmt->fetchAll();
+        if ($records === []) {
+            return [];
+        }
+
+        $reportFrom = (new DateTimeImmutable($fromDate))->modify('-1 day')->format('Y-m-d H:i:s');
+        $reportTo = (new DateTimeImmutable($toDate))->modify('+1 day')->format('Y-m-d H:i:s');
+        $reportStmt = $this->db->pdo()->prepare(
+            'SELECT CAST(crt.contact_id AS CHAR) AS contact_id,
+                    crt.concern, crt.`action` AS action, crt.report_body, crt.created_at,
+                    NULL AS phone_number, 0 AS legacy
+             FROM call_report_threads crt
+             WHERE crt.main_id = :report_main_id
+               AND crt.created_at BETWEEN :report_from AND :report_to
+             UNION ALL
+             SELECT CAST(cle.lcustomer_id AS CHAR) AS contact_id,
+                    NULL AS concern, NULL AS action,
+                    TRIM(REPLACE(cle.lnotes, \'[Sales Agent Report]\', \'\')) AS report_body,
+                    CONCAT(cl.lcall_date, \' 00:00:00\') AS created_at,
+                    NULL AS phone_number, 1 AS legacy
+             FROM tblcall_logs_entry cle
+             INNER JOIN tblcall_logs cl ON cl.lrefno = cle.lrefno
+             WHERE cl.lmain_id = :legacy_main_id
+               AND cl.lcall_date BETWEEN :legacy_report_from AND :legacy_report_to
+               AND cle.lnotes LIKE \'[Sales Agent Report]%\''
+        );
+        $reportStmt->execute([
+            'report_main_id' => $mainId,
+            'report_from' => $reportFrom,
+            'report_to' => $reportTo,
+            'legacy_main_id' => $mainId,
+            'legacy_report_from' => substr($reportFrom, 0, 10),
+            'legacy_report_to' => substr($reportTo, 0, 10),
+        ]);
+
+        return CallRecordReportMatcher::attach($records, $reportStmt->fetchAll());
     }
 
     public function getAutoReplySettings(?int $agentId = null): ?array
