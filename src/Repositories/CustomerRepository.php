@@ -154,7 +154,13 @@ SQL;
         return $customer;
     }
 
-    public function getPurchaseHistory(string $sessionId, ?string $dateFrom, ?string $dateTo): array
+    public function getPurchaseHistory(
+        string $sessionId,
+        ?string $dateFrom,
+        ?string $dateTo,
+        ?int $limit = null,
+        int $offset = 0
+    ): array
     {
         $filters = '';
         $params = [
@@ -169,6 +175,15 @@ SQL;
         if ($dateTo !== null && $dateTo !== '') {
             $filters .= ' AND src.ldate <= :date_to';
             $params['date_to'] = $dateTo;
+        }
+
+        $paginationSql = '';
+        if ($limit !== null) {
+            $paginationSql = ' LIMIT :history_limit OFFSET :history_offset';
+            $limit = max(1, min(51, $limit));
+            $offset = max(0, $offset);
+            $params['history_limit'] = $limit;
+            $params['history_offset'] = $offset;
         }
 
         $sql = <<<SQL
@@ -238,6 +253,7 @@ LEFT JOIN (
 WHERE 1=1
 {$filters}
 ORDER BY src.ldate DESC, src.source_type ASC
+{$paginationSql}
 SQL;
 
         $stmt = $this->db->pdo()->prepare($sql);

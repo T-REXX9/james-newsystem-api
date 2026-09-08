@@ -49,6 +49,8 @@ final class CustomerController
 
         $dateFrom = $query['date_from'] ?? null;
         $dateTo = $query['date_to'] ?? null;
+        $page = max(1, (int) ($query['page'] ?? 1));
+        $perPage = max(1, min(50, (int) ($query['per_page'] ?? 50)));
 
         $customer = $this->repo->findCustomerBySession($sessionId);
         if ($customer === null) {
@@ -75,6 +77,18 @@ final class CustomerController
             $this->repo->resolveVipStandingLevel($mainId, (float) ($salesTotals['last_month_sales'] ?? 0))
         );
 
+        $historyRows = $this->repo->getPurchaseHistory(
+            $sessionId,
+            $dateFrom,
+            $dateTo,
+            $perPage + 1,
+            ($page - 1) * $perPage
+        );
+        $hasMore = count($historyRows) > $perPage;
+        if ($hasMore) {
+            $historyRows = array_slice($historyRows, 0, $perPage);
+        }
+
         return [
             'customer_session' => $sessionId,
             'date_from' => $dateFrom,
@@ -97,7 +111,12 @@ final class CustomerController
                 'credit_limit' => (float) ($customer['lcredit'] ?? 0),
                 'agent_name' => (string) ($customer['agent_name'] ?? ''),
             ],
-            'items' => $this->repo->getPurchaseHistory($sessionId, $dateFrom, $dateTo),
+            'items' => $historyRows,
+            'pagination' => [
+                'page' => $page,
+                'per_page' => $perPage,
+                'has_more' => $hasMore,
+            ],
         ];
     }
 
