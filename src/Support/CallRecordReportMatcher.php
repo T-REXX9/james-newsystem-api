@@ -13,14 +13,16 @@ final class CallRecordReportMatcher
      */
     public static function attach(array $records, array $reports): array
     {
-        return array_map(static function (array $record) use ($reports): array {
+        $usedReports = [];
+        return array_map(static function (array $record) use ($reports, &$usedReports): array {
             $record['concern'] = null;
             $record['action'] = null;
             $record['report_body'] = null;
 
             $matches = array_values(array_filter(
                 $reports,
-                static fn(array $report): bool => self::matchesIdentity($record, $report)
+                static fn(array $report): bool => !isset($usedReports[self::reportKey($report)])
+                    && self::matchesIdentity($record, $report)
                     && self::isWithinWindow($record, $report)
             ));
             usort($matches, static function (array $left, array $right) use ($record): int {
@@ -32,6 +34,7 @@ final class CallRecordReportMatcher
 
             $report = $matches[0] ?? null;
             if ($report !== null) {
+                $usedReports[self::reportKey($report)] = true;
                 $record['concern'] = self::firstValue($report['concern'] ?? null, $report['report_body'] ?? null, 'Concern');
                 $record['action'] = self::firstValue($report['action'] ?? null, $report['report_body'] ?? null, 'Action');
                 $record['report_body'] = trim((string) ($report['report_body'] ?? '')) ?: null;
@@ -67,7 +70,7 @@ final class CallRecordReportMatcher
             return false;
         }
 
-        if (($report['legacy'] ?? false) === true) {
+        if ((int) ($report['legacy'] ?? 0) === 1) {
             return date('Y-m-d', $recordTime) === date('Y-m-d', $reportTime);
         }
 
@@ -104,9 +107,9 @@ final class CallRecordReportMatcher
             : null;
     }
 
-    /** @param array<string, mixed> $record */
-    private static function distanceFromRecord(array $record): int
+    /** @param array<string, mixed> $report */
+    private static function reportKey(array $report): string
     {
-        return self::timestamp($record);
+        return (string) ($report['report_key'] ?? spl_object_id((object) $report));
     }
 }

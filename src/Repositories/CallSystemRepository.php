@@ -404,8 +404,12 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
         $reportStmt = $this->db->pdo()->prepare(
             'SELECT CAST(crt.contact_id AS CHAR) AS contact_id,
                     crt.concern, crt.`action` AS action, crt.report_body, crt.created_at,
-                    NULL AS phone_number, 0 AS legacy
+                    COALESCE(NULLIF(p.lmobile, \'\'), NULLIF(p.lphone, \'\')) AS phone_number,
+                    0 AS legacy, CONCAT(\'thread:\', crt.id) AS report_key
              FROM call_report_threads crt
+             LEFT JOIN tblpatient p
+               ON CAST(p.lid AS CHAR) = CAST(crt.contact_id AS CHAR)
+               OR p.lsessionid = crt.contact_id
              WHERE crt.main_id = :report_main_id
                AND crt.created_at BETWEEN :report_from AND :report_to
              UNION ALL
@@ -413,9 +417,13 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
                     NULL AS concern, NULL AS action,
                     TRIM(REPLACE(cle.lnotes, \'[Sales Agent Report]\', \'\')) AS report_body,
                     CONCAT(cl.lcall_date, \' 00:00:00\') AS created_at,
-                    NULL AS phone_number, 1 AS legacy
+                    COALESCE(NULLIF(p.lmobile, \'\'), NULLIF(p.lphone, \'\')) AS phone_number,
+                    1 AS legacy, CONCAT(\'legacy:\', cle.lid) AS report_key
              FROM tblcall_logs_entry cle
              INNER JOIN tblcall_logs cl ON cl.lrefno = cle.lrefno
+             LEFT JOIN tblpatient p
+               ON CAST(p.lid AS CHAR) = CAST(cle.lcustomer_id AS CHAR)
+               OR p.lsessionid = cle.lcustomer_id
              WHERE cl.lmain_id = :legacy_main_id
                AND cl.lcall_date BETWEEN :legacy_report_from AND :legacy_report_to
                AND cle.lnotes LIKE \'[Sales Agent Report]%\''
