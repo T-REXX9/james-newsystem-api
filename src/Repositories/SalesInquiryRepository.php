@@ -321,6 +321,7 @@ SQL;
 
             $salesDate = $this->normalizeDate((string) ($payload['sales_date'] ?? date('Y-m-d')));
             $salesTime = $this->normalizeTime((string) ($payload['sales_time'] ?? date('H:i:s')));
+            $salesAttribution = $this->resolveCreatingUserSalesAttribution($userId, $payload);
 
             $insert = $pdo->prepare(
                 'INSERT INTO tblinquiry
@@ -337,8 +338,8 @@ SQL;
                 'luser' => (string) $userId,
                 'lrefno' => $inquiryRefno,
                 'lcompany' => $this->stringOrFallback($payload['customer_company'] ?? null, $customer['lcompany'] ?? ''),
-                'lsalesperson' => $this->stringOrFallback($payload['sales_person'] ?? null, $customer['sales_person_name'] ?? ''),
-                'lsales_person_id' => $this->stringOrFallback($payload['sales_person_id'] ?? null, (string) ($customer['lsales_person'] ?? '')),
+                'lsalesperson' => $salesAttribution['name'],
+                'lsales_person_id' => $salesAttribution['id'],
                 'lsales_address' => $this->stringOrFallback($payload['delivery_address'] ?? null, $customer['ldelivery_address'] ?? ''),
                 'lterms' => (string) ($payload['terms'] ?? ($customer['lterms'] ?? '')),
                 'lterms_condition' => (string) ($payload['terms'] ?? ($customer['lterms'] ?? '')),
@@ -1397,6 +1398,44 @@ SQL;
     {
         $candidate = trim((string) ($value ?? ''));
         return $candidate === '' ? $fallback : $candidate;
+    }
+
+    /**
+     * New documents belong to the creating account, not the customer's default agent.
+     *
+     * @param array<string, mixed> $payload
+     * @return array{id: string, name: string}
+     */
+    private function resolveCreatingUserSalesAttribution(int $userId, array $payload): array
+    {
+        $creatorId = $userId > 0 ? (string) $userId : '';
+        $creatorName = $creatorId !== '' ? $this->getAccountDisplayName((int) $creatorId) : '';
+        $explicitName = trim((string) ($payload['sales_person'] ?? ''));
+
+        return [
+            'id' => $creatorId,
+            // Prefer the account's stored name; fall back to an explicit matching payload name only
+            // when the account row has no usable display name.
+            'name' => $creatorName !== '' ? $creatorName : $explicitName,
+        ];
+    }
+
+    private function getAccountDisplayName(int $accountId): string
+    {
+        if ($accountId <= 0) {
+            return '';
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT TRIM(CONCAT(COALESCE(lfname, ''), ' ', COALESCE(llname, ''))) AS full_name
+             FROM tblaccount
+             WHERE lid = :id
+             LIMIT 1"
+        );
+        $stmt->bindValue('id', $accountId, \PDO::PARAM_INT);
+        $stmt->execute();
+
+        return trim((string) ($stmt->fetchColumn() ?: ''));
     }
 
     /**

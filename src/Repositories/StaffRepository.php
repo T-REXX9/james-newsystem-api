@@ -268,21 +268,18 @@ SQL;
             $params['group_id'] = $groupId;
         }
 
-        $effectiveGroupId = isset($params['group_id'])
-            ? (int) $params['group_id']
-            : (int) ($existing['role_id'] ?? 0);
-
         if (array_key_exists('access_rights', $data) && is_array($data['access_rights'])) {
-            if ($this->accountAccessRightsColumnExists()) {
-                $updates[] = 'laccess_rights = :access_rights';
-                $params['access_rights'] = json_encode(array_values($data['access_rights']));
-            } elseif (array_key_exists('group_id', $data)) {
-                $this->legacyPermissions->syncGroupPermissions(
-                    $mainId,
-                    $effectiveGroupId,
-                    array_values($data['access_rights'])
+            // Per-account overrides require tblaccount.laccess_rights. Never fall back to
+            // rewriting the shared group permission rows — that made staff saves look
+            // successful, then revert (or change every account in the group) on refresh.
+            if (!$this->accountAccessRightsColumnExists()) {
+                throw new HttpException(
+                    500,
+                    'Staff access rights cannot be saved because tblaccount.laccess_rights is missing. Apply api/migrations/004_add_tblaccount_access_rights.sql.'
                 );
             }
+            $updates[] = 'laccess_rights = :access_rights';
+            $params['access_rights'] = json_encode(array_values($data['access_rights']));
         }
 
         if (empty($updates)) {

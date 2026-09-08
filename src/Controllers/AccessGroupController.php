@@ -107,13 +107,27 @@ final class AccessGroupController
             throw new HttpException(422, 'id is required');
         }
 
+        $oldGroup = $this->repo->getGroupById($mainId, $groupId);
+        if ($oldGroup === null) {
+            throw new HttpException(404, 'Access group not found');
+        }
+
+        if ($this->repo->isCoreAccessGroupName((string) ($oldGroup['name'] ?? ''))) {
+            throw new HttpException(
+                409,
+                sprintf(
+                    '%s is a built-in system group and cannot be deleted. It is required for account roles and is recreated automatically.',
+                    (string) ($oldGroup['name'] ?? 'This group')
+                )
+            );
+        }
+
         if ($this->repo->countAssignedStaff($mainId, $groupId) > 0) {
             throw new HttpException(409, 'Cannot delete group while staff are assigned');
         }
 
         // Capture old permissions for audit logging before deletion
-        $oldGroup = $this->repo->getGroupById($mainId, $groupId);
-        $oldPermissions = $oldGroup ? ($oldGroup['access_rights'] ?? []) : [];
+        $oldPermissions = $oldGroup['access_rights'] ?? [];
 
         $deleted = $this->repo->deleteGroup($mainId, $groupId);
         if (!$deleted) {

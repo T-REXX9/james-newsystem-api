@@ -12,6 +12,14 @@ use App\Repositories\StaffRepository;
 $db = new Database(app_config());
 $pdo = $db->pdo();
 
+// Production schema must expose per-account rights storage. Without this column,
+// Access Control saves cannot persist and refresh restores group defaults.
+if (!$pdo->query("SHOW COLUMNS FROM tblaccount LIKE 'laccess_rights'")->fetch()) {
+    throw new RuntimeException(
+        'FAIL: tblaccount.laccess_rights is missing — apply api/migrations/004_add_tblaccount_access_rights.sql'
+    );
+}
+
 foreach (['tblaccount', 'tblusertype', 'tblweb_permission', 'tblweb_pagecateg'] as $table) {
     $ddl = $pdo->query("SHOW CREATE TABLE {$table}")->fetch(PDO::FETCH_NUM)[1];
     $pdo->exec(preg_replace('/^CREATE TABLE/', 'CREATE TEMPORARY TABLE', $ddl));

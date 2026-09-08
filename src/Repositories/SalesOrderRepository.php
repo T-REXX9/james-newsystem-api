@@ -404,6 +404,8 @@ SQL;
                 }
             }
 
+            $salesAttribution = $this->resolveCreatingUserSalesAttribution($userId, $payload);
+
             $insert = $pdo->prepare(
                 'INSERT INTO tbltransaction
                 (lsaleno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lbranch, lt_lfname, lt_llname, lcompany, lsales_address, lmy_refno, lyour_refno, lprice_group, lcredit_limit, lpromissory_note, lpo_no, lnote, lterms, lterm_condition, lsales_person, lsales_person_id, lsubmitstat, ltransaction_status, lcancel, linquiry_refno, linquiry_no, IsInquiry, lurgency, lurgency_date)
@@ -432,8 +434,8 @@ SQL;
                 'lnote' => (string) ($payload['remarks'] ?? ''),
                 'lterms' => $terms,
                 'lterm_condition' => $termCondition,
-                'lsales_person' => $this->stringOrFallback($payload['sales_person'] ?? null, (string) ($customer['sales_person_name'] ?? '')),
-                'lsales_person_id' => $this->stringOrFallback($payload['sales_person_id'] ?? null, (string) ($customer['lsales_person'] ?? '')),
+                'lsales_person' => $salesAttribution['name'],
+                'lsales_person_id' => $salesAttribution['id'],
                 'lsubmitstat' => $status,
                 'ltransaction_status' => $transactionStatus,
                 'lcancel' => $status === 'Cancelled' ? 1 : 0,
@@ -1626,6 +1628,42 @@ SQL;
     {
         $candidate = trim((string) ($value ?? ''));
         return $candidate === '' ? $fallback : $candidate;
+    }
+
+    /**
+     * New documents belong to the creating account, not the customer's default agent.
+     *
+     * @param array<string, mixed> $payload
+     * @return array{id: string, name: string}
+     */
+    private function resolveCreatingUserSalesAttribution(int $userId, array $payload): array
+    {
+        $creatorId = $userId > 0 ? (string) $userId : '';
+        $creatorName = $creatorId !== '' ? $this->getAccountDisplayName((int) $creatorId) : '';
+        $explicitName = trim((string) ($payload['sales_person'] ?? ''));
+
+        return [
+            'id' => $creatorId,
+            'name' => $creatorName !== '' ? $creatorName : $explicitName,
+        ];
+    }
+
+    private function getAccountDisplayName(int $accountId): string
+    {
+        if ($accountId <= 0) {
+            return '';
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT TRIM(CONCAT(COALESCE(lfname, ''), ' ', COALESCE(llname, ''))) AS full_name
+             FROM tblaccount
+             WHERE lid = :id
+             LIMIT 1"
+        );
+        $stmt->bindValue('id', $accountId, \PDO::PARAM_INT);
+        $stmt->execute();
+
+        return trim((string) ($stmt->fetchColumn() ?: ''));
     }
 
     private function isApprover(int $mainId, int $userId, string $module): bool

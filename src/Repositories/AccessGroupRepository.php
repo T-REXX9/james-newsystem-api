@@ -221,17 +221,41 @@ final class AccessGroupRepository
     {
         $groupId = (int) ($row['id'] ?? 0);
 
+        $name = $this->canonicalizeRoleName((string) ($row['name'] ?? ''));
+
         return [
             'id' => (string) $groupId,
             'main_id' => isset($row['main_id']) ? (int) $row['main_id'] : $mainId,
-            'name' => $this->canonicalizeRoleName((string) ($row['name'] ?? '')),
+            'name' => $name,
             'description' => trim((string) ($row['description'] ?? '')),
             'access_rights' => $this->isCompanyOwnerName((string) ($row['name'] ?? ''))
                 ? ['*']
                 : $this->legacyPermissions->getAccessRightsForGroup($mainId, $groupId),
             'created_at' => '',
             'assigned_staff_count' => $this->countAssignedStaff($mainId, $groupId),
+            // Core roles are recreated by ensureCoreAccessGroups() on every list.
+            'is_core' => $this->isCoreAccessGroupName($name),
         ];
+    }
+
+    public function isCoreAccessGroup(int $mainId, int $groupId): bool
+    {
+        $group = $this->getGroupById($mainId, $groupId);
+        if ($group === null) {
+            return false;
+        }
+
+        return $this->isCoreAccessGroupName((string) ($group['name'] ?? ''));
+    }
+
+    public function isCoreAccessGroupName(string $name): bool
+    {
+        $canonical = $this->canonicalizeRoleName($name);
+        return in_array($canonical, [
+            self::COMPANY_OWNER_NAME,
+            self::SALES_AGENT_NAME,
+            self::WAREHOUSE_PERSONNEL_NAME,
+        ], true);
     }
 
     /**
