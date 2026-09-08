@@ -21,7 +21,9 @@ final class CallReportRepository
         string $agentName,
         string $reportBody,
         string $outcome,
-        bool $notifyMaster = true
+        bool $notifyMaster = true,
+        ?string $concern = null,
+        ?string $action = null
     ): array {
         $contactId = trim((string) ($callLog['contact_id'] ?? ''));
         $callLogEntryId = (int) preg_replace('/^legacy_/', '', (string) ($callLog['id'] ?? '0'));
@@ -64,9 +66,9 @@ final class CallReportRepository
         $insert = $this->db->pdo()->prepare(
             'INSERT INTO call_report_threads
              (main_id, contact_id, call_log_entry_id, call_log_refno, agent_user_id, agent_name, outcome, report_body,
-              call_started_at, call_ended_at, duration_seconds, created_at)
+              concern, action, call_started_at, call_ended_at, duration_seconds, created_at)
              VALUES (:main_id, :contact_id, :call_log_entry_id, :call_log_refno, :agent_user_id, :agent_name, :outcome, :report_body,
-                     :call_started_at, :call_ended_at, :duration_seconds, :created_at)'
+                     :concern, :action, :call_started_at, :call_ended_at, :duration_seconds, :created_at)'
         );
         $insert->execute([
             'main_id' => $mainId,
@@ -77,6 +79,8 @@ final class CallReportRepository
             'agent_name' => $agentName !== '' ? $agentName : ('User ' . $agentUserId),
             'outcome' => $outcome !== '' ? $outcome : 'note',
             'report_body' => $reportBody,
+            'concern' => $concern,
+            'action' => $action,
             'call_started_at' => $callDetails['call_started_at'],
             'call_ended_at' => $callDetails['call_ended_at'],
             'duration_seconds' => $callDetails['duration_seconds'],

@@ -152,6 +152,23 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
             ];
         }
 
+        if ($source === 'hardware' && $direction === 'outbound') {
+            $placeholder = $this->findRecentSystemOutboundPlaceholder(
+                $agentId,
+                $deviceId,
+                $phoneNumber,
+                $callTimestamp
+            );
+            if ($placeholder !== null) {
+                return $this->mergeHardwareCallIntoPlaceholder(
+                    (int) $placeholder['lid'],
+                    $durationSeconds,
+                    $callTimestamp,
+                    $customerId
+                );
+            }
+        }
+
         $stmt = $this->db->pdo()->prepare(
             'INSERT INTO tblcall_logs_v2
                 (lagent_id, ldevice_id, lcustomer_id, lphone_number, ldirection,
@@ -315,6 +332,73 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
              WHERE ' . implode(' AND ', $conditions) . '
              ORDER BY c.lcall_timestamp DESC, c.lid DESC
              LIMIT 200'
+        );
+        $stmt->execute($params);
+
+        return $stmt->fetchAll();
+    }
+
+    public function listCallRecords(int $viewerId, int $mainId, bool $canViewTeam, array $filters = []): array
+    {
+        $conditions = [];
+        $params = [];
+
+        if ($canViewTeam) {
+            $conditions[] = '(a.lid = :main_id OR a.lmother_id = :main_id_2)';
+            $params['main_id'] = $mainId;
+            $params['main_id_2'] = $mainId;
+        } else {
+            $conditions[] = 'c.lagent_id = :viewer_id';
+            $params['viewer_id'] = $viewerId;
+        }
+
+        $month = (int) ($filters['month'] ?? (int) date('n'));
+        $year = (int) ($filters['year'] ?? (int) date('Y'));
+        if ($month < 1 || $month > 12) {
+            $month = (int) date('n');
+        }
+        if ($year < 2000 || $year > 2100) {
+            $year = (int) date('Y');
+        }
+
+        $fromDate = sprintf('%04d-%02d-01 00:00:00', $year, $month);
+        $toDateObj = new DateTimeImmutable(sprintf('%04d-%02d-01', $year, $month));
+        $toDate = $toDateObj->modify('last day of this month')->format('Y-m-d') . ' 23:59:59';
+
+        $conditions[] = 'c.lcall_timestamp >= :from_date';
+        $conditions[] = 'c.lcall_timestamp <= :to_date';
+        $params['from_date'] = $fromDate;
+        $params['to_date'] = $toDate;
+
+        if (($filters['direction'] ?? '') !== '') {
+            $conditions[] = 'c.ldirection = :direction';
+            $params['direction'] = (string) $filters['direction'];
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT c.lid, c.lagent_id, c.ldevice_id, c.lcustomer_id, c.lphone_number,
+                    c.ldirection, c.lduration_seconds, c.lcall_timestamp, c.lsource, c.lcreated_at,
+                    COALESCE(a.lfname, \'\') AS agent_first_name,
+                    COALESCE(a.llname, \'\') AS agent_last_name,
+                    COALESCE(p.lcompany, \'\') AS customer_company,
+                    COALESCE(p.lpatient_code, \'\') AS customer_code,
+                    crt.concern,
+                    crt.action,
+                    crt.report_body
+             FROM tblcall_logs_v2 c
+             INNER JOIN tblaccount a ON a.lid = c.lagent_id
+             LEFT JOIN tblpatient p ON p.lid = c.lcustomer_id
+             LEFT JOIN call_report_threads crt
+               ON crt.agent_user_id = c.lagent_id
+              AND (
+                crt.contact_id = CAST(c.lcustomer_id AS CHAR)
+                OR (c.lcustomer_id IS NULL AND crt.contact_id = c.lphone_number)
+              )
+              AND crt.created_at BETWEEN DATE_SUB(c.lcall_timestamp, INTERVAL 30 MINUTE)
+                                      AND DATE_ADD(c.lcall_timestamp, INTERVAL 30 MINUTE)
+             WHERE ' . implode(' AND ', $conditions) . '
+             ORDER BY c.lcall_timestamp DESC, c.lid DESC
+             LIMIT 1000'
         );
         $stmt->execute($params);
 
@@ -491,6 +575,82 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
         $row = $stmt->fetch();
 
         return is_array($row) ? $row : null;
+    }
+
+    /**
+     * Match a later Android call-log upload to the James row created when the
+     * phone reported the click-to-call request as dialed.
+     */
+    private function findRecentSystemOutboundPlaceholder(
+        int $agentId,
+        string $deviceId,
+        string $phoneNumber,
+        string $callTimestamp
+    ): ?array {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT lid, lagent_id, ldevice_id, lcustomer_id, lphone_number, ldirection,
+                    lduration_seconds, lcall_timestamp, lsource, lcreated_at
+             FROM tblcall_logs_v2
+             WHERE lagent_id = :agent_id
+               AND ldevice_id = :device_id
+               AND ldirection = \'outbound\'
+               AND lsource = \'manual\'
+               AND lduration_seconds = 0
+               AND lcall_timestamp BETWEEN DATE_SUB(:call_timestamp, INTERVAL 15 MINUTE)
+                                      AND DATE_ADD(:call_timestamp_end, INTERVAL 15 MINUTE)
+             ORDER BY lid DESC
+             LIMIT 20'
+        );
+        $stmt->execute([
+            'agent_id' => $agentId,
+            'device_id' => $deviceId,
+            'call_timestamp' => $callTimestamp,
+            'call_timestamp_end' => $callTimestamp,
+        ]);
+
+        while ($row = $stmt->fetch()) {
+            if (PhoneNumberNormalizer::equivalent($phoneNumber, (string) ($row['lphone_number'] ?? ''))) {
+                return $row;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function mergeHardwareCallIntoPlaceholder(
+        int $callLogId,
+        int $durationSeconds,
+        string $callTimestamp,
+        ?int $customerId
+    ): array {
+        $stmt = $this->db->pdo()->prepare(
+            'UPDATE tblcall_logs_v2
+             SET lduration_seconds = :duration_seconds,
+                 lcall_timestamp = :call_timestamp,
+                 lsource = \'hardware\',
+                 lcustomer_id = COALESCE(lcustomer_id, :customer_id)
+             WHERE lid = :id'
+        );
+        $stmt->execute([
+            'duration_seconds' => $durationSeconds,
+            'call_timestamp' => $callTimestamp,
+            'customer_id' => $customerId,
+            'id' => $callLogId,
+        ]);
+
+        $updated = $this->getCallLog($callLogId);
+        if ($updated === null) {
+            throw new RuntimeException('Unable to load merged call log');
+        }
+
+        return [
+            'created' => false,
+            'duplicate' => true,
+            'call' => $updated,
+        ];
     }
 
     private function findDuplicateCallLog(

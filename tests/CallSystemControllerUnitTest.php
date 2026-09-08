@@ -118,6 +118,16 @@ final class FakeCallSystemRepository implements CallSystemRepositoryInterface
         ]];
     }
 
+    public function listCallRecords(int $viewerId, int $mainId, bool $canViewTeam, array $filters = []): array
+    {
+        return [[
+            'lagent_id' => $viewerId,
+            'ldirection' => $filters['direction'] ?? '',
+            'month' => $filters['month'] ?? 0,
+            'year' => $filters['year'] ?? 0,
+        ]];
+    }
+
     public function getAutoReplySettings(?int $agentId = null): ?array
     {
         return $this->autoSettings;
@@ -313,6 +323,7 @@ $pending = $controller->listPendingDialRequests([], [], [
 ]);
 expect_true(count($pending['requests'] ?? []) === 1, 'registered phone receives its pending dial request');
 
+$repo->lastCall = null;
 $updated = $controller->updateDialRequestStatus(['requestId' => '5'], [], [
     '__auth_claims' => ['sub' => 42, 'main_userid' => 7],
     'device_id' => 'device-42',
@@ -320,6 +331,24 @@ $updated = $controller->updateDialRequestStatus(['requestId' => '5'], [], [
 ]);
 expect_true(($updated['updated'] ?? false) === true, 'dial request status update returns updated=true');
 expect_true(($updated['request']['lstatus'] ?? '') === 'dialed', 'dial request status changes to dialed');
+expect_true(($repo->lastCall['phone_number'] ?? '') === '09171234567', 'dialed request is stored as a system call log');
+expect_true(($repo->lastCall['direction'] ?? '') === 'outbound', 'system call log for a dialed request is outbound');
+expect_true(($repo->lastCall['source'] ?? '') === 'manual', 'system call log does not wait for phone hardware sync');
+expect_true(($repo->lastCall['duration_seconds'] ?? -1) === 0, 'system call log starts at zero duration until hardware sync');
+expect_true(($repo->lastCall['customer_id'] ?? 0) === 101, 'system call log keeps the matched customer');
+
+$controller->createDialRequest([], [], [
+    '__auth_claims' => ['sub' => 42, 'main_userid' => 7],
+    'phone_number' => '09179876543',
+]);
+$repo->lastCall = null;
+$failedUpdate = $controller->updateDialRequestStatus(['requestId' => '5'], [], [
+    '__auth_claims' => ['sub' => 42, 'main_userid' => 7],
+    'device_id' => 'device-42',
+    'status' => 'failed',
+]);
+expect_true(($failedUpdate['request']['lstatus'] ?? '') === 'failed', 'dial request status can be marked failed');
+expect_true($repo->lastCall === null, 'a failed dial request is not stored as a call log');
 
 expect_http_exception(
     static fn() => $controller->updateDialRequestStatus(['requestId' => '5'], [], [
@@ -419,6 +448,29 @@ $audit = $controller->listAutoReplyAudit([], [], [
     '__auth_claims' => ['sub' => 1, 'main_userid' => 1, 'user_type' => '1'],
 ]);
 expect_true(count($audit['replies'] ?? []) === 1, 'Master User can view missed-call auto-reply audit history');
+
+$callRecords = $controller->listCallRecords([], ['month' => '8', 'year' => '2026'], [
+    '__auth_claims' => ['sub' => 1, 'main_userid' => 1, 'user_type' => '1'],
+]);
+expect_true(count($callRecords['records'] ?? []) > 0, 'Master User call records returns rows');
+expect_true(($callRecords['records'][0]['month'] ?? 0) === 8, 'call records uses the month filter');
+expect_true(($callRecords['records'][0]['year'] ?? 0) === 2026, 'call records uses the year filter');
+
+expect_http_exception(
+    static fn() => $controller->listCallRecords([], ['direction' => 'connected'], [
+        '__auth_claims' => ['sub' => 1, 'main_userid' => 1, 'user_type' => '1'],
+    ]),
+    422,
+    'call records rejects an invalid direction'
+);
+
+expect_http_exception(
+    static fn() => $controller->listCallRecords([], ['month' => '8', 'year' => '2026'], [
+        '__auth_claims' => ['sub' => 2, 'main_userid' => 1, 'user_type' => '0'],
+    ]),
+    403,
+    'call records rejects non-Master-User access'
+);
 
 echo "Results: {$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);

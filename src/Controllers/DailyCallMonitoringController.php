@@ -327,7 +327,10 @@ final class DailyCallMonitoringController
                     $authenticatedUserId,
                     $agentName,
                     $reportBody,
-                    (string) ($body['outcome'] ?? $result['outcome'] ?? 'note')
+                    (string) ($body['outcome'] ?? $result['outcome'] ?? 'note'),
+                    notifyMaster: true,
+                    concern: trim((string) ($body['concern'] ?? '')) ?: null,
+                    action: trim((string) ($body['action'] ?? '')) ?: null,
                 );
                 $result['report_thread_id'] = $thread['id'] ?? null;
             } catch (\Throwable $threadError) {

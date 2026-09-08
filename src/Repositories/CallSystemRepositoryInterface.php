@@ -58,6 +58,15 @@ interface CallSystemRepositoryInterface
     public function listCallLogs(int $viewerId, int $mainId, bool $canViewTeam, array $filters = []): array;
 
     /**
+     * List phone records for the Master User Call Records page, joined
+     * with Application call report Concern and Action when a report exists.
+     *
+     * @param array<string, mixed> $filters
+     * @return array<int, array<string, mixed>>
+     */
+    public function listCallRecords(int $viewerId, int $mainId, bool $canViewTeam, array $filters = []): array;
+
+    /**
      * @return array<string, mixed>|null
      */
     public function getAutoReplySettings(?int $agentId = null): ?array;

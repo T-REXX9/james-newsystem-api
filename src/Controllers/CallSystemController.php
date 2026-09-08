@@ -190,13 +190,19 @@ final class CallSystemController
         }
 
         try {
-            return [
-                'updated' => true,
-                'request' => $this->repo->updateDialRequestStatus($agentId, $requestId, $status),
-            ];
+            $request = $this->repo->updateDialRequestStatus($agentId, $requestId, $status);
         } catch (RuntimeException $e) {
             throw new HttpException(404, 'Pending dial request was not found for this staff account');
         }
+
+        if ($status === 'dialed') {
+            $this->recordDialedCall($agentId, $body, $request);
+        }
+
+        return [
+            'updated' => true,
+            'request' => $request,
+        ];
     }
 
     /**
@@ -322,6 +328,41 @@ final class CallSystemController
     }
 
     /**
+     * List phone records with joined Application call report Concern and Action
+     * for the Master User Call Records page.
+     *
+     * @param array<string, mixed> $query
+     * @param array<string, mixed> $body
+     * @return array<string, mixed>
+     */
+    public function listCallRecords(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+
+        $agentId = $this->authenticatedAgentId($body);
+        $mainId = $this->mainUserId($body);
+        $canViewTeam = $this->canViewTeam($body);
+
+        $direction = strtolower(trim((string) ($query['direction'] ?? '')));
+        if ($direction !== '' && !in_array($direction, ['inbound', 'outbound', 'missed'], true)) {
+            throw new HttpException(422, 'direction must be inbound, outbound, or missed');
+        }
+
+        $month = (int) ($query['month'] ?? (int) date('n'));
+        $year = (int) ($query['year'] ?? (int) date('Y'));
+
+        $filters = [
+            'direction' => $direction,
+            'month' => $month,
+            'year' => $year,
+        ];
+
+        return [
+            'records' => $this->repo->listCallRecords($agentId, $mainId, $canViewTeam, $filters),
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $body
      */
     private function authenticatedAgentId(array $body): int
@@ -394,6 +435,33 @@ final class CallSystemController
         }
 
         return $this->repo->processMissedCallAutoReply($agentId, $phoneNumber, $templateId, $cooldownMinutes);
+    }
+
+    /**
+     * Persist the outbound call in James as soon as the phone reports it was dialed.
+     * Hardware sync later fills in duration; this row exists even if Android call-log
+     * permission is missing.
+     *
+     * @param array<string, mixed> $body
+     * @param array<string, mixed> $request
+     */
+    private function recordDialedCall(int $agentId, array $body, array $request): void
+    {
+        $phoneNumber = trim((string) ($request['lphone_number'] ?? ''));
+        if ($phoneNumber === '') {
+            return;
+        }
+
+        $customerId = (int) ($request['lcustomer_id'] ?? 0);
+
+        $this->repo->createCallLog($agentId, $this->deviceId($body), [
+            'customer_id' => $customerId > 0 ? $customerId : null,
+            'phone_number' => $phoneNumber,
+            'direction' => 'outbound',
+            'duration_seconds' => 0,
+            'call_timestamp' => (new DateTimeImmutable('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s'),
+            'source' => 'manual',
+        ]);
     }
 
     /**

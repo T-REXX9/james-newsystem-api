@@ -519,6 +519,7 @@ function app_router(): Router
     $router->patch('/api/v1/call-system/dial-requests/{requestId}/status', $requireBearerAuthWithClaims([$callSystemController, 'updateDialRequestStatus']));
     $router->get('/api/v1/call-system/devices', $requireBearerAuthWithClaims([$callSystemController, 'listDevices']));
     $router->get('/api/v1/call-system/call-logs', $requireBearerAuthWithClaims([$callSystemController, 'listCallLogs']));
+    $router->get('/api/v1/call-system/call-records', $requireBearerAuthWithClaims([$callSystemController, 'listCallRecords']));
     $router->get('/api/v1/call-system/auto-reply-settings', $requireBearerAuthWithClaims([$callSystemController, 'getAutoReplySettings']));
     $router->post('/api/v1/call-system/auto-reply-settings', $requireBearerAuthWithClaims([$callSystemController, 'saveAutoReplySettings']));
     $router->get('/api/v1/call-system/auto-reply-audit', $requireBearerAuthWithClaims([$callSystemController, 'listAutoReplyAudit']));
