@@ -244,6 +244,9 @@ SELECT
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by_name,
     CAST(COALESCE(pr_totals.ordered_qty, 0) AS DECIMAL(15,2)) AS ordered_qty,
     CAST(COALESCE(po_cycle.received_qty, 0) AS DECIMAL(15,2)) AS received_qty,
+    COALESCE(po_cycle.rr_refno, '') AS rr_refno,
+    COALESCE(po_cycle.rr_numbers, '') AS rr_numbers,
+    COALESCE(po_cycle.rr_dates, '') AS rr_dates,
     CASE
         WHEN COALESCE(po_cycle.po_count, 0) = 0 THEN 'Pending'
         WHEN COALESCE(po_cycle.received_qty, 0) <= 0 THEN 'PO Created'
@@ -265,9 +268,26 @@ LEFT JOIN (
     SELECT
         po.lpr_refno,
         COUNT(DISTINCT po.lrefno) AS po_count,
+        GROUP_CONCAT(DISTINCT rr_cycle.rr_refno ORDER BY po.lid SEPARATOR ',') AS rr_refno,
+        GROUP_CONCAT(DISTINCT rr_cycle.rr_numbers ORDER BY po.lid SEPARATOR ', ') AS rr_numbers,
+        GROUP_CONCAT(DISTINCT rr_cycle.rr_dates ORDER BY po.lid SEPARATOR ',') AS rr_dates,
         SUM(COALESCE(poi.lreceiving_qty, 0)) AS received_qty
     FROM tblpo_list po
     LEFT JOIN tblpo_itemlist poi ON poi.lrefno = po.lrefno
+    LEFT JOIN (
+        SELECT
+            lmain_id,
+            lpo_refno,
+            GROUP_CONCAT(DISTINCT lrefno ORDER BY lid SEPARATOR ',') AS rr_refno,
+            GROUP_CONCAT(DISTINCT lpurchaseno ORDER BY lid SEPARATOR ', ') AS rr_numbers,
+            GROUP_CONCAT(DISTINCT ldate ORDER BY lid SEPARATOR ',') AS rr_dates
+        FROM tblpurchase_order
+        WHERE COALESCE(ldeleted, 0) = 0
+          AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted")
+        GROUP BY lmain_id, lpo_refno
+    ) rr_cycle
+        ON rr_cycle.lmain_id = po.lmain_id
+       AND rr_cycle.lpo_refno = po.lrefno
     WHERE COALESCE(po.ldeleted, 0) = 0
     GROUP BY po.lpr_refno
 ) po_cycle
