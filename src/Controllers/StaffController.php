@@ -99,6 +99,10 @@ final class StaffController
             throw new HttpException(422, 'No valid fields to update');
         }
 
+        if (array_key_exists('role', $data) && !array_key_exists('group_id', $data)) {
+            throw new HttpException(422, 'group_id is required when assigning a staff role');
+        }
+
         $updated = $this->repo->updateStaff($mainId, $staffId, $data);
         if ($updated === null) {
             throw new HttpException(404, 'Staff member not found');
@@ -132,6 +136,11 @@ final class StaffController
         $role = trim((string) ($body['role'] ?? ''));
         if ($role === '') {
             throw new HttpException(422, 'role is required');
+        }
+
+        $groupId = (int) ($body['group_id'] ?? 0);
+        if ($groupId <= 0) {
+            throw new HttpException(422, 'group_id is required and must reference an existing access group');
         }
 
         $created = $this->repo->createStaff($mainId, [
