@@ -50,8 +50,9 @@ final class StaffRepository
 
         $whereSql = implode(' AND ', $where);
         $accountAccessRightsSelect = $this->accountAccessRightsColumnExists()
-            ? "COALESCE(a.laccess_rights, '[]') AS laccess_rights"
-            : "'[]' AS laccess_rights";
+            ? "a.laccess_rights AS laccess_rights,
+               CASE WHEN a.laccess_rights IS NULL THEN 0 ELSE 1 END AS has_stored_access_rights"
+            : "'[]' AS laccess_rights, 0 AS has_stored_access_rights";
 
         $sql = <<<SQL
 SELECT
@@ -121,8 +122,9 @@ SQL;
         $this->consolidateSalesPersonIntoSalesAgent($mainId);
 
         $accountAccessRightsSelect = $this->accountAccessRightsColumnExists()
-            ? "COALESCE(a.laccess_rights, '[]') AS laccess_rights"
-            : "'[]' AS laccess_rights";
+            ? "a.laccess_rights AS laccess_rights,
+               CASE WHEN a.laccess_rights IS NULL THEN 0 ELSE 1 END AS has_stored_access_rights"
+            : "'[]' AS laccess_rights, 0 AS has_stored_access_rights";
 
         $sql = <<<SQL
 SELECT
@@ -573,10 +575,13 @@ SQL;
             ? $this->legacyPermissions->getAccessRightsForGroup($mainId, $groupId)
             : ['home'];
         $storedRights = $this->parseAccessRights($row['laccess_rights'] ?? []);
-        $hasStoredRights = $storedRights !== [];
+        // An empty JSON array is an intentional override (all access revoked),
+        // while NULL means the account has never had individual rights saved.
+        $hasStoredRights = (int) ($row['has_stored_access_rights'] ?? 0) === 1;
 
         $row['access_rights'] = $hasStoredRights ? $storedRights : $groupRights;
         $row['access_override'] = $hasStoredRights && $this->rightsDiffer($storedRights, $groupRights);
+        unset($row['has_stored_access_rights']);
 
         return $row;
     }
@@ -598,16 +603,8 @@ SQL;
             return $this->hasAccountAccessRightsColumn;
         }
 
-        $stmt = $this->db->pdo()->prepare(
-            "SELECT COUNT(*)
-             FROM INFORMATION_SCHEMA.COLUMNS
-             WHERE TABLE_SCHEMA = DATABASE()
-               AND TABLE_NAME = 'tblaccount'
-               AND COLUMN_NAME = 'laccess_rights'"
-        );
-        $stmt->execute();
-
-        $this->hasAccountAccessRightsColumn = (int) $stmt->fetchColumn() > 0;
+        $stmt = $this->db->pdo()->query("SHOW COLUMNS FROM tblaccount LIKE 'laccess_rights'");
+        $this->hasAccountAccessRightsColumn = (bool) $stmt->fetch(PDO::FETCH_ASSOC);
         return $this->hasAccountAccessRightsColumn;
     }
 
