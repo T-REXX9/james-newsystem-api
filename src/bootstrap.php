@@ -61,7 +61,9 @@ use App\Controllers\PromotionController;
 use App\Controllers\LoyaltyDiscountController;
 use App\Controllers\ProfitProtectionController;
 use App\Controllers\VipTierSettingsController;
+use App\Controllers\ServerMaintenanceController;
 use App\Controllers\RolePermissionController;
+use App\Services\DatabaseBackupService;
 use App\Http\Router;
 use App\Middleware\PermissionMiddleware;
 use App\Security\TokenService;
@@ -215,7 +217,9 @@ require __DIR__ . '/Controllers/PromotionController.php';
 require __DIR__ . '/Controllers/LoyaltyDiscountController.php';
 require __DIR__ . '/Controllers/ProfitProtectionController.php';
 require __DIR__ . '/Controllers/VipTierSettingsController.php';
+require __DIR__ . '/Controllers/ServerMaintenanceController.php';
 require __DIR__ . '/Controllers/RolePermissionController.php';
+require __DIR__ . '/Services/DatabaseBackupService.php';
 
 Env::load(dirname(__DIR__) . '/.env');
 date_default_timezone_set((string) Env::get('APP_TIMEZONE', 'UTC'));
@@ -363,6 +367,11 @@ function app_router(): Router
     $loyaltyDiscountController = new LoyaltyDiscountController(new App\Repositories\LoyaltyDiscountRepository($db));
     $profitProtectionController = new ProfitProtectionController(new App\Repositories\ProfitProtectionRepository($db));
     $vipTierSettingsController = new VipTierSettingsController(new App\Repositories\VipTierSettingsRepository($db));
+    $serverMaintenanceBackupDir = dirname(__DIR__) . '/storage/database-backups';
+    $serverMaintenanceController = new ServerMaintenanceController(
+        new DatabaseBackupService($config),
+        $serverMaintenanceBackupDir
+    );
 
     $requireBearerAuth = static function (callable $handler) use ($tokenService): callable {
         return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService) {
@@ -879,6 +888,9 @@ function app_router(): Router
     // VIP Tier Settings
     $router->get('/api/v1/vip-tier-settings', $requireBearerAuthWithClaims([$vipTierSettingsController, 'index']));
     $router->patch('/api/v1/vip-tier-settings', $requireBearerAuthWithClaims([$vipTierSettingsController, 'update']));
+    // Server Maintenance (Master User only)
+    $router->get('/api/v1/server-maintenance/status', $requireBearerAuthWithClaims([$serverMaintenanceController, 'status']));
+    $router->get('/api/v1/server-maintenance/database-backup', $requireBearerAuthWithClaims([$serverMaintenanceController, 'downloadDatabaseBackup']));
     $router->post('/api/v1/profit-protection/validate-items', [$profitProtectionController, 'validateItems']);
     $router->post('/api/v1/profit-protection/overrides', [$profitProtectionController, 'createOverride']);
     $router->get('/api/v1/profit-protection/overrides', [$profitProtectionController, 'listOverrides']);
