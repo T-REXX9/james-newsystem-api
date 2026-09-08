@@ -85,6 +85,7 @@ require __DIR__ . '/Support/PurchasedItemMatcher.php';
 require __DIR__ . '/Support/ReturnToSupplierStockPolicy.php';
 require __DIR__ . '/Support/AuditTrailWriter.php';
 require __DIR__ . '/Support/VipDocumentDiscount.php';
+require __DIR__ . '/Support/VipStanding.php';
 require __DIR__ . '/Config.php';
 require __DIR__ . '/Database.php';
 require __DIR__ . '/Http/Response.php';

@@ -69,11 +69,11 @@ final class CustomerController
             0.0
         );
 
-        $priceGroup = (string) ($customer['price_group'] ?? '');
-        $customerSince = (string) ($customer['customer_since'] ?? '');
-        $vipStatus = $this->repo->resolvePlatinumEligibility($priceGroup, $customerSince)
-            ? 'PLATINUM'
-            : strtoupper($this->repo->getNormalizedPriceGroup($priceGroup));
+        $mainId = (int) ($customer['lmain_id'] ?? 0);
+        $salesTotals = $this->repo->getCustomerSalesTotals($sessionId);
+        $vipStatus = strtoupper(
+            $this->repo->resolveVipStandingLevel($mainId, (float) ($salesTotals['last_month_sales'] ?? 0))
+        );
 
         return [
             'customer_session' => $sessionId,

@@ -5,6 +5,7 @@ declare(strict_types=1);
 require __DIR__ . '/../src/Database.php';
 require __DIR__ . '/../src/Support/CustomerLedgerCalculator.php';
 require __DIR__ . '/../src/Support/PurchasedItemMatcher.php';
+require __DIR__ . '/../src/Support/VipStanding.php';
 require __DIR__ . '/../src/Repositories/CustomerRepository.php';
 
 use App\Repositories\CustomerRepository;
@@ -41,6 +42,25 @@ platinumAssert(
 platinumAssert(
     $repo->resolvePlatinumEligibility('vip2', '') === false,
     'Missing Customer Since is not platinum-eligible',
+    $passed,
+    $failed
+);
+
+platinumAssert(
+    $repo->resolveVipStandingLevel(0, 0.0) === 'regular',
+    'Zero last-month spend is regular regardless of stored price group',
+    $passed,
+    $failed
+);
+platinumAssert(
+    $repo->resolveVipStandingLevel(0, 10000.0) === 'silver',
+    'Default silver threshold uses last-month spend',
+    $passed,
+    $failed
+);
+platinumAssert(
+    $repo->resolveVipStandingLevel(0, 30000.0) === 'gold',
+    'Default gold threshold uses last-month spend',
     $passed,
     $failed
 );

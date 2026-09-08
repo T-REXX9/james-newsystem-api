@@ -7,6 +7,7 @@ namespace App\Repositories;
 use App\Database;
 use App\Support\CustomerLedgerCalculator;
 use App\Support\PurchasedItemMatcher;
+use App\Support\VipStanding;
 use DateTimeImmutable;
 use PDO;
 use RuntimeException;
@@ -605,14 +606,13 @@ SQL;
         $termsStmt->execute(['customer_id' => $sessionId]);
         $terms = (string) ($termsStmt->fetchColumn() ?: ($customer['lterms'] ?? ''));
 
-        // VIP status & price code
+        // VIP status is spend-based (last month); price code remains the stored price group.
         $rawPriceGroup = (string) ($customer['lprice_group'] ?? '');
-        $normalizedPriceGroup = $this->getNormalizedPriceGroup($rawPriceGroup);
         $customerSince = CustomerLedgerCalculator::normalizeDate((string) ($customer['lsince'] ?? ''));
-        $platinum = $this->resolvePlatinumEligibility($rawPriceGroup, (string) ($customer['lsince'] ?? ''));
-        $vipStatus = $platinum ? 'platinum' : $normalizedPriceGroup;
+        $mainId = (int) ($customer['lmain_id'] ?? 0);
+        $vipStatus = $this->resolveVipStandingLevel($mainId, $lastMonthSales);
         $discountCode = $this->recordQualifiedDiscountCode(
-            (int) ($customer['lmain_id'] ?? 0),
+            $mainId,
             $sessionId,
             (string) ($customer['discount_code'] ?? ''),
             $rawPriceGroup,
@@ -647,8 +647,50 @@ SQL;
             'old_name' => $oldName !== '' ? $oldName : null,
             'price_code' => $rawPriceGroup !== '' ? $rawPriceGroup : null,
             'discount_code' => $discountCode,
-            'vip_status' => $vipStatus !== 'unknown' ? $vipStatus : null,
+            'vip_status' => $vipStatus,
             'aging' => $aging,
+        ];
+    }
+
+    /**
+     * @return 'regular'|'silver'|'gold'
+     */
+    public function resolveVipStandingLevel(int $mainId, float $lastMonthSpend): string
+    {
+        $config = $this->vipTierConfig($mainId);
+
+        return VipStanding::resolveLevel(
+            $lastMonthSpend,
+            (float) $config['one_time_discount_threshold'],
+            (float) $config['unlimited_discount_threshold']
+        );
+    }
+
+    /**
+     * @return array{dealership_sales:float,ishinomoto_sales:float,monthly_sales:float,last_month_sales:float}
+     */
+    public function getCustomerSalesTotals(string $sessionId): array
+    {
+        return $this->loadCustomerSalesTotals($sessionId);
+    }
+
+    /**
+     * @return array{
+     *   one_time_discount_threshold: int|float,
+     *   unlimited_discount_threshold: int|float,
+     *   discount_percentage?: int|float
+     * }
+     */
+    private function vipTierConfig(int $mainId): array
+    {
+        if ($mainId > 0) {
+            return (new VipTierSettingsRepository($this->db))->getConfig($mainId);
+        }
+
+        return [
+            'one_time_discount_threshold' => 10000,
+            'unlimited_discount_threshold' => 30000,
+            'discount_percentage' => 10,
         ];
     }
 
@@ -664,19 +706,12 @@ SQL;
             return $this->persistDiscountCode($mainId, $sessionId, $currentDiscountCode, 'vip platinum');
         }
 
-        $config = $mainId > 0
-            ? (new VipTierSettingsRepository($this->db))->getConfig($mainId)
-            : [
-                'one_time_discount_threshold' => 10000,
-                'unlimited_discount_threshold' => 30000,
-            ];
-
-        $qualified = null;
-        if ($benefitMonthBasisSales >= (float) $config['unlimited_discount_threshold']) {
-            $qualified = 'vip gold';
-        } elseif ($benefitMonthBasisSales >= (float) $config['one_time_discount_threshold']) {
-            $qualified = 'vip silver';
-        }
+        $level = $this->resolveVipStandingLevel($mainId, $benefitMonthBasisSales);
+        $qualified = match ($level) {
+            'gold' => 'vip gold',
+            'silver' => 'vip silver',
+            default => null,
+        };
 
         if ($qualified !== null) {
             return $this->persistDiscountCode($mainId, $sessionId, $currentDiscountCode, $qualified);
