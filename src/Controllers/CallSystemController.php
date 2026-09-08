@@ -24,7 +24,8 @@ final class CallSystemController
 
     /**
      * Register the authenticated staff member's Android calling device.
-     * The device cannot silently move between staff accounts.
+     * If the device is already bound to another staff account, registration
+     * rebinds it to the newly authenticated account.
      *
      * @param array<string, mixed> $body
      * @return array<string, mixed>
@@ -34,23 +35,11 @@ final class CallSystemController
         $agentId = $this->authenticatedAgentId($body);
         $deviceId = $this->deviceId($body);
         $status = $this->status($body, 'app_open');
-        $existing = $this->repo->findDevice($deviceId);
 
-        if ($existing !== null && (int) ($existing['lagent_id'] ?? 0) !== $agentId) {
-            throw new HttpException(409, 'This phone is already assigned to another staff account');
-        }
-
-        try {
-            return [
-                'registered' => true,
-                'device' => $this->repo->upsertDevice($agentId, $deviceId, $status),
-            ];
-        } catch (RuntimeException $e) {
-            if (str_contains(strtolower($e->getMessage()), 'another staff')) {
-                throw new HttpException(409, $e->getMessage());
-            }
-            throw $e;
-        }
+        return [
+            'registered' => true,
+            'device' => $this->repo->upsertDevice($agentId, $deviceId, $status),
+        ];
     }
 
     /**

@@ -33,9 +33,6 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
     public function upsertDevice(int $agentId, string $deviceId, string $status): array
     {
         $existing = $this->findDevice($deviceId);
-        if ($existing !== null && (int) ($existing['lagent_id'] ?? 0) !== $agentId) {
-            throw new RuntimeException('Device is already assigned to another staff account');
-        }
 
         if ($existing === null) {
             $stmt = $this->db->pdo()->prepare(
@@ -50,13 +47,13 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
         } else {
             $stmt = $this->db->pdo()->prepare(
                 'UPDATE tblcall_devices
-                 SET llast_seen = CURRENT_TIMESTAMP, lstatus = :status
-                 WHERE lid = :id AND lagent_id = :agent_id'
+                 SET lagent_id = :agent_id, llast_seen = CURRENT_TIMESTAMP, lstatus = :status
+                 WHERE lid = :id'
             );
             $stmt->execute([
+                'agent_id' => $agentId,
                 'status' => $status,
                 'id' => (int) $existing['lid'],
-                'agent_id' => $agentId,
             ]);
         }
 

@@ -200,14 +200,41 @@ $heartbeat = $controller->heartbeat([], [], [
 expect_true(($heartbeat['accepted'] ?? false) === true, 'heartbeat returns accepted=true');
 expect_true(($heartbeat['device']['lstatus'] ?? '') === 'background_active', 'heartbeat defaults to background_active');
 
+$reassigned = $controller->registerDevice([], [], [
+    '__auth_claims' => ['sub' => 99],
+    'device_id' => 'device-42',
+]);
+expect_true(($reassigned['registered'] ?? false) === true, 'registration rebinds a device already assigned to another staff account');
+expect_true(($reassigned['device']['lagent_id'] ?? 0) === 99, 'registration stores the newly authenticated staff account as the device owner');
+
+$newOwnerHeartbeat = $controller->heartbeat([], [], [
+    '__auth_claims' => ['sub' => 99],
+    'device_id' => 'device-42',
+]);
+expect_true(($newOwnerHeartbeat['accepted'] ?? false) === true, 'heartbeat accepts the staff account that now owns the device');
+
 expect_http_exception(
-    static fn() => $controller->registerDevice([], [], [
-        '__auth_claims' => ['sub' => 99],
+    static fn() => $controller->heartbeat([], [], [
+        '__auth_claims' => ['sub' => 42],
         'device_id' => 'device-42',
     ]),
     409,
-    'registration rejects a device already assigned to another staff account'
+    'heartbeat rejects the previous staff account after the device is rebound'
 );
+
+$sameAccount = $controller->registerDevice([], [], [
+    '__auth_claims' => ['sub' => 99],
+    'device_id' => 'device-42',
+    'status' => 'background_active',
+]);
+expect_true(($sameAccount['registered'] ?? false) === true, 'registration still succeeds for the staff account that already owns the device');
+expect_true(($sameAccount['device']['lagent_id'] ?? 0) === 99, 'same-account registration keeps the current owner');
+
+$controller->registerDevice([], [], [
+    '__auth_claims' => ['sub' => 42],
+    'device_id' => 'device-42',
+    'status' => 'background_active',
+]);
 
 expect_http_exception(
     static fn() => $controller->heartbeat([], [], [
