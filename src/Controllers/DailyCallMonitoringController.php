@@ -141,6 +141,12 @@ final class DailyCallMonitoringController
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
+        if ((string) ($claims['user_type'] ?? '') !== '1') {
+            $approver = $this->repo->isApprover($mainId, $authenticatedUserId);
+            if (!$approver) {
+                throw new HttpException(403, 'Only approver accounts can approve or reject incident returns');
+            }
+        }
 
         $required = ['id', 'contact_id', 'report_date', 'report_time', 'incident_date', 'incident_time', 'issue_type', 'description', 'reported_by', 'done_by'];
         foreach ($required as $field) {
@@ -186,10 +192,6 @@ final class DailyCallMonitoringController
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
-        if ((string) ($claims['user_type'] ?? '') !== '1') {
-            throw new HttpException(403, 'Only the Master User can approve or reject incident returns');
-        }
-
         $reportId = trim((string) ($params['reportId'] ?? ''));
         $decision = strtolower(trim((string) ($body['decision'] ?? '')));
         $disposition = isset($body['disposition']) ? strtolower(trim((string) $body['disposition'])) : null;

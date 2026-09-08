@@ -391,6 +391,52 @@ function app_router(): Router
         };
     };
 
+    // Approval is a separate capability from module access. Every existing
+    // approval/post action must derive the actor from the verified token and
+    // match the existing Maintenance → Approver list.
+    $requireApproverAction = static function (callable $handler, array $approverModules, bool $approvalOnly = false) use ($requireBearerAuthWithClaims, $db): callable {
+        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $approverModules, $db, $approvalOnly, $requireBearerAuthWithClaims): array {
+            $action = strtolower(trim((string) ($params['action'] ?? $body['action'] ?? $body['status'] ?? $body['decision'] ?? '')));
+            $approvalActions = ['approve', 'approved', 'approverecord', 'post', 'finalize', 'review', 'reject', 'rejected', 'disapprove', 'disapproved', 'disapproverecord', 'submitted'];
+            if (!$approvalOnly && !in_array($action, $approvalActions, true)) {
+                return $handler($params, $query, $body);
+            }
+
+            return $requireBearerAuthWithClaims(static function (array $authParams = [], array $authQuery = [], array $authBody = []) use ($handler, $approverModules, $db): array {
+                $claims = is_array($authBody['__auth_claims'] ?? null) ? $authBody['__auth_claims'] : [];
+                $userId = (int) ($claims['sub'] ?? 0);
+                $mainId = (int) ($claims['main_userid'] ?? $authBody['main_id'] ?? 0);
+                if ($userId <= 0 || $mainId <= 0) {
+                    throw new HttpException(403, 'An authenticated approver is required');
+                }
+                if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+                    throw new HttpException(403, 'Invalid account scope');
+                }
+
+                // Never trust actor or tenant fields supplied by the client.
+                // Keep legacy field names populated for existing controllers,
+                // but make every one of them come from the verified claims.
+                $authBody['main_id'] = $mainId;
+                $authBody['user_id'] = $userId;
+                $authBody['staff_id'] = (string) $userId;
+                $authBody['reviewed_by'] = (string) $userId;
+                $authBody['approved_by'] = (string) $userId;
+
+                $modules = array_values(array_unique(array_map('strval', $approverModules)));
+                $placeholders = implode(',', array_fill(0, count($modules), '?'));
+                $statement = $db->pdo()->prepare(
+                    "SELECT 1 FROM tblapprover WHERE lmain_id = ? AND lstaff_id = ? AND UPPER(COALESCE(ltrans_type, '')) IN ({$placeholders}) LIMIT 1"
+                );
+                $statement->execute(array_merge([$mainId, $userId], array_map('strtoupper', $modules)));
+                if (!$statement->fetchColumn()) {
+                    throw new HttpException(403, 'Only approver accounts can approve records');
+                }
+
+                return $handler($authParams, $authQuery, $authBody);
+            })($params, $query, $body);
+        };
+    };
+
     $customerWorkflowController = new App\Controllers\CustomerWorkflowController($db, $authRepo);
     $router = new Router();
     $router->get('/api/v1/health', [$healthController, 'index']);
@@ -402,7 +448,7 @@ function app_router(): Router
     $router->get('/api/v1/customer-workflows/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'allRequests']));
     $router->get('/api/v1/customer-workflows/{contactId}/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'requests']));
     $router->post('/api/v1/customer-workflows/{contactId}/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'createRequest']));
-    $router->post('/api/v1/customer-workflows/{contactId}/requests/{requestId}/review', $requireBearerAuthWithClaims([$customerWorkflowController, 'reviewRequest']));
+    $router->post('/api/v1/customer-workflows/{contactId}/requests/{requestId}/review', $requireApproverAction([$customerWorkflowController, 'reviewRequest'], ['Customer Request', 'Customer', 'CR']));
     $router->get('/api/v1/customers/{sessionId}', [$customerController, 'show']);
     $router->get('/api/v1/customers/{sessionId}/purchase-history', [$customerController, 'purchaseHistory']);
     $router->get('/api/v1/customers/{sessionId}/purchased-items', [$customerController, 'purchasedItems']);
@@ -415,7 +461,7 @@ function app_router(): Router
     $router->post('/api/v1/adjustment-entries', [$adjustmentEntryController, 'create']);
     $router->patch('/api/v1/adjustment-entries/{refno}', [$adjustmentEntryController, 'update']);
     $router->delete('/api/v1/adjustment-entries/{refno}', [$adjustmentEntryController, 'delete']);
-    $router->post('/api/v1/adjustment-entries/{refno}/actions/{action}', [$adjustmentEntryController, 'action']);
+    $router->post('/api/v1/adjustment-entries/{refno}/actions/{action}', $requireApproverAction([$adjustmentEntryController, 'action'], ['Adjustment Entry', 'Adjustment']));
     $router->get('/api/v1/activity-logs', [$activityLogController, 'list']);
     $router->get('/api/v1/activity-logs/users', [$activityLogController, 'users']);
     $router->get('/api/v1/customer-database', [$customerDatabaseController, 'list']);
@@ -447,7 +493,7 @@ function app_router(): Router
     $router->get('/api/v1/collections/{collectionRefno}/approver-logs', [$collectionController, 'approverLogs']);
     $router->post('/api/v1/collections/{collectionRefno}/items/post', [$collectionController, 'postItems']);
     $router->post('/api/v1/collections/{collectionRefno}/payments', [$collectionController, 'addPayment']);
-    $router->post('/api/v1/collections/{collectionRefno}/actions/{action}', [$collectionController, 'action']);
+    $router->post('/api/v1/collections/{collectionRefno}/actions/{action}', $requireApproverAction([$collectionController, 'action'], ['Collection']));
     $router->patch('/api/v1/collection-items/{itemId}', [$collectionController, 'updateItem']);
     $router->delete('/api/v1/collection-items/{itemId}', [$collectionController, 'deleteItem']);
     $router->get('/api/v1/contacts', [$contactsController, 'list']);
@@ -511,7 +557,7 @@ function app_router(): Router
     $router->post('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/messages', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createCallReportReply']));
     $router->patch('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/read', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'markCallReportThreadRead']));
     $router->post('/api/v1/daily-call-monitoring/incident-reports', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createIncidentReport']));
-    $router->patch('/api/v1/daily-call-monitoring/incident-reports/{reportId}/decision', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'reviewIncidentReport']));
+    $router->patch('/api/v1/daily-call-monitoring/incident-reports/{reportId}/decision', $requireApproverAction([$dailyCallMonitoringController, 'reviewIncidentReport'], ['Incident Report', 'Incident', 'IR', 'Sales Return', 'SR']));
     $router->post('/api/v1/call-system/devices/register', $requireBearerAuthWithClaims([$callSystemController, 'registerDevice']));
     $router->post('/api/v1/call-system/devices/heartbeat', $requireBearerAuthWithClaims([$callSystemController, 'heartbeat']));
     $router->post('/api/v1/call-system/call-logs', $requireBearerAuthWithClaims([$callSystemController, 'createCallLog']));
@@ -536,7 +582,7 @@ function app_router(): Router
     $router->post('/api/v1/freight-charges', [$freightChargesController, 'create']);
     $router->patch('/api/v1/freight-charges/{refno}', [$freightChargesController, 'update']);
     $router->delete('/api/v1/freight-charges/{refno}', [$freightChargesController, 'delete']);
-    $router->post('/api/v1/freight-charges/{refno}/actions/{action}', [$freightChargesController, 'action']);
+    $router->post('/api/v1/freight-charges/{refno}/actions/{action}', $requireApproverAction([$freightChargesController, 'action'], ['Freight Charges', 'Freight']));
     $router->get('/api/v1/suggested-stock-report/customers', [$suggestedStockReportController, 'customers']);
     $router->get('/api/v1/suggested-stock-report/summary', [$suggestedStockReportController, 'summary']);
     $router->get('/api/v1/suggested-stock-report/details', [$suggestedStockReportController, 'details']);
@@ -564,7 +610,7 @@ function app_router(): Router
     $router->post('/api/v1/purchase-requests/{prRefno}/items', [$purchaseRequestController, 'addItem']);
     $router->patch('/api/v1/purchase-request-items/{itemId}', [$purchaseRequestController, 'updateItem']);
     $router->delete('/api/v1/purchase-request-items/{itemId}', [$purchaseRequestController, 'deleteItem']);
-    $router->post('/api/v1/purchase-requests/{prRefno}/actions/{action}', $requireBearerAuthWithClaims([$purchaseRequestController, 'action']));
+    $router->post('/api/v1/purchase-requests/{prRefno}/actions/{action}', $requireApproverAction([$purchaseRequestController, 'action'], ['Purchase Request', 'PR']));
     $router->get('/api/v1/purchase-orders', [$purchaseOrderController, 'list']);
     $router->get('/api/v1/purchase-orders/suppliers', [$purchaseOrderController, 'suppliers']);
     $router->get('/api/v1/purchase-orders/{purchaseRefno}', [$purchaseOrderController, 'show']);
@@ -589,7 +635,7 @@ function app_router(): Router
     $router->post('/api/v1/receiving-stocks/{receivingRefno}/items', [$receivingStockController, 'addItem']);
     $router->patch('/api/v1/receiving-stock-items/{itemId}', [$receivingStockController, 'updateItem']);
     $router->delete('/api/v1/receiving-stock-items/{itemId}', [$receivingStockController, 'deleteItem']);
-    $router->post('/api/v1/receiving-stocks/{receivingRefno}/finalize', [$receivingStockController, 'finalize']);
+    $router->post('/api/v1/receiving-stocks/{receivingRefno}/finalize', $requireApproverAction([$receivingStockController, 'finalize'], ['Receiving Stock', 'RR'], true));
     $router->post('/api/v1/receiving-stocks/{receivingRefno}/actions/unpost', $requireBearerAuthWithClaims([$receivingStockController, 'unpost']));
     $router->get('/api/v1/reorder-report', [$reorderReportController, 'list']);
     $router->post('/api/v1/reorder-report/hide-items', [$reorderReportController, 'hideItems']);
@@ -605,7 +651,7 @@ function app_router(): Router
     $router->post('/api/v1/return-to-suppliers/{returnRefno}/items', [$returnToSupplierController, 'addItem']);
     $router->patch('/api/v1/return-to-supplier-items/{itemId}', [$returnToSupplierController, 'updateItem']);
     $router->delete('/api/v1/return-to-supplier-items/{itemId}', [$returnToSupplierController, 'deleteItem']);
-    $router->post('/api/v1/return-to-suppliers/{returnRefno}/actions/{action}', [$returnToSupplierController, 'action']);
+    $router->post('/api/v1/return-to-suppliers/{returnRefno}/actions/{action}', $requireApproverAction([$returnToSupplierController, 'action'], ['Return to Supplier', 'RTS']));
     $router->get('/api/v1/order-slips', [$orderSlipController, 'list']);
     $router->get('/api/v1/order-slips/{orderSlipRefno}', [$orderSlipController, 'show']);
     $router->post('/api/v1/order-slips', [$orderSlipController, 'create']);
@@ -614,7 +660,7 @@ function app_router(): Router
     $router->post('/api/v1/order-slips/{orderSlipRefno}/items', [$orderSlipController, 'addItem']);
     $router->patch('/api/v1/order-slip-items/{itemId}', [$orderSlipController, 'updateItem']);
     $router->delete('/api/v1/order-slip-items/{itemId}', [$orderSlipController, 'deleteItem']);
-    $router->post('/api/v1/order-slips/{orderSlipRefno}/actions/{action}', [$orderSlipController, 'action']);
+    $router->post('/api/v1/order-slips/{orderSlipRefno}/actions/{action}', $requireApproverAction([$orderSlipController, 'action'], ['Order Slip', 'OS']));
     $router->get('/api/v1/invoices', [$invoiceController, 'list']);
     $router->get('/api/v1/invoices/{invoiceRefno}', [$invoiceController, 'show']);
     $router->post('/api/v1/invoices', [$invoiceController, 'create']);
@@ -623,7 +669,7 @@ function app_router(): Router
     $router->post('/api/v1/invoices/{invoiceRefno}/items', [$invoiceController, 'addItem']);
     $router->patch('/api/v1/invoice-items/{itemId}', [$invoiceController, 'updateItem']);
     $router->delete('/api/v1/invoice-items/{itemId}', [$invoiceController, 'deleteItem']);
-    $router->post('/api/v1/invoices/{invoiceRefno}/actions/{action}', [$invoiceController, 'action']);
+    $router->post('/api/v1/invoices/{invoiceRefno}/actions/{action}', $requireApproverAction([$invoiceController, 'action'], ['Invoice', 'SI']));
     $router->get('/api/v1/inquiry-reports/customers', [$inquiryReportController, 'customers']);
     $router->get('/api/v1/inquiry-reports', [$inquiryReportController, 'report']);
     $router->get('/api/v1/inactive-active-customers-report', [$inactiveActiveCustomersReportController, 'report']);
@@ -639,7 +685,7 @@ function app_router(): Router
     $router->get('/api/v1/inventory-audits/stock-adjustments/{refno}', [$inventoryAuditController, 'showStockAdjustment']);
     $router->patch('/api/v1/inventory-audits/stock-adjustments/{refno}/date', [$inventoryAuditController, 'updateStockAdjustmentDate']);
     $router->post('/api/v1/inventory-audits/stock-adjustments/{refno}/counts', [$inventoryAuditController, 'saveStockAdjustmentCounts']);
-    $router->post('/api/v1/inventory-audits/stock-adjustments/{refno}/post', [$inventoryAuditController, 'postStockAdjustment']);
+    $router->post('/api/v1/inventory-audits/stock-adjustments/{refno}/post', $requireApproverAction([$inventoryAuditController, 'postStockAdjustment'], ['Inventory Audit', 'IA'], true));
     $router->delete('/api/v1/inventory-audits/stock-adjustments/{refno}/items/{itemSession}', [$inventoryAuditController, 'deleteStockAdjustmentItem']);
     $router->delete('/api/v1/inventory-audits/stock-adjustments/{refno}', [$inventoryAuditController, 'deleteStockAdjustment']);
     $router->get('/api/v1/inventory-report/options', [$inventoryReportController, 'options']);
@@ -652,7 +698,7 @@ function app_router(): Router
     $router->post('/api/v1/transfer-stocks/{transferRefno}/items', [$transferStockController, 'addItem']);
     $router->patch('/api/v1/transfer-stock-items/{itemId}', [$transferStockController, 'updateItem']);
     $router->delete('/api/v1/transfer-stock-items/{itemId}', [$transferStockController, 'deleteItem']);
-    $router->post('/api/v1/transfer-stocks/{transferRefno}/actions/{action}', [$transferStockController, 'action']);
+    $router->post('/api/v1/transfer-stocks/{transferRefno}/actions/{action}', $requireApproverAction([$transferStockController, 'action'], ['Transfer Stock', 'TS']));
     $router->get('/api/v1/stock-movements', [$stockMovementController, 'list']);
     $router->get('/api/v1/stock-movements/{logId}', [$stockMovementController, 'show']);
     $router->post('/api/v1/stock-movements', [$stockMovementController, 'create']);
@@ -661,7 +707,7 @@ function app_router(): Router
     $router->get('/api/v1/stock-adjustments', [$stockAdjustmentController, 'list']);
     $router->get('/api/v1/stock-adjustments/{refno}', [$stockAdjustmentController, 'show']);
     $router->post('/api/v1/stock-adjustments', [$stockAdjustmentController, 'create']);
-    $router->post('/api/v1/stock-adjustments/{refno}/finalize', [$stockAdjustmentController, 'finalize']);
+    $router->post('/api/v1/stock-adjustments/{refno}/finalize', $requireApproverAction([$stockAdjustmentController, 'finalize'], ['Stock Adjustment', 'SA'], true));
     $router->post('/api/v1/auth/login', [$authController, 'login']);
     $router->get('/api/v1/auth/me', [$authController, 'me']);
     $router->post('/api/v1/auth/logout', [$authController, 'logout']);
@@ -683,17 +729,17 @@ function app_router(): Router
     $router->get('/api/v1/sales-returns/{refno}/source-items', [$salesReturnController, 'sourceItems']);
     $router->post('/api/v1/sales-returns/{refno}/items', [$salesReturnController, 'addItem']);
     $router->delete('/api/v1/sales-return-items/{itemId}', [$salesReturnController, 'deleteItem']);
-    $router->post('/api/v1/sales-returns/{refno}/actions/post', [$salesReturnController, 'postAction']);
+    $router->post('/api/v1/sales-returns/{refno}/actions/post', $requireApproverAction([$salesReturnController, 'postAction'], ['Sales Return', 'SR'], true));
     $router->post('/api/v1/sales-returns/{refno}/actions/unpost', [$salesReturnController, 'unpostAction']);
     $router->get('/api/v1/sales-inquiries', [$salesInquiryController, 'list']);
     $router->get('/api/v1/sales-inquiries/{inquiryRefno}', [$salesInquiryController, 'show']);
     $router->post('/api/v1/sales-inquiries', [$salesInquiryController, 'create']);
-    $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', [$salesInquiryController, 'update']);
+    $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', $requireApproverAction([$salesInquiryController, 'update'], ['Sales Inquiry', 'SI']));
     $router->delete('/api/v1/sales-inquiries/{inquiryRefno}', [$salesInquiryController, 'delete']);
     $router->post('/api/v1/sales-inquiries/{inquiryRefno}/items', [$salesInquiryController, 'addItem']);
     $router->patch('/api/v1/sales-inquiry-items/{itemId}', [$salesInquiryController, 'updateItem']);
     $router->delete('/api/v1/sales-inquiry-items/{itemId}', [$salesInquiryController, 'deleteItem']);
-    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/actions/{action}', [$salesInquiryController, 'action']);
+    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/actions/{action}', $requireApproverAction([$salesInquiryController, 'action'], ['Sales Inquiry', 'SI']));
     $router->get('/api/v1/sales-orders', [$salesOrderController, 'list']);
     $router->get('/api/v1/sales-orders/{salesRefno}', [$salesOrderController, 'show']);
     $router->post('/api/v1/sales-orders', [$salesOrderController, 'create']);
@@ -702,7 +748,7 @@ function app_router(): Router
     $router->post('/api/v1/sales-orders/{salesRefno}/items', [$salesOrderController, 'addItem']);
     $router->patch('/api/v1/sales-order-items/{itemId}', [$salesOrderController, 'updateItem']);
     $router->delete('/api/v1/sales-order-items/{itemId}', [$salesOrderController, 'deleteItem']);
-    $router->post('/api/v1/sales-orders/{salesRefno}/actions/{action}', [$salesOrderController, 'action']);
+    $router->post('/api/v1/sales-orders/{salesRefno}/actions/{action}', $requireApproverAction([$salesOrderController, 'action'], ['Sales Order', 'SO']));
     $router->post('/api/v1/sales-orders/{salesRefno}/convert/{documentType}', [$salesOrderController, 'convertDocument']);
     $router->get('/api/v1/approvers', [$approverController, 'list']);
     $router->get('/api/v1/approvers/staff', [$approverController, 'staff']);
@@ -811,7 +857,7 @@ function app_router(): Router
     $router->get('/api/v1/promotion-postings/{postingId}', [$promotionController, 'getPosting']);
     $router->post('/api/v1/promotions/{promotionId}/postings', [$promotionController, 'createPosting']);
     $router->patch('/api/v1/promotion-postings/{postingId}', [$promotionController, 'updatePosting']);
-    $router->post('/api/v1/promotion-postings/{postingId}/review', [$promotionController, 'reviewPosting']);
+    $router->post('/api/v1/promotion-postings/{postingId}/review', $requireApproverAction([$promotionController, 'reviewPosting'], ['Promotion', 'Promotion Posting']));
     $router->delete('/api/v1/promotion-postings/{postingId}', [$promotionController, 'deletePosting']);
     $router->get('/api/v1/promotion-postings/review/pending', [$promotionController, 'getPendingReview']);
     // Promotion Extended Operations

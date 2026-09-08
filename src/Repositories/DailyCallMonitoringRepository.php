@@ -17,6 +17,15 @@ final class DailyCallMonitoringRepository
     {
     }
 
+    public function isApprover(int $mainId, int $userId): bool
+    {
+        $statement = $this->db->pdo()->prepare(
+            "SELECT 1 FROM tblapprover WHERE lmain_id = ? AND lstaff_id = ? AND UPPER(COALESCE(ltrans_type, '')) IN ('INCIDENT', 'INCIDENT REPORT', 'IR', 'SALES RETURN', 'SR') LIMIT 1"
+        );
+        $statement->execute([$mainId, $userId]);
+        return (bool) $statement->fetchColumn();
+    }
+
     public function getExcelRows(int $mainId, string $status = 'all', string $search = '', ?int $viewerUserId = null): array
     {
         $customers = $this->getCustomerBaseRows($mainId, 'all', $search, $viewerUserId);
