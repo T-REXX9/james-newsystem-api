@@ -301,6 +301,8 @@ SQL;
             }
             $updates[] = 'laction_permissions = :action_permissions';
             $params['action_permissions'] = json_encode(ActionPermissionPolicy::normalizePagePermissions($data['action_permissions']), JSON_THROW_ON_ERROR);
+        } elseif (array_key_exists('action_permissions', $data) && $data['action_permissions'] === null) {
+            $updates[] = 'laction_permissions = NULL';
         }
 
         if (empty($updates)) {
@@ -628,6 +630,28 @@ SQL;
                 $decoded = json_decode($stored, true);
                 if (is_array($decoded)) return ActionPermissionPolicy::normalizePagePermissions($decoded);
             }
+
+            // Preserve the effective legacy group permissions until an
+            // explicit page-scoped group override is configured.
+            $legacy = $this->db->pdo()->prepare(
+                'SELECT ladd_action, ledit_action, ldelete_action
+                 FROM tblweb_permission
+                 WHERE lmain_id = :main_id AND lgroup = :group_id AND lstatus = 1'
+            );
+            $legacy->execute(['main_id' => $mainId, 'group_id' => $groupId]);
+            $permissions = [
+                'can_add' => true,
+                'can_edit' => true,
+                'can_delete' => true,
+                'can_post' => true,
+                'can_unpost' => true,
+            ];
+            while ($row = $legacy->fetch(PDO::FETCH_ASSOC)) {
+                $permissions['can_add'] = $permissions['can_add'] && (int) ($row['ladd_action'] ?? 0) === 1;
+                $permissions['can_edit'] = $permissions['can_edit'] && (int) ($row['ledit_action'] ?? 0) === 1;
+                $permissions['can_delete'] = $permissions['can_delete'] && (int) ($row['ldelete_action'] ?? 0) === 1;
+            }
+            return ActionPermissionPolicy::normalizePagePermissions($permissions);
         } catch (\Throwable) {
             // Optional group action defaults are unavailable on pre-migration databases.
         }

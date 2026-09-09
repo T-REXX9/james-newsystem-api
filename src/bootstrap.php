@@ -483,7 +483,7 @@ function app_router(): Router
             if ($hasAssignment) {
                 return $requireMasterUser($handler)($params, $query, $body);
             }
-            return $requireActionAuth($handler, 'Customer', 'edit')($params, $query, $body);
+            return $requireActionAuth($handler, 'Customer Database', 'edit')($params, $query, $body);
         });
     };
 
@@ -584,17 +584,17 @@ function app_router(): Router
     $router->patch('/api/v1/customer-groups/{groupId}', $requireActionAuth([$customerGroupController, 'update'], 'Customer', 'edit'));
     $router->delete('/api/v1/customer-groups/{groupId}', $requireActionAuth([$customerGroupController, 'delete'], 'Customer', 'delete'));
     $router->get('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'show']);
-    $router->post('/api/v1/customer-database', $requireActionAuth([$customerDatabaseController, 'create'], 'Customer', 'add'));
+    $router->post('/api/v1/customer-database', $requireActionAuth([$customerDatabaseController, 'create'], 'Customer Database', 'add'));
     $router->patch('/api/v1/customer-database/bulk', $requireCustomerUpdateAuth([$customerDatabaseController, 'bulkUpdate']));
     $router->patch('/api/v1/customer-database/{sessionId}', $requireCustomerUpdateAuth([$customerDatabaseController, 'update']));
-    $router->delete('/api/v1/customer-database/{sessionId}', $requireActionAuth([$customerDatabaseController, 'delete'], 'Customer', 'delete'));
-    $router->post('/api/v1/customer-database/{sessionId}/contacts', $requireActionAuth([$customerDatabaseController, 'addContact'], 'Customer', 'add'));
-    $router->patch('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'updateContact'], 'Customer', 'edit'));
-    $router->delete('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'deleteContact'], 'Customer', 'delete'));
+    $router->delete('/api/v1/customer-database/{sessionId}', $requireActionAuth([$customerDatabaseController, 'delete'], 'Customer Database', 'delete'));
+    $router->post('/api/v1/customer-database/{sessionId}/contacts', $requireActionAuth([$customerDatabaseController, 'addContact'], 'Customer Database', 'add'));
+    $router->patch('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'updateContact'], 'Customer Database', 'edit'));
+    $router->delete('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'deleteContact'], 'Customer Database', 'delete'));
     $router->get('/api/v1/customer-database/{sessionId}/terms', [$customerDatabaseController, 'listTerms']);
-    $router->post('/api/v1/customer-database/{sessionId}/terms', $requireActionAuth([$customerDatabaseController, 'addTerm'], 'Customer', 'add'));
-    $router->patch('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'updateTerm'], 'Customer', 'edit'));
-    $router->delete('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'deleteTerm'], 'Customer', 'delete'));
+    $router->post('/api/v1/customer-database/{sessionId}/terms', $requireActionAuth([$customerDatabaseController, 'addTerm'], 'Customer Database', 'add'));
+    $router->patch('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'updateTerm'], 'Customer Database', 'edit'));
+    $router->delete('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'deleteTerm'], 'Customer Database', 'delete'));
     $router->get('/api/v1/collections', [$collectionController, 'list']);
     $router->post('/api/v1/collections', $requireActionAuth([$collectionController, 'create'], 'Collection', 'add'));
     $router->get('/api/v1/collections/unpaid', [$collectionController, 'unpaid']);
@@ -610,9 +610,9 @@ function app_router(): Router
     $router->delete('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'deleteItem'], 'Collection', 'delete'));
     $router->get('/api/v1/contacts', [$contactsController, 'list']);
     $router->get('/api/v1/contacts/{id}', [$contactsController, 'show']);
-    $router->post('/api/v1/contacts', $requireActionAuth([$contactsController, 'create'], 'Customer', 'add'));
+    $router->post('/api/v1/contacts', $requireActionAuth([$contactsController, 'create'], 'Customer Database', 'add'));
     $router->patch('/api/v1/contacts/{id}', $requireCustomerUpdateAuth([$contactsController, 'update']));
-    $router->delete('/api/v1/contacts/{id}', $requireActionAuth([$contactsController, 'delete'], 'Customer', 'delete'));
+    $router->delete('/api/v1/contacts/{id}', $requireActionAuth([$contactsController, 'delete'], 'Customer Database', 'delete'));
     $router->post('/api/v1/contacts/bulk-update', $requireCustomerUpdateAuth([$contactsController, 'bulkUpdate']));
     $router->get('/api/v1/teams/{teamId}/messages', [$messagesController, 'list']);
     $router->get('/api/v1/messages/{id}', [$messagesController, 'show']);
