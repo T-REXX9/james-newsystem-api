@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\LegacyPermissionMapper;
+use App\Support\ActionPermissionPolicy;
 use PDO;
 
 final class RolePermissionRepository
@@ -18,6 +19,7 @@ final class RolePermissionRepository
     /** @var array<string, array<int, array{module_id: string, can_add: bool, can_edit: bool, can_delete: bool}>> */
     private array $actionPermissionCache = [];
     private ?bool $hasAccountAccessRightsColumn = null;
+    private ?bool $hasAccountActionPermissionsColumn = null;
 
     public function __construct(private readonly Database $db)
     {
@@ -145,6 +147,74 @@ final class RolePermissionRepository
     }
 
     /**
+     * Resolve the effective action permissions for one account.
+     * Account-specific settings take precedence over the legacy group rows.
+     *
+     * @return array<string, bool>
+     */
+    public function getActionPermissionsForAccount(int $mainId, int $accountId, int $groupId): array
+    {
+        if ($this->accountActionPermissionsColumnExists()) {
+            $stmt = $this->db->pdo()->prepare(
+                'SELECT laction_permissions
+                 FROM tblaccount
+                 WHERE lid = :account_id AND lmother_id = :main_id
+                 LIMIT 1'
+            );
+            $stmt->execute(['account_id' => $accountId, 'main_id' => $mainId]);
+            $stored = $stmt->fetchColumn();
+            if (is_string($stored) && trim($stored) !== '') {
+                $decoded = json_decode($stored, true);
+                if (is_array($decoded)) {
+                    return ActionPermissionPolicy::normalize($decoded);
+                }
+            }
+
+            // A migrated account without an explicit override keeps the
+            // current allow-by-default behavior until the Master User sets flags.
+            return ActionPermissionPolicy::DEFAULTS;
+        }
+
+        $legacy = $this->getActionPermissions($mainId, $groupId);
+        if ($legacy === []) {
+            return ActionPermissionPolicy::DEFAULTS;
+        }
+
+        $result = ActionPermissionPolicy::DEFAULTS;
+        foreach ($legacy as $permission) {
+            $result['can_add'] = $result['can_add'] && (bool) ($permission['can_add'] ?? false);
+            $result['can_edit'] = $result['can_edit'] && (bool) ($permission['can_edit'] ?? false);
+            $result['can_delete'] = $result['can_delete'] && (bool) ($permission['can_delete'] ?? false);
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param array<string, mixed> $permissions
+     */
+    public function saveActionPermissionsForAccount(int $mainId, int $accountId, array $permissions): void
+    {
+        if (!$this->accountActionPermissionsColumnExists()) {
+            throw new \RuntimeException(
+                'Per-account action permissions cannot be saved because tblaccount.laction_permissions is missing. Apply api/migrations/040_add_account_action_permissions.sql.'
+            );
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'UPDATE tblaccount
+             SET laction_permissions = :permissions
+             WHERE lid = :account_id AND lmother_id = :main_id
+             LIMIT 1'
+        );
+        $stmt->execute([
+            'permissions' => json_encode(ActionPermissionPolicy::normalize($permissions), JSON_THROW_ON_ERROR),
+            'account_id' => $accountId,
+            'main_id' => $mainId,
+        ]);
+    }
+
+    /**
      * Fetch all roles from tblusertype.
      *
      * @return array<int, array{id: int, name: string, description: string}>
@@ -244,6 +314,23 @@ final class RolePermissionRepository
                 ]);
             }
         }
+    }
+
+    private function accountActionPermissionsColumnExists(): bool
+    {
+        if ($this->hasAccountActionPermissionsColumn !== null) {
+            return $this->hasAccountActionPermissionsColumn;
+        }
+
+        $stmt = $this->db->pdo()->query(
+            "SELECT COUNT(*)
+             FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = 'tblaccount'
+               AND COLUMN_NAME = 'laction_permissions'"
+        );
+        $this->hasAccountActionPermissionsColumn = (int) $stmt->fetchColumn() > 0;
+        return $this->hasAccountActionPermissionsColumn;
     }
 
     /**

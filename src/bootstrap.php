@@ -427,18 +427,66 @@ function app_router(): Router
         };
     };
 
+    $requireMasterUser = static function (callable $handler) use ($requireBearerAuthWithClaims): callable {
+        return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($handler): array {
+            $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+            if ((string) ($claims['user_type'] ?? '') !== '1') {
+                throw new HttpException(403, 'Only the Master User can perform this action');
+            }
+
+            $mainId = (int) ($claims['main_userid'] ?? 0);
+            if ($mainId <= 0) {
+                throw new HttpException(403, 'Invalid account scope');
+            }
+            $body['main_id'] = $mainId;
+            $query['main_id'] = (string) $mainId;
+            return $handler($params, $query, $body);
+        });
+    };
+
+    $requireActionAuth = static function (callable $handler, string $_module, string $action) use ($requireBearerAuthWithClaims, $permissionMiddleware): callable {
+        return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($handler, $action, $permissionMiddleware): array {
+            $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+            $mainId = (int) ($claims['main_userid'] ?? 0);
+            if ($mainId <= 0) {
+                throw new HttpException(403, 'Invalid account scope');
+            }
+
+            // Keep tenant and actor identity bound to the verified session.
+            $body['main_id'] = $mainId;
+            $query['main_id'] = (string) $mainId;
+            $body['user_id'] = (int) ($claims['sub'] ?? 0);
+            $permissionMiddleware->assertActionPermission($claims, $action);
+            return $handler($params, $query, $body);
+        });
+    };
+
+    $requireCustomerUpdateAuth = static function (callable $handler) use ($requireBearerAuthWithClaims, $requireActionAuth, $requireMasterUser): callable {
+        return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($handler, $requireActionAuth, $requireMasterUser): array {
+            $updates = is_array($body['updates'] ?? null) ? $body['updates'] : $body;
+            $hasAssignment = array_key_exists('sales_person_id', $updates)
+                || array_key_exists('salesman', $updates)
+                || array_key_exists('salesPerson', $updates)
+                || array_key_exists('assignedAgent', $updates);
+            if ($hasAssignment) {
+                return $requireMasterUser($handler)($params, $query, $body);
+            }
+            return $requireActionAuth($handler, 'Customer', 'edit')($params, $query, $body);
+        });
+    };
+
     // Approval is a separate capability from module access. Every existing
     // approval/post action must derive the actor from the verified token and
     // match the existing Maintenance → Approver list.
-    $requireApproverAction = static function (callable $handler, array $approverModules, bool $approvalOnly = false) use ($requireBearerAuthWithClaims, $db): callable {
-        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $approverModules, $db, $approvalOnly, $requireBearerAuthWithClaims): array {
+    $requireApproverAction = static function (callable $handler, array $approverModules, bool $approvalOnly = false, ?string $fixedActionPermission = null) use ($requireBearerAuthWithClaims, $permissionMiddleware, $db): callable {
+        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $approverModules, $db, $approvalOnly, $fixedActionPermission, $requireBearerAuthWithClaims, $permissionMiddleware): array {
             $action = strtolower(trim((string) ($params['action'] ?? $body['action'] ?? $body['status'] ?? $body['decision'] ?? '')));
-            $approvalActions = ['approve', 'approved', 'approverecord', 'post', 'finalize', 'review', 'reject', 'rejected', 'disapprove', 'disapproved', 'disapproverecord', 'submitted'];
+            $approvalActions = ['approve', 'approved', 'approverecord', 'post', 'finalize', 'review', 'reject', 'rejected', 'disapprove', 'disapproved', 'disapproverecord', 'submitted', 'unpost'];
             if (!$approvalOnly && !in_array($action, $approvalActions, true)) {
                 return $handler($params, $query, $body);
             }
 
-            return $requireBearerAuthWithClaims(static function (array $authParams = [], array $authQuery = [], array $authBody = []) use ($handler, $approverModules, $db): array {
+            return $requireBearerAuthWithClaims(static function (array $authParams = [], array $authQuery = [], array $authBody = []) use ($handler, $approverModules, $db, $action, $fixedActionPermission, $permissionMiddleware): array {
                 $claims = is_array($authBody['__auth_claims'] ?? null) ? $authBody['__auth_claims'] : [];
                 $userId = (int) ($claims['sub'] ?? 0);
                 $mainId = (int) ($claims['main_userid'] ?? $authBody['main_id'] ?? 0);
@@ -458,14 +506,26 @@ function app_router(): Router
                 $authBody['reviewed_by'] = (string) $userId;
                 $authBody['approved_by'] = (string) $userId;
 
-                $modules = array_values(array_unique(array_map('strval', $approverModules)));
-                $placeholders = implode(',', array_fill(0, count($modules), '?'));
-                $statement = $db->pdo()->prepare(
-                    "SELECT 1 FROM tblapprover WHERE lmain_id = ? AND lstaff_id = ? AND UPPER(COALESCE(ltrans_type, '')) IN ({$placeholders}) LIMIT 1"
-                );
-                $statement->execute(array_merge([$mainId, $userId], array_map('strtoupper', $modules)));
-                if (!$statement->fetchColumn()) {
-                    throw new HttpException(403, 'Only approver accounts can approve records');
+                $actionPermission = $fixedActionPermission;
+                if ($actionPermission === null && in_array($action, ['post', 'posted', 'finalize', 'submitted'], true)) {
+                    $actionPermission = 'post';
+                } elseif ($actionPermission === null && $action === 'unpost') {
+                    $actionPermission = 'unpost';
+                }
+                if ($actionPermission !== null) {
+                    $permissionMiddleware->assertActionPermission($claims, $actionPermission);
+                }
+
+                if ((string) ($claims['user_type'] ?? '') !== '1') {
+                    $modules = array_values(array_unique(array_map('strval', $approverModules)));
+                    $placeholders = implode(',', array_fill(0, count($modules), '?'));
+                    $statement = $db->pdo()->prepare(
+                        "SELECT 1 FROM tblapprover WHERE lmain_id = ? AND lstaff_id = ? AND UPPER(COALESCE(ltrans_type, '')) IN ({$placeholders}) LIMIT 1"
+                    );
+                    $statement->execute(array_merge([$mainId, $userId], array_map('strtoupper', $modules)));
+                    if (!$statement->fetchColumn()) {
+                        throw new HttpException(403, 'Only approver accounts can approve records');
+                    }
                 }
 
                 return $handler($authParams, $authQuery, $authBody);
@@ -494,9 +554,9 @@ function app_router(): Router
     $router->get('/api/v1/accounts-receivable', [$accountsReceivableController, 'report']);
     $router->get('/api/v1/adjustment-entries', [$adjustmentEntryController, 'list']);
     $router->get('/api/v1/adjustment-entries/{refno}', [$adjustmentEntryController, 'show']);
-    $router->post('/api/v1/adjustment-entries', [$adjustmentEntryController, 'create']);
-    $router->patch('/api/v1/adjustment-entries/{refno}', [$adjustmentEntryController, 'update']);
-    $router->delete('/api/v1/adjustment-entries/{refno}', [$adjustmentEntryController, 'delete']);
+    $router->post('/api/v1/adjustment-entries', $requireActionAuth([$adjustmentEntryController, 'create'], 'Adjustment Entry', 'add'));
+    $router->patch('/api/v1/adjustment-entries/{refno}', $requireActionAuth([$adjustmentEntryController, 'update'], 'Adjustment Entry', 'edit'));
+    $router->delete('/api/v1/adjustment-entries/{refno}', $requireActionAuth([$adjustmentEntryController, 'delete'], 'Adjustment Entry', 'delete'));
     $router->post('/api/v1/adjustment-entries/{refno}/actions/{action}', $requireApproverAction([$adjustmentEntryController, 'action'], ['Adjustment Entry', 'Adjustment']));
     $router->get('/api/v1/activity-logs', [$activityLogController, 'list']);
     $router->get('/api/v1/activity-logs/users', [$activityLogController, 'users']);
@@ -504,40 +564,40 @@ function app_router(): Router
     $router->get('/api/v1/customer-database/province-summary', [$customerDatabaseController, 'provinceSummary']);
     $router->get('/api/v1/customer-groups', [$customerGroupController, 'list']);
     $router->get('/api/v1/customer-groups/{groupId}', [$customerGroupController, 'show']);
-    $router->post('/api/v1/customer-groups', [$customerGroupController, 'create']);
-    $router->patch('/api/v1/customer-groups/{groupId}', [$customerGroupController, 'update']);
-    $router->delete('/api/v1/customer-groups/{groupId}', [$customerGroupController, 'delete']);
+    $router->post('/api/v1/customer-groups', $requireActionAuth([$customerGroupController, 'create'], 'Customer', 'add'));
+    $router->patch('/api/v1/customer-groups/{groupId}', $requireActionAuth([$customerGroupController, 'update'], 'Customer', 'edit'));
+    $router->delete('/api/v1/customer-groups/{groupId}', $requireActionAuth([$customerGroupController, 'delete'], 'Customer', 'delete'));
     $router->get('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'show']);
-    $router->post('/api/v1/customer-database', [$customerDatabaseController, 'create']);
-    $router->patch('/api/v1/customer-database/bulk', [$customerDatabaseController, 'bulkUpdate']);
-    $router->patch('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'update']);
-    $router->delete('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'delete']);
-    $router->post('/api/v1/customer-database/{sessionId}/contacts', [$customerDatabaseController, 'addContact']);
-    $router->patch('/api/v1/customer-database/contacts/{contactId}', [$customerDatabaseController, 'updateContact']);
-    $router->delete('/api/v1/customer-database/contacts/{contactId}', [$customerDatabaseController, 'deleteContact']);
+    $router->post('/api/v1/customer-database', $requireActionAuth([$customerDatabaseController, 'create'], 'Customer', 'add'));
+    $router->patch('/api/v1/customer-database/bulk', $requireCustomerUpdateAuth([$customerDatabaseController, 'bulkUpdate']));
+    $router->patch('/api/v1/customer-database/{sessionId}', $requireCustomerUpdateAuth([$customerDatabaseController, 'update']));
+    $router->delete('/api/v1/customer-database/{sessionId}', $requireActionAuth([$customerDatabaseController, 'delete'], 'Customer', 'delete'));
+    $router->post('/api/v1/customer-database/{sessionId}/contacts', $requireActionAuth([$customerDatabaseController, 'addContact'], 'Customer', 'add'));
+    $router->patch('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'updateContact'], 'Customer', 'edit'));
+    $router->delete('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'deleteContact'], 'Customer', 'delete'));
     $router->get('/api/v1/customer-database/{sessionId}/terms', [$customerDatabaseController, 'listTerms']);
-    $router->post('/api/v1/customer-database/{sessionId}/terms', [$customerDatabaseController, 'addTerm']);
-    $router->patch('/api/v1/customer-database/terms/{termId}', [$customerDatabaseController, 'updateTerm']);
-    $router->delete('/api/v1/customer-database/terms/{termId}', [$customerDatabaseController, 'deleteTerm']);
+    $router->post('/api/v1/customer-database/{sessionId}/terms', $requireActionAuth([$customerDatabaseController, 'addTerm'], 'Customer', 'add'));
+    $router->patch('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'updateTerm'], 'Customer', 'edit'));
+    $router->delete('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'deleteTerm'], 'Customer', 'delete'));
     $router->get('/api/v1/collections', [$collectionController, 'list']);
-    $router->post('/api/v1/collections', [$collectionController, 'create']);
+    $router->post('/api/v1/collections', $requireActionAuth([$collectionController, 'create'], 'Collection', 'add'));
     $router->get('/api/v1/collections/unpaid', [$collectionController, 'unpaid']);
     $router->get('/api/v1/collections/summary', [$collectionController, 'summary']);
-    $router->delete('/api/v1/collections/{collectionRefno}', [$collectionController, 'delete']);
+    $router->delete('/api/v1/collections/{collectionRefno}', $requireActionAuth([$collectionController, 'delete'], 'Collection', 'delete'));
     $router->get('/api/v1/collections/{collectionRefno}', [$collectionController, 'show']);
     $router->get('/api/v1/collections/{collectionRefno}/items', [$collectionController, 'items']);
     $router->get('/api/v1/collections/{collectionRefno}/approver-logs', [$collectionController, 'approverLogs']);
-    $router->post('/api/v1/collections/{collectionRefno}/items/post', [$collectionController, 'postItems']);
-    $router->post('/api/v1/collections/{collectionRefno}/payments', [$collectionController, 'addPayment']);
+    $router->post('/api/v1/collections/{collectionRefno}/items/post', $requireActionAuth([$collectionController, 'postItems'], 'Collection', 'post'));
+    $router->post('/api/v1/collections/{collectionRefno}/payments', $requireActionAuth([$collectionController, 'addPayment'], 'Collection', 'add'));
     $router->post('/api/v1/collections/{collectionRefno}/actions/{action}', $requireApproverAction([$collectionController, 'action'], ['Collection']));
-    $router->patch('/api/v1/collection-items/{itemId}', [$collectionController, 'updateItem']);
-    $router->delete('/api/v1/collection-items/{itemId}', [$collectionController, 'deleteItem']);
+    $router->patch('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'updateItem'], 'Collection', 'edit'));
+    $router->delete('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'deleteItem'], 'Collection', 'delete'));
     $router->get('/api/v1/contacts', [$contactsController, 'list']);
     $router->get('/api/v1/contacts/{id}', [$contactsController, 'show']);
-    $router->post('/api/v1/contacts', [$contactsController, 'create']);
-    $router->patch('/api/v1/contacts/{id}', [$contactsController, 'update']);
-    $router->delete('/api/v1/contacts/{id}', [$contactsController, 'delete']);
-    $router->post('/api/v1/contacts/bulk-update', [$contactsController, 'bulkUpdate']);
+    $router->post('/api/v1/contacts', $requireActionAuth([$contactsController, 'create'], 'Customer', 'add'));
+    $router->patch('/api/v1/contacts/{id}', $requireCustomerUpdateAuth([$contactsController, 'update']));
+    $router->delete('/api/v1/contacts/{id}', $requireActionAuth([$contactsController, 'delete'], 'Customer', 'delete'));
+    $router->post('/api/v1/contacts/bulk-update', $requireCustomerUpdateAuth([$contactsController, 'bulkUpdate']));
     $router->get('/api/v1/teams/{teamId}/messages', [$messagesController, 'list']);
     $router->get('/api/v1/messages/{id}', [$messagesController, 'show']);
     $router->post('/api/v1/teams/{teamId}/messages', [$messagesController, 'create']);
@@ -571,10 +631,10 @@ function app_router(): Router
     $router->get('/api/v1/profiles', [$profilesController, 'list']);
     $router->get('/api/v1/profiles/sales-agents', [$profilesController, 'salesAgents']);
     $router->get('/api/v1/profiles/{id}', [$profilesController, 'show']);
-    $router->patch('/api/v1/profiles/{id}', [$profilesController, 'update']);
-    $router->post('/api/v1/profiles/{id}/deactivate', [$profilesController, 'deactivate']);
-    $router->post('/api/v1/profiles/{id}/activate', [$profilesController, 'activate']);
-    $router->post('/api/v1/profiles/{id}/role', [$profilesController, 'updateRole']);
+    $router->patch('/api/v1/profiles/{id}', $requireMasterUser([$profilesController, 'update']));
+    $router->post('/api/v1/profiles/{id}/deactivate', $requireMasterUser([$profilesController, 'deactivate']));
+    $router->post('/api/v1/profiles/{id}/activate', $requireMasterUser([$profilesController, 'activate']));
+    $router->post('/api/v1/profiles/{id}/role', $requireMasterUser([$profilesController, 'updateRole']));
     $router->get('/api/v1/daily-call-monitoring/excel', [$dailyCallMonitoringController, 'excelRows']);
     $router->get('/api/v1/daily-call-monitoring/master-list', [$dailyCallMonitoringController, 'masterList']);
     $router->get('/api/v1/daily-call-monitoring/sales-performance-dashboard', [$dailyCallMonitoringController, 'salesPerformanceDashboard']);
@@ -615,9 +675,9 @@ function app_router(): Router
     $router->get('/api/v1/freight-charges', [$freightChargesController, 'list']);
     $router->get('/api/v1/freight-charges/report', [$freightChargesController, 'report']);
     $router->get('/api/v1/freight-charges/{refno}', [$freightChargesController, 'show']);
-    $router->post('/api/v1/freight-charges', [$freightChargesController, 'create']);
-    $router->patch('/api/v1/freight-charges/{refno}', [$freightChargesController, 'update']);
-    $router->delete('/api/v1/freight-charges/{refno}', [$freightChargesController, 'delete']);
+    $router->post('/api/v1/freight-charges', $requireActionAuth([$freightChargesController, 'create'], 'Freight Charges', 'add'));
+    $router->patch('/api/v1/freight-charges/{refno}', $requireActionAuth([$freightChargesController, 'update'], 'Freight Charges', 'edit'));
+    $router->delete('/api/v1/freight-charges/{refno}', $requireActionAuth([$freightChargesController, 'delete'], 'Freight Charges', 'delete'));
     $router->post('/api/v1/freight-charges/{refno}/actions/{action}', $requireApproverAction([$freightChargesController, 'action'], ['Freight Charges', 'Freight']));
     $router->get('/api/v1/suggested-stock-report/customers', [$suggestedStockReportController, 'customers']);
     $router->get('/api/v1/suggested-stock-report/summary', [$suggestedStockReportController, 'summary']);
@@ -633,46 +693,46 @@ function app_router(): Router
     $router->post('/api/v1/suggested-stock-report/purchase-orders/{purchaseRefno}/items', [$suggestedStockReportController, 'addPurchaseOrderItem']);
     $router->get('/api/v1/products', [$productController, 'list']);
     $router->get('/api/v1/products/{productSession}', [$productController, 'show']);
-    $router->post('/api/v1/products', [$productController, 'create']);
-    $router->patch('/api/v1/products/{productSession}', [$productController, 'update']);
-    $router->post('/api/v1/products/bulk-update', [$productController, 'bulkUpdate']);
-    $router->delete('/api/v1/products/{productSession}', [$productController, 'delete']);
+    $router->post('/api/v1/products', $requireActionAuth([$productController, 'create'], 'Product', 'add'));
+    $router->patch('/api/v1/products/{productSession}', $requireActionAuth([$productController, 'update'], 'Product', 'edit'));
+    $router->post('/api/v1/products/bulk-update', $requireActionAuth([$productController, 'bulkUpdate'], 'Product', 'edit'));
+    $router->delete('/api/v1/products/{productSession}', $requireActionAuth([$productController, 'delete'], 'Product', 'delete'));
     $router->get('/api/v1/purchase-requests', [$purchaseRequestController, 'list']);
     $router->get('/api/v1/purchase-requests/next-number', [$purchaseRequestController, 'nextNumber']);
     $router->get('/api/v1/purchase-requests/{prRefno}', [$purchaseRequestController, 'show']);
-    $router->post('/api/v1/purchase-requests', [$purchaseRequestController, 'create']);
-    $router->patch('/api/v1/purchase-requests/{prRefno}', [$purchaseRequestController, 'update']);
-    $router->delete('/api/v1/purchase-requests/{prRefno}', $requireBearerAuthWithClaims([$purchaseRequestController, 'delete']));
-    $router->post('/api/v1/purchase-requests/{prRefno}/items', [$purchaseRequestController, 'addItem']);
-    $router->patch('/api/v1/purchase-request-items/{itemId}', [$purchaseRequestController, 'updateItem']);
-    $router->delete('/api/v1/purchase-request-items/{itemId}', [$purchaseRequestController, 'deleteItem']);
+    $router->post('/api/v1/purchase-requests', $requireActionAuth([$purchaseRequestController, 'create'], 'Purchase Request', 'add'));
+    $router->patch('/api/v1/purchase-requests/{prRefno}', $requireActionAuth([$purchaseRequestController, 'update'], 'Purchase Request', 'edit'));
+    $router->delete('/api/v1/purchase-requests/{prRefno}', $requireActionAuth([$purchaseRequestController, 'delete'], 'Purchase Request', 'delete'));
+    $router->post('/api/v1/purchase-requests/{prRefno}/items', $requireActionAuth([$purchaseRequestController, 'addItem'], 'Purchase Request', 'add'));
+    $router->patch('/api/v1/purchase-request-items/{itemId}', $requireActionAuth([$purchaseRequestController, 'updateItem'], 'Purchase Request', 'edit'));
+    $router->delete('/api/v1/purchase-request-items/{itemId}', $requireActionAuth([$purchaseRequestController, 'deleteItem'], 'Purchase Request', 'delete'));
     $router->post('/api/v1/purchase-requests/{prRefno}/actions/{action}', $requireApproverAction([$purchaseRequestController, 'action'], ['Purchase Request', 'PR']));
     $router->get('/api/v1/purchase-orders', [$purchaseOrderController, 'list']);
     $router->get('/api/v1/purchase-orders/suppliers', [$purchaseOrderController, 'suppliers']);
     $router->get('/api/v1/purchase-orders/{purchaseRefno}', [$purchaseOrderController, 'show']);
-    $router->post('/api/v1/purchase-orders', [$purchaseOrderController, 'create']);
-    $router->patch('/api/v1/purchase-orders/{purchaseRefno}', [$purchaseOrderController, 'update']);
-    $router->delete('/api/v1/purchase-orders/{purchaseRefno}', $requireBearerAuthWithClaims([$purchaseOrderController, 'delete']));
-    $router->post('/api/v1/purchase-orders/{purchaseRefno}/items', [$purchaseOrderController, 'addItem']);
-    $router->post('/api/v1/purchase-orders/{purchaseRefno}/actions/unpost', $requireBearerAuthWithClaims([$purchaseOrderController, 'unpost']));
+    $router->post('/api/v1/purchase-orders', $requireActionAuth([$purchaseOrderController, 'create'], 'Purchase Order', 'add'));
+    $router->patch('/api/v1/purchase-orders/{purchaseRefno}', $requireActionAuth([$purchaseOrderController, 'update'], 'Purchase Order', 'edit'));
+    $router->delete('/api/v1/purchase-orders/{purchaseRefno}', $requireActionAuth([$purchaseOrderController, 'delete'], 'Purchase Order', 'delete'));
+    $router->post('/api/v1/purchase-orders/{purchaseRefno}/items', $requireActionAuth([$purchaseOrderController, 'addItem'], 'Purchase Order', 'add'));
+    $router->post('/api/v1/purchase-orders/{purchaseRefno}/actions/unpost', $requireActionAuth([$purchaseOrderController, 'unpost'], 'Purchase Order', 'unpost'));
     $router->get('/api/v1/suppliers', [$supplierController, 'list']);
     $router->get('/api/v1/suppliers/{supplierId}', [$supplierController, 'show']);
-    $router->post('/api/v1/suppliers', [$supplierController, 'create']);
-    $router->patch('/api/v1/suppliers/{supplierId}', [$supplierController, 'update']);
-    $router->delete('/api/v1/suppliers/{supplierId}', [$supplierController, 'delete']);
-    $router->patch('/api/v1/purchase-order-items/{itemId}', [$purchaseOrderController, 'updateItem']);
-    $router->delete('/api/v1/purchase-order-items/{itemId}', [$purchaseOrderController, 'deleteItem']);
+    $router->post('/api/v1/suppliers', $requireActionAuth([$supplierController, 'create'], 'Supplier', 'add'));
+    $router->patch('/api/v1/suppliers/{supplierId}', $requireActionAuth([$supplierController, 'update'], 'Supplier', 'edit'));
+    $router->delete('/api/v1/suppliers/{supplierId}', $requireActionAuth([$supplierController, 'delete'], 'Supplier', 'delete'));
+    $router->patch('/api/v1/purchase-order-items/{itemId}', $requireActionAuth([$purchaseOrderController, 'updateItem'], 'Purchase Order', 'edit'));
+    $router->delete('/api/v1/purchase-order-items/{itemId}', $requireActionAuth([$purchaseOrderController, 'deleteItem'], 'Purchase Order', 'delete'));
     $router->get('/api/v1/receiving-stocks', [$receivingStockController, 'list']);
     $router->get('/api/v1/receiving-stocks/purchase-orders/eligible', [$receivingStockController, 'eligiblePurchaseOrders']);
     $router->get('/api/v1/receiving-stocks/{receivingRefno}', [$receivingStockController, 'show']);
-    $router->post('/api/v1/receiving-stocks', [$receivingStockController, 'create']);
-    $router->patch('/api/v1/receiving-stocks/{receivingRefno}', [$receivingStockController, 'update']);
-    $router->delete('/api/v1/receiving-stocks/{receivingRefno}', $requireBearerAuthWithClaims([$receivingStockController, 'delete']));
-    $router->post('/api/v1/receiving-stocks/{receivingRefno}/items', [$receivingStockController, 'addItem']);
-    $router->patch('/api/v1/receiving-stock-items/{itemId}', [$receivingStockController, 'updateItem']);
-    $router->delete('/api/v1/receiving-stock-items/{itemId}', [$receivingStockController, 'deleteItem']);
-    $router->post('/api/v1/receiving-stocks/{receivingRefno}/finalize', $requireApproverAction([$receivingStockController, 'finalize'], ['Receiving Stock', 'RR'], true));
-    $router->post('/api/v1/receiving-stocks/{receivingRefno}/actions/unpost', $requireBearerAuthWithClaims([$receivingStockController, 'unpost']));
+    $router->post('/api/v1/receiving-stocks', $requireActionAuth([$receivingStockController, 'create'], 'Receiving Stock', 'add'));
+    $router->patch('/api/v1/receiving-stocks/{receivingRefno}', $requireActionAuth([$receivingStockController, 'update'], 'Receiving Stock', 'edit'));
+    $router->delete('/api/v1/receiving-stocks/{receivingRefno}', $requireActionAuth([$receivingStockController, 'delete'], 'Receiving Stock', 'delete'));
+    $router->post('/api/v1/receiving-stocks/{receivingRefno}/items', $requireActionAuth([$receivingStockController, 'addItem'], 'Receiving Stock', 'add'));
+    $router->patch('/api/v1/receiving-stock-items/{itemId}', $requireActionAuth([$receivingStockController, 'updateItem'], 'Receiving Stock', 'edit'));
+    $router->delete('/api/v1/receiving-stock-items/{itemId}', $requireActionAuth([$receivingStockController, 'deleteItem'], 'Receiving Stock', 'delete'));
+    $router->post('/api/v1/receiving-stocks/{receivingRefno}/finalize', $requireApproverAction([$receivingStockController, 'finalize'], ['Receiving Stock', 'RR'], true, 'post'));
+    $router->post('/api/v1/receiving-stocks/{receivingRefno}/actions/unpost', $requireActionAuth([$receivingStockController, 'unpost'], 'Receiving Stock', 'unpost'));
     $router->get('/api/v1/reorder-report', [$reorderReportController, 'list']);
     $router->post('/api/v1/reorder-report/hide-items', [$reorderReportController, 'hideItems']);
     $router->post('/api/v1/reorder-report/restore-items', [$reorderReportController, 'restoreItems']);
@@ -680,31 +740,31 @@ function app_router(): Router
     $router->get('/api/v1/return-to-suppliers/rr/search', [$returnToSupplierController, 'searchReceivingReports']);
     $router->get('/api/v1/return-to-suppliers/rr/{rrRefno}/items', [$returnToSupplierController, 'receivingReportItems']);
     $router->get('/api/v1/return-to-suppliers/{returnRefno}', [$returnToSupplierController, 'show']);
-    $router->post('/api/v1/return-to-suppliers', [$returnToSupplierController, 'create']);
-    $router->patch('/api/v1/return-to-suppliers/{returnRefno}', [$returnToSupplierController, 'update']);
-    $router->delete('/api/v1/return-to-suppliers/{returnRefno}', [$returnToSupplierController, 'delete']);
+    $router->post('/api/v1/return-to-suppliers', $requireActionAuth([$returnToSupplierController, 'create'], 'Return to Supplier', 'add'));
+    $router->patch('/api/v1/return-to-suppliers/{returnRefno}', $requireActionAuth([$returnToSupplierController, 'update'], 'Return to Supplier', 'edit'));
+    $router->delete('/api/v1/return-to-suppliers/{returnRefno}', $requireActionAuth([$returnToSupplierController, 'delete'], 'Return to Supplier', 'delete'));
     $router->get('/api/v1/return-to-suppliers/{returnRefno}/items', [$returnToSupplierController, 'items']);
-    $router->post('/api/v1/return-to-suppliers/{returnRefno}/items', [$returnToSupplierController, 'addItem']);
-    $router->patch('/api/v1/return-to-supplier-items/{itemId}', [$returnToSupplierController, 'updateItem']);
-    $router->delete('/api/v1/return-to-supplier-items/{itemId}', [$returnToSupplierController, 'deleteItem']);
+    $router->post('/api/v1/return-to-suppliers/{returnRefno}/items', $requireActionAuth([$returnToSupplierController, 'addItem'], 'Return to Supplier', 'add'));
+    $router->patch('/api/v1/return-to-supplier-items/{itemId}', $requireActionAuth([$returnToSupplierController, 'updateItem'], 'Return to Supplier', 'edit'));
+    $router->delete('/api/v1/return-to-supplier-items/{itemId}', $requireActionAuth([$returnToSupplierController, 'deleteItem'], 'Return to Supplier', 'delete'));
     $router->post('/api/v1/return-to-suppliers/{returnRefno}/actions/{action}', $requireApproverAction([$returnToSupplierController, 'action'], ['Return to Supplier', 'RTS']));
     $router->get('/api/v1/order-slips', [$orderSlipController, 'list']);
     $router->get('/api/v1/order-slips/{orderSlipRefno}', [$orderSlipController, 'show']);
-    $router->post('/api/v1/order-slips', [$orderSlipController, 'create']);
-    $router->patch('/api/v1/order-slips/{orderSlipRefno}', [$orderSlipController, 'update']);
-    $router->delete('/api/v1/order-slips/{orderSlipRefno}', [$orderSlipController, 'delete']);
-    $router->post('/api/v1/order-slips/{orderSlipRefno}/items', [$orderSlipController, 'addItem']);
-    $router->patch('/api/v1/order-slip-items/{itemId}', [$orderSlipController, 'updateItem']);
-    $router->delete('/api/v1/order-slip-items/{itemId}', [$orderSlipController, 'deleteItem']);
+    $router->post('/api/v1/order-slips', $requireActionAuth([$orderSlipController, 'create'], 'Order Slip', 'add'));
+    $router->patch('/api/v1/order-slips/{orderSlipRefno}', $requireActionAuth([$orderSlipController, 'update'], 'Order Slip', 'edit'));
+    $router->delete('/api/v1/order-slips/{orderSlipRefno}', $requireActionAuth([$orderSlipController, 'delete'], 'Order Slip', 'delete'));
+    $router->post('/api/v1/order-slips/{orderSlipRefno}/items', $requireActionAuth([$orderSlipController, 'addItem'], 'Order Slip', 'add'));
+    $router->patch('/api/v1/order-slip-items/{itemId}', $requireActionAuth([$orderSlipController, 'updateItem'], 'Order Slip', 'edit'));
+    $router->delete('/api/v1/order-slip-items/{itemId}', $requireActionAuth([$orderSlipController, 'deleteItem'], 'Order Slip', 'delete'));
     $router->post('/api/v1/order-slips/{orderSlipRefno}/actions/{action}', $requireApproverAction([$orderSlipController, 'action'], ['Order Slip', 'OS']));
     $router->get('/api/v1/invoices', [$invoiceController, 'list']);
     $router->get('/api/v1/invoices/{invoiceRefno}', [$invoiceController, 'show']);
-    $router->post('/api/v1/invoices', [$invoiceController, 'create']);
-    $router->patch('/api/v1/invoices/{invoiceRefno}', [$invoiceController, 'update']);
-    $router->delete('/api/v1/invoices/{invoiceRefno}', [$invoiceController, 'delete']);
-    $router->post('/api/v1/invoices/{invoiceRefno}/items', [$invoiceController, 'addItem']);
-    $router->patch('/api/v1/invoice-items/{itemId}', [$invoiceController, 'updateItem']);
-    $router->delete('/api/v1/invoice-items/{itemId}', [$invoiceController, 'deleteItem']);
+    $router->post('/api/v1/invoices', $requireActionAuth([$invoiceController, 'create'], 'Invoice', 'add'));
+    $router->patch('/api/v1/invoices/{invoiceRefno}', $requireActionAuth([$invoiceController, 'update'], 'Invoice', 'edit'));
+    $router->delete('/api/v1/invoices/{invoiceRefno}', $requireActionAuth([$invoiceController, 'delete'], 'Invoice', 'delete'));
+    $router->post('/api/v1/invoices/{invoiceRefno}/items', $requireActionAuth([$invoiceController, 'addItem'], 'Invoice', 'add'));
+    $router->patch('/api/v1/invoice-items/{itemId}', $requireActionAuth([$invoiceController, 'updateItem'], 'Invoice', 'edit'));
+    $router->delete('/api/v1/invoice-items/{itemId}', $requireActionAuth([$invoiceController, 'deleteItem'], 'Invoice', 'delete'));
     $router->post('/api/v1/invoices/{invoiceRefno}/actions/{action}', $requireApproverAction([$invoiceController, 'action'], ['Invoice', 'SI']));
     $router->get('/api/v1/inquiry-reports/customers', [$inquiryReportController, 'customers']);
     $router->get('/api/v1/inquiry-reports', [$inquiryReportController, 'report']);
@@ -713,37 +773,37 @@ function app_router(): Router
     $router->get('/api/v1/inventory-audits', [$inventoryAuditController, 'list']);
     $router->get('/api/v1/inventory-audits/filter-options', [$inventoryAuditController, 'filters']);
     $router->get('/api/v1/inventory-audits/adjustments/{adjustmentId}', [$inventoryAuditController, 'showAdjustment']);
-    $router->post('/api/v1/inventory-audits/adjustments', [$inventoryAuditController, 'createAdjustment']);
-    $router->patch('/api/v1/inventory-audits/adjustments/{adjustmentId}', [$inventoryAuditController, 'updateAdjustment']);
-    $router->delete('/api/v1/inventory-audits/adjustments/{adjustmentId}', [$inventoryAuditController, 'deleteAdjustment']);
+    $router->post('/api/v1/inventory-audits/adjustments', $requireActionAuth([$inventoryAuditController, 'createAdjustment'], 'Inventory Audit', 'add'));
+    $router->patch('/api/v1/inventory-audits/adjustments/{adjustmentId}', $requireActionAuth([$inventoryAuditController, 'updateAdjustment'], 'Inventory Audit', 'edit'));
+    $router->delete('/api/v1/inventory-audits/adjustments/{adjustmentId}', $requireActionAuth([$inventoryAuditController, 'deleteAdjustment'], 'Inventory Audit', 'delete'));
     $router->get('/api/v1/inventory-audits/stock-adjustments', [$inventoryAuditController, 'listStockAdjustments']);
-    $router->post('/api/v1/inventory-audits/stock-adjustments', [$inventoryAuditController, 'createStockAdjustment']);
+    $router->post('/api/v1/inventory-audits/stock-adjustments', $requireActionAuth([$inventoryAuditController, 'createStockAdjustment'], 'Inventory Audit', 'add'));
     $router->get('/api/v1/inventory-audits/stock-adjustments/{refno}', [$inventoryAuditController, 'showStockAdjustment']);
-    $router->patch('/api/v1/inventory-audits/stock-adjustments/{refno}/date', [$inventoryAuditController, 'updateStockAdjustmentDate']);
-    $router->post('/api/v1/inventory-audits/stock-adjustments/{refno}/counts', [$inventoryAuditController, 'saveStockAdjustmentCounts']);
-    $router->post('/api/v1/inventory-audits/stock-adjustments/{refno}/post', $requireApproverAction([$inventoryAuditController, 'postStockAdjustment'], ['Inventory Audit', 'IA'], true));
-    $router->delete('/api/v1/inventory-audits/stock-adjustments/{refno}/items/{itemSession}', [$inventoryAuditController, 'deleteStockAdjustmentItem']);
-    $router->delete('/api/v1/inventory-audits/stock-adjustments/{refno}', [$inventoryAuditController, 'deleteStockAdjustment']);
+    $router->patch('/api/v1/inventory-audits/stock-adjustments/{refno}/date', $requireActionAuth([$inventoryAuditController, 'updateStockAdjustmentDate'], 'Inventory Audit', 'edit'));
+    $router->post('/api/v1/inventory-audits/stock-adjustments/{refno}/counts', $requireActionAuth([$inventoryAuditController, 'saveStockAdjustmentCounts'], 'Inventory Audit', 'edit'));
+    $router->post('/api/v1/inventory-audits/stock-adjustments/{refno}/post', $requireApproverAction([$inventoryAuditController, 'postStockAdjustment'], ['Inventory Audit', 'IA'], true, 'post'));
+    $router->delete('/api/v1/inventory-audits/stock-adjustments/{refno}/items/{itemSession}', $requireActionAuth([$inventoryAuditController, 'deleteStockAdjustmentItem'], 'Inventory Audit', 'delete'));
+    $router->delete('/api/v1/inventory-audits/stock-adjustments/{refno}', $requireActionAuth([$inventoryAuditController, 'deleteStockAdjustment'], 'Inventory Audit', 'delete'));
     $router->get('/api/v1/inventory-report/options', [$inventoryReportController, 'options']);
     $router->get('/api/v1/inventory-report', [$inventoryReportController, 'report']);
     $router->get('/api/v1/transfer-stocks', [$transferStockController, 'list']);
     $router->get('/api/v1/transfer-stocks/{transferRefno}', [$transferStockController, 'show']);
-    $router->post('/api/v1/transfer-stocks', [$transferStockController, 'create']);
-    $router->patch('/api/v1/transfer-stocks/{transferRefno}', [$transferStockController, 'update']);
-    $router->delete('/api/v1/transfer-stocks/{transferRefno}', [$transferStockController, 'delete']);
-    $router->post('/api/v1/transfer-stocks/{transferRefno}/items', [$transferStockController, 'addItem']);
-    $router->patch('/api/v1/transfer-stock-items/{itemId}', [$transferStockController, 'updateItem']);
-    $router->delete('/api/v1/transfer-stock-items/{itemId}', [$transferStockController, 'deleteItem']);
+    $router->post('/api/v1/transfer-stocks', $requireActionAuth([$transferStockController, 'create'], 'Transfer Stock', 'add'));
+    $router->patch('/api/v1/transfer-stocks/{transferRefno}', $requireActionAuth([$transferStockController, 'update'], 'Transfer Stock', 'edit'));
+    $router->delete('/api/v1/transfer-stocks/{transferRefno}', $requireActionAuth([$transferStockController, 'delete'], 'Transfer Stock', 'delete'));
+    $router->post('/api/v1/transfer-stocks/{transferRefno}/items', $requireActionAuth([$transferStockController, 'addItem'], 'Transfer Stock', 'add'));
+    $router->patch('/api/v1/transfer-stock-items/{itemId}', $requireActionAuth([$transferStockController, 'updateItem'], 'Transfer Stock', 'edit'));
+    $router->delete('/api/v1/transfer-stock-items/{itemId}', $requireActionAuth([$transferStockController, 'deleteItem'], 'Transfer Stock', 'delete'));
     $router->post('/api/v1/transfer-stocks/{transferRefno}/actions/{action}', $requireApproverAction([$transferStockController, 'action'], ['Transfer Stock', 'TS']));
     $router->get('/api/v1/stock-movements', [$stockMovementController, 'list']);
     $router->get('/api/v1/stock-movements/{logId}', [$stockMovementController, 'show']);
-    $router->post('/api/v1/stock-movements', [$stockMovementController, 'create']);
-    $router->patch('/api/v1/stock-movements/{logId}', [$stockMovementController, 'update']);
-    $router->delete('/api/v1/stock-movements/{logId}', [$stockMovementController, 'delete']);
+    $router->post('/api/v1/stock-movements', $requireActionAuth([$stockMovementController, 'create'], 'Stock Movement', 'add'));
+    $router->patch('/api/v1/stock-movements/{logId}', $requireActionAuth([$stockMovementController, 'update'], 'Stock Movement', 'edit'));
+    $router->delete('/api/v1/stock-movements/{logId}', $requireActionAuth([$stockMovementController, 'delete'], 'Stock Movement', 'delete'));
     $router->get('/api/v1/stock-adjustments', [$stockAdjustmentController, 'list']);
     $router->get('/api/v1/stock-adjustments/{refno}', [$stockAdjustmentController, 'show']);
-    $router->post('/api/v1/stock-adjustments', [$stockAdjustmentController, 'create']);
-    $router->post('/api/v1/stock-adjustments/{refno}/finalize', $requireApproverAction([$stockAdjustmentController, 'finalize'], ['Stock Adjustment', 'SA'], true));
+    $router->post('/api/v1/stock-adjustments', $requireActionAuth([$stockAdjustmentController, 'create'], 'Stock Adjustment', 'add'));
+    $router->post('/api/v1/stock-adjustments/{refno}/finalize', $requireApproverAction([$stockAdjustmentController, 'finalize'], ['Stock Adjustment', 'SA'], true, 'post'));
     $router->post('/api/v1/auth/login', [$authController, 'login']);
     $router->get('/api/v1/auth/me', [$authController, 'me']);
     $router->post('/api/v1/auth/logout', [$authController, 'logout']);
@@ -758,54 +818,54 @@ function app_router(): Router
     $router->get('/api/v1/sales-development-report/summary', [$salesDevelopmentReportController, 'summary']);
     $router->get('/api/v1/sales-returns', [$salesReturnController, 'list']);
     $router->get('/api/v1/sales-returns/source-documents', [$salesReturnController, 'sourceDocuments']);
-    $router->post('/api/v1/sales-returns', [$salesReturnController, 'create']);
+    $router->post('/api/v1/sales-returns', $requireActionAuth([$salesReturnController, 'create'], 'Sales Return', 'add'));
     $router->get('/api/v1/sales-returns/{refno}', [$salesReturnController, 'show']);
-    $router->patch('/api/v1/sales-returns/{refno}', [$salesReturnController, 'update']);
+    $router->patch('/api/v1/sales-returns/{refno}', $requireActionAuth([$salesReturnController, 'update'], 'Sales Return', 'edit'));
     $router->get('/api/v1/sales-returns/{refno}/items', [$salesReturnController, 'items']);
     $router->get('/api/v1/sales-returns/{refno}/source-items', [$salesReturnController, 'sourceItems']);
-    $router->post('/api/v1/sales-returns/{refno}/items', [$salesReturnController, 'addItem']);
-    $router->delete('/api/v1/sales-return-items/{itemId}', [$salesReturnController, 'deleteItem']);
-    $router->post('/api/v1/sales-returns/{refno}/actions/post', $requireApproverAction([$salesReturnController, 'postAction'], ['Sales Return', 'SR'], true));
-    $router->post('/api/v1/sales-returns/{refno}/actions/unpost', [$salesReturnController, 'unpostAction']);
+    $router->post('/api/v1/sales-returns/{refno}/items', $requireActionAuth([$salesReturnController, 'addItem'], 'Sales Return', 'add'));
+    $router->delete('/api/v1/sales-return-items/{itemId}', $requireActionAuth([$salesReturnController, 'deleteItem'], 'Sales Return', 'delete'));
+    $router->post('/api/v1/sales-returns/{refno}/actions/post', $requireApproverAction([$salesReturnController, 'postAction'], ['Sales Return', 'SR'], true, 'post'));
+    $router->post('/api/v1/sales-returns/{refno}/actions/unpost', $requireActionAuth([$salesReturnController, 'unpostAction'], 'Sales Return', 'unpost'));
     $router->get('/api/v1/sales-inquiries', [$salesInquiryController, 'list']);
     $router->get('/api/v1/sales-inquiries/{inquiryRefno}', [$salesInquiryController, 'show']);
-    $router->post('/api/v1/sales-inquiries', [$salesInquiryController, 'create']);
-    $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', $requireApproverAction([$salesInquiryController, 'update'], ['Sales Inquiry', 'SI']));
-    $router->delete('/api/v1/sales-inquiries/{inquiryRefno}', [$salesInquiryController, 'delete']);
-    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/items', [$salesInquiryController, 'addItem']);
-    $router->patch('/api/v1/sales-inquiry-items/{itemId}', [$salesInquiryController, 'updateItem']);
-    $router->delete('/api/v1/sales-inquiry-items/{itemId}', [$salesInquiryController, 'deleteItem']);
+    $router->post('/api/v1/sales-inquiries', $requireActionAuth([$salesInquiryController, 'create'], 'Sales Inquiry', 'add'));
+    $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', $requireActionAuth([$salesInquiryController, 'update'], 'Sales Inquiry', 'edit'));
+    $router->delete('/api/v1/sales-inquiries/{inquiryRefno}', $requireActionAuth([$salesInquiryController, 'delete'], 'Sales Inquiry', 'delete'));
+    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/items', $requireActionAuth([$salesInquiryController, 'addItem'], 'Sales Inquiry', 'add'));
+    $router->patch('/api/v1/sales-inquiry-items/{itemId}', $requireActionAuth([$salesInquiryController, 'updateItem'], 'Sales Inquiry', 'edit'));
+    $router->delete('/api/v1/sales-inquiry-items/{itemId}', $requireActionAuth([$salesInquiryController, 'deleteItem'], 'Sales Inquiry', 'delete'));
     $router->post('/api/v1/sales-inquiries/{inquiryRefno}/actions/{action}', $requireApproverAction([$salesInquiryController, 'action'], ['Sales Inquiry', 'SI']));
     $router->get('/api/v1/sales-orders', [$salesOrderController, 'list']);
     $router->get('/api/v1/sales-orders/{salesRefno}', [$salesOrderController, 'show']);
-    $router->post('/api/v1/sales-orders', [$salesOrderController, 'create']);
-    $router->patch('/api/v1/sales-orders/{salesRefno}', [$salesOrderController, 'update']);
-    $router->delete('/api/v1/sales-orders/{salesRefno}', [$salesOrderController, 'delete']);
-    $router->post('/api/v1/sales-orders/{salesRefno}/items', [$salesOrderController, 'addItem']);
-    $router->patch('/api/v1/sales-order-items/{itemId}', [$salesOrderController, 'updateItem']);
-    $router->delete('/api/v1/sales-order-items/{itemId}', [$salesOrderController, 'deleteItem']);
+    $router->post('/api/v1/sales-orders', $requireActionAuth([$salesOrderController, 'create'], 'Sales Order', 'add'));
+    $router->patch('/api/v1/sales-orders/{salesRefno}', $requireActionAuth([$salesOrderController, 'update'], 'Sales Order', 'edit'));
+    $router->delete('/api/v1/sales-orders/{salesRefno}', $requireActionAuth([$salesOrderController, 'delete'], 'Sales Order', 'delete'));
+    $router->post('/api/v1/sales-orders/{salesRefno}/items', $requireActionAuth([$salesOrderController, 'addItem'], 'Sales Order', 'add'));
+    $router->patch('/api/v1/sales-order-items/{itemId}', $requireActionAuth([$salesOrderController, 'updateItem'], 'Sales Order', 'edit'));
+    $router->delete('/api/v1/sales-order-items/{itemId}', $requireActionAuth([$salesOrderController, 'deleteItem'], 'Sales Order', 'delete'));
     $router->post('/api/v1/sales-orders/{salesRefno}/actions/{action}', $requireApproverAction([$salesOrderController, 'action'], ['Sales Order', 'SO']));
-    $router->post('/api/v1/sales-orders/{salesRefno}/convert/{documentType}', [$salesOrderController, 'convertDocument']);
+    $router->post('/api/v1/sales-orders/{salesRefno}/convert/{documentType}', $requireActionAuth([$salesOrderController, 'convertDocument'], 'Sales Order', 'add'));
     $router->get('/api/v1/approvers', [$approverController, 'list']);
     $router->get('/api/v1/approvers/staff', [$approverController, 'staff']);
     $router->get('/api/v1/approvers/{approverId}', [$approverController, 'show']);
-    $router->post('/api/v1/approvers', [$approverController, 'create']);
-    $router->patch('/api/v1/approvers/{approverId}', [$approverController, 'update']);
-    $router->delete('/api/v1/approvers/{approverId}', [$approverController, 'delete']);
+    $router->post('/api/v1/approvers', $requireMasterUser([$approverController, 'create']));
+    $router->patch('/api/v1/approvers/{approverId}', $requireMasterUser([$approverController, 'update']));
+    $router->delete('/api/v1/approvers/{approverId}', $requireMasterUser([$approverController, 'delete']));
     $router->get('/api/v1/access-groups', [$accessGroupController, 'list']);
-    $router->post('/api/v1/access-groups', [$accessGroupController, 'create']);
-    $router->patch('/api/v1/access-groups/{id}', [$accessGroupController, 'update']);
-    $router->delete('/api/v1/access-groups/{id}', [$accessGroupController, 'delete']);
+    $router->post('/api/v1/access-groups', $requireMasterUser([$accessGroupController, 'create']));
+    $router->patch('/api/v1/access-groups/{id}', $requireMasterUser([$accessGroupController, 'update']));
+    $router->delete('/api/v1/access-groups/{id}', $requireMasterUser([$accessGroupController, 'delete']));
     $router->get('/api/v1/roles', [$rolePermissionController, 'list']);
-    $router->post('/api/v1/roles', [$rolePermissionController, 'create']);
+    $router->post('/api/v1/roles', $requireMasterUser([$rolePermissionController, 'create']));
     $router->get('/api/v1/roles/{roleId}/permissions', [$rolePermissionController, 'show']);
-    $router->patch('/api/v1/roles/{roleId}/permissions', [$rolePermissionController, 'update']);
-    $router->get('/api/v1/staff', [$staffController, 'list']);
-    $router->post('/api/v1/staff', [$staffController, 'create']);
-    $router->get('/api/v1/staff/roles', [$staffController, 'roles']);
-    $router->get('/api/v1/staff/{staffId}', [$staffController, 'show']);
-    $router->patch('/api/v1/staff/{staffId}', [$staffController, 'update']);
-    $router->delete('/api/v1/staff/{staffId}', [$staffController, 'delete']);
+    $router->patch('/api/v1/roles/{roleId}/permissions', $requireMasterUser([$rolePermissionController, 'update']));
+    $router->get('/api/v1/staff', $requireBearerAuthWithClaims([$staffController, 'list']));
+    $router->post('/api/v1/staff', $requireMasterUser([$staffController, 'create']));
+    $router->get('/api/v1/staff/roles', $requireBearerAuthWithClaims([$staffController, 'roles']));
+    $router->get('/api/v1/staff/{staffId}', $requireBearerAuthWithClaims([$staffController, 'show']));
+    $router->patch('/api/v1/staff/{staffId}', $requireMasterUser([$staffController, 'update']));
+    $router->delete('/api/v1/staff/{staffId}', $requireMasterUser([$staffController, 'delete']));
     $router->get('/api/v1/teams', [$teamController, 'list']);
     $router->get('/api/v1/teams/{teamId}', [$teamController, 'show']);
     $router->post('/api/v1/teams', [$teamController, 'create']);
@@ -878,29 +938,29 @@ function app_router(): Router
     $router->get('/api/v1/promotions/assigned/list', [$promotionController, 'getAssignedPromotions']);
     $router->get('/api/v1/promotions/status/{status}', [$promotionController, 'getPromotionsByStatus']);
     $router->get('/api/v1/promotions/active/list', [$promotionController, 'getActivePromotions']);
-    $router->post('/api/v1/promotions', [$promotionController, 'createPromotion']);
+    $router->post('/api/v1/promotions', $requireActionAuth([$promotionController, 'createPromotion'], 'Promotion', 'add'));
     $router->get('/api/v1/promotions/{promotionId}', [$promotionController, 'getPromotion']);
-    $router->patch('/api/v1/promotions/{promotionId}', [$promotionController, 'updatePromotion']);
-    $router->delete('/api/v1/promotions/{promotionId}', [$promotionController, 'deletePromotion']);
+    $router->patch('/api/v1/promotions/{promotionId}', $requireActionAuth([$promotionController, 'updatePromotion'], 'Promotion', 'edit'));
+    $router->delete('/api/v1/promotions/{promotionId}', $requireActionAuth([$promotionController, 'deletePromotion'], 'Promotion', 'delete'));
     // Promotion Products
     $router->get('/api/v1/promotions/{promotionId}/products', [$promotionController, 'listProducts']);
     $router->get('/api/v1/promotion-products/{productId}', [$promotionController, 'getProduct']);
-    $router->post('/api/v1/promotions/{promotionId}/products', [$promotionController, 'addProduct']);
-    $router->patch('/api/v1/promotion-products/{productId}', [$promotionController, 'updateProduct']);
-    $router->delete('/api/v1/promotion-products/{productId}', [$promotionController, 'deleteProduct']);
+    $router->post('/api/v1/promotions/{promotionId}/products', $requireActionAuth([$promotionController, 'addProduct'], 'Promotion', 'add'));
+    $router->patch('/api/v1/promotion-products/{productId}', $requireActionAuth([$promotionController, 'updateProduct'], 'Promotion', 'edit'));
+    $router->delete('/api/v1/promotion-products/{productId}', $requireActionAuth([$promotionController, 'deleteProduct'], 'Promotion', 'delete'));
     // Promotion Postings
     $router->get('/api/v1/promotions/{promotionId}/postings', [$promotionController, 'listPostings']);
     $router->get('/api/v1/promotion-postings/{postingId}', [$promotionController, 'getPosting']);
-    $router->post('/api/v1/promotions/{promotionId}/postings', [$promotionController, 'createPosting']);
-    $router->patch('/api/v1/promotion-postings/{postingId}', [$promotionController, 'updatePosting']);
+    $router->post('/api/v1/promotions/{promotionId}/postings', $requireActionAuth([$promotionController, 'createPosting'], 'Promotion', 'add'));
+    $router->patch('/api/v1/promotion-postings/{postingId}', $requireActionAuth([$promotionController, 'updatePosting'], 'Promotion', 'edit'));
     $router->post('/api/v1/promotion-postings/{postingId}/review', $requireApproverAction([$promotionController, 'reviewPosting'], ['Promotion', 'Promotion Posting']));
-    $router->delete('/api/v1/promotion-postings/{postingId}', [$promotionController, 'deletePosting']);
+    $router->delete('/api/v1/promotion-postings/{postingId}', $requireActionAuth([$promotionController, 'deletePosting'], 'Promotion', 'delete'));
     $router->get('/api/v1/promotion-postings/review/pending', [$promotionController, 'getPendingReview']);
     // Promotion Extended Operations
-    $router->post('/api/v1/promotions/{promotionId}/extend', [$promotionController, 'extendPromotion']);
-    $router->post('/api/v1/promotions/{promotionId}/products/batch', [$promotionController, 'batchAddProducts']);
-    $router->delete('/api/v1/promotions/{promotionId}/products/by-product/{productId}', [$promotionController, 'removeProductByProductId']);
-    $router->post('/api/v1/promotions/upload-screenshot', [$promotionController, 'uploadScreenshot']);
+    $router->post('/api/v1/promotions/{promotionId}/extend', $requireActionAuth([$promotionController, 'extendPromotion'], 'Promotion', 'edit'));
+    $router->post('/api/v1/promotions/{promotionId}/products/batch', $requireActionAuth([$promotionController, 'batchAddProducts'], 'Promotion', 'add'));
+    $router->delete('/api/v1/promotions/{promotionId}/products/by-product/{productId}', $requireActionAuth([$promotionController, 'removeProductByProductId'], 'Promotion', 'delete'));
+    $router->post('/api/v1/promotions/upload-screenshot', $requireActionAuth([$promotionController, 'uploadScreenshot'], 'Promotion', 'edit'));
     // Loyalty Discounts
     $router->get('/api/v1/loyalty-discounts', [$loyaltyDiscountController, 'list']);
     $router->get('/api/v1/loyalty-discounts/stats', [$loyaltyDiscountController, 'stats']);

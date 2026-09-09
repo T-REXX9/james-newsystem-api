@@ -7,6 +7,7 @@ namespace App\Controllers;
 use App\Repositories\AuthRepository;
 use App\Repositories\RolePermissionRepository;
 use App\Security\TokenService;
+use App\Support\ActionPermissionPolicy;
 use App\Support\Exceptions\HttpException;
 
 final class AuthController
@@ -118,20 +119,18 @@ final class AuthController
         $webPermissions = $this->repo->getWebPermissions($mainUserId, $userType);
         $packagePermissions = $servicePackage === '' ? [] : $this->repo->getPackagePermissions($mainUserId, $servicePackage);
 
-        // Build action-level permissions from web permissions (ladd_action, ledit_action, ldelete_action)
-        $actionPermissions = [];
-        if ($this->rolePermissionRepo !== null && $roleId > 0) {
-            $actionPermissions = $this->rolePermissionRepo->getActionPermissionsByModule($mainUserId, $roleId);
-        } else {
-            // Fallback: derive action permissions directly from web permissions
+        // Build per-account action permissions. Master Users are always unrestricted.
+        $actionPermissions = ActionPermissionPolicy::DEFAULTS;
+        if ($userType !== '1' && $this->rolePermissionRepo !== null && $roleId > 0) {
+            $actionPermissions = $this->rolePermissionRepo->getActionPermissionsForAccount($mainUserId, $userId, $roleId);
+        } elseif ($userType !== '1') {
+            // Fallback for deployments without the role-permission repository.
             foreach ($webPermissions as $wp) {
                 $pageNo = (string) ($wp['lpageno'] ?? '');
                 if ($pageNo !== '') {
-                    $actionPermissions[$pageNo] = [
-                        'can_add' => (int) ($wp['ladd_action'] ?? 0) === 1,
-                        'can_edit' => (int) ($wp['ledit_action'] ?? 0) === 1,
-                        'can_delete' => (int) ($wp['ldelete_action'] ?? 0) === 1,
-                    ];
+                    $actionPermissions['can_add'] = $actionPermissions['can_add'] && (int) ($wp['ladd_action'] ?? 0) === 1;
+                    $actionPermissions['can_edit'] = $actionPermissions['can_edit'] && (int) ($wp['ledit_action'] ?? 0) === 1;
+                    $actionPermissions['can_delete'] = $actionPermissions['can_delete'] && (int) ($wp['ldelete_action'] ?? 0) === 1;
                 }
             }
         }

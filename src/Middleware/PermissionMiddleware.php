@@ -14,7 +14,7 @@ use App\Support\Exceptions\HttpException;
  * Checks three levels:
  * 1. Authentication (valid JWT token)
  * 2. Module-level access (user's role has access to the requested module)
- * 3. Action-level access (user's role can perform add/edit/delete on the module)
+ * 3. Action-level access (the account can perform add/edit/delete/post/unpost)
  */
 final class PermissionMiddleware
 {
@@ -28,7 +28,7 @@ final class PermissionMiddleware
      * Validate that the authenticated user has access to the requested endpoint.
      *
      * @param string|null $requiredModule The module ID required for this endpoint (null = auth only)
-     * @param string|null $requiredAction The action required: 'add', 'edit', 'delete', or null for read-only
+     * @param string|null $requiredAction The action required: 'add', 'edit', 'delete', 'post', 'unpost', or null for read-only
      * @return array The JWT claims if validation passes
      * @throws HttpException If access is denied
      */
@@ -60,7 +60,7 @@ final class PermissionMiddleware
 
             // Step 3: If an action is required, validate action-level access
             if ($requiredAction !== null) {
-                $this->validateActionPermission($mainUserId, $groupId, $requiredAction);
+                $this->assertActionPermission($claims, $requiredAction);
             }
         }
 
@@ -72,34 +72,23 @@ final class PermissionMiddleware
      *
      * @throws HttpException If the action is not allowed
      */
-    private function validateActionPermission(int $mainId, int $groupId, string $action): void
+    public function assertActionPermission(array $claims, string $action): void
     {
-        $actionPerms = $this->rolePermissionRepo->getActionPermissions($mainId, $groupId);
-
-        // If no action permissions are defined, default to allowed
-        if (empty($actionPerms)) {
+        if ((string) ($claims['user_type'] ?? '') === '1') {
             return;
         }
 
-        $actionField = match ($action) {
-            'add' => 'can_add',
-            'edit' => 'can_edit',
-            'delete' => 'can_delete',
-            default => null,
-        };
-
-        if ($actionField === null) {
-            return;
+        $mainId = (int) ($claims['main_userid'] ?? 0);
+        $accountId = (int) ($claims['sub'] ?? 0);
+        $groupId = (int) ($claims['logintype'] ?? 0);
+        if ($mainId <= 0 || $accountId <= 0 || $groupId <= 0) {
+            throw new HttpException(403, 'Forbidden: Unable to determine user permissions');
         }
 
-        // Check if any permission row grants this action
-        foreach ($actionPerms as $perm) {
-            if ($perm[$actionField] ?? false) {
-                return;
-            }
+        $permissions = $this->rolePermissionRepo->getActionPermissionsForAccount($mainId, $accountId, $groupId);
+        if (!\App\Support\ActionPermissionPolicy::allows($permissions, $action, false)) {
+            throw new HttpException(403, "Forbidden: You do not have permission to {$action}");
         }
-
-        throw new HttpException(403, "Forbidden: You do not have permission to {$action} in this module");
     }
 
     /**
@@ -153,17 +142,15 @@ final class PermissionMiddleware
     }
 
     /**
-     * Get action permissions for the authenticated user's role.
-     * Returns an associative array of module_id => {can_add, can_edit, can_delete}.
+     * Get action permissions for the authenticated account.
      *
-     * @return array<string, array{can_add: bool, can_edit: bool, can_delete: bool}>
+     * @return array<string, bool>
      */
     public function getActionPermissionsForUser(array $claims): array
     {
         $userType = (string) ($claims['user_type'] ?? '');
         if ($userType === '1') {
-            // Owner gets all action permissions
-            return [];
+            return \App\Support\ActionPermissionPolicy::DEFAULTS;
         }
 
         $mainUserId = (int) ($claims['main_userid'] ?? 0);
@@ -173,6 +160,10 @@ final class PermissionMiddleware
             return [];
         }
 
-        return $this->rolePermissionRepo->getActionPermissionsByModule($mainUserId, $groupId);
+        return $this->rolePermissionRepo->getActionPermissionsForAccount(
+            $mainUserId,
+            (int) ($claims['sub'] ?? 0),
+            $groupId
+        );
     }
 }

@@ -86,6 +86,7 @@ final class StaffController
             'access_rights',
             'access_override',
             'group_id',
+            'action_permissions',
         ];
 
         $data = [];

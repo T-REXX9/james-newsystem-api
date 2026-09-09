@@ -7,12 +7,14 @@ namespace App\Repositories;
 use App\Database;
 use App\Support\LegacyPermissionMapper;
 use App\Support\Exceptions\HttpException;
+use App\Support\ActionPermissionPolicy;
 use PDO;
 
 final class StaffRepository
 {
     private LegacyPermissionMapper $legacyPermissions;
     private ?bool $hasAccountAccessRightsColumn = null;
+    private ?bool $hasAccountActionPermissionsColumn = null;
     private const SALES_AGENT_NAME = 'Sales Agent';
     private const WAREHOUSE_PERSONNEL_NAME = 'Warehouse Personnel';
     private const COMPANY_OWNER_NAME = 'Company Owner';
@@ -53,6 +55,9 @@ final class StaffRepository
             ? "a.laccess_rights AS laccess_rights,
                CASE WHEN a.laccess_rights IS NULL THEN 0 ELSE 1 END AS has_stored_access_rights"
             : "'[]' AS laccess_rights, 0 AS has_stored_access_rights";
+        $actionPermissionsSelect = $this->accountActionPermissionsColumnExists()
+            ? "a.laction_permissions AS laction_permissions"
+            : "NULL AS laction_permissions";
 
         $sql = <<<SQL
 SELECT
@@ -78,6 +83,7 @@ SELECT
     CAST(COALESCE(a.lcommission, 0) AS DECIMAL(10,2)) AS commission,
     COALESCE(a.ldatereg, NOW()) AS created_at,
     {$accountAccessRightsSelect},
+    {$actionPermissionsSelect},
     0 AS access_override
 FROM tblaccount a
 WHERE {$whereSql}
@@ -125,6 +131,9 @@ SQL;
             ? "a.laccess_rights AS laccess_rights,
                CASE WHEN a.laccess_rights IS NULL THEN 0 ELSE 1 END AS has_stored_access_rights"
             : "'[]' AS laccess_rights, 0 AS has_stored_access_rights";
+        $actionPermissionsSelect = $this->accountActionPermissionsColumnExists()
+            ? "a.laction_permissions AS laction_permissions"
+            : "NULL AS laction_permissions";
 
         $sql = <<<SQL
 SELECT
@@ -158,6 +167,7 @@ SELECT
     CAST(COALESCE(a.lcommission, 0) AS DECIMAL(10,2)) AS commission,
     COALESCE(a.ldatereg, NOW()) AS created_at,
     {$accountAccessRightsSelect},
+    {$actionPermissionsSelect},
     0 AS access_override
 FROM tblaccount a
 WHERE a.lid = :staff_id
@@ -280,6 +290,17 @@ SQL;
             }
             $updates[] = 'laccess_rights = :access_rights';
             $params['access_rights'] = json_encode(array_values($data['access_rights']));
+        }
+
+        if (array_key_exists('action_permissions', $data) && is_array($data['action_permissions'])) {
+            if (!$this->accountActionPermissionsColumnExists()) {
+                throw new HttpException(
+                    500,
+                    'Action permissions cannot be saved because tblaccount.laction_permissions is missing. Apply api/migrations/040_add_account_action_permissions.sql.'
+                );
+            }
+            $updates[] = 'laction_permissions = :action_permissions';
+            $params['action_permissions'] = json_encode(ActionPermissionPolicy::normalize($data['action_permissions']), JSON_THROW_ON_ERROR);
         }
 
         if (empty($updates)) {
@@ -578,6 +599,15 @@ SQL;
 
         $row['access_rights'] = $hasStoredRights ? $storedRights : $groupRights;
         $row['access_override'] = $hasStoredRights && $this->rightsDiffer($storedRights, $groupRights);
+        $actionPermissions = [];
+        if (is_string($row['laction_permissions'] ?? null) && trim($row['laction_permissions']) !== '') {
+            $decoded = json_decode($row['laction_permissions'], true);
+            if (is_array($decoded)) {
+                $actionPermissions = ActionPermissionPolicy::normalize($decoded);
+            }
+        }
+        $row['action_permissions'] = $actionPermissions;
+        unset($row['laction_permissions']);
         unset($row['has_stored_access_rights']);
 
         return $row;
@@ -603,6 +633,17 @@ SQL;
         $stmt = $this->db->pdo()->query("SHOW COLUMNS FROM tblaccount LIKE 'laccess_rights'");
         $this->hasAccountAccessRightsColumn = (bool) $stmt->fetch(PDO::FETCH_ASSOC);
         return $this->hasAccountAccessRightsColumn;
+    }
+
+    private function accountActionPermissionsColumnExists(): bool
+    {
+        if ($this->hasAccountActionPermissionsColumn !== null) {
+            return $this->hasAccountActionPermissionsColumn;
+        }
+
+        $stmt = $this->db->pdo()->query("SHOW COLUMNS FROM tblaccount LIKE 'laction_permissions'");
+        $this->hasAccountActionPermissionsColumn = (bool) $stmt->fetch(PDO::FETCH_ASSOC);
+        return $this->hasAccountActionPermissionsColumn;
     }
 
     private function normalizeEmail(string $email): string
