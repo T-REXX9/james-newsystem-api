@@ -22,17 +22,17 @@ final class CustomerRepository
     }
 
     /**
-     * Maps legacy database pricing groups to API-facing tiers.
+     * Maps database pricing groups to vip1 / vip2 / vip3.
      */
     public function getNormalizedPriceGroup(string $dbValue): string
     {
         $canonical = preg_replace('/[\s_-]+/', '', strtolower(trim($dbValue))) ?? '';
 
         return match ($canonical) {
-            'aaa' => 'regular',
-            'vip1' => 'silver',
-            'vip2' => 'gold',
-            default => 'unknown',
+            'vip1', 'silver' => 'vip1',
+            'vip2', 'gold' => 'vip2',
+            'vip3', 'platinum', 'aaa', 'aa', 'regular' => 'vip3',
+            default => 'vip3',
         };
     }
 
@@ -50,20 +50,20 @@ final class CustomerRepository
         }
 
         return match ($this->getNormalizedPriceGroup($fallbackPriceGroup)) {
-            'silver' => 'vip silver',
-            'gold' => 'vip gold',
+            'vip1' => 'vip silver',
+            'vip2' => 'vip gold',
             default => 'regular',
         };
     }
 
     /**
-     * Platinum applies only to gold customers retained for at least 3 months.
+     * Platinum applies only to vip2 customers retained for at least 3 months.
      */
     public function resolvePlatinumEligibility(string $priceGroup, string $customerSince): bool
     {
         $internal = $this->getNormalizedPriceGroup($priceGroup);
         $normalizedSince = CustomerLedgerCalculator::normalizeDate($customerSince);
-        if ($internal !== 'gold' || $normalizedSince === null) {
+        if ($internal !== 'vip2' || $normalizedSince === null) {
             return false;
         }
 

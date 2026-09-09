@@ -138,7 +138,7 @@ final class InventoryReportRepository
                 'last_rr_date' => (string) ($item['last_rr_date'] ?? ''),
                 'last_rr_qty' => (float) ($item['last_rr_qty'] ?? 0),
                 'reorder_quantity' => (float) ($item['reorder_quantity'] ?? 0),
-                // Product Database's visible VIP 1 is stored under the legacy AAA price group.
+                // Product Database VIP 1 is stored under the legacy "VIP 1" price group.
                 'vip1_price' => (float) ($item['vip1_price'] ?? 0),
                 // Keep the old key during rollout for older deployed web bundles.
                 'cost' => (float) ($item['vip1_price'] ?? 0),
@@ -236,7 +236,7 @@ SELECT
         SELECT ip.lprice_amt
         FROM tblinventory_price ip
         WHERE ip.linv_refno = itm.lsession
-          AND ip.lprice_name = 'AAA'
+          AND ip.lprice_name = 'VIP 1'
         ORDER BY ip.lid DESC
         LIMIT 1
     ), 0) AS vip1_price,

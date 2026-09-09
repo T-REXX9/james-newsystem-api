@@ -122,7 +122,7 @@ SELECT
         SELECT ip.lprice_amt
         FROM tblinventory_price ip
         WHERE ip.linv_refno = itm.lsession
-          AND ip.lprice_name = 'AAA'
+          AND ip.lprice_name = 'VIP 1'
         ORDER BY ip.lid DESC
         LIMIT 1
     ), 0) AS vip1_price,

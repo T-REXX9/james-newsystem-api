@@ -185,6 +185,13 @@ SELECT
     CAST(COALESCE((
         SELECT ip.lprice_amt
         FROM tblinventory_price ip
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'VIP3'
+        ORDER BY ip.lid DESC
+        LIMIT 1
+    ), 0) AS DECIMAL(15,2)) AS price_vip3,
+    CAST(COALESCE((
+        SELECT ip.lprice_amt
+        FROM tblinventory_price ip
         WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'BAA'
         ORDER BY ip.lid DESC
         LIMIT 1
@@ -416,6 +423,13 @@ SELECT
         ORDER BY ip.lid DESC
         LIMIT 1
     ), 0) AS DECIMAL(15,2)) AS price_vip2,
+    CAST(COALESCE((
+        SELECT ip.lprice_amt
+        FROM tblinventory_price ip
+        WHERE ip.linv_refno = itm.lsession AND ip.lprice_name = 'VIP3'
+        ORDER BY ip.lid DESC
+        LIMIT 1
+    ), 0) AS DECIMAL(15,2)) AS price_vip3,
     CAST(COALESCE((
         SELECT ip.lprice_amt
         FROM tblinventory_price ip
@@ -1076,6 +1090,7 @@ SQL;
             'price_dd' => 'ADD',
             'price_vip1' => 'VIP 1',
             'price_vip2' => 'VIP2',
+            'price_vip3' => 'VIP3',
         ];
 
         foreach ($mapping as $field => $groupName) {

@@ -335,8 +335,6 @@ SQL);
             'priority_from_date' => $normalizedFromDate,
             'historical_before_date' => $normalizedFromDate,
             'historical_before_date_count' => $normalizedFromDate,
-            'current_year' => (int) date('Y'),
-            'current_year_month' => (int) date('Y'),
             'current_month' => date('Y-m'),
             'last_month' => date('Y-m', strtotime('-1 month')),
             'ledger_main_id' => $mainIdStr,
@@ -397,10 +395,10 @@ SELECT
     COALESCE(ledger_summary.historical_transaction_count, 0) AS historical_transaction_count,
     COALESCE(ledger_summary.active_purchase_month_count, 0) AS active_purchase_month_count,
     COALESCE(ledger_summary.total_sales, 0) AS total_sales,
-    COALESCE(ledger_summary.current_year_sales, 0) AS current_year_sales,
-    COALESCE(ledger_summary.current_year_purchase_month_count, 0) AS current_year_purchase_month_count,
-    COALESCE(ledger_summary.last_active_year_sales, 0) AS last_active_year_sales,
-    COALESCE(ledger_summary.last_active_year_purchase_month_count, 0) AS last_active_year_purchase_month_count,
+    COALESCE(ledger_summary.priority_trailing_12_month_sales, 0) AS priority_trailing_12_month_sales,
+    COALESCE(ledger_summary.priority_trailing_12_month_month_count, 0) AS priority_trailing_12_month_month_count,
+    COALESCE(ledger_summary.recovery_trailing_12_month_sales, 0) AS recovery_trailing_12_month_sales,
+    COALESCE(ledger_summary.recovery_trailing_12_month_month_count, 0) AS recovery_trailing_12_month_month_count,
     ledger_summary.last_active_year,
     COALESCE(ledger_summary.current_month_sales, 0) AS current_month_sales,
     COALESCE(ledger_summary.last_month_sales, 0) AS last_month_sales,
@@ -429,10 +427,23 @@ LEFT JOIN (
         COUNT(CASE WHEN lg.ldatetime < :historical_before_date_count THEN lg.lid END) AS historical_transaction_count,
         COUNT(DISTINCT DATE_FORMAT(lg.ldatetime, '%Y-%m')) AS active_purchase_month_count,
         SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS total_sales,
-        SUM(CASE WHEN YEAR(lg.ldatetime) = :current_year AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS current_year_sales,
-        COUNT(DISTINCT CASE WHEN YEAR(lg.ldatetime) = :current_year_month AND COALESCE(lg.ldebit, 0) > 0 THEN DATE_FORMAT(lg.ldatetime, '%Y-%m') END) AS current_year_purchase_month_count,
-        SUM(CASE WHEN ly.last_active_year IS NOT NULL AND YEAR(lg.ldatetime) = ly.last_active_year AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS last_active_year_sales,
-        COUNT(DISTINCT CASE WHEN ly.last_active_year IS NOT NULL AND YEAR(lg.ldatetime) = ly.last_active_year AND COALESCE(lg.ldebit, 0) > 0 THEN DATE_FORMAT(lg.ldatetime, '%Y-%m') END) AS last_active_year_purchase_month_count,
+        SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS priority_trailing_12_month_sales,
+        COUNT(DISTINCT CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN DATE_FORMAT(lg.ldatetime, '%Y-%m') END) AS priority_trailing_12_month_month_count,
+        SUM(CASE
+            WHEN ly.last_active_purchase_at IS NOT NULL
+              AND lg.ldatetime >= DATE_SUB(ly.last_active_purchase_at, INTERVAL 12 MONTH)
+              AND lg.ldatetime <= ly.last_active_purchase_at
+              AND COALESCE(lg.ldebit, 0) > 0
+            THEN COALESCE(lg.ldebit, 0)
+            ELSE 0
+        END) AS recovery_trailing_12_month_sales,
+        COUNT(DISTINCT CASE
+            WHEN ly.last_active_purchase_at IS NOT NULL
+              AND lg.ldatetime >= DATE_SUB(ly.last_active_purchase_at, INTERVAL 12 MONTH)
+              AND lg.ldatetime <= ly.last_active_purchase_at
+              AND COALESCE(lg.ldebit, 0) > 0
+            THEN DATE_FORMAT(lg.ldatetime, '%Y-%m')
+        END) AS recovery_trailing_12_month_month_count,
         ly.last_active_year,
         SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :current_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS current_month_sales,
         SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :last_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS last_month_sales,
@@ -445,7 +456,8 @@ LEFT JOIN (
         SELECT
             historical.lcustomerid,
             historical.lmainid,
-            MAX(YEAR(historical.ldatetime)) AS last_active_year
+            MAX(YEAR(historical.ldatetime)) AS last_active_year,
+            MAX(historical.ldatetime) AS last_active_purchase_at
         FROM tblledger historical
         WHERE historical.lmainid = :historical_ledger_main_id
           AND historical.ldatetime < :historical_before_date
@@ -457,7 +469,7 @@ LEFT JOIN (
     WHERE lg.lmainid = :ledger_main_id
       AND lg.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
       AND COALESCE(lg.lcustomerid, '') <> ''
-    GROUP BY lg.lcustomerid, lg.lmainid, ly.last_active_year
+    GROUP BY lg.lcustomerid, lg.lmainid, ly.last_active_year, ly.last_active_purchase_at
 ) ledger_summary ON ledger_summary.lcustomerid = p.lsessionid
     AND ledger_summary.lmainid = CAST(p.lmain_id AS CHAR)
 LEFT JOIN (
@@ -492,10 +504,10 @@ SQL;
             $rawDate = (string) ($row['last_purchase_date_raw'] ?? '');
             $daysSinceLastPurchase = max(0, (int) ($row['days_since_last_purchase'] ?? 0));
             $totalSales = (float) ($row['total_sales'] ?? 0);
-            $currentYearSales = (float) ($row['current_year_sales'] ?? 0);
-            $currentYearPurchaseMonthCount = max(0, (int) ($row['current_year_purchase_month_count'] ?? 0));
-            $lastActiveYearSales = (float) ($row['last_active_year_sales'] ?? 0);
-            $lastActiveYearPurchaseMonthCount = max(0, (int) ($row['last_active_year_purchase_month_count'] ?? 0));
+            $priorityTrailingSales = (float) ($row['priority_trailing_12_month_sales'] ?? 0);
+            $priorityTrailingMonthCount = max(0, (int) ($row['priority_trailing_12_month_month_count'] ?? 0));
+            $recoveryTrailingSales = (float) ($row['recovery_trailing_12_month_sales'] ?? 0);
+            $recoveryTrailingMonthCount = max(0, (int) ($row['recovery_trailing_12_month_month_count'] ?? 0));
             $purchaseCount = (int) ($row['purchase_count'] ?? 0);
             $priorityTransactionCount = (int) ($row['priority_transaction_count'] ?? 0);
             $ledgerTransactionCount = (int) ($row['ledger_transaction_count'] ?? 0);
@@ -503,12 +515,22 @@ SQL;
             $listCategory = $priorityTransactionCount > 0
                 ? 'priority'
                 : ($ledgerTransactionCount > 0 ? 'recovery' : 'no_purchase');
-            $averageMonthlySales = $listCategory === 'recovery'
-                ? ($lastActiveYearPurchaseMonthCount > 0 ? $lastActiveYearSales / $lastActiveYearPurchaseMonthCount : 0)
-                : ($currentYearPurchaseMonthCount > 0 ? $currentYearSales / $currentYearPurchaseMonthCount : 0);
-            $averageMonthlySalesMonthCount = $listCategory === 'recovery'
-                ? $lastActiveYearPurchaseMonthCount
-                : $currentYearPurchaseMonthCount;
+            $isBlocked = ((int) ($row['customer_status'] ?? 1) === 4)
+                || strtolower(trim((string) ($row['debt_type'] ?? 'Good'))) === 'bad';
+            // Client formula:
+            // Priority = avg monthly purchase over the last 12 months
+            // Recovery / Blacklisted = avg monthly purchase over the last 12 months of active year
+            // Verified prospect potential is applied in the UI as ₱5,000 each
+            // Unverified prospect potential is 0
+            $useRecoveryAverage = $listCategory === 'recovery' || $isBlocked;
+            $averageMonthlySales = $useRecoveryAverage
+                ? ($recoveryTrailingMonthCount > 0 ? $recoveryTrailingSales / $recoveryTrailingMonthCount : 0)
+                : ($listCategory === 'priority' && $priorityTrailingMonthCount > 0
+                    ? $priorityTrailingSales / $priorityTrailingMonthCount
+                    : 0);
+            $averageMonthlySalesMonthCount = $useRecoveryAverage
+                ? $recoveryTrailingMonthCount
+                : ($listCategory === 'priority' ? $priorityTrailingMonthCount : 0);
             $activePurchaseMonthCount = max(0, (int) ($row['active_purchase_month_count'] ?? 0));
             $recentThreeMonthSales = (float) ($row['recent_three_month_sales'] ?? 0);
             $previousThreeMonthSales = (float) ($row['previous_three_month_sales'] ?? 0);
@@ -554,8 +576,8 @@ SQL;
                 'list_category' => $listCategory,
                 'averageMonthlySalesMonthCount' => $averageMonthlySalesMonthCount,
                 'average_monthly_sales_month_count' => $averageMonthlySalesMonthCount,
-                'averageMonthlySalesYear' => $listCategory === 'recovery' ? (int) ($row['last_active_year'] ?? 0) : (int) date('Y'),
-                'average_monthly_sales_year' => $listCategory === 'recovery' ? (int) ($row['last_active_year'] ?? 0) : (int) date('Y'),
+                'averageMonthlySalesYear' => $useRecoveryAverage ? (int) ($row['last_active_year'] ?? 0) : 0,
+                'average_monthly_sales_year' => $useRecoveryAverage ? (int) ($row['last_active_year'] ?? 0) : 0,
                 'totalSales' => $totalSales,
                 'total_sales' => $totalSales,
                 'currentMonthSales' => (float) ($row['current_month_sales'] ?? 0),

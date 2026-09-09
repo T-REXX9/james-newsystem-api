@@ -61,8 +61,8 @@ $pdo->exec("INSERT INTO tblinventory_item
     (2, 'item-2', 'PN-002', 'IT-002', 'FILTER', 'Fuel System', 'B-02', 4, 1, 1),
     (3, 'item-3', 'PN-003', 'IT-003', 'GASKET', 'Fuel System', 'C-03', 2, 1, 1)");
 $pdo->exec("INSERT INTO tblinventory_price (lid, linv_refno, lprice_name, lprice_amt) VALUES
-    (1, 'item-1', 'AAA', 18),
-    (2, 'item-1', 'VIP 1', 0)");
+    (1, 'item-1', 'VIP 1', 18),
+    (2, 'item-1', 'AAA', 0)");
 $pdo->exec("INSERT INTO tblinventory_logs
     (lid, linvent_id, lwarehouse, lin, lout, ldateadded, ltransaction_type, lstatus_logs) VALUES
     (1, 'item-1', 'MAIN', 5, 0, '2026-07-01 09:00:00', 'Receiving', '+'),
@@ -127,11 +127,11 @@ inventory_report_expect(
 );
 inventory_report_expect(
     ($result['items'][0]['vip1_price'] ?? 0) === 18.0,
-    'report uses the price shown as VIP 1 in Product Database rather than the internal VIP 1 field shown as VIP 2'
+    'report uses the VIP 1 database price group'
 );
 inventory_report_expect(
     ($result['items'][0]['value'] ?? 0) === 126.0,
-    'inventory report value uses the Product Database VIP 1 price'
+    'inventory report value uses the VIP 1 price'
 );
 
 echo "Tests passed.\n";

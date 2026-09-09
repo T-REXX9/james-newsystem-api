@@ -100,6 +100,7 @@ try {
         ['AAA', '500.00'],
         ['VIP 1', '450.00'],
         ['VIP2', '475.00'],
+        ['VIP3', '425.00'],
         ['ADD', '300.00'],
         ['ZERO', '0.00'],
     ] as [$name, $amount]) {
@@ -120,17 +121,19 @@ try {
     assert_eq(200, $res['http_code'], 'Product endpoint returns 200', $passed, $failed, $errors);
 
     $product = is_array($res['body']['data'] ?? null) ? $res['body']['data'] : [];
-    assert_eq(500.0, (float) ($product['price_aa'] ?? -1), 'Product Database VIP 1 maps to AAA', $passed, $failed, $errors);
-    assert_eq(450.0, (float) ($product['price_vip1'] ?? -1), 'Product Database VIP 2 maps to legacy VIP 1', $passed, $failed, $errors);
-    assert_eq(475.0, (float) ($product['price_vip2'] ?? -1), 'Product Database VIP 3 maps to VIP2', $passed, $failed, $errors);
+    assert_eq(500.0, (float) ($product['price_aa'] ?? -1), 'AA maps to AAA', $passed, $failed, $errors);
+    assert_eq(450.0, (float) ($product['price_vip1'] ?? -1), 'VIP 1 maps to legacy VIP 1', $passed, $failed, $errors);
+    assert_eq(475.0, (float) ($product['price_vip2'] ?? -1), 'VIP 2 maps to VIP2', $passed, $failed, $errors);
+    assert_eq(425.0, (float) ($product['price_vip3'] ?? -1), 'VIP 3 maps to VIP3', $passed, $failed, $errors);
 
     $list = request("{$API_BASE}/api/v1/products?main_id={$MAIN_ID}&status=all&search=CODEX-LOWEST-PRICE&page=1&per_page=5");
     assert_eq(200, $list['http_code'], 'Product list endpoint returns 200', $passed, $failed, $errors);
     $listProduct = $list['body']['data']['items'][0] ?? [];
     assert_eq($session, (string) ($listProduct['id'] ?? ''), 'Product list finds seeded product', $passed, $failed, $errors);
-    assert_eq(500.0, (float) ($listProduct['price_aa'] ?? -1), 'Product list VIP 1 maps to AAA', $passed, $failed, $errors);
-    assert_eq(450.0, (float) ($listProduct['price_vip1'] ?? -1), 'Product list VIP 2 maps to legacy VIP 1', $passed, $failed, $errors);
-    assert_eq(475.0, (float) ($listProduct['price_vip2'] ?? -1), 'Product list VIP 3 maps to VIP2', $passed, $failed, $errors);
+    assert_eq(500.0, (float) ($listProduct['price_aa'] ?? -1), 'Product list AA maps to AAA', $passed, $failed, $errors);
+    assert_eq(450.0, (float) ($listProduct['price_vip1'] ?? -1), 'Product list VIP 1 maps to legacy VIP 1', $passed, $failed, $errors);
+    assert_eq(475.0, (float) ($listProduct['price_vip2'] ?? -1), 'Product list VIP 2 maps to VIP2', $passed, $failed, $errors);
+    assert_eq(425.0, (float) ($listProduct['price_vip3'] ?? -1), 'Product list VIP 3 maps to VIP3', $passed, $failed, $errors);
 } finally {
     $pdo->prepare('DELETE FROM tblinventory_price WHERE linv_refno = :session')->execute(['session' => $session]);
     $pdo->prepare('DELETE FROM tblinventory_item WHERE lsession = :session')->execute(['session' => $session]);

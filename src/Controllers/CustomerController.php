@@ -27,9 +27,8 @@ final class CustomerController
 
         $priceGroup = $customer['price_group'] ?? '';
         $customerSince = $customer['customer_since'] ?? '';
-        $eligible = $this->repo->resolvePlatinumEligibility($priceGroup, $customerSince);
         $normalized = $this->repo->getNormalizedPriceGroup($priceGroup);
-        $customer['pricing_tier'] = $eligible ? 'platinum' : $normalized;
+        $customer['pricing_tier'] = $normalized;
         $customer['price_code'] = (string) ($customer['price_code'] ?? $customer['price_group'] ?? '');
         $customer['discount_code'] = $this->repo->normalizeDiscountCode(
             (string) ($customer['discount_code'] ?? ''),
