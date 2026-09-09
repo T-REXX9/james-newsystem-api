@@ -76,6 +76,9 @@ $run('records failure and notifies when destination is missing', static function
     if (($saved['last_success_at'] ?? null) !== null) {
         throw new RuntimeException('success must not be recorded');
     }
+    if (($saved['last_run_key'] ?? null) !== null) {
+        throw new RuntimeException('missing destination must not consume the run slot');
+    }
 
     @unlink($storePath);
 });

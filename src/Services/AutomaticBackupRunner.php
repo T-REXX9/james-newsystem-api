@@ -50,7 +50,8 @@ final class AutomaticBackupRunner
                 $settings,
                 $runKey,
                 'Backup Destination is missing, unmounted, or not writable.',
-                $now
+                $now,
+                false
             );
         }
 
@@ -89,11 +90,11 @@ final class AutomaticBackupRunner
             $this->store->save($settings);
 
             return ['status' => 'success', 'path' => $target];
-        } catch (Throwable $error) {
+        } catch (\Throwable $error) {
             if (is_string($tempPath) && $tempPath !== '' && is_file($tempPath)) {
                 @unlink($tempPath);
             }
-            return $this->fail($settings, $runKey, $error->getMessage(), $now);
+            return $this->fail($settings, $runKey, $error->getMessage(), $now, true);
         }
     }
 
@@ -101,11 +102,19 @@ final class AutomaticBackupRunner
      * @param array<string, mixed> $settings
      * @return array{status: string, message: string}
      */
-    private function fail(array $settings, string $runKey, string $message, DateTimeImmutable $now): array
-    {
+    private function fail(
+        array $settings,
+        string $runKey,
+        string $message,
+        DateTimeImmutable $now,
+        bool $consumeRunSlot
+    ): array {
         $settings['last_failure_at'] = $now->format('c');
         $settings['last_failure_message'] = $message;
-        $settings['last_run_key'] = $runKey;
+        // Missing destination should remain retryable in the same schedule slot.
+        if ($consumeRunSlot) {
+            $settings['last_run_key'] = $runKey;
+        }
         $this->store->save($settings);
 
         ($this->notifyMaster)(

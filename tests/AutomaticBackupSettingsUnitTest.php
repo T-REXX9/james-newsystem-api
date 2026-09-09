@@ -121,5 +121,18 @@ $run('accepts weekly schedule with days', static function (): void {
     }
 });
 
+$run('normalizes HH:MM:SS time from browsers to HH:MM', static function (): void {
+    $normalized = AutomaticBackupSettings::normalizeAndValidate([
+        'enabled' => false,
+        'frequency' => 'daily',
+        'time' => '02:00:00',
+        'destination_path' => '',
+        'retention_count' => 14,
+    ]);
+    if ($normalized['time'] !== '02:00') {
+        throw new RuntimeException('expected normalized 02:00');
+    }
+});
+
 echo "Passed: {$passed}, Failed: {$failed}\n";
 exit($failed > 0 ? 1 : 0);

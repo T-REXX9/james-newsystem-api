@@ -48,9 +48,11 @@ final class AutomaticBackupSettings
         }
 
         $time = trim((string) ($input['time'] ?? $base['time']));
-        if (!preg_match('/^([01]\d|2[0-3]):([0-5]\d)$/', $time)) {
+        // Browsers may submit HH:MM:SS from <input type="time">.
+        if (preg_match('/^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/', $time, $timeMatch) !== 1) {
             throw new HttpException(422, 'Automatic Backup time must be HH:MM in 24-hour format.');
         }
+        $time = $timeMatch[1] . ':' . $timeMatch[2];
 
         $destination = trim((string) ($input['destination_path'] ?? ''));
         if ($enabled && $destination === '') {
