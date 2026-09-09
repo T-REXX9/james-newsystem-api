@@ -201,6 +201,7 @@ SQL);
 SELECT COUNT(*)
 FROM tblpatient p
 WHERE p.lmain_id = :main_id
+  AND COALESCE(p.ldeleted, 0) = 0
   AND LOWER(COALESCE(p.lactive, '')) NOT LIKE '%inactive%'
   AND COALESCE(p.lstatus, 1) <> 0
   AND LOWER(COALESCE(p.lprofile_type, '')) NOT LIKE '%prospective%'
@@ -326,6 +327,7 @@ SQL);
         $normalizedFromDate = $this->normalizeDateOrDefault($fromDate, '2025-10-01');
         $where = [
             'p.lmain_id = :main_id',
+            'COALESCE(p.ldeleted, 0) = 0',
         ];
         $mainIdStr = (string) $mainId;
         $params = [
@@ -1471,6 +1473,7 @@ LEFT JOIN (
     GROUP BY lg.lcustomerid
 ) lg_bal ON lg_bal.lcustomerid = p.lsessionid
 WHERE p.lmain_id = :main_id
+  AND COALESCE(p.ldeleted, 0) = 0
 ORDER BY p.lid DESC
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
@@ -1527,6 +1530,7 @@ LEFT JOIN (
     ) cp_min ON cp_min.lrefno = cp.lrefno AND cp_min.min_lid = cp.lid
 ) cp_first ON cp_first.lrefno = p.lsessionid
 WHERE p.lmain_id = :main_id
+  AND COALESCE(p.ldeleted, 0) = 0
 SQL;
         $params = ['main_id' => $mainId];
 
