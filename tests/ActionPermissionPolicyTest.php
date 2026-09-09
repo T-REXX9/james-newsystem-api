@@ -18,3 +18,12 @@ $assert(ActionPermissionPolicy::allows(['can_post' => false], 'post', false) ===
 $assert(ActionPermissionPolicy::allows(['can_delete' => false], 'delete', true) === true, 'Master User bypasses disabled delete');
 $assert(ActionPermissionPolicy::normalize(['can_add' => 0])['can_add'] === false, 'normalizes legacy numeric flags');
 $assert(ActionPermissionPolicy::normalize(null)['can_unpost'] === true, 'preserves backward-compatible defaults');
+$pagePermissions = [
+    'global' => ActionPermissionPolicy::DEFAULTS,
+    'pages' => [
+        'Sales Inquiry' => ['can_delete' => true],
+        'Product Database' => ['can_delete' => false],
+    ],
+];
+$assert(ActionPermissionPolicy::allows($pagePermissions, 'delete', false, 'Sales Inquiry') === true, 'allows a page-specific action');
+$assert(ActionPermissionPolicy::allows($pagePermissions, 'delete', false, 'Product Database') === false, 'isolates page-specific actions');

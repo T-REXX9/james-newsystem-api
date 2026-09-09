@@ -34,11 +34,29 @@ final class ActionPermissionPolicy
     }
 
     /**
+     * Normalize the new page-scoped shape while accepting legacy flat values.
+     *
+     * @return array{global: array<string, bool>, pages: array<string, array<string, bool>>}
+     */
+    public static function normalizePagePermissions(?array $permissions): array
+    {
+        $permissions ??= [];
+        $global = self::normalize(is_array($permissions['global'] ?? null) ? $permissions['global'] : $permissions);
+        $pages = [];
+        foreach (($permissions['pages'] ?? []) as $page => $pagePermissions) {
+            if (!is_string($page) || !is_array($pagePermissions)) continue;
+            $pages[$page] = self::normalize(array_merge($global, $pagePermissions));
+        }
+
+        return ['global' => $global, 'pages' => $pages];
+    }
+
+    /**
      * Master Users bypass every stored action restriction.
      *
      * @param array<string, mixed>|null $permissions
      */
-    public static function allows(?array $permissions, string $action, bool $isMasterUser): bool
+    public static function allows(?array $permissions, string $action, bool $isMasterUser, ?string $page = null): bool
     {
         if ($isMasterUser) {
             return true;
@@ -53,6 +71,11 @@ final class ActionPermissionPolicy
             default => null,
         };
 
-        return $field === null || self::normalize($permissions)[$field];
+        if ($field === null) return true;
+        $normalized = self::normalizePagePermissions($permissions);
+        $pagePermissions = $page !== null && isset($normalized['pages'][$page])
+            ? $normalized['pages'][$page]
+            : $normalized['global'];
+        return $pagePermissions[$field];
     }
 }

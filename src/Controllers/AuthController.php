@@ -121,7 +121,7 @@ final class AuthController
         $packagePermissions = $servicePackage === '' ? [] : $this->repo->getPackagePermissions($mainUserId, $servicePackage);
 
         // Build per-account action permissions. Master Users are always unrestricted.
-        $actionPermissions = ActionPermissionPolicy::DEFAULTS;
+        $actionPermissions = ActionPermissionPolicy::normalizePagePermissions(null);
         if ($userType !== '1' && $this->rolePermissionRepo !== null && $roleId > 0) {
             $actionPermissions = $this->rolePermissionRepo->getActionPermissionsForAccount($mainUserId, $userId, $roleId);
         } elseif ($userType !== '1') {
@@ -129,9 +129,9 @@ final class AuthController
             foreach ($webPermissions as $wp) {
                 $pageNo = (string) ($wp['lpageno'] ?? '');
                 if ($pageNo !== '') {
-                    $actionPermissions['can_add'] = $actionPermissions['can_add'] && (int) ($wp['ladd_action'] ?? 0) === 1;
-                    $actionPermissions['can_edit'] = $actionPermissions['can_edit'] && (int) ($wp['ledit_action'] ?? 0) === 1;
-                    $actionPermissions['can_delete'] = $actionPermissions['can_delete'] && (int) ($wp['ldelete_action'] ?? 0) === 1;
+                    $actionPermissions['global']['can_add'] = $actionPermissions['global']['can_add'] && (int) ($wp['ladd_action'] ?? 0) === 1;
+                    $actionPermissions['global']['can_edit'] = $actionPermissions['global']['can_edit'] && (int) ($wp['ledit_action'] ?? 0) === 1;
+                    $actionPermissions['global']['can_delete'] = $actionPermissions['global']['can_delete'] && (int) ($wp['ldelete_action'] ?? 0) === 1;
                 }
             }
         }

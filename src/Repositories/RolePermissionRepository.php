@@ -150,7 +150,7 @@ final class RolePermissionRepository
      * Resolve the effective action permissions for one account.
      * Account-specific settings take precedence over the legacy group rows.
      *
-     * @return array<string, bool>
+     * @return array{global: array<string, bool>, pages: array<string, array<string, bool>>}
      */
     public function getActionPermissionsForAccount(int $mainId, int $accountId, int $groupId): array
     {
@@ -166,18 +166,18 @@ final class RolePermissionRepository
             if (is_string($stored) && trim($stored) !== '') {
                 $decoded = json_decode($stored, true);
                 if (is_array($decoded)) {
-                    return ActionPermissionPolicy::normalize($decoded);
+                    return ActionPermissionPolicy::normalizePagePermissions($decoded);
                 }
             }
 
-            // A migrated account without an explicit override keeps the
-            // current allow-by-default behavior until the Master User sets flags.
-            return ActionPermissionPolicy::DEFAULTS;
+            // An account without an explicit override inherits its group's
+            // page defaults, preserving the group as the preset source.
+            return $this->getGroupActionPermissions($mainId, $groupId);
         }
 
         $legacy = $this->getActionPermissions($mainId, $groupId);
         if ($legacy === []) {
-            return ActionPermissionPolicy::DEFAULTS;
+            return ActionPermissionPolicy::normalizePagePermissions(null);
         }
 
         $result = ActionPermissionPolicy::DEFAULTS;
@@ -187,7 +187,35 @@ final class RolePermissionRepository
             $result['can_delete'] = $result['can_delete'] && (bool) ($permission['can_delete'] ?? false);
         }
 
-        return $result;
+        return ActionPermissionPolicy::normalizePagePermissions($result);
+    }
+
+    /** @return array{global: array<string, bool>, pages: array<string, array<string, bool>>} */
+    private function getGroupActionPermissions(int $mainId, int $groupId): array
+    {
+        try {
+            $stmt = $this->db->pdo()->prepare(
+                'SELECT action_permissions FROM access_groups WHERE main_id = :main_id AND id = :group_id LIMIT 1'
+            );
+            $stmt->execute(['main_id' => $mainId, 'group_id' => $groupId]);
+            $stored = $stmt->fetchColumn();
+            if (is_string($stored) && trim($stored) !== '') {
+                $decoded = json_decode($stored, true);
+                if (is_array($decoded)) return ActionPermissionPolicy::normalizePagePermissions($decoded);
+            }
+        } catch (\Throwable) {
+            // Older installations may not have the optional Access Group column.
+        }
+
+        $legacy = $this->getActionPermissions($mainId, $groupId);
+        if ($legacy === []) return ActionPermissionPolicy::normalizePagePermissions(null);
+        $global = ActionPermissionPolicy::DEFAULTS;
+        foreach ($legacy as $permission) {
+            $global['can_add'] = $global['can_add'] && (bool) ($permission['can_add'] ?? false);
+            $global['can_edit'] = $global['can_edit'] && (bool) ($permission['can_edit'] ?? false);
+            $global['can_delete'] = $global['can_delete'] && (bool) ($permission['can_delete'] ?? false);
+        }
+        return ActionPermissionPolicy::normalizePagePermissions($global);
     }
 
     /**
@@ -208,7 +236,7 @@ final class RolePermissionRepository
              LIMIT 1'
         );
         $stmt->execute([
-            'permissions' => json_encode(ActionPermissionPolicy::normalize($permissions), JSON_THROW_ON_ERROR),
+            'permissions' => json_encode(ActionPermissionPolicy::normalizePagePermissions($permissions), JSON_THROW_ON_ERROR),
             'account_id' => $accountId,
             'main_id' => $mainId,
         ]);

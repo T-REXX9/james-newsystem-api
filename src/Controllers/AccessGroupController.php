@@ -45,6 +45,7 @@ final class AccessGroupController
             'name' => $name,
             'description' => $body['description'] ?? '',
             'access_rights' => $body['access_rights'] ?? [],
+            'action_permissions' => $body['action_permissions'] ?? [],
         ]);
     }
 
@@ -61,7 +62,7 @@ final class AccessGroupController
         }
 
         $data = [];
-        foreach (['name', 'description', 'access_rights'] as $field) {
+        foreach (['name', 'description', 'access_rights', 'action_permissions'] as $field) {
             if (array_key_exists($field, $body)) {
                 $data[$field] = $body[$field];
             }

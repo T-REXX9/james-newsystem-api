@@ -60,7 +60,7 @@ final class PermissionMiddleware
 
             // Step 3: If an action is required, validate action-level access
             if ($requiredAction !== null) {
-                $this->assertActionPermission($claims, $requiredAction);
+                $this->assertActionPermission($claims, $requiredAction, $requiredModule);
             }
         }
 
@@ -72,7 +72,7 @@ final class PermissionMiddleware
      *
      * @throws HttpException If the action is not allowed
      */
-    public function assertActionPermission(array $claims, string $action): void
+    public function assertActionPermission(array $claims, string $action, ?string $page = null): void
     {
         if ((string) ($claims['user_type'] ?? '') === '1') {
             return;
@@ -86,7 +86,7 @@ final class PermissionMiddleware
         }
 
         $permissions = $this->rolePermissionRepo->getActionPermissionsForAccount($mainId, $accountId, $groupId);
-        if (!\App\Support\ActionPermissionPolicy::allows($permissions, $action, false)) {
+        if (!\App\Support\ActionPermissionPolicy::allows($permissions, $action, false, $page)) {
             throw new HttpException(403, "Forbidden: You do not have permission to {$action}");
         }
     }

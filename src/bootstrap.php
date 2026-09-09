@@ -450,8 +450,8 @@ function app_router(): Router
         });
     };
 
-    $requireActionAuth = static function (callable $handler, string $_module, string $action) use ($requireBearerAuthWithClaims, $permissionMiddleware): callable {
-        return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($handler, $action, $permissionMiddleware): array {
+    $requireActionAuth = static function (callable $handler, string $page, string $action) use ($requireBearerAuthWithClaims, $permissionMiddleware): callable {
+        return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($handler, $page, $action, $permissionMiddleware): array {
             $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
             $mainId = (int) ($claims['main_userid'] ?? 0);
             if ($mainId <= 0) {
@@ -462,7 +462,7 @@ function app_router(): Router
             $body['main_id'] = $mainId;
             $query['main_id'] = (string) $mainId;
             $body['user_id'] = (int) ($claims['sub'] ?? 0);
-            $permissionMiddleware->assertActionPermission($claims, $action);
+            $permissionMiddleware->assertActionPermission($claims, $action, $page);
             return $handler($params, $query, $body);
         });
     };
@@ -529,7 +529,7 @@ function app_router(): Router
                     $actionPermission = 'add';
                 }
                 if ($actionPermission !== null) {
-                    $permissionMiddleware->assertActionPermission($claims, $actionPermission);
+                    $permissionMiddleware->assertActionPermission($claims, $actionPermission, $approverModules[0] ?? null);
                 }
 
                 if ($requiresApproval && (string) ($claims['user_type'] ?? '') !== '1') {

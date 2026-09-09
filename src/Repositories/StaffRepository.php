@@ -300,7 +300,7 @@ SQL;
                 );
             }
             $updates[] = 'laction_permissions = :action_permissions';
-            $params['action_permissions'] = json_encode(ActionPermissionPolicy::normalize($data['action_permissions']), JSON_THROW_ON_ERROR);
+            $params['action_permissions'] = json_encode(ActionPermissionPolicy::normalizePagePermissions($data['action_permissions']), JSON_THROW_ON_ERROR);
         }
 
         if (empty($updates)) {
@@ -603,14 +603,36 @@ SQL;
         if (is_string($row['laction_permissions'] ?? null) && trim($row['laction_permissions']) !== '') {
             $decoded = json_decode($row['laction_permissions'], true);
             if (is_array($decoded)) {
-                $actionPermissions = ActionPermissionPolicy::normalize($decoded);
+                $actionPermissions = ActionPermissionPolicy::normalizePagePermissions($decoded);
             }
+        }
+        if ($actionPermissions === [] && $mainId > 0 && $groupId > 0) {
+            $actionPermissions = $this->getGroupActionPermissions($mainId, $groupId);
         }
         $row['action_permissions'] = $actionPermissions;
         unset($row['laction_permissions']);
         unset($row['has_stored_access_rights']);
 
         return $row;
+    }
+
+    private function getGroupActionPermissions(int $mainId, int $groupId): array
+    {
+        try {
+            $stmt = $this->db->pdo()->prepare(
+                'SELECT action_permissions FROM access_groups WHERE main_id = :main_id AND id = :group_id LIMIT 1'
+            );
+            $stmt->execute(['main_id' => $mainId, 'group_id' => $groupId]);
+            $stored = $stmt->fetchColumn();
+            if (is_string($stored) && trim($stored) !== '') {
+                $decoded = json_decode($stored, true);
+                if (is_array($decoded)) return ActionPermissionPolicy::normalizePagePermissions($decoded);
+            }
+        } catch (\Throwable) {
+            // Optional group action defaults are unavailable on pre-migration databases.
+        }
+
+        return ActionPermissionPolicy::normalizePagePermissions(null);
     }
 
     private function rightsDiffer(array $left, array $right): bool

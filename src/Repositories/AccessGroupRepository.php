@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\LegacyPermissionMapper;
+use App\Support\ActionPermissionPolicy;
 use PDO;
 
 final class AccessGroupRepository
@@ -31,7 +32,8 @@ final class AccessGroupRepository
                 CAST(COALESCE(NULLIF(ut.lmain_id, 0), :main_id_select) AS SIGNED) AS main_id,
                 COALESCE(ut.ltype_name, \'\') AS name,
                 COALESCE(ut.ldesc, \'\') AS description,
-                ag.access_rights AS access_rights
+                ag.access_rights AS access_rights,
+                ag.action_permissions AS action_permissions
              FROM tblusertype ut
              LEFT JOIN access_groups ag ON ag.id = ut.lid AND ag.main_id = :main_id_join_group
              LEFT JOIN tblaccount a
@@ -49,7 +51,7 @@ final class AccessGroupRepository
                  OR wp.lpageno IS NOT NULL
                )
                AND LOWER(TRIM(COALESCE(ut.ltype_name, \'\'))) NOT IN (\'sales person\', \'salesperson\')
-             GROUP BY ut.lid, ag.access_rights
+             GROUP BY ut.lid, ag.access_rights, ag.action_permissions
              ORDER BY ut.ltype_name ASC, ut.lid ASC'
         );
         $stmt->bindValue('main_id_select', $mainId, PDO::PARAM_INT);
@@ -73,7 +75,8 @@ final class AccessGroupRepository
                 CAST(COALESCE(NULLIF(ut.lmain_id, 0), :main_id_select) AS SIGNED) AS main_id,
                 COALESCE(ut.ltype_name, \'\') AS name,
                 COALESCE(ut.ldesc, \'\') AS description,
-                ag.access_rights AS access_rights
+                ag.access_rights AS access_rights,
+                ag.action_permissions AS action_permissions
              FROM tblusertype ut
              LEFT JOIN access_groups ag ON ag.id = ut.lid AND ag.main_id = :main_id_join_group
              WHERE ut.lid = :group_id
@@ -123,7 +126,7 @@ final class AccessGroupRepository
 
         $groupId = (int) $this->db->pdo()->lastInsertId();
         $rights = $this->sanitizeAccessRights($data['access_rights'] ?? []);
-        $this->storeGroupAccessRights($mainId, $groupId, $rights);
+        $this->storeGroupAccessRights($mainId, $groupId, $rights, $data['action_permissions'] ?? []);
 
         return $this->getGroupById($mainId, $groupId) ?? [
             'id' => (string) $groupId,
@@ -173,7 +176,9 @@ final class AccessGroupRepository
         }
 
         if (array_key_exists('access_rights', $data)) {
-            $this->storeGroupAccessRights($mainId, $groupId, $this->sanitizeAccessRights($data['access_rights']));
+            $this->storeGroupAccessRights($mainId, $groupId, $this->sanitizeAccessRights($data['access_rights']), $data['action_permissions'] ?? null);
+        } elseif (array_key_exists('action_permissions', $data)) {
+            $this->storeGroupActionPermissions($mainId, $groupId, $data['action_permissions']);
         }
 
         return $this->getGroupById($mainId, $groupId);
@@ -232,6 +237,9 @@ final class AccessGroupRepository
                 : (array_key_exists('access_rights', $row) && $row['access_rights'] !== null
                     ? $this->decodeAccessRights($row['access_rights'])
                     : $this->legacyPermissions->getAccessRightsForGroup($mainId, $groupId)),
+            'action_permissions' => ActionPermissionPolicy::normalizePagePermissions(
+                $this->decodeActionPermissions($row['action_permissions'] ?? null)
+            ),
             'created_at' => '',
             'assigned_staff_count' => $this->countAssignedStaff($mainId, $groupId),
             // Core roles are recreated by ensureCoreAccessGroups() on every list.
@@ -239,20 +247,41 @@ final class AccessGroupRepository
         ];
     }
 
-    private function storeGroupAccessRights(int $mainId, int $groupId, array $rights): void
+    private function storeGroupAccessRights(int $mainId, int $groupId, array $rights, mixed $actionPermissions = null): void
     {
         $stmt = $this->db->pdo()->prepare(
-            'INSERT INTO access_groups (id, main_id, name, description, access_rights)
-             SELECT ut.lid, :main_id, ut.ltype_name, ut.ldesc, :access_rights
+            'INSERT INTO access_groups (id, main_id, name, description, access_rights, action_permissions)
+             SELECT ut.lid, :main_id, ut.ltype_name, ut.ldesc, :access_rights, :action_permissions
              FROM tblusertype ut WHERE ut.lid = :group_id
-             ON DUPLICATE KEY UPDATE access_rights = VALUES(access_rights)'
+             ON DUPLICATE KEY UPDATE access_rights = VALUES(access_rights), action_permissions = COALESCE(VALUES(action_permissions), action_permissions)'
         );
         $stmt->execute([
             'main_id' => $mainId,
             'group_id' => $groupId,
             'access_rights' => json_encode(array_values($rights)),
+            'action_permissions' => $actionPermissions === null ? null : json_encode(ActionPermissionPolicy::normalizePagePermissions(is_array($actionPermissions) ? $actionPermissions : [])),
         ]);
         $this->legacyPermissions->syncGroupPermissions($mainId, $groupId, $rights);
+    }
+
+    private function storeGroupActionPermissions(int $mainId, int $groupId, mixed $actionPermissions): void
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'UPDATE access_groups SET action_permissions = :action_permissions WHERE id = :group_id AND main_id = :main_id LIMIT 1'
+        );
+        $stmt->execute([
+            'action_permissions' => json_encode(ActionPermissionPolicy::normalizePagePermissions(is_array($actionPermissions) ? $actionPermissions : [])),
+            'group_id' => $groupId,
+            'main_id' => $mainId,
+        ]);
+    }
+
+    private function decodeActionPermissions(mixed $value): array
+    {
+        if (is_array($value)) return $value;
+        if (!is_string($value) || trim($value) === '') return [];
+        $decoded = json_decode($value, true);
+        return is_array($decoded) ? $decoded : [];
     }
 
     private function decodeAccessRights(mixed $value): array
