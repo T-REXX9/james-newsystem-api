@@ -5,6 +5,10 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Http\Response;
+use App\Services\AutomaticBackupRunner;
+use App\Services\AutomaticBackupSettings;
+use App\Services\AutomaticBackupSettingsStore;
+use App\Services\BackupDestinationLister;
 use App\Services\DatabaseBackupService;
 use App\Support\Exceptions\HttpException;
 
@@ -12,7 +16,10 @@ final class ServerMaintenanceController
 {
     public function __construct(
         private readonly DatabaseBackupService $backupService,
-        private readonly string $backupDirectory
+        private readonly string $backupDirectory,
+        private readonly AutomaticBackupSettingsStore $automaticBackupStore,
+        private readonly BackupDestinationLister $destinationLister,
+        private readonly AutomaticBackupRunner $automaticBackupRunner
     ) {
     }
 
@@ -25,7 +32,46 @@ final class ServerMaintenanceController
             'backup_available' => $this->backupService->databaseName() !== '',
             'format' => 'sql.gz',
             'description' => 'Full logical dump of the application database (schema, data, routines, triggers, and events).',
+            'automatic_backup' => $this->automaticBackupStore->load(),
         ];
+    }
+
+    public function getAutomaticBackup(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+        return $this->automaticBackupStore->load();
+    }
+
+    public function updateAutomaticBackup(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+
+        $existing = $this->automaticBackupStore->load();
+        $normalized = AutomaticBackupSettings::normalizeAndValidate(array_merge($existing, $body, [
+            // Preserve run metadata unless explicitly cleared by the runner.
+            'last_success_at' => $existing['last_success_at'] ?? null,
+            'last_failure_at' => $existing['last_failure_at'] ?? null,
+            'last_failure_message' => $existing['last_failure_message'] ?? null,
+            'last_run_key' => $existing['last_run_key'] ?? null,
+        ]));
+
+        $this->automaticBackupStore->save($normalized);
+        return $normalized;
+    }
+
+    public function listBackupDestinations(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+        return [
+            'items' => $this->destinationLister->listWritableDestinations(),
+        ];
+    }
+
+    public function runAutomaticBackup(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+        $force = filter_var($body['force'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        return $this->automaticBackupRunner->runDue($force);
     }
 
     /**

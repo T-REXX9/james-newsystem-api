@@ -64,6 +64,10 @@ use App\Controllers\VipTierSettingsController;
 use App\Controllers\ServerMaintenanceController;
 use App\Controllers\RolePermissionController;
 use App\Services\DatabaseBackupService;
+use App\Services\AutomaticBackupSettingsStore;
+use App\Services\AutomaticBackupRunner;
+use App\Services\AutomaticBackupNotifier;
+use App\Services\BackupDestinationLister;
 use App\Http\Router;
 use App\Middleware\PermissionMiddleware;
 use App\Security\TokenService;
@@ -220,6 +224,12 @@ require __DIR__ . '/Controllers/VipTierSettingsController.php';
 require __DIR__ . '/Controllers/ServerMaintenanceController.php';
 require __DIR__ . '/Controllers/RolePermissionController.php';
 require __DIR__ . '/Services/DatabaseBackupService.php';
+require __DIR__ . '/Services/AutomaticBackupSettings.php';
+require __DIR__ . '/Services/AutomaticBackupSettingsStore.php';
+require __DIR__ . '/Services/AutomaticBackupOrganizer.php';
+require __DIR__ . '/Services/AutomaticBackupRunner.php';
+require __DIR__ . '/Services/AutomaticBackupNotifier.php';
+require __DIR__ . '/Services/BackupDestinationLister.php';
 
 Env::load(dirname(__DIR__) . '/.env');
 date_default_timezone_set((string) Env::get('APP_TIMEZONE', 'UTC'));
@@ -368,9 +378,26 @@ function app_router(): Router
     $profitProtectionController = new ProfitProtectionController(new App\Repositories\ProfitProtectionRepository($db));
     $vipTierSettingsController = new VipTierSettingsController(new App\Repositories\VipTierSettingsRepository($db));
     $serverMaintenanceBackupDir = dirname(__DIR__) . '/storage/database-backups';
+    $automaticBackupStore = new AutomaticBackupSettingsStore(
+        dirname(__DIR__) . '/storage/automatic-backup-settings.json'
+    );
+    $databaseBackupService = new DatabaseBackupService($config);
+    $automaticBackupNotifier = new AutomaticBackupNotifier($db);
+    $automaticBackupRunner = new AutomaticBackupRunner(
+        $automaticBackupStore,
+        $databaseBackupService->databaseName(),
+        static fn (): array => $databaseBackupService->createFullDumpGzipFile($serverMaintenanceBackupDir),
+        static function (string $title, string $message) use ($automaticBackupNotifier): void {
+            $automaticBackupNotifier->notifyMasters($title, $message);
+        },
+        static fn (): \DateTimeImmutable => new \DateTimeImmutable('now', new \DateTimeZone('UTC'))
+    );
     $serverMaintenanceController = new ServerMaintenanceController(
-        new DatabaseBackupService($config),
-        $serverMaintenanceBackupDir
+        $databaseBackupService,
+        $serverMaintenanceBackupDir,
+        $automaticBackupStore,
+        new BackupDestinationLister(BackupDestinationLister::defaultRoots()),
+        $automaticBackupRunner
     );
 
     $requireBearerAuth = static function (callable $handler) use ($tokenService): callable {
@@ -891,6 +918,10 @@ function app_router(): Router
     // Server Maintenance (Master User only)
     $router->get('/api/v1/server-maintenance/status', $requireBearerAuthWithClaims([$serverMaintenanceController, 'status']));
     $router->get('/api/v1/server-maintenance/database-backup', $requireBearerAuthWithClaims([$serverMaintenanceController, 'downloadDatabaseBackup']));
+    $router->get('/api/v1/server-maintenance/automatic-backup', $requireBearerAuthWithClaims([$serverMaintenanceController, 'getAutomaticBackup']));
+    $router->patch('/api/v1/server-maintenance/automatic-backup', $requireBearerAuthWithClaims([$serverMaintenanceController, 'updateAutomaticBackup']));
+    $router->get('/api/v1/server-maintenance/backup-destinations', $requireBearerAuthWithClaims([$serverMaintenanceController, 'listBackupDestinations']));
+    $router->post('/api/v1/server-maintenance/automatic-backup/run', $requireBearerAuthWithClaims([$serverMaintenanceController, 'runAutomaticBackup']));
     $router->post('/api/v1/profit-protection/validate-items', [$profitProtectionController, 'validateItems']);
     $router->post('/api/v1/profit-protection/overrides', [$profitProtectionController, 'createOverride']);
     $router->get('/api/v1/profit-protection/overrides', [$profitProtectionController, 'listOverrides']);
