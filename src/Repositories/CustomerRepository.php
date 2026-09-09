@@ -796,111 +796,30 @@ SQL;
     {
         $sql = <<<'SQL'
 SELECT
-    COALESCE(SUM(doc.amount), 0) AS dealership_sales,
+    COALESCE(SUM(COALESCE(l.ldebit, 0)), 0) AS dealership_sales,
+    COALESCE(SUM(COALESCE(l.ldebit, 0)), 0) AS ishinomoto_sales,
     COALESCE(SUM(
         CASE
-            WHEN DATE_FORMAT(doc.doc_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
-            THEN doc.ishinomoto_amount
-            ELSE 0
-        END
-    ), 0) AS ishinomoto_sales,
-    COALESCE(SUM(
-        CASE
-            WHEN DATE_FORMAT(doc.doc_date, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
-            THEN doc.amount
+            WHEN DATE_FORMAT(l.ldatetime, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+            THEN COALESCE(l.ldebit, 0)
             ELSE 0
         END
     ), 0) AS monthly_sales,
     COALESCE(SUM(
         CASE
-            WHEN DATE_FORMAT(doc.doc_date, '%Y-%m') = DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH), '%Y-%m')
-            THEN doc.amount
+            WHEN DATE_FORMAT(l.ldatetime, '%Y-%m') = DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH), '%Y-%m')
+            THEN COALESCE(l.ldebit, 0)
             ELSE 0
         END
     ), 0) AS last_month_sales
-FROM (
-    SELECT
-        inv.lrefno AS document_refno,
-        COALESCE(NULLIF(inv.lsales_refno, ''), CONCAT('INV:', inv.lrefno)) AS sales_refno,
-        COALESCE(inv.ldate, DATE(inv.ldatetime), CURDATE()) AS doc_date,
-        SUM(COALESCE(ii.lqty, 0) * COALESCE(ii.lprice, 0)) AS amount,
-        SUM(
-            CASE
-                WHEN LOWER(TRIM(COALESCE(inv_brand.lname, ii.lbrand, ''))) = 'ishinomoto'
-                THEN COALESCE(ii.lqty, 0) * COALESCE(ii.lprice, 0)
-                ELSE 0
-            END
-        ) AS ishinomoto_amount,
-        2 AS priority
-    FROM tblinvoice_list inv
-    INNER JOIN tblinvoice_itemrec ii ON ii.linvoice_refno = inv.lrefno
-    LEFT JOIN tblbrand inv_brand ON CAST(inv_brand.lid AS CHAR) = CAST(ii.lbrand AS CHAR)
-    WHERE inv.lcustomerid = :customer_id_invoice
-      AND COALESCE(inv.lcancel_invoice, 0) = 0
-      AND LOWER(COALESCE(inv.lstatus, '')) = 'posted'
-    GROUP BY inv.lrefno, sales_refno, doc_date
-
-    UNION ALL
-
-    SELECT
-        dr.lrefno AS document_refno,
-        COALESCE(NULLIF(dr.lsales_refno, ''), CONCAT('DR:', dr.lrefno)) AS sales_refno,
-        COALESCE(dr.ldate, DATE(dr.ldatetime), CURDATE()) AS doc_date,
-        SUM(COALESCE(dri.lqty, 0) * COALESCE(dri.lprice, 0)) AS amount,
-        SUM(
-            CASE
-                WHEN LOWER(TRIM(COALESCE(dr_brand.lname, dri.lbrand, ''))) = 'ishinomoto'
-                THEN COALESCE(dri.lqty, 0) * COALESCE(dri.lprice, 0)
-                ELSE 0
-            END
-        ) AS ishinomoto_amount,
-        1 AS priority
-    FROM tbldelivery_receipt dr
-    INNER JOIN tbldelivery_receipt_items dri ON dri.lor_refno = dr.lrefno
-    LEFT JOIN tblbrand dr_brand ON CAST(dr_brand.lid AS CHAR) = CAST(dri.lbrand AS CHAR)
-    WHERE dr.lcustomerid = :customer_id_order_slip
-      AND COALESCE(dr.lcancel, 0) = 0
-      AND LOWER(COALESCE(dr.lstatus, '')) = 'posted'
-    GROUP BY dr.lrefno, sales_refno, doc_date
-) doc
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM (
-        SELECT
-            inv2.lrefno AS document_refno,
-            COALESCE(NULLIF(inv2.lsales_refno, ''), CONCAT('INV:', inv2.lrefno)) AS sales_refno,
-            2 AS priority
-        FROM tblinvoice_list inv2
-        WHERE inv2.lcustomerid = :customer_id_invoice_shadow
-          AND COALESCE(inv2.lcancel_invoice, 0) = 0
-          AND LOWER(COALESCE(inv2.lstatus, '')) = 'posted'
-
-        UNION ALL
-
-        SELECT
-            dr2.lrefno AS document_refno,
-            COALESCE(NULLIF(dr2.lsales_refno, ''), CONCAT('DR:', dr2.lrefno)) AS sales_refno,
-            1 AS priority
-        FROM tbldelivery_receipt dr2
-        WHERE dr2.lcustomerid = :customer_id_order_slip_shadow
-          AND COALESCE(dr2.lcancel, 0) = 0
-          AND LOWER(COALESCE(dr2.lstatus, '')) = 'posted'
-    ) ranked
-    WHERE ranked.sales_refno = doc.sales_refno
-      AND (
-          ranked.priority > doc.priority
-          OR (ranked.priority = doc.priority AND ranked.document_refno > doc.document_refno)
-      )
-)
+FROM tblledger l
+WHERE l.lcustomerid = :customer_id
+  AND LOWER(TRIM(COALESCE(l.ltype, ''))) = 'debit'
+  AND LOWER(TRIM(COALESCE(l.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
 SQL;
 
         $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute([
-            'customer_id_invoice' => $sessionId,
-            'customer_id_order_slip' => $sessionId,
-            'customer_id_invoice_shadow' => $sessionId,
-            'customer_id_order_slip_shadow' => $sessionId,
-        ]);
+        $stmt->execute(['customer_id' => $sessionId]);
 
         $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
