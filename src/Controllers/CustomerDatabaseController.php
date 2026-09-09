@@ -50,6 +50,18 @@ final class CustomerDatabaseController
         return $record;
     }
 
+    public function nameCheck(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        return [
+            'items' => $this->repo->findSimilarCustomers($mainId, $query, (string) ($query['exclude_session_id'] ?? '')),
+        ];
+    }
+
     public function create(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($body['main_id'] ?? 0);

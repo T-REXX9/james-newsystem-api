@@ -44,7 +44,7 @@ $userId = 1;
 $stamp = date('YmdHis') . '-' . random_int(1000, 9999);
 $sessionIds = [];
 
-$create = static function (string $sessionId, string $company, string $tin = '') use ($customers, $mainId, $userId, &$sessionIds): array {
+$create = static function (string $sessionId, string $company, string $tin = '', string $phone = '') use ($customers, $mainId, $userId, &$sessionIds): array {
     $sessionIds[] = $sessionId;
     return $customers->createCustomer($mainId, $userId, [
         'session_id' => $sessionId,
@@ -53,8 +53,8 @@ $create = static function (string $sessionId, string $company, string $tin = '')
         'debt_type' => 'Good',
         'status' => 3,
         'profile_type' => 'prospect',
-        'phone' => '09171234567',
-        'mobile' => '09171234567',
+        'phone' => $phone !== '' ? $phone : '09171234567',
+        'mobile' => $phone !== '' ? $phone : '09171234567',
     ]);
 };
 
@@ -91,12 +91,12 @@ try {
     $assertEq(1, $countLive($companyA), 'duplicate company name does not insert a second row');
     $assert($customers->getCustomer($mainId, $sessionB) === null, 'rejected duplicate company is not retrievable');
 
-    $create($sessionC, $companyB, '');
+    $create($sessionC, $companyB, '', '09171234568');
     $assertEq(1, $countLive($companyB), 'different company name with blank TIN is allowed');
 
     $tinDuplicateMessage = '';
     try {
-        $create($sessionD, "Dup Co D {$stamp}", "tin {$stamp}");
+        $create($sessionD, "Dup Co D {$stamp}", "tin {$stamp}", '09171234567');
     } catch (RuntimeException $e) {
         $tinDuplicateMessage = $e->getMessage();
     }
@@ -123,7 +123,7 @@ try {
     $stillB = $customers->getCustomer($mainId, $sessionC);
     $assertEq($companyB, (string) ($stillB['company'] ?? ''), 'refused update leaves the original company name');
 
-    $create($sessionE, "Dup Co E {$stamp}", '');
+    $create($sessionE, "Dup Co E {$stamp}", '', '09171234569');
     $assertEq(1, $countLive("Dup Co E {$stamp}"), 'another blank-TIN customer with a distinct name is allowed');
 } finally {
     foreach (array_unique($sessionIds) as $sessionId) {

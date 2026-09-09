@@ -7,6 +7,7 @@ namespace App\Repositories;
 use App\Database;
 use App\Support\AuditTrailWriter;
 use App\Support\CustomerLedgerCalculator;
+use App\Support\PhoneNumberNormalizer;
 use PDO;
 use RuntimeException;
 
@@ -172,6 +173,7 @@ SELECT
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
     COALESCE(p.lpreferred_brand, '') AS preferred_brand,
     COALESCE(p.lnotes, '') AS notes,
+    COALESCE(p.lduplicate_override_reason, '') AS duplicate_override_reason,
     COALESCE(p.ldatereg, '') AS date_registered,
     (SELECT COUNT(*) FROM tblcontact_person cp WHERE cp.lrefno = p.lsessionid) AS contact_count,
     (SELECT COUNT(*) FROM tblpatient_terms pt WHERE pt.lpatient = p.lsessionid) AS term_count,
@@ -271,6 +273,7 @@ SELECT
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
     COALESCE(p.lpreferred_brand, '') AS preferred_brand,
     COALESCE(p.lnotes, '') AS notes,
+    COALESCE(p.lduplicate_override_reason, '') AS duplicate_override_reason,
     COALESCE(p.ldatereg, '') AS date_registered,
     COALESCE(
         (SELECT SUM(COALESCE(l.ldebit, 0)) - SUM(COALESCE(l.lcredit, 0))
@@ -308,7 +311,18 @@ SQL;
             throw new RuntimeException('company is required');
         }
 
-        $this->assertUniqueCustomerIdentity($mainId, $company, (string) ($payload['tin'] ?? ''));
+        $overrideReason = trim((string) ($payload['duplicate_override_reason'] ?? ''));
+        $overrideConfirmed = filter_var($payload['duplicate_override_confirmed'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $matches = $this->findSimilarCustomers($mainId, $payload);
+        $usesDuplicateWorkflow = array_key_exists('duplicate_override_confirmed', $payload)
+            || array_key_exists('duplicate_override_reason', $payload);
+        if ($matches !== [] && $usesDuplicateWorkflow && (!$overrideConfirmed || $overrideReason === '')) {
+            // Keep TASK-13's stable exact-identity error for callers that have
+            // not explicitly entered the override flow.
+            $this->assertUniqueCustomerIdentity($mainId, $company, (string) ($payload['tin'] ?? ''));
+            throw new RuntimeException('A matching or similar customer already exists. Review the matches and provide a reason to continue.');
+        }
+        $this->assertUniqueCustomerIdentity($mainId, $company, (string) ($payload['tin'] ?? ''), '', $overrideConfirmed && $overrideReason !== '');
         $this->assertCustomerPhoneLengths($payload);
 
         $sessionId = trim((string) ($payload['session_id'] ?? ''));
@@ -323,9 +337,9 @@ SQL;
             $discountCodeInsertValue = $this->hasCustomerDiscountCodeColumn() ? ', :discount_code' : '';
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
             );
             $insertParams = [
                 'main_id' => $mainId,
@@ -353,6 +367,7 @@ SQL;
                 'credit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : 0,
                 'status' => isset($payload['status']) ? (int) $payload['status'] : 1,
                 'notes' => (string) ($payload['notes'] ?? ''),
+                'duplicate_override_reason' => $matches !== [] ? $overrideReason : null,
                 'province' => (string) ($payload['province'] ?? ''),
                 'city' => (string) ($payload['city'] ?? ''),
                 'debt_type' => (string) (($payload['debt_type'] ?? '') !== '' ? $payload['debt_type'] : 'Good'),
@@ -388,13 +403,130 @@ SQL;
                 $this->insertContact($pdo, $mainId, $sessionId, $contact);
             }
 
-            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Customer Database', 'Create', $sessionId);
+            (new AuditTrailWriter($pdo))->write(
+                $mainId,
+                $userId,
+                'Customer Database',
+                $matches !== [] ? 'Create - Duplicate Override' : 'Create',
+                $sessionId,
+                $matches !== [] ? $overrideReason : ''
+            );
             $pdo->commit();
             return $this->getCustomer($mainId, $sessionId) ?? [];
         } catch (\Throwable $e) {
             $pdo->rollBack();
             $this->rethrowAsFriendlyValidation($e);
         }
+    }
+
+    /**
+     * Find live customer names that are exact matches or contain the proposed name
+     * (or are contained by it). This is intentionally a lightweight pre-save check
+     * used to warn staff about possible existing/do-not-contact customers.
+     *
+     * @return array<int, array{company: string, is_blacklisted: bool, is_exact: bool}>
+     */
+    public function findSimilarCustomerNames(int $mainId, string $company, string $excludeSessionId = ''): array
+    {
+        $normalizedCompany = strtolower(trim($company));
+        if ($normalizedCompany === '') {
+            return [];
+        }
+
+        $where = [
+            'p.lmain_id = :main_id',
+            'COALESCE(p.ldeleted, 0) = 0',
+            "TRIM(COALESCE(p.lcompany, '')) <> ''",
+            "(
+                LOWER(TRIM(p.lcompany)) LIKE :contains_company
+                OR :company_contains_existing LIKE CONCAT('%', LOWER(TRIM(p.lcompany)), '%')
+            )",
+        ];
+        $params = [
+            'main_id' => $mainId,
+            'contains_company' => '%' . $normalizedCompany . '%',
+            'company_contains_existing' => $normalizedCompany,
+        ];
+        if ($excludeSessionId !== '') {
+            $where[] = 'p.lsessionid <> :exclude_session_id';
+            $params['exclude_session_id'] = $excludeSessionId;
+        }
+
+        $sql = 'SELECT TRIM(p.lcompany) AS company,
+                       COALESCE(p.ldebt_type, \'Good\') AS debt_type
+                FROM tblpatient p
+                WHERE ' . implode(' AND ', $where) . '
+                ORDER BY CASE WHEN LOWER(TRIM(p.lcompany)) = :exact_company THEN 0 ELSE 1 END,
+                         CASE WHEN COALESCE(p.ldebt_type, \'Good\') = \'Bad\' THEN 0 ELSE 1 END,
+                         p.lcompany ASC
+                LIMIT 10';
+        $params['exact_company'] = $normalizedCompany;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute($params);
+        $matches = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $existingCompany = trim((string) ($row['company'] ?? ''));
+            $matches[] = [
+                'company' => $existingCompany,
+                'is_blacklisted' => strtolower(trim((string) ($row['debt_type'] ?? 'Good'))) === 'bad',
+                'is_exact' => strtolower($existingCompany) === $normalizedCompany,
+            ];
+        }
+
+        return $matches;
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function findSimilarCustomers(int $mainId, array $payload, string $excludeSessionId = ''): array
+    {
+        $company = strtolower(trim((string) ($payload['company'] ?? '')));
+        $tin = preg_replace('/[\s-]+/', '', strtolower((string) ($payload['tin'] ?? ''))) ?? '';
+        $phones = array_values(array_unique(array_merge(
+            PhoneNumberNormalizer::candidates((string) ($payload['phone'] ?? '')),
+            PhoneNumberNormalizer::candidates((string) ($payload['mobile'] ?? ''))
+        )));
+        $address = $this->normalizeIdentityText(implode(' ', [
+            (string) ($payload['address'] ?? ''),
+            (string) ($payload['delivery_address'] ?? ''),
+            (string) ($payload['city'] ?? ''),
+            (string) ($payload['province'] ?? ''),
+        ]));
+        if ($company === '' && $tin === '' && $phones === [] && $address === '') return [];
+
+        $sql = "SELECT p.lsessionid AS session_id, TRIM(COALESCE(p.lcompany, '')) AS company,
+                       COALESCE(p.lstatus, 1) AS status, COALESCE(p.lprofile_type, 'Old') AS profile_type,
+                       COALESCE(p.ldebt_type, 'Good') AS debt_type, COALESCE(p.ltin, '') AS tin,
+                       COALESCE(p.lphone, '') AS phone, COALESCE(p.lmobile, '') AS mobile,
+                       COALESCE(p.laddress, '') AS address, COALESCE(p.ldelivery_address, '') AS delivery_address,
+                       COALESCE(p.lcity, '') AS city, COALESCE(p.lprovince, '') AS province
+                FROM tblpatient p
+                WHERE p.lmain_id = :main_id AND COALESCE(p.ldeleted, 0) = 0";
+        $params = ['main_id' => $mainId];
+        if ($excludeSessionId !== '') { $sql .= ' AND p.lsessionid <> :exclude_session_id'; $params['exclude_session_id'] = $excludeSessionId; }
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute($params);
+        $matches = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $existingCompany = strtolower(trim((string) $row['company']));
+            $existingTin = preg_replace('/[\s-]+/', '', strtolower((string) $row['tin'])) ?? '';
+            $existingPhones = array_values(array_unique(array_merge(PhoneNumberNormalizer::candidates((string) $row['phone']), PhoneNumberNormalizer::candidates((string) $row['mobile']))));
+            $existingAddress = $this->normalizeIdentityText(implode(' ', [$row['address'], $row['delivery_address'], $row['city'], $row['province']]));
+            $fields = [];
+            if ($company !== '' && $existingCompany !== '' && ($existingCompany === $company || str_contains($existingCompany, $company) || str_contains($company, $existingCompany))) $fields[] = $existingCompany === $company ? 'company_exact' : 'company_similar';
+            if ($tin !== '' && $existingTin !== '' && $tin === $existingTin) $fields[] = 'tin';
+            if ($phones !== [] && array_intersect($phones, $existingPhones) !== []) $fields[] = 'phone';
+            if ($address !== '' && $existingAddress !== '' && $address === $existingAddress) $fields[] = 'address';
+            if ($fields === []) continue;
+            $matches[] = ['session_id' => (string) $row['session_id'], 'company' => (string) $row['company'], 'status' => (string) $row['status'], 'profile_type' => (string) $row['profile_type'], 'is_blacklisted' => strtolower((string) $row['debt_type']) === 'bad', 'matched_fields' => $fields];
+        }
+        usort($matches, static fn (array $a, array $b): int => count($b['matched_fields']) <=> count($a['matched_fields']));
+        return array_slice($matches, 0, 10);
+    }
+
+    private function normalizeIdentityText(string $value): string
+    {
+        return preg_replace('/[^a-z0-9]+/', '', strtolower(trim($value))) ?? '';
     }
 
     /**
@@ -955,7 +1087,8 @@ SQL;
         int $mainId,
         string $company,
         string $tin,
-        string $excludeSessionId = ''
+        string $excludeSessionId = '',
+        bool $allowOverride = false
     ): void {
         $company = trim($company);
         $tinNormalized = $this->normalizeCustomerTin($tin);
@@ -993,6 +1126,10 @@ SQL;
         }
 
         $existingCompany = trim((string) ($row['company'] ?? ''));
+        if ($allowOverride) {
+            return;
+        }
+
         throw new RuntimeException('This customer is already recorded: ' . $existingCompany . '.');
     }
 
