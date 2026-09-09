@@ -16,6 +16,7 @@ if ($controller === false || $authRepository === false || $authController === fa
 
 $checks = [
     'password endpoint is Master User protected' => str_contains($bootstrap, "'/api/v1/staff/{staffId}/password', \$requireMasterUser"),
+    'password repository imports its HTTP exception type' => str_contains($authRepository, 'use App\\Support\\Exceptions\\HttpException;'),
     'password endpoint validates minimum length' => str_contains($controller, "strlen(\$password) < 8"),
     'password is stored using the legacy authentication hash' => str_contains($authRepository, 'hashLegacyPassword($password)'),
     'password change increments the session version' => str_contains($authRepository, 'lsession_version = COALESCE(lsession_version, 0) + 1'),

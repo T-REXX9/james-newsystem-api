@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\LegacyPermissionMapper;
+use App\Support\Exceptions\HttpException;
 use PDO;
 
 final class AuthRepository
