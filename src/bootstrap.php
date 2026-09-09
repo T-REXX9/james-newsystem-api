@@ -482,11 +482,9 @@ function app_router(): Router
         return static function (array $params = [], array $query = [], array $body = []) use ($handler, $approverModules, $db, $approvalOnly, $fixedActionPermission, $requireBearerAuthWithClaims, $permissionMiddleware): array {
             $action = strtolower(trim((string) ($params['action'] ?? $body['action'] ?? $body['status'] ?? $body['decision'] ?? '')));
             $approvalActions = ['approve', 'approved', 'approverecord', 'post', 'finalize', 'review', 'reject', 'rejected', 'disapprove', 'disapproved', 'disapproverecord', 'submitted', 'unpost'];
-            if (!$approvalOnly && !in_array($action, $approvalActions, true)) {
-                return $handler($params, $query, $body);
-            }
+            $requiresApproval = $approvalOnly || in_array($action, $approvalActions, true);
 
-            return $requireBearerAuthWithClaims(static function (array $authParams = [], array $authQuery = [], array $authBody = []) use ($handler, $approverModules, $db, $action, $fixedActionPermission, $permissionMiddleware): array {
+            return $requireBearerAuthWithClaims(static function (array $authParams = [], array $authQuery = [], array $authBody = []) use ($handler, $approverModules, $db, $action, $fixedActionPermission, $permissionMiddleware, $requiresApproval): array {
                 $claims = is_array($authBody['__auth_claims'] ?? null) ? $authBody['__auth_claims'] : [];
                 $userId = (int) ($claims['sub'] ?? 0);
                 $mainId = (int) ($claims['main_userid'] ?? $authBody['main_id'] ?? 0);
@@ -511,12 +509,14 @@ function app_router(): Router
                     $actionPermission = 'post';
                 } elseif ($actionPermission === null && $action === 'unpost') {
                     $actionPermission = 'unpost';
+                } elseif ($actionPermission === null && in_array($action, ['cancel', 'cancelled', 'delete', 'deleted'], true)) {
+                    $actionPermission = 'delete';
                 }
                 if ($actionPermission !== null) {
                     $permissionMiddleware->assertActionPermission($claims, $actionPermission);
                 }
 
-                if ((string) ($claims['user_type'] ?? '') !== '1') {
+                if ($requiresApproval && (string) ($claims['user_type'] ?? '') !== '1') {
                     $modules = array_values(array_unique(array_map('strval', $approverModules)));
                     $placeholders = implode(',', array_fill(0, count($modules), '?'));
                     $statement = $db->pdo()->prepare(
