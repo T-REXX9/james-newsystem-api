@@ -99,8 +99,9 @@ final class AuthRepository
      */
     public function getDerivedAccessRights(array $user): array
     {
+        $hasStoredRights = array_key_exists('laccess_rights', $user) && $user['laccess_rights'] !== null;
         $storedRights = $this->decodeAccessRights($user['laccess_rights'] ?? null);
-        if ($storedRights !== []) {
+        if ($hasStoredRights) {
             return $storedRights;
         }
 

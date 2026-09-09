@@ -85,6 +85,24 @@ final class LegacyPermissionMapper
      */
     public function getAccessRightsForGroup(int $mainId, int $groupId): array
     {
+        // New access groups store canonical route/page IDs directly. Keep the
+        // legacy permission table as a fallback for existing installations.
+        try {
+            $stmt = $this->pdo->prepare(
+                'SELECT access_rights FROM access_groups WHERE main_id = :main_id AND id = :group_id LIMIT 1'
+            );
+            $stmt->execute(['main_id' => $mainId, 'group_id' => $groupId]);
+            $stored = $stmt->fetchColumn();
+            if ($stored !== false && $stored !== null) {
+                $decoded = is_string($stored) ? json_decode($stored, true) : $stored;
+                return is_array($decoded)
+                    ? array_values(array_filter($decoded, static fn (mixed $id): bool => is_string($id)))
+                    : [];
+            }
+        } catch (\Throwable) {
+            // Older databases may not have access_groups yet.
+        }
+
         $pageIds = $this->fetchPageIdsForGroup($mainId, $groupId);
         $moduleIds = ['home' => true];
 

@@ -30,8 +30,10 @@ final class AccessGroupRepository
                 CAST(ut.lid AS CHAR) AS id,
                 CAST(COALESCE(NULLIF(ut.lmain_id, 0), :main_id_select) AS SIGNED) AS main_id,
                 COALESCE(ut.ltype_name, \'\') AS name,
-                COALESCE(ut.ldesc, \'\') AS description
+                COALESCE(ut.ldesc, \'\') AS description,
+                ag.access_rights AS access_rights
              FROM tblusertype ut
+             LEFT JOIN access_groups ag ON ag.id = ut.lid AND ag.main_id = :main_id_join_group
              LEFT JOIN tblaccount a
                ON a.ltype = ut.lid
               AND a.lmother_id = :main_id_join_account
@@ -47,11 +49,12 @@ final class AccessGroupRepository
                  OR wp.lpageno IS NOT NULL
                )
                AND LOWER(TRIM(COALESCE(ut.ltype_name, \'\'))) NOT IN (\'sales person\', \'salesperson\')
-             GROUP BY ut.lid
+             GROUP BY ut.lid, ag.access_rights
              ORDER BY ut.ltype_name ASC, ut.lid ASC'
         );
         $stmt->bindValue('main_id_select', $mainId, PDO::PARAM_INT);
         $stmt->bindValue('main_id_join_account', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('main_id_join_group', $mainId, PDO::PARAM_INT);
         $stmt->bindValue('main_id_join_wp', $mainId, PDO::PARAM_INT);
         $stmt->bindValue('main_id_where', $mainId, PDO::PARAM_INT);
         $stmt->execute();
@@ -69,8 +72,10 @@ final class AccessGroupRepository
                 CAST(ut.lid AS CHAR) AS id,
                 CAST(COALESCE(NULLIF(ut.lmain_id, 0), :main_id_select) AS SIGNED) AS main_id,
                 COALESCE(ut.ltype_name, \'\') AS name,
-                COALESCE(ut.ldesc, \'\') AS description
+                COALESCE(ut.ldesc, \'\') AS description,
+                ag.access_rights AS access_rights
              FROM tblusertype ut
+             LEFT JOIN access_groups ag ON ag.id = ut.lid AND ag.main_id = :main_id_join_group
              WHERE ut.lid = :group_id
                AND (
                  ut.lmain_id = :main_id_where
@@ -92,6 +97,7 @@ final class AccessGroupRepository
              LIMIT 1'
         );
         $stmt->bindValue('main_id_select', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('main_id_join_group', $mainId, PDO::PARAM_INT);
         $stmt->bindValue('main_id_where', $mainId, PDO::PARAM_INT);
         $stmt->bindValue('main_id_account', $mainId, PDO::PARAM_INT);
         $stmt->bindValue('main_id_wp', $mainId, PDO::PARAM_INT);
@@ -116,18 +122,15 @@ final class AccessGroupRepository
         ]);
 
         $groupId = (int) $this->db->pdo()->lastInsertId();
-        $this->legacyPermissions->syncGroupPermissions(
-            $mainId,
-            $groupId,
-            $this->sanitizeAccessRights($data['access_rights'] ?? [])
-        );
+        $rights = $this->sanitizeAccessRights($data['access_rights'] ?? []);
+        $this->storeGroupAccessRights($mainId, $groupId, $rights);
 
         return $this->getGroupById($mainId, $groupId) ?? [
             'id' => (string) $groupId,
             'main_id' => $mainId,
             'name' => $name,
             'description' => trim((string) ($data['description'] ?? '')),
-            'access_rights' => $this->sanitizeAccessRights($data['access_rights'] ?? []),
+            'access_rights' => $rights,
             'assigned_staff_count' => 0,
         ];
     }
@@ -170,11 +173,7 @@ final class AccessGroupRepository
         }
 
         if (array_key_exists('access_rights', $data)) {
-            $this->legacyPermissions->syncGroupPermissions(
-                $mainId,
-                $groupId,
-                $this->sanitizeAccessRights($data['access_rights'])
-            );
+            $this->storeGroupAccessRights($mainId, $groupId, $this->sanitizeAccessRights($data['access_rights']));
         }
 
         return $this->getGroupById($mainId, $groupId);
@@ -230,12 +229,38 @@ final class AccessGroupRepository
             'description' => trim((string) ($row['description'] ?? '')),
             'access_rights' => $this->isCompanyOwnerName((string) ($row['name'] ?? ''))
                 ? ['*']
-                : $this->legacyPermissions->getAccessRightsForGroup($mainId, $groupId),
+                : (array_key_exists('access_rights', $row) && $row['access_rights'] !== null
+                    ? $this->decodeAccessRights($row['access_rights'])
+                    : $this->legacyPermissions->getAccessRightsForGroup($mainId, $groupId)),
             'created_at' => '',
             'assigned_staff_count' => $this->countAssignedStaff($mainId, $groupId),
             // Core roles are recreated by ensureCoreAccessGroups() on every list.
             'is_core' => $this->isCoreAccessGroupName($name),
         ];
+    }
+
+    private function storeGroupAccessRights(int $mainId, int $groupId, array $rights): void
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'INSERT INTO access_groups (id, main_id, name, description, access_rights)
+             SELECT ut.lid, :main_id, ut.ltype_name, ut.ldesc, :access_rights
+             FROM tblusertype ut WHERE ut.lid = :group_id
+             ON DUPLICATE KEY UPDATE access_rights = VALUES(access_rights)'
+        );
+        $stmt->execute([
+            'main_id' => $mainId,
+            'group_id' => $groupId,
+            'access_rights' => json_encode(array_values($rights)),
+        ]);
+        $this->legacyPermissions->syncGroupPermissions($mainId, $groupId, $rights);
+    }
+
+    private function decodeAccessRights(mixed $value): array
+    {
+        if (is_array($value)) return $this->sanitizeAccessRights($value);
+        if (!is_string($value) || trim($value) === '') return [];
+        $decoded = json_decode($value, true);
+        return is_array($decoded) ? $this->sanitizeAccessRights($decoded) : [];
     }
 
     public function isCoreAccessGroup(int $mainId, int $groupId): bool
