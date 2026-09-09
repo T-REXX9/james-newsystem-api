@@ -12,6 +12,7 @@ final class AuthRepository
 {
     private LegacyPermissionMapper $legacyPermissions;
     private ?bool $hasAccountAccessRightsColumn = null;
+    private ?bool $hasSessionVersionColumn = null;
 
     public function __construct(private readonly Database $db)
     {
@@ -44,6 +45,82 @@ final class AuthRepository
         $stmt->execute(['id' => $userId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
+    }
+
+    public function isSessionCurrent(array $claims): bool
+    {
+        $userId = (int) ($claims['sub'] ?? 0);
+        if ($userId <= 0 || !$this->sessionVersionColumnExists()) {
+            return $userId > 0;
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT lsession_version FROM tblaccount WHERE lid = :user_id AND COALESCE(lstatus, 0) = 1 LIMIT 1'
+        );
+        $stmt->execute(['user_id' => $userId]);
+        $current = $stmt->fetchColumn();
+
+        return $current !== false && (int) $current === (int) ($claims['session_version'] ?? 0);
+    }
+
+    public function sessionVersion(int $userId): int
+    {
+        if ($userId <= 0 || !$this->sessionVersionColumnExists()) {
+            return 0;
+        }
+
+        $stmt = $this->db->pdo()->prepare('SELECT lsession_version FROM tblaccount WHERE lid = :user_id LIMIT 1');
+        $stmt->execute(['user_id' => $userId]);
+        return max(0, (int) ($stmt->fetchColumn() ?: 0));
+    }
+
+    public function changeStaffPassword(int $mainId, int $staffId, string $password): bool
+    {
+        if (!$this->sessionVersionColumnExists()) {
+            throw new HttpException(500, 'Password changes require api/migrations/041_add_account_session_version.sql');
+        }
+
+        $staff = $this->findUserById($staffId);
+        if ($staff === null || (int) ($staff['lmother_id'] ?? 0) !== $mainId || (int) ($staff['ltype'] ?? 0) === 1) {
+            return false;
+        }
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare(
+                'UPDATE tblaccount
+                 SET lpassword = :password, lsession_version = COALESCE(lsession_version, 0) + 1
+                 WHERE lid = :staff_id AND lmother_id = :main_id AND ltype <> 1 AND COALESCE(lstatus, 0) = 1
+                 LIMIT 1'
+            );
+            $stmt->execute([
+                'password' => $this->hashLegacyPassword($password),
+                'staff_id' => $staffId,
+                'main_id' => $mainId,
+            ]);
+
+            // Device registration is an authorization binding. It must be rebuilt after re-authentication.
+            $devices = $pdo->prepare('DELETE FROM tblcall_devices WHERE lagent_id = :staff_id');
+            $devices->execute(['staff_id' => $staffId]);
+            $changed = $stmt->rowCount() > 0;
+            $pdo->commit();
+            return $changed;
+        } catch (\Throwable $error) {
+            $pdo->rollBack();
+            throw $error;
+        }
+    }
+
+    private function sessionVersionColumnExists(): bool
+    {
+        if ($this->hasSessionVersionColumn !== null) {
+            return $this->hasSessionVersionColumn;
+        }
+
+        $stmt = $this->db->pdo()->query("SHOW COLUMNS FROM tblaccount LIKE 'lsession_version'");
+        $this->hasSessionVersionColumn = (bool) $stmt->fetch(PDO::FETCH_ASSOC);
+        return $this->hasSessionVersionColumn;
     }
 
     public function getWebPermissions(int $mainUserId, string $group): array

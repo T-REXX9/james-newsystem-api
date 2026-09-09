@@ -400,8 +400,8 @@ function app_router(): Router
         $automaticBackupRunner
     );
 
-    $requireBearerAuth = static function (callable $handler) use ($tokenService): callable {
-        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService) {
+    $requireBearerAuth = static function (callable $handler) use ($tokenService, $authRepo): callable {
+        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService, $authRepo) {
             $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['Authorization'] ?? '';
             if (!is_string($header) || trim($header) === '') {
                 throw new HttpException(401, 'Authorization header is required');
@@ -411,18 +411,24 @@ function app_router(): Router
                 throw new HttpException(401, 'Bearer token is required');
             }
 
-            $tokenService->verify((string) $matches[1]);
+            $claims = $tokenService->verify((string) $matches[1]);
+            if (!$authRepo->isSessionCurrent($claims)) {
+                throw new HttpException(401, 'Session expired. Please sign in again.');
+            }
             return $handler($params, $query, $body);
         };
     };
 
-    $requireBearerAuthWithClaims = static function (callable $handler) use ($tokenService): callable {
-        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService) {
+    $requireBearerAuthWithClaims = static function (callable $handler) use ($tokenService, $authRepo): callable {
+        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService, $authRepo) {
             $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['Authorization'] ?? '';
             if (!is_string($header) || !preg_match('/^Bearer\s+(.+)$/i', trim($header), $matches)) {
                 throw new HttpException(401, 'Bearer token is required');
             }
             $body['__auth_claims'] = $tokenService->verify((string) $matches[1]);
+            if (!$authRepo->isSessionCurrent($body['__auth_claims'])) {
+                throw new HttpException(401, 'Session expired. Please sign in again.');
+            }
             return $handler($params, $query, $body);
         };
     };
@@ -875,6 +881,7 @@ function app_router(): Router
     $router->get('/api/v1/staff/roles', $requireBearerAuthWithClaims([$staffController, 'roles']));
     $router->get('/api/v1/staff/{staffId}', $requireBearerAuthWithClaims([$staffController, 'show']));
     $router->patch('/api/v1/staff/{staffId}', $requireMasterUser([$staffController, 'update']));
+    $router->post('/api/v1/staff/{staffId}/password', $requireMasterUser([$staffController, 'changePassword']));
     $router->delete('/api/v1/staff/{staffId}', $requireMasterUser([$staffController, 'delete']));
     $router->get('/api/v1/teams', [$teamController, 'list']);
     $router->get('/api/v1/teams/{teamId}', [$teamController, 'show']);

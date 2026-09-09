@@ -86,6 +86,7 @@ final class AuthController
             'session_branch' => $context['session_branch'],
             'industry' => $context['industry'],
             'logintype' => $context['logintype'],
+            'session_version' => $this->repo->sessionVersion((int) ($user['lid'] ?? 0)),
         ]);
 
         $context['token'] = $token;
@@ -186,6 +187,11 @@ final class AuthController
             throw new HttpException(401, 'Bearer token is required');
         }
 
-        return $this->tokens->verify((string) $matches[1]);
+        $claims = $this->tokens->verify((string) $matches[1]);
+        if (!$this->repo->isSessionCurrent($claims)) {
+            throw new HttpException(401, 'Session expired. Please sign in again.');
+        }
+
+        return $claims;
     }
 }

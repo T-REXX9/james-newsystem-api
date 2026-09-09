@@ -112,6 +112,27 @@ final class StaffController
         return $updated;
     }
 
+    public function changePassword(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $staffId = (int) ($params['staffId'] ?? 0);
+        $password = (string) ($body['new_password'] ?? '');
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        if ($staffId <= 0) {
+            throw new HttpException(422, 'staffId is required');
+        }
+        if (strlen($password) < 8) {
+            throw new HttpException(422, 'Password must be at least 8 characters');
+        }
+        if ($this->authRepo === null || !$this->authRepo->changeStaffPassword($mainId, $staffId, $password)) {
+            throw new HttpException(404, 'Staff member not found');
+        }
+
+        return ['password_changed' => true, 'staff_id' => $staffId];
+    }
+
     public function create(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($body['main_id'] ?? 0);
