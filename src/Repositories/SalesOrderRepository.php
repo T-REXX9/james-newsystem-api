@@ -823,8 +823,8 @@ SQL;
         $order = $sales['order'] ?? [];
         $items = is_array($sales['items'] ?? null) ? $sales['items'] : [];
         $status = strtolower(trim((string) ($order['status'] ?? '')));
-        if (!in_array($status, ['approved', 'posted'], true)) {
-            throw new RuntimeException('Sales order must be approved before conversion');
+        if (!in_array($status, ['pending', 'submitted', 'approved', 'posted'], true)) {
+            throw new RuntimeException('Sales order is not available for conversion');
         }
         if ((int) ($order['is_cancelled'] ?? 0) > 0) {
             throw new RuntimeException('Cancelled sales orders cannot be converted');

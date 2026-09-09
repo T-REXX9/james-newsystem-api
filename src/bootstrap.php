@@ -487,7 +487,7 @@ function app_router(): Router
     $requireApproverAction = static function (callable $handler, array $approverModules, bool $approvalOnly = false, ?string $fixedActionPermission = null) use ($requireBearerAuthWithClaims, $permissionMiddleware, $db): callable {
         return static function (array $params = [], array $query = [], array $body = []) use ($handler, $approverModules, $db, $approvalOnly, $fixedActionPermission, $requireBearerAuthWithClaims, $permissionMiddleware): array {
             $action = strtolower(trim((string) ($params['action'] ?? $body['action'] ?? $body['status'] ?? $body['decision'] ?? '')));
-            $approvalActions = ['approve', 'approved', 'approverecord', 'post', 'finalize', 'review', 'reject', 'rejected', 'disapprove', 'disapproved', 'disapproverecord', 'submitted', 'unpost'];
+            $approvalActions = ['approve', 'approved', 'approverecord', 'post', 'postrecord', 'posttoledger', 'finalize', 'review', 'reject', 'rejected', 'disapprove', 'disapproved', 'disapproverecord', 'submitted', 'unpost'];
             $requiresApproval = $approvalOnly || in_array($action, $approvalActions, true);
 
             return $requireBearerAuthWithClaims(static function (array $authParams = [], array $authQuery = [], array $authBody = []) use ($handler, $approverModules, $db, $action, $fixedActionPermission, $permissionMiddleware, $requiresApproval): array {
@@ -511,12 +511,16 @@ function app_router(): Router
                 $authBody['approved_by'] = (string) $userId;
 
                 $actionPermission = $fixedActionPermission;
-                if ($actionPermission === null && in_array($action, ['post', 'posted', 'finalize', 'submitted'], true)) {
+                if ($actionPermission === null && in_array($action, ['post', 'posted', 'postrecord', 'posttoledger', 'finalize', 'submitted'], true)) {
                     $actionPermission = 'post';
                 } elseif ($actionPermission === null && $action === 'unpost') {
                     $actionPermission = 'unpost';
-                } elseif ($actionPermission === null && in_array($action, ['cancel', 'cancelled', 'delete', 'deleted'], true)) {
+                } elseif ($actionPermission === null && in_array($action, ['cancel', 'cancelled', 'cancelrecord', 'delete', 'deleted'], true)) {
                     $actionPermission = 'delete';
+                } elseif ($actionPermission === null && in_array($action, ['submitrecord', 'edit', 'editrecord', 'update'], true)) {
+                    $actionPermission = 'edit';
+                } elseif ($actionPermission === null && in_array($action, ['convert', 'convert-to-order', 'convertsales'], true)) {
+                    $actionPermission = 'add';
                 }
                 if ($actionPermission !== null) {
                     $permissionMiddleware->assertActionPermission($claims, $actionPermission);
@@ -543,13 +547,13 @@ function app_router(): Router
     $router = new Router();
     $router->get('/api/v1/health', [$healthController, 'index']);
     $router->get('/api/v1/recycle-bin', $requireBearerAuthWithClaims([$customerWorkflowController, 'recycleBin']));
-    $router->post('/api/v1/recycle-bin/{type}/{itemId}/restore', $requireBearerAuthWithClaims([$customerWorkflowController, 'restoreRecycleBinItem']));
+    $router->post('/api/v1/recycle-bin/{type}/{itemId}/restore', $requireActionAuth([$customerWorkflowController, 'restoreRecycleBinItem'], 'Recycle Bin', 'edit'));
     $router->post('/api/v1/activity-logs', $requireBearerAuthWithClaims([$customerWorkflowController, 'logActivity']));
     $router->get('/api/v1/customer-workflows/{contactId}/inquiries', $requireBearerAuthWithClaims([$customerWorkflowController, 'inquiries']));
     $router->get('/api/v1/customer-workflows/{contactId}/returns', $requireBearerAuthWithClaims([$customerWorkflowController, 'returns']));
     $router->get('/api/v1/customer-workflows/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'allRequests']));
     $router->get('/api/v1/customer-workflows/{contactId}/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'requests']));
-    $router->post('/api/v1/customer-workflows/{contactId}/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'createRequest']));
+    $router->post('/api/v1/customer-workflows/{contactId}/requests', $requireActionAuth([$customerWorkflowController, 'createRequest'], 'Customer', 'add'));
     $router->post('/api/v1/customer-workflows/{contactId}/requests/{requestId}/review', $requireApproverAction([$customerWorkflowController, 'reviewRequest'], ['Customer Request', 'Customer', 'CR']));
     $router->get('/api/v1/customers/{sessionId}', [$customerController, 'show']);
     $router->get('/api/v1/customers/{sessionId}/purchase-history', [$customerController, 'purchaseHistory']);
@@ -658,7 +662,7 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/call-report-threads', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'callReportThreads']));
     $router->post('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/messages', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createCallReportReply']));
     $router->patch('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/read', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'markCallReportThreadRead']));
-    $router->post('/api/v1/daily-call-monitoring/incident-reports', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createIncidentReport']));
+    $router->post('/api/v1/daily-call-monitoring/incident-reports', $requireActionAuth([$dailyCallMonitoringController, 'createIncidentReport'], 'Incident Report', 'add'));
     $router->patch('/api/v1/daily-call-monitoring/incident-reports/{reportId}/decision', $requireApproverAction([$dailyCallMonitoringController, 'reviewIncidentReport'], ['Incident Report', 'Incident', 'IR', 'Sales Return', 'SR']));
     $router->post('/api/v1/call-system/devices/register', $requireBearerAuthWithClaims([$callSystemController, 'registerDevice']));
     $router->post('/api/v1/call-system/devices/heartbeat', $requireBearerAuthWithClaims([$callSystemController, 'heartbeat']));
@@ -670,14 +674,14 @@ function app_router(): Router
     $router->get('/api/v1/call-system/call-logs', $requireBearerAuthWithClaims([$callSystemController, 'listCallLogs']));
     $router->get('/api/v1/call-system/call-records', $requireBearerAuthWithClaims([$callSystemController, 'listCallRecords']));
     $router->get('/api/v1/call-system/auto-reply-settings', $requireBearerAuthWithClaims([$callSystemController, 'getAutoReplySettings']));
-    $router->post('/api/v1/call-system/auto-reply-settings', $requireBearerAuthWithClaims([$callSystemController, 'saveAutoReplySettings']));
+    $router->post('/api/v1/call-system/auto-reply-settings', $requireMasterUser([$callSystemController, 'saveAutoReplySettings']));
     $router->get('/api/v1/call-system/auto-reply-audit', $requireBearerAuthWithClaims([$callSystemController, 'listAutoReplyAudit']));
-    $router->post('/api/v1/daily-call-monitoring/customer-logs', [$dailyCallMonitoringController, 'createCustomerLog']);
+    $router->post('/api/v1/daily-call-monitoring/customer-logs', $requireActionAuth([$dailyCallMonitoringController, 'createCustomerLog'], 'Customer', 'edit'));
     $router->get('/api/v1/fast-slow-inventory-report', [$fastSlowInventoryReportController, 'report']);
     $router->get('/api/v1/incident-items-report', $requireBearerAuthWithClaims([$incidentItemsReportController, 'report']));
     $router->get('/api/v1/incident-items-report/incidents', $requireBearerAuthWithClaims([$incidentItemsReportController, 'listItemIncidents']));
     $router->get('/api/v1/incident-items-report/incidents/{reportId}', $requireBearerAuthWithClaims([$incidentItemsReportController, 'showIncident']));
-    $router->post('/api/v1/incident-report-items', $requireBearerAuthWithClaims([$incidentItemsReportController, 'create']));
+    $router->post('/api/v1/incident-report-items', $requireActionAuth([$incidentItemsReportController, 'create'], 'Incident Report', 'add'));
     $router->get('/api/v1/freight-charges', [$freightChargesController, 'list']);
     $router->get('/api/v1/freight-charges/report', [$freightChargesController, 'report']);
     $router->get('/api/v1/freight-charges/{refno}', [$freightChargesController, 'show']);
@@ -688,7 +692,7 @@ function app_router(): Router
     $router->get('/api/v1/suggested-stock-report/customers', [$suggestedStockReportController, 'customers']);
     $router->get('/api/v1/suggested-stock-report/summary', [$suggestedStockReportController, 'summary']);
     $router->get('/api/v1/suggested-stock-report/details', [$suggestedStockReportController, 'details']);
-    $router->patch('/api/v1/suggested-stock-report/remark', [$suggestedStockReportController, 'updateRemark']);
+    $router->patch('/api/v1/suggested-stock-report/remark', $requireActionAuth([$suggestedStockReportController, 'updateRemark'], 'Suggested Stock Report', 'edit'));
     $router->post('/api/v1/suggested-stock-report/clear-not-listed', $requireActionAuth([$suggestedStockReportController, 'clearNotListed'], 'Suggested Stock Report', 'edit'));
     $router->post('/api/v1/suggested-stock-report/kiv', $requireActionAuth([$suggestedStockReportController, 'addToKiv'], 'Suggested Stock Report', 'add'));
     $router->post('/api/v1/suggested-stock-report/kiv/remove', $requireActionAuth([$suggestedStockReportController, 'removeFromKiv'], 'Suggested Stock Report', 'delete'));
@@ -740,8 +744,8 @@ function app_router(): Router
     $router->post('/api/v1/receiving-stocks/{receivingRefno}/finalize', $requireApproverAction([$receivingStockController, 'finalize'], ['Receiving Stock', 'RR'], true, 'post'));
     $router->post('/api/v1/receiving-stocks/{receivingRefno}/actions/unpost', $requireActionAuth([$receivingStockController, 'unpost'], 'Receiving Stock', 'unpost'));
     $router->get('/api/v1/reorder-report', [$reorderReportController, 'list']);
-    $router->post('/api/v1/reorder-report/hide-items', [$reorderReportController, 'hideItems']);
-    $router->post('/api/v1/reorder-report/restore-items', [$reorderReportController, 'restoreItems']);
+    $router->post('/api/v1/reorder-report/hide-items', $requireActionAuth([$reorderReportController, 'hideItems'], 'Reorder Report', 'edit'));
+    $router->post('/api/v1/reorder-report/restore-items', $requireActionAuth([$reorderReportController, 'restoreItems'], 'Reorder Report', 'edit'));
     $router->get('/api/v1/return-to-suppliers', [$returnToSupplierController, 'list']);
     $router->get('/api/v1/return-to-suppliers/rr/search', [$returnToSupplierController, 'searchReceivingReports']);
     $router->get('/api/v1/return-to-suppliers/rr/{rrRefno}/items', [$returnToSupplierController, 'receivingReportItems']);
@@ -874,56 +878,56 @@ function app_router(): Router
     $router->delete('/api/v1/staff/{staffId}', $requireMasterUser([$staffController, 'delete']));
     $router->get('/api/v1/teams', [$teamController, 'list']);
     $router->get('/api/v1/teams/{teamId}', [$teamController, 'show']);
-    $router->post('/api/v1/teams', [$teamController, 'create']);
-    $router->patch('/api/v1/teams/{teamId}', [$teamController, 'update']);
-    $router->delete('/api/v1/teams/{teamId}', [$teamController, 'delete']);
+    $router->post('/api/v1/teams', $requireActionAuth([$teamController, 'create'], 'Team', 'add'));
+    $router->patch('/api/v1/teams/{teamId}', $requireActionAuth([$teamController, 'update'], 'Team', 'edit'));
+    $router->delete('/api/v1/teams/{teamId}', $requireActionAuth([$teamController, 'delete'], 'Team', 'delete'));
     $router->get('/api/v1/couriers', [$courierController, 'list']);
     $router->get('/api/v1/couriers/{courierId}', [$courierController, 'show']);
-    $router->post('/api/v1/couriers', [$courierController, 'create']);
-    $router->patch('/api/v1/couriers/{courierId}', [$courierController, 'update']);
-    $router->delete('/api/v1/couriers/{courierId}', [$courierController, 'delete']);
+    $router->post('/api/v1/couriers', $requireActionAuth([$courierController, 'create'], 'Courier', 'add'));
+    $router->patch('/api/v1/couriers/{courierId}', $requireActionAuth([$courierController, 'update'], 'Courier', 'edit'));
+    $router->delete('/api/v1/couriers/{courierId}', $requireActionAuth([$courierController, 'delete'], 'Courier', 'delete'));
     $router->get('/api/v1/categories', [$categoryController, 'list']);
     $router->get('/api/v1/categories/{categoryId}', [$categoryController, 'show']);
-    $router->post('/api/v1/categories', [$categoryController, 'create']);
-    $router->patch('/api/v1/categories/{categoryId}', [$categoryController, 'update']);
-    $router->delete('/api/v1/categories/{categoryId}', [$categoryController, 'delete']);
+    $router->post('/api/v1/categories', $requireActionAuth([$categoryController, 'create'], 'Category', 'add'));
+    $router->patch('/api/v1/categories/{categoryId}', $requireActionAuth([$categoryController, 'update'], 'Category', 'edit'));
+    $router->delete('/api/v1/categories/{categoryId}', $requireActionAuth([$categoryController, 'delete'], 'Category', 'delete'));
     $router->get('/api/v1/remark-templates', [$remarkTemplateController, 'list']);
     $router->get('/api/v1/remark-templates/{remarkTemplateId}', [$remarkTemplateController, 'show']);
-    $router->post('/api/v1/remark-templates', [$remarkTemplateController, 'create']);
-    $router->patch('/api/v1/remark-templates/{remarkTemplateId}', [$remarkTemplateController, 'update']);
-    $router->delete('/api/v1/remark-templates/{remarkTemplateId}', [$remarkTemplateController, 'delete']);
+    $router->post('/api/v1/remark-templates', $requireActionAuth([$remarkTemplateController, 'create'], 'Remark Templates', 'add'));
+    $router->patch('/api/v1/remark-templates/{remarkTemplateId}', $requireActionAuth([$remarkTemplateController, 'update'], 'Remark Templates', 'edit'));
+    $router->delete('/api/v1/remark-templates/{remarkTemplateId}', $requireActionAuth([$remarkTemplateController, 'delete'], 'Remark Templates', 'delete'));
     $router->get('/api/v1/special-prices/products', $requireBearerAuth([$specialPriceController, 'products']));
     $router->get('/api/v1/special-prices/customers', $requireBearerAuth([$specialPriceController, 'customers']));
     $router->get('/api/v1/special-prices/areas', $requireBearerAuth([$specialPriceController, 'areas']));
     $router->get('/api/v1/special-prices/categories', $requireBearerAuth([$specialPriceController, 'categories']));
     $router->get('/api/v1/special-prices', $requireBearerAuth([$specialPriceController, 'list']));
-    $router->post('/api/v1/special-prices', $requireBearerAuth([$specialPriceController, 'create']));
+    $router->post('/api/v1/special-prices', $requireActionAuth([$specialPriceController, 'create'], 'Special Price', 'add'));
     $router->get('/api/v1/special-prices/{refno}', $requireBearerAuth([$specialPriceController, 'show']));
-    $router->patch('/api/v1/special-prices/{refno}', $requireBearerAuth([$specialPriceController, 'update']));
-    $router->delete('/api/v1/special-prices/{refno}', $requireBearerAuth([$specialPriceController, 'delete']));
-    $router->post('/api/v1/special-prices/{refno}/customers', $requireBearerAuth([$specialPriceController, 'addCustomer']));
-    $router->delete('/api/v1/special-prices/{refno}/customers/{patientRefno}', $requireBearerAuth([$specialPriceController, 'removeCustomer']));
-    $router->post('/api/v1/special-prices/{refno}/areas', $requireBearerAuth([$specialPriceController, 'addArea']));
-    $router->delete('/api/v1/special-prices/{refno}/areas/{areaCode}', $requireBearerAuth([$specialPriceController, 'removeArea']));
-    $router->post('/api/v1/special-prices/{refno}/categories', $requireBearerAuth([$specialPriceController, 'addCategory']));
-    $router->delete('/api/v1/special-prices/{refno}/categories/{categoryId}', $requireBearerAuth([$specialPriceController, 'removeCategory']));
+    $router->patch('/api/v1/special-prices/{refno}', $requireActionAuth([$specialPriceController, 'update'], 'Special Price', 'edit'));
+    $router->delete('/api/v1/special-prices/{refno}', $requireActionAuth([$specialPriceController, 'delete'], 'Special Price', 'delete'));
+    $router->post('/api/v1/special-prices/{refno}/customers', $requireActionAuth([$specialPriceController, 'addCustomer'], 'Special Price', 'add'));
+    $router->delete('/api/v1/special-prices/{refno}/customers/{patientRefno}', $requireActionAuth([$specialPriceController, 'removeCustomer'], 'Special Price', 'delete'));
+    $router->post('/api/v1/special-prices/{refno}/areas', $requireActionAuth([$specialPriceController, 'addArea'], 'Special Price', 'add'));
+    $router->delete('/api/v1/special-prices/{refno}/areas/{areaCode}', $requireActionAuth([$specialPriceController, 'removeArea'], 'Special Price', 'delete'));
+    $router->post('/api/v1/special-prices/{refno}/categories', $requireActionAuth([$specialPriceController, 'addCategory'], 'Special Price', 'add'));
+    $router->delete('/api/v1/special-prices/{refno}/categories/{categoryId}', $requireActionAuth([$specialPriceController, 'removeCategory'], 'Special Price', 'delete'));
     // Campaign Outreach
     $router->get('/api/v1/campaigns/{campaignId}/outreach', [$campaignController, 'listOutreach']);
     $router->get('/api/v1/campaigns/{campaignId}/outreach/{id}', [$campaignController, 'getOutreach']);
-    $router->post('/api/v1/campaigns/{campaignId}/outreach', [$campaignController, 'createOutreach']);
-    $router->patch('/api/v1/outreach/{id}', [$campaignController, 'updateOutreachStatus']);
-    $router->post('/api/v1/outreach/{id}/response', [$campaignController, 'recordOutreachResponse']);
+    $router->post('/api/v1/campaigns/{campaignId}/outreach', $requireActionAuth([$campaignController, 'createOutreach'], 'Campaign', 'add'));
+    $router->patch('/api/v1/outreach/{id}', $requireActionAuth([$campaignController, 'updateOutreachStatus'], 'Campaign', 'edit'));
+    $router->post('/api/v1/outreach/{id}/response', $requireActionAuth([$campaignController, 'recordOutreachResponse'], 'Campaign', 'edit'));
     $router->get('/api/v1/outreach/pending', [$campaignController, 'getPendingOutreach']);
     // Campaign Feedback
     $router->get('/api/v1/campaigns/{campaignId}/feedback', [$campaignController, 'listFeedback']);
-    $router->post('/api/v1/campaigns/{campaignId}/feedback', [$campaignController, 'createFeedback']);
+    $router->post('/api/v1/campaigns/{campaignId}/feedback', $requireActionAuth([$campaignController, 'createFeedback'], 'Campaign', 'add'));
     $router->get('/api/v1/campaigns/{campaignId}/feedback/analysis', [$campaignController, 'analyzeFeedback']);
     // Campaign Stats
     $router->get('/api/v1/campaigns/{campaignId}/stats', [$campaignController, 'getStats']);
     // Message Templates
     $router->get('/api/v1/message-templates', [$campaignController, 'listTemplates']);
     $router->get('/api/v1/message-templates/{id}', [$campaignController, 'getTemplate']);
-    $router->post('/api/v1/message-templates', [$campaignController, 'createTemplate']);
+    $router->post('/api/v1/message-templates', $requireActionAuth([$campaignController, 'createTemplate'], 'Message Templates', 'add'));
 
     // SMS Gateway (Authenticated by Gateway Device ID)
     $smsGatewayController = new \App\Controllers\SmsGatewayController($db);
@@ -933,10 +937,10 @@ function app_router(): Router
     $router->post('/api/v1/sms-gateway/register-device', [$smsGatewayController, 'registerDevice']);
     $router->post('/api/v1/sms-gateway/fetch-jobs', [$smsGatewayController, 'fetchJobs']);
     $router->post('/api/v1/sms-gateway/report-status', [$smsGatewayController, 'reportStatus']);
-    $router->patch('/api/v1/message-templates/{id}', [$campaignController, 'updateTemplate']);
-    $router->delete('/api/v1/message-templates/{id}', [$campaignController, 'deleteTemplate']);
+    $router->patch('/api/v1/message-templates/{id}', $requireActionAuth([$campaignController, 'updateTemplate'], 'Message Templates', 'edit'));
+    $router->delete('/api/v1/message-templates/{id}', $requireActionAuth([$campaignController, 'deleteTemplate'], 'Message Templates', 'delete'));
     // Queue Processing
-    $router->post('/api/v1/outreach/queue/process', [$campaignController, 'processOutreachQueue']);
+    $router->post('/api/v1/outreach/queue/process', $requireActionAuth([$campaignController, 'processOutreachQueue'], 'Campaign', 'edit'));
     // Promotions
     $router->get('/api/v1/promotions', [$promotionController, 'listPromotions']);
     // Promotion Stats & Extended Operations (static routes before {promotionId})
@@ -971,28 +975,28 @@ function app_router(): Router
     $router->get('/api/v1/loyalty-discounts', [$loyaltyDiscountController, 'list']);
     $router->get('/api/v1/loyalty-discounts/stats', [$loyaltyDiscountController, 'stats']);
     $router->get('/api/v1/loyalty-discounts/customer/{customerId}/active-discount', [$loyaltyDiscountController, 'customerActiveDiscount']);
-    $router->post('/api/v1/loyalty-discounts', [$loyaltyDiscountController, 'create']);
-    $router->patch('/api/v1/loyalty-discounts/{ruleId}', [$loyaltyDiscountController, 'update']);
-    $router->patch('/api/v1/loyalty-discounts/{ruleId}/status', [$loyaltyDiscountController, 'updateStatus']);
-    $router->delete('/api/v1/loyalty-discounts/{ruleId}', [$loyaltyDiscountController, 'delete']);
+    $router->post('/api/v1/loyalty-discounts', $requireActionAuth([$loyaltyDiscountController, 'create'], 'Loyalty Discounts', 'add'));
+    $router->patch('/api/v1/loyalty-discounts/{ruleId}', $requireActionAuth([$loyaltyDiscountController, 'update'], 'Loyalty Discounts', 'edit'));
+    $router->patch('/api/v1/loyalty-discounts/{ruleId}/status', $requireActionAuth([$loyaltyDiscountController, 'updateStatus'], 'Loyalty Discounts', 'edit'));
+    $router->delete('/api/v1/loyalty-discounts/{ruleId}', $requireActionAuth([$loyaltyDiscountController, 'delete'], 'Loyalty Discounts', 'delete'));
     // Profit Protection
     $router->get('/api/v1/profit-protection/threshold', [$profitProtectionController, 'threshold']);
-    $router->patch('/api/v1/profit-protection/threshold', [$profitProtectionController, 'updateThreshold']);
+    $router->patch('/api/v1/profit-protection/threshold', $requireActionAuth([$profitProtectionController, 'updateThreshold'], 'Profit Protection', 'edit'));
     // VIP Tier Settings
     $router->get('/api/v1/vip-tier-settings', $requireBearerAuthWithClaims([$vipTierSettingsController, 'index']));
-    $router->patch('/api/v1/vip-tier-settings', $requireBearerAuthWithClaims([$vipTierSettingsController, 'update']));
+    $router->patch('/api/v1/vip-tier-settings', $requireMasterUser([$vipTierSettingsController, 'update']));
     // Server Maintenance (Master User only)
     $router->get('/api/v1/server-maintenance/status', $requireBearerAuthWithClaims([$serverMaintenanceController, 'status']));
     $router->get('/api/v1/server-maintenance/database-backup', $requireBearerAuthWithClaims([$serverMaintenanceController, 'downloadDatabaseBackup']));
     $router->get('/api/v1/server-maintenance/automatic-backup', $requireBearerAuthWithClaims([$serverMaintenanceController, 'getAutomaticBackup']));
-    $router->patch('/api/v1/server-maintenance/automatic-backup', $requireBearerAuthWithClaims([$serverMaintenanceController, 'updateAutomaticBackup']));
+    $router->patch('/api/v1/server-maintenance/automatic-backup', $requireMasterUser([$serverMaintenanceController, 'updateAutomaticBackup']));
     $router->get('/api/v1/server-maintenance/backup-destinations', $requireBearerAuthWithClaims([$serverMaintenanceController, 'listBackupDestinations']));
-    $router->post('/api/v1/server-maintenance/automatic-backup/run', $requireBearerAuthWithClaims([$serverMaintenanceController, 'runAutomaticBackup']));
-    $router->post('/api/v1/profit-protection/validate-items', [$profitProtectionController, 'validateItems']);
-    $router->post('/api/v1/profit-protection/overrides', [$profitProtectionController, 'createOverride']);
+    $router->post('/api/v1/server-maintenance/automatic-backup/run', $requireMasterUser([$serverMaintenanceController, 'runAutomaticBackup']));
+    $router->post('/api/v1/profit-protection/validate-items', $requireBearerAuthWithClaims([$profitProtectionController, 'validateItems']));
+    $router->post('/api/v1/profit-protection/overrides', $requireActionAuth([$profitProtectionController, 'createOverride'], 'Profit Protection', 'add'));
     $router->get('/api/v1/profit-protection/overrides', [$profitProtectionController, 'listOverrides']);
     $router->get('/api/v1/profit-protection/override-stats', [$profitProtectionController, 'overrideStats']);
-    $router->post('/api/v1/profit-protection/admin-overrides', [$profitProtectionController, 'createAdminOverride']);
+    $router->post('/api/v1/profit-protection/admin-overrides', $requireMasterUser([$profitProtectionController, 'createAdminOverride']));
     $router->get('/api/v1/profit-protection/admin-overrides', [$profitProtectionController, 'listAdminOverrides']);
 
     return $router;
