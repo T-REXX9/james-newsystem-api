@@ -90,6 +90,7 @@ require __DIR__ . '/Support/PurchaseReceivingPolicy.php';
 require __DIR__ . '/Support/PurchasedItemMatcher.php';
 require __DIR__ . '/Support/ReturnToSupplierStockPolicy.php';
 require __DIR__ . '/Support/AuditTrailWriter.php';
+require __DIR__ . '/Support/RecordImageValidator.php';
 require __DIR__ . '/Support/VipDocumentDiscount.php';
 require __DIR__ . '/Support/VipStanding.php';
 require __DIR__ . '/Config.php';
@@ -707,8 +708,8 @@ function app_router(): Router
     $router->get('/api/v1/suggested-stock-report/purchase-orders', [$suggestedStockReportController, 'purchaseOrders']);
     $router->post('/api/v1/suggested-stock-report/purchase-orders', $requireActionAuth([$suggestedStockReportController, 'createPurchaseOrder'], 'Purchase Order', 'add'));
     $router->post('/api/v1/suggested-stock-report/purchase-orders/{purchaseRefno}/items', $requireActionAuth([$suggestedStockReportController, 'addPurchaseOrderItem'], 'Purchase Order', 'add'));
-    $router->get('/api/v1/products', [$productController, 'list']);
-    $router->get('/api/v1/products/{productSession}', [$productController, 'show']);
+    $router->get('/api/v1/products', $requireBearerAuth([$productController, 'list']));
+    $router->get('/api/v1/products/{productSession}', $requireBearerAuth([$productController, 'show']));
     $router->post('/api/v1/products', $requireActionAuth([$productController, 'create'], 'Product', 'add'));
     $router->patch('/api/v1/products/{productSession}', $requireActionAuth([$productController, 'update'], 'Product', 'edit'));
     $router->post('/api/v1/products/bulk-update', $requireActionAuth([$productController, 'bulkUpdate'], 'Product', 'edit'));
