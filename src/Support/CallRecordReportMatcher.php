@@ -15,9 +15,9 @@ final class CallRecordReportMatcher
     {
         $usedReports = [];
         return array_map(static function (array $record) use ($reports, &$usedReports): array {
-            $record['concern'] = null;
-            $record['action'] = null;
-            $record['report_body'] = null;
+            $record['concern'] = $record['concern'] ?? null;
+            $record['action'] = $record['action'] ?? null;
+            $record['report_body'] = $record['report_body'] ?? null;
 
             $matches = array_values(array_filter(
                 $reports,

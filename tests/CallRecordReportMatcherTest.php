@@ -94,5 +94,14 @@ $closest = CallRecordReportMatcher::attach([[
 ]);
 $assert($closest[0]['concern'] === 'Nearest', 'chooses the closest report when several reports match');
 
+$synthetic = CallRecordReportMatcher::attach([[
+    'lcustomer_id' => '1461',
+    'lcall_timestamp' => '2026-09-09 16:00:54',
+    'concern' => 'Interested in fleet pricing after the call.',
+    'action' => null,
+    'report_body' => 'Interested in fleet pricing after the call.',
+]], []);
+$assert($synthetic[0]['concern'] === 'Interested in fleet pricing after the call.', 'preserves prospect comment on synthetic call records');
+
 echo "Results: {$passed} passed, {$failed} failed\n";
 exit($failed > 0 ? 1 : 0);
