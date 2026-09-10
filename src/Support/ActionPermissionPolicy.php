@@ -9,6 +9,7 @@ final class ActionPermissionPolicy
     /** @var array<string, bool> */
     public const DEFAULTS = [
         'can_view' => true,
+        'can_approve' => true,
         'can_add' => true,
         'can_edit' => true,
         'can_delete' => true,
@@ -65,6 +66,7 @@ final class ActionPermissionPolicy
 
         $field = match ($action) {
             'view' => 'can_view',
+            'approve' => 'can_approve',
             'add' => 'can_add',
             'edit' => 'can_edit',
             'delete' => 'can_delete',

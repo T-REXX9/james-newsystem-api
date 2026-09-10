@@ -533,7 +533,9 @@ function app_router(): Router
                 $authBody['approved_by'] = (string) $userId;
 
                 $actionPermission = $fixedActionPermission;
-                if ($actionPermission === null && in_array($action, ['post', 'posted', 'postrecord', 'posttoledger', 'finalize', 'submitted'], true)) {
+                if ($actionPermission === null && in_array($action, ['approve', 'approved', 'approverecord', 'review', 'reject', 'rejected', 'disapprove', 'disapproved', 'disapproverecord'], true)) {
+                    $actionPermission = 'approve';
+                } elseif ($actionPermission === null && in_array($action, ['post', 'posted', 'postrecord', 'posttoledger', 'finalize', 'submitted'], true)) {
                     $actionPermission = 'post';
                 } elseif ($actionPermission === null && $action === 'unpost') {
                     $actionPermission = 'unpost';
