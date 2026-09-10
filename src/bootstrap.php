@@ -469,6 +469,16 @@ function app_router(): Router
         });
     };
 
+    // Literal /actions/unpost routes do not capture {action}; inject it for
+    // controllers that still read $params['action'] / $body['action'].
+    $withFixedAction = static function (callable $handler, string $action): callable {
+        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $action): array {
+            $params['action'] = $action;
+            $body['action'] = $action;
+            return $handler($params, $query, $body);
+        };
+    };
+
     $requireViewAuth = static function (callable $handler, string $page) use ($requireBearerAuthWithClaims, $permissionMiddleware): callable {
         return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($handler, $page, $permissionMiddleware): array {
             $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
@@ -504,12 +514,15 @@ function app_router(): Router
     };
 
     // Approval is a separate capability from module access. Every approval or
-    // post action must derive the actor from the verified token. Approve grants
-    // approval authority; Post/Unpost workflows retain their existing checks.
+    // post action must derive the actor from the verified token. Approve/post
+    // may require Maintenance Approver listing; unpost uses Posting permission
+    // (can_unpost) only — same as Sales Return / Purchase Order / Receiving.
     $requireApproverAction = static function (callable $handler, array $approverModules, bool $approvalOnly = false, ?string $fixedActionPermission = null) use ($requireBearerAuthWithClaims, $permissionMiddleware, $db): callable {
         return static function (array $params = [], array $query = [], array $body = []) use ($handler, $approverModules, $db, $approvalOnly, $fixedActionPermission, $requireBearerAuthWithClaims, $permissionMiddleware): array {
             $action = strtolower(trim((string) ($params['action'] ?? $body['action'] ?? $body['status'] ?? $body['decision'] ?? '')));
-            $approvalActions = ['approve', 'approved', 'approverecord', 'post', 'postrecord', 'posttoledger', 'finalize', 'review', 'reject', 'rejected', 'disapprove', 'disapproved', 'disapproverecord', 'submitted', 'unpost'];
+            // Unpost is a Posting permission (can_unpost), not Approver listing.
+            // Peer routes (Sales Return / PO / Receiving) already use requireActionAuth for unpost.
+            $approvalActions = ['approve', 'approved', 'approverecord', 'post', 'postrecord', 'posttoledger', 'finalize', 'review', 'reject', 'rejected', 'disapprove', 'disapproved', 'disapproverecord', 'submitted'];
             $requiresApproval = $approvalOnly || in_array($action, $approvalActions, true);
 
             return $requireBearerAuthWithClaims(static function (array $authParams = [], array $authQuery = [], array $authBody = []) use ($handler, $approverModules, $db, $action, $fixedActionPermission, $permissionMiddleware, $requiresApproval): array {
@@ -591,6 +604,7 @@ function app_router(): Router
     $router->post('/api/v1/adjustment-entries', $requireActionAuth([$adjustmentEntryController, 'create'], 'Adjustment Entry', 'add'));
     $router->patch('/api/v1/adjustment-entries/{refno}', $requireActionAuth([$adjustmentEntryController, 'update'], 'Adjustment Entry', 'edit'));
     $router->delete('/api/v1/adjustment-entries/{refno}', $requireActionAuth([$adjustmentEntryController, 'delete'], 'Adjustment Entry', 'delete'));
+    $router->post('/api/v1/adjustment-entries/{refno}/actions/unpost', $requireActionAuth($withFixedAction([$adjustmentEntryController, 'action'], 'unpost'), 'Adjustment Entry', 'unpost'));
     $router->post('/api/v1/adjustment-entries/{refno}/actions/{action}', $requireApproverAction([$adjustmentEntryController, 'action'], ['Adjustment Entry', 'Adjustment']));
     $router->get('/api/v1/activity-logs', [$activityLogController, 'list']);
     $router->get('/api/v1/activity-logs/users', [$activityLogController, 'users']);
@@ -713,6 +727,7 @@ function app_router(): Router
     $router->post('/api/v1/freight-charges', $requireActionAuth([$freightChargesController, 'create'], 'Freight Charges', 'add'));
     $router->patch('/api/v1/freight-charges/{refno}', $requireActionAuth([$freightChargesController, 'update'], 'Freight Charges', 'edit'));
     $router->delete('/api/v1/freight-charges/{refno}', $requireActionAuth([$freightChargesController, 'delete'], 'Freight Charges', 'delete'));
+    $router->post('/api/v1/freight-charges/{refno}/actions/unpost', $requireActionAuth($withFixedAction([$freightChargesController, 'action'], 'unpost'), 'Freight Charges', 'unpost'));
     $router->post('/api/v1/freight-charges/{refno}/actions/{action}', $requireApproverAction([$freightChargesController, 'action'], ['Freight Charges', 'Freight']));
     $router->get('/api/v1/suggested-stock-report/customers', [$suggestedStockReportController, 'customers']);
     $router->get('/api/v1/suggested-stock-report/summary', [$suggestedStockReportController, 'summary']);
@@ -741,6 +756,7 @@ function app_router(): Router
     $router->post('/api/v1/purchase-requests/{prRefno}/items', $requireActionAuth([$purchaseRequestController, 'addItem'], 'Purchase Request', 'add'));
     $router->patch('/api/v1/purchase-request-items/{itemId}', $requireActionAuth([$purchaseRequestController, 'updateItem'], 'Purchase Request', 'edit'));
     $router->delete('/api/v1/purchase-request-items/{itemId}', $requireActionAuth([$purchaseRequestController, 'deleteItem'], 'Purchase Request', 'delete'));
+    $router->post('/api/v1/purchase-requests/{prRefno}/actions/unpost', $requireActionAuth($withFixedAction([$purchaseRequestController, 'action'], 'unpost'), 'Purchase Request', 'unpost'));
     $router->post('/api/v1/purchase-requests/{prRefno}/actions/{action}', $requireApproverAction([$purchaseRequestController, 'action'], ['Purchase Request', 'PR']));
     $router->get('/api/v1/purchase-orders', $requireViewAuth([$purchaseOrderController, 'list'], 'Purchase Order'));
     $router->get('/api/v1/purchase-orders/suppliers', $requireViewAuth([$purchaseOrderController, 'suppliers'], 'Purchase Order'));
@@ -782,6 +798,7 @@ function app_router(): Router
     $router->post('/api/v1/return-to-suppliers/{returnRefno}/items', $requireActionAuth([$returnToSupplierController, 'addItem'], 'Return to Supplier', 'add'));
     $router->patch('/api/v1/return-to-supplier-items/{itemId}', $requireActionAuth([$returnToSupplierController, 'updateItem'], 'Return to Supplier', 'edit'));
     $router->delete('/api/v1/return-to-supplier-items/{itemId}', $requireActionAuth([$returnToSupplierController, 'deleteItem'], 'Return to Supplier', 'delete'));
+    $router->post('/api/v1/return-to-suppliers/{returnRefno}/actions/unpost', $requireActionAuth($withFixedAction([$returnToSupplierController, 'action'], 'unpost'), 'Return to Supplier', 'unpost'));
     $router->post('/api/v1/return-to-suppliers/{returnRefno}/actions/{action}', $requireApproverAction([$returnToSupplierController, 'action'], ['Return to Supplier', 'RTS']));
     $router->get('/api/v1/order-slips', $requireViewAuth([$orderSlipController, 'list'], 'Order Slip'));
     $router->get('/api/v1/order-slips/{orderSlipRefno}', $requireViewAuth([$orderSlipController, 'show'], 'Order Slip'));
@@ -791,6 +808,7 @@ function app_router(): Router
     $router->post('/api/v1/order-slips/{orderSlipRefno}/items', $requireActionAuth([$orderSlipController, 'addItem'], 'Order Slip', 'add'));
     $router->patch('/api/v1/order-slip-items/{itemId}', $requireActionAuth([$orderSlipController, 'updateItem'], 'Order Slip', 'edit'));
     $router->delete('/api/v1/order-slip-items/{itemId}', $requireActionAuth([$orderSlipController, 'deleteItem'], 'Order Slip', 'delete'));
+    $router->post('/api/v1/order-slips/{orderSlipRefno}/actions/unpost', $requireActionAuth($withFixedAction([$orderSlipController, 'action'], 'unpost'), 'Order Slip', 'unpost'));
     $router->post('/api/v1/order-slips/{orderSlipRefno}/actions/{action}', $requireApproverAction([$orderSlipController, 'action'], ['Order Slip', 'OS']));
     $router->get('/api/v1/invoices', $requireViewAuth([$invoiceController, 'list'], 'Invoice'));
     $router->get('/api/v1/invoices/{invoiceRefno}', $requireViewAuth([$invoiceController, 'show'], 'Invoice'));
@@ -800,6 +818,7 @@ function app_router(): Router
     $router->post('/api/v1/invoices/{invoiceRefno}/items', $requireActionAuth([$invoiceController, 'addItem'], 'Invoice', 'add'));
     $router->patch('/api/v1/invoice-items/{itemId}', $requireActionAuth([$invoiceController, 'updateItem'], 'Invoice', 'edit'));
     $router->delete('/api/v1/invoice-items/{itemId}', $requireActionAuth([$invoiceController, 'deleteItem'], 'Invoice', 'delete'));
+    $router->post('/api/v1/invoices/{invoiceRefno}/actions/unpost', $requireActionAuth($withFixedAction([$invoiceController, 'action'], 'unpost'), 'Invoice', 'unpost'));
     $router->post('/api/v1/invoices/{invoiceRefno}/actions/{action}', $requireApproverAction([$invoiceController, 'action'], ['Invoice', 'SI']));
     $router->get('/api/v1/inquiry-reports/customers', $requireViewAuth([$inquiryReportController, 'customers'], 'Inquiry Report'));
     $router->get('/api/v1/inquiry-reports', $requireViewAuth([$inquiryReportController, 'report'], 'Inquiry Report'));
@@ -879,6 +898,7 @@ function app_router(): Router
     $router->post('/api/v1/sales-orders/{salesRefno}/items', $requireActionAuth([$salesOrderController, 'addItem'], 'Sales Order', 'add'));
     $router->patch('/api/v1/sales-order-items/{itemId}', $requireActionAuth([$salesOrderController, 'updateItem'], 'Sales Order', 'edit'));
     $router->delete('/api/v1/sales-order-items/{itemId}', $requireActionAuth([$salesOrderController, 'deleteItem'], 'Sales Order', 'delete'));
+    $router->post('/api/v1/sales-orders/{salesRefno}/actions/unpost', $requireActionAuth($withFixedAction([$salesOrderController, 'action'], 'unpost'), 'Sales Order', 'unpost'));
     $router->post('/api/v1/sales-orders/{salesRefno}/actions/{action}', $requireApproverAction([$salesOrderController, 'action'], ['Sales Order', 'SO']));
     $router->post('/api/v1/sales-orders/{salesRefno}/convert/{documentType}', $requireActionAuth([$salesOrderController, 'convertDocument'], 'Sales Order', 'add'));
     $router->get('/api/v1/approvers', [$approverController, 'list']);
