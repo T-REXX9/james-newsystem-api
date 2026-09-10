@@ -503,9 +503,9 @@ function app_router(): Router
         });
     };
 
-    // Approval is a separate capability from module access. Every existing
-    // approval/post action must derive the actor from the verified token and
-    // match the existing Maintenance → Approver list.
+    // Approval is a separate capability from module access. Every approval or
+    // post action must derive the actor from the verified token. Approve grants
+    // approval authority; Post/Unpost workflows retain their existing checks.
     $requireApproverAction = static function (callable $handler, array $approverModules, bool $approvalOnly = false, ?string $fixedActionPermission = null) use ($requireBearerAuthWithClaims, $permissionMiddleware, $db): callable {
         return static function (array $params = [], array $query = [], array $body = []) use ($handler, $approverModules, $db, $approvalOnly, $fixedActionPermission, $requireBearerAuthWithClaims, $permissionMiddleware): array {
             $action = strtolower(trim((string) ($params['action'] ?? $body['action'] ?? $body['status'] ?? $body['decision'] ?? '')));
@@ -550,7 +550,7 @@ function app_router(): Router
                     $permissionMiddleware->assertActionPermission($claims, $actionPermission, $approverModules[0] ?? null);
                 }
 
-                if ($requiresApproval && (string) ($claims['user_type'] ?? '') !== '1') {
+                if ($requiresApproval && $actionPermission !== 'approve' && (string) ($claims['user_type'] ?? '') !== '1') {
                     $modules = array_values(array_unique(array_map('strval', $approverModules)));
                     $placeholders = implode(',', array_fill(0, count($modules), '?'));
                     $statement = $db->pdo()->prepare(
