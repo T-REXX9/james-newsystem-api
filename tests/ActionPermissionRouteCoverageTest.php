@@ -65,6 +65,33 @@ foreach ($expected as $route => $wrapper) {
     }
 }
 
+$expectedViewRoutes = [
+    '/api/v1/customer-database' => 'Customer Database',
+    '/api/v1/products' => 'Product Database',
+    '/api/v1/purchase-requests' => 'Purchase Request',
+    '/api/v1/purchase-orders' => 'Purchase Order',
+    '/api/v1/receiving-stocks' => 'Receiving Stock',
+    '/api/v1/return-to-suppliers' => 'Return to Supplier',
+    '/api/v1/order-slips' => 'Order Slip',
+    '/api/v1/invoices' => 'Invoice',
+    '/api/v1/sales-returns' => 'Sales Return',
+    '/api/v1/sales-inquiries' => 'Sales Inquiry',
+];
+
+foreach ($expectedViewRoutes as $route => $page) {
+    $line = null;
+    foreach (preg_split('/\R/', $source) ?: [] as $candidate) {
+        if (preg_match('/\$router->get\(/', $candidate) && str_contains($candidate, "'{$route}'")) {
+            $line = $candidate;
+            if (str_contains($candidate, '$requireViewAuth') && str_contains($candidate, "'{$page}'")) break;
+        }
+    }
+
+    if ($line === null || !str_contains($line, '$requireViewAuth') || !str_contains($line, "'{$page}'")) {
+        throw new RuntimeException("FAIL: {$route} is not protected by View for {$page}");
+    }
+}
+
 foreach (['submitrecord', 'postrecord', 'posttoledger', 'cancelrecord', 'convert-to-order'] as $actionAlias) {
     if (!str_contains($source, "'{$actionAlias}'")) {
         throw new RuntimeException("FAIL: dynamic action alias {$actionAlias} is not mapped to an action permission");
