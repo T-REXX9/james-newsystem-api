@@ -111,10 +111,54 @@ final class CallReportRepository
         $stmt->execute(['main_id' => $mainId, 'contact_id' => $contactId]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
-        return array_values(array_filter(array_map(
+        $threads = array_values(array_filter(array_map(
             fn(array $row): ?array => $this->mapThreadRow($row, $viewerUserId),
             $rows
         )));
+
+        $prospectStmt = $this->db->pdo()->prepare(
+            'SELECT CONCAT(\'prospect_\', p.lid) AS synthetic_id,
+                    p.lid AS contact_id,
+                    p.lencoded_by AS agent_user_id,
+                    TRIM(CONCAT(COALESCE(a.lfname, \'\'), \' \', COALESCE(a.llname, \'\'))) AS agent_name,
+                    p.lnotes AS report_body,
+                    p.ldatetime AS created_at
+             FROM tblpatient p
+             INNER JOIN tblaccount a ON a.lid = p.lencoded_by
+             WHERE p.lmain_id = :main_id
+               AND CAST(p.lid AS CHAR) = :contact_id
+               AND TRIM(COALESCE(p.lnotes, \'\')) <> \'\'
+               AND (COALESCE(p.lstatus, 1) = 3 OR LOWER(COALESCE(p.lprofile_type, \'\')) LIKE \'%prospect%\')
+             LIMIT 1'
+        );
+        $prospectStmt->execute(['main_id' => $mainId, 'contact_id' => $contactId]);
+        $prospect = $prospectStmt->fetch(PDO::FETCH_ASSOC);
+        if (is_array($prospect)) {
+            $threads[] = [
+                'id' => (string) ($prospect['synthetic_id'] ?? ''),
+                'contact_id' => (string) ($prospect['contact_id'] ?? $contactId),
+                'call_log_entry_id' => '',
+                'call_log_refno' => '',
+                'agent_user_id' => (string) ($prospect['agent_user_id'] ?? ''),
+                'agent_name' => trim((string) ($prospect['agent_name'] ?? '')) ?: 'Sales Agent',
+                'outcome' => 'note',
+                'report_body' => (string) ($prospect['report_body'] ?? ''),
+                'created_at' => (string) ($prospect['created_at'] ?? ''),
+                'call_started_at' => '',
+                'call_ended_at' => (string) ($prospect['created_at'] ?? ''),
+                'duration_seconds' => 0,
+                'last_activity_at' => (string) ($prospect['created_at'] ?? ''),
+                'unread_count' => 0,
+                'messages' => [],
+                'replyable' => false,
+            ];
+        }
+
+        usort($threads, static fn(array $left, array $right): int => strcmp(
+            (string) ($right['created_at'] ?? ''),
+            (string) ($left['created_at'] ?? '')
+        ));
+        return $threads;
     }
 
     public function getThreadById(int $mainId, int $threadId, int $viewerUserId): ?array
