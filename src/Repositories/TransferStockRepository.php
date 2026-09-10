@@ -496,9 +496,6 @@ SQL;
         }
 
         if (in_array($normalizedAction, ['approve', 'approverecord'], true)) {
-            if (!$this->isApprover($userId)) {
-                throw new RuntimeException('Only approver accounts can approve transfer stock');
-            }
             if (!in_array($currentStatus, ['submitted'], true)) {
                 throw new RuntimeException('Only submitted transfers can be approved');
             }

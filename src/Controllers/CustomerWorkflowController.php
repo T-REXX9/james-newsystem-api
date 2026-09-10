@@ -99,20 +99,8 @@ final class CustomerWorkflowController
 
     public function reviewRequest(array $params, array $query, array $body): array
     {
-        [$mainId, $userId, $owner] = $this->context($query, $body);
-        if (!$owner && !$this->isApprover($mainId, $userId)) {
-            throw new HttpException(403, 'Only approver accounts can review customer requests');
-        }
+        [$mainId, $userId] = $this->context($query, $body);
         return (new CustomerRequestRepository($this->db))->review($mainId, rawurldecode($params['contactId']), $params['requestId'], $userId, (string) ($body['decision'] ?? ''), trim((string) ($body['note'] ?? '')));
-    }
-
-    private function isApprover(int $mainId, int $userId): bool
-    {
-        $statement = $this->db->pdo()->prepare(
-            "SELECT 1 FROM tblapprover WHERE lmain_id = ? AND lstaff_id = ? AND UPPER(COALESCE(ltrans_type, '')) IN ('CUSTOMER', 'CUSTOMER REQUEST', 'CR') LIMIT 1"
-        );
-        $statement->execute([$mainId, $userId]);
-        return (bool) $statement->fetchColumn();
     }
     public function recycleBin(array $params, array $query, array $body): array
     {

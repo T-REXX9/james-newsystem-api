@@ -719,9 +719,6 @@ SQL;
             $set[] = "lsubmitstat = 'Submitted'";
             $set[] = 'lcancel = 0';
         } elseif ($normalizedAction === 'approve' || $normalizedAction === 'approvesales') {
-            if (!$this->isApprover($mainId, $viewerUserId, 'SO')) {
-                throw new RuntimeException('Only approver accounts can approve sales orders');
-            }
             $set[] = "lsubmitstat = 'Approved'";
             $set[] = 'lcancel = 0';
         } elseif ($normalizedAction === 'unpost') {
