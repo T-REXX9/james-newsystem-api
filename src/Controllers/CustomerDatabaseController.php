@@ -7,6 +7,7 @@ namespace App\Controllers;
 use App\Repositories\CustomerDatabaseRepository;
 use App\Support\Exceptions\HttpException;
 use RuntimeException;
+use InvalidArgumentException;
 
 final class CustomerDatabaseController
 {
@@ -72,7 +73,7 @@ final class CustomerDatabaseController
 
         try {
             return $this->repo->createCustomer($mainId, $userId, $body);
-        } catch (RuntimeException $e) {
+        } catch (RuntimeException|InvalidArgumentException $e) {
             throw new HttpException(422, $e->getMessage());
         }
     }
@@ -91,7 +92,7 @@ final class CustomerDatabaseController
 
         try {
             $record = $this->repo->updateCustomer($mainId, $sessionId, $body);
-        } catch (RuntimeException $e) {
+        } catch (RuntimeException|InvalidArgumentException $e) {
             throw new HttpException(422, $e->getMessage());
         }
         if ($record === null) {

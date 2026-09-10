@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
+use App\Support\RecordImageValidator;
 use InvalidArgumentException;
 use PDO;
 
@@ -269,6 +271,8 @@ SELECT
         FROM tblinventory_logs tx
         WHERE tx.linvent_id = itm.lsession
     ), 0) AS SIGNED) AS transaction_count,
+    COALESCE(itm.lrecord_image, '') AS record_image,
+    COALESCE(itm.lrecord_image_position, '50,50') AS record_image_position,
     CAST(COALESCE(itm.lnot_inventory, 0) AS SIGNED) AS is_deleted
 FROM tblinventory_item itm
 {$stockTotalsJoin}
@@ -505,6 +509,8 @@ SELECT
         FROM tblinventory_logs tx
         WHERE tx.linvent_id = itm.lsession
     ), 0) AS SIGNED) AS transaction_count,
+    COALESCE(itm.lrecord_image, '') AS record_image,
+    COALESCE(itm.lrecord_image_position, '50,50') AS record_image_position,
     CAST(COALESCE(itm.lnot_inventory, 0) AS SIGNED) AS is_deleted
 FROM tblinventory_item itm
 LEFT JOIN tblcategory cat ON cat.lid = itm.lcategory
@@ -554,11 +560,11 @@ SQL;
 INSERT INTO tblinventory_item (
     lsession, lmain_id, litemcode, ldescription, lpartno, loem_number, lbrand, lbarcode,
     lpcsperbox, lsize, lreorder_amt, lstatus, lproduct_group, lnickname, lholes, lreplenish,
-    lopn_number, lapplication, lcylinder, lcost, lnot_inventory, linv_stat, ltrackable, ldateadded, laddedby
+    lopn_number, lapplication, lcylinder, lcost, lrecord_image, lrecord_image_position, lnot_inventory, linv_stat, ltrackable, ldateadded, laddedby
 ) VALUES (
     :lsession, :lmain_id, :litemcode, :ldescription, :lpartno, :loem_number, :lbrand, :lbarcode,
     :lpcsperbox, :lsize, :lreorder_amt, :lstatus, :lproduct_group, :lnickname, :lholes, :lreplenish,
-    :lopn_number, :lapplication, :lcylinder, :lcost, 0, '', 'Yes', CURDATE(), :laddedby
+    :lopn_number, :lapplication, :lcylinder, :lcost, :lrecord_image, :lrecord_image_position, 0, '', 'Yes', CURDATE(), :laddedby
 )
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
@@ -584,6 +590,8 @@ SQL;
             'lapplication' => $this->strVal($payload['application'] ?? ''),
             'lcylinder' => $this->strVal($payload['no_of_cylinder'] ?? ''),
             'lcost' => (float) ($payload['cost'] ?? 0),
+            'lrecord_image' => RecordImageValidator::normalize((string) ($payload['record_image'] ?? '')),
+            'lrecord_image_position' => (string) ($payload['record_image_position'] ?? '50,50'),
             'laddedby' => $userId > 0 ? $userId : null,
         ]);
 
@@ -672,6 +680,8 @@ SQL;
             'application' => 'lapplication',
             'no_of_cylinder' => 'lcylinder',
             'cost' => 'lcost',
+            'record_image' => 'lrecord_image',
+            'record_image_position' => 'lrecord_image_position',
         ];
 
         foreach ($map as $apiField => $dbField) {
@@ -685,7 +695,9 @@ SQL;
             } elseif ($apiField === 'cost') {
                 $params[$paramName] = (float) $payload[$apiField];
             } else {
-                $params[$paramName] = $this->strVal($payload[$apiField]);
+                $params[$paramName] = $apiField === 'record_image'
+                    ? RecordImageValidator::normalize((string) $payload[$apiField])
+                    : $this->strVal($payload[$apiField]);
             }
         }
 
@@ -701,6 +713,15 @@ SQL;
         }
 
         $userId = (int) ($payload['user_id'] ?? 0);
+        if (array_key_exists('record_image', $payload) && (string) ($payload['record_image'] ?? '') !== (string) ($existing['record_image'] ?? '')) {
+            (new AuditTrailWriter($this->db->pdo()))->write(
+                $mainId,
+                $userId,
+                'Product Database',
+                trim((string) ($payload['record_image'] ?? '')) === '' ? 'Remove Record Image' : 'Update Record Image',
+                $productSession
+            );
+        }
         $this->syncPrices($mainId, $productSession, $payload, $userId);
         $this->syncSupplierCosts(
             $mainId,

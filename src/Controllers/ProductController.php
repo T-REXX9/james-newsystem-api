@@ -101,7 +101,11 @@ final class ProductController
             throw new HttpException(422, 'productSession is required');
         }
 
-        $updated = $this->repo->updateProduct($mainId, $session, $body);
+        try {
+            $updated = $this->repo->updateProduct($mainId, $session, $body);
+        } catch (\InvalidArgumentException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
         if ($updated === null) {
             throw new HttpException(404, 'Product not found');
         }

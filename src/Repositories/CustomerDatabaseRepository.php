@@ -8,6 +8,7 @@ use App\Database;
 use App\Support\AuditTrailWriter;
 use App\Support\CustomerLedgerCalculator;
 use App\Support\PhoneNumberNormalizer;
+use App\Support\RecordImageValidator;
 use PDO;
 use RuntimeException;
 
@@ -174,6 +175,8 @@ SELECT
     COALESCE(p.lpreferred_brand, '') AS preferred_brand,
     COALESCE(p.lnotes, '') AS notes,
     COALESCE(p.lduplicate_override_reason, '') AS duplicate_override_reason,
+    COALESCE(p.lrecord_image, '') AS record_image,
+    COALESCE(p.lrecord_image_position, '50,50') AS record_image_position,
     COALESCE(p.ldatereg, '') AS date_registered,
     (SELECT COUNT(*) FROM tblcontact_person cp WHERE cp.lrefno = p.lsessionid) AS contact_count,
     (SELECT COUNT(*) FROM tblpatient_terms pt WHERE pt.lpatient = p.lsessionid) AS term_count,
@@ -274,6 +277,8 @@ SELECT
     COALESCE(p.lpreferred_brand, '') AS preferred_brand,
     COALESCE(p.lnotes, '') AS notes,
     COALESCE(p.lduplicate_override_reason, '') AS duplicate_override_reason,
+    COALESCE(p.lrecord_image, '') AS record_image,
+    COALESCE(p.lrecord_image_position, '50,50') AS record_image_position,
     COALESCE(p.ldatereg, '') AS date_registered,
     COALESCE(
         (SELECT SUM(COALESCE(l.ldebit, 0)) - SUM(COALESCE(l.lcredit, 0))
@@ -337,9 +342,9 @@ SQL;
             $discountCodeInsertValue = $this->hasCustomerDiscountCodeColumn() ? ', :discount_code' : '';
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
             );
             $insertParams = [
                 'main_id' => $mainId,
@@ -368,6 +373,8 @@ SQL;
                 'status' => isset($payload['status']) ? (int) $payload['status'] : 1,
                 'notes' => (string) ($payload['notes'] ?? ''),
                 'duplicate_override_reason' => $matches !== [] ? $overrideReason : null,
+                'record_image' => RecordImageValidator::normalize((string) ($payload['record_image'] ?? '')),
+                'record_image_position' => (string) ($payload['record_image_position'] ?? '50,50'),
                 'province' => (string) ($payload['province'] ?? ''),
                 'city' => (string) ($payload['city'] ?? ''),
                 'debt_type' => (string) (($payload['debt_type'] ?? '') !== '' ? $payload['debt_type'] : 'Good'),
@@ -587,6 +594,8 @@ SET
     lcredit = :credit,
     lstatus = :status,
     lnotes = :notes,
+    lrecord_image = :record_image,
+    lrecord_image_position = :record_image_position,
     lprovince = :province,
     lcity = :city,
     ldebt_type = :debt_type,
@@ -621,6 +630,10 @@ SQL;
                 'credit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($existing['credit_limit'] ?? 0),
                 'status' => isset($payload['status']) ? (int) $payload['status'] : (int) ($existing['status'] ?? 1),
                 'notes' => (string) ($payload['notes'] ?? $existing['notes'] ?? ''),
+                'record_image' => array_key_exists('record_image', $payload)
+                    ? RecordImageValidator::normalize((string) $payload['record_image'])
+                    : (string) ($existing['record_image'] ?? ''),
+                'record_image_position' => (string) ($payload['record_image_position'] ?? $existing['record_image_position'] ?? '50,50'),
                 'province' => (string) ($payload['province'] ?? $existing['province'] ?? ''),
                 'city' => (string) ($payload['city'] ?? $existing['city'] ?? ''),
                 'debt_type' => (string) ($payload['debt_type'] ?? $existing['debt_type'] ?? 'Good'),
@@ -652,6 +665,15 @@ SQL;
             $auditAction = 'Reject Prospect - Blacklisted';
         }
         (new AuditTrailWriter($this->db->pdo()))->write($mainId, $auditUserId, $auditPage, $auditAction, $sessionId);
+        if (array_key_exists('record_image', $payload) && (string) ($payload['record_image'] ?? '') !== (string) ($existing['record_image'] ?? '')) {
+            (new AuditTrailWriter($this->db->pdo()))->write(
+                $mainId,
+                $auditUserId,
+                'Customer Database',
+                trim((string) ($payload['record_image'] ?? '')) === '' ? 'Remove Record Image' : 'Update Record Image',
+                $sessionId
+            );
+        }
 
         return $this->getCustomer($mainId, $sessionId);
     }
