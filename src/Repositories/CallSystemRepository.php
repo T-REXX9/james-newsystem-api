@@ -395,6 +395,58 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
         $stmt->execute($params);
         $records = $stmt->fetchAll();
 
+        // Add Prospect comments are reviewable reports even before a phone
+        // record exists. Keep them in the same Call Records surface so the
+        // Master User can review the staff submission immediately.
+        if (($filters['direction'] ?? '') === '' || ($filters['direction'] ?? '') === 'outbound') {
+            $prospectConditions = [
+                'p.lmain_id = :prospect_main_id',
+                "TRIM(COALESCE(p.lnotes, '')) <> ''",
+                "(COALESCE(p.lstatus, 1) = 3 OR LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospect%')",
+                'p.ldatetime >= :prospect_from_date',
+                'p.ldatetime <= :prospect_to_date',
+            ];
+            $prospectParams = [
+                'prospect_main_id' => $mainId,
+                'prospect_from_date' => $fromDate,
+                'prospect_to_date' => $toDate,
+            ];
+            if ($canViewTeam) {
+                $prospectConditions[] = '(a.lid = :prospect_owner_id OR a.lmother_id = :prospect_owner_id_2)';
+                $prospectParams['prospect_owner_id'] = $mainId;
+                $prospectParams['prospect_owner_id_2'] = $mainId;
+            } else {
+                $prospectConditions[] = 'a.lid = :prospect_viewer_id';
+                $prospectParams['prospect_viewer_id'] = $viewerId;
+            }
+
+            $prospectStmt = $this->db->pdo()->prepare(
+                'SELECT CONCAT(\'prospect_\', p.lid) AS lid,
+                        p.lencoded_by AS lagent_id,
+                        \'Add Prospect\' AS ldevice_id,
+                        p.lid AS lcustomer_id,
+                        COALESCE(NULLIF(p.lmobile, \'\'), NULLIF(p.lphone, \'\'), \'\') AS lphone_number,
+                        \'outbound\' AS ldirection,
+                        0 AS lduration_seconds,
+                        p.ldatetime AS lcall_timestamp,
+                        \'prospect_comment\' AS lsource,
+                        p.ldatetime AS lcreated_at,
+                        COALESCE(a.lfname, \'\') AS agent_first_name,
+                        COALESCE(a.llname, \'\') AS agent_last_name,
+                        COALESCE(p.lcompany, \'\') AS customer_company,
+                        COALESCE(p.lpatient_code, \'\') AS customer_code,
+                        p.lnotes AS concern,
+                        NULL AS action,
+                        p.lnotes AS report_body
+                 FROM tblpatient p
+                 INNER JOIN tblaccount a ON a.lid = p.lencoded_by
+                 WHERE ' . implode(' AND ', $prospectConditions) . '
+                 ORDER BY p.ldatetime DESC, p.lid DESC'
+            );
+            $prospectStmt->execute($prospectParams);
+            $records = array_merge($records, $prospectStmt->fetchAll());
+        }
+
         if ($records === []) {
             return [];
         }
