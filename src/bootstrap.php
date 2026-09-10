@@ -869,8 +869,8 @@ function app_router(): Router
     $router->patch('/api/v1/sales-inquiry-items/{itemId}', $requireActionAuth([$salesInquiryController, 'updateItem'], 'Sales Inquiry', 'edit'));
     $router->delete('/api/v1/sales-inquiry-items/{itemId}', $requireActionAuth([$salesInquiryController, 'deleteItem'], 'Sales Inquiry', 'delete'));
     $router->post('/api/v1/sales-inquiries/{inquiryRefno}/actions/{action}', $requireApproverAction([$salesInquiryController, 'action'], ['Sales Inquiry', 'SI']));
-    $router->get('/api/v1/sales-orders', [$salesOrderController, 'list']);
-    $router->get('/api/v1/sales-orders/{salesRefno}', [$salesOrderController, 'show']);
+    $router->get('/api/v1/sales-orders', $requireViewAuth([$salesOrderController, 'list'], 'Sales Order'));
+    $router->get('/api/v1/sales-orders/{salesRefno}', $requireViewAuth([$salesOrderController, 'show'], 'Sales Order'));
     $router->post('/api/v1/sales-orders', $requireActionAuth([$salesOrderController, 'create'], 'Sales Order', 'add'));
     $router->patch('/api/v1/sales-orders/{salesRefno}', $requireActionAuth([$salesOrderController, 'update'], 'Sales Order', 'edit'));
     $router->delete('/api/v1/sales-orders/{salesRefno}', $requireActionAuth([$salesOrderController, 'delete'], 'Sales Order', 'delete'));
@@ -900,33 +900,33 @@ function app_router(): Router
     $router->patch('/api/v1/staff/{staffId}', $requireMasterUser([$staffController, 'update']));
     $router->post('/api/v1/staff/{staffId}/password', $requireMasterUser([$staffController, 'changePassword']));
     $router->delete('/api/v1/staff/{staffId}', $requireMasterUser([$staffController, 'delete']));
-    $router->get('/api/v1/teams', [$teamController, 'list']);
-    $router->get('/api/v1/teams/{teamId}', [$teamController, 'show']);
+    $router->get('/api/v1/teams', $requireViewAuth([$teamController, 'list'], 'Team'));
+    $router->get('/api/v1/teams/{teamId}', $requireViewAuth([$teamController, 'show'], 'Team'));
     $router->post('/api/v1/teams', $requireActionAuth([$teamController, 'create'], 'Team', 'add'));
     $router->patch('/api/v1/teams/{teamId}', $requireActionAuth([$teamController, 'update'], 'Team', 'edit'));
     $router->delete('/api/v1/teams/{teamId}', $requireActionAuth([$teamController, 'delete'], 'Team', 'delete'));
-    $router->get('/api/v1/couriers', [$courierController, 'list']);
-    $router->get('/api/v1/couriers/{courierId}', [$courierController, 'show']);
+    $router->get('/api/v1/couriers', $requireViewAuth([$courierController, 'list'], 'Courier Management'));
+    $router->get('/api/v1/couriers/{courierId}', $requireViewAuth([$courierController, 'show'], 'Courier Management'));
     $router->post('/api/v1/couriers', $requireActionAuth([$courierController, 'create'], 'Courier', 'add'));
     $router->patch('/api/v1/couriers/{courierId}', $requireActionAuth([$courierController, 'update'], 'Courier', 'edit'));
     $router->delete('/api/v1/couriers/{courierId}', $requireActionAuth([$courierController, 'delete'], 'Courier', 'delete'));
-    $router->get('/api/v1/categories', [$categoryController, 'list']);
-    $router->get('/api/v1/categories/{categoryId}', [$categoryController, 'show']);
+    $router->get('/api/v1/categories', $requireViewAuth([$categoryController, 'list'], 'Category Management'));
+    $router->get('/api/v1/categories/{categoryId}', $requireViewAuth([$categoryController, 'show'], 'Category Management'));
     $router->post('/api/v1/categories', $requireActionAuth([$categoryController, 'create'], 'Category', 'add'));
     $router->patch('/api/v1/categories/{categoryId}', $requireActionAuth([$categoryController, 'update'], 'Category', 'edit'));
     $router->delete('/api/v1/categories/{categoryId}', $requireActionAuth([$categoryController, 'delete'], 'Category', 'delete'));
-    $router->get('/api/v1/remark-templates', [$remarkTemplateController, 'list']);
-    $router->get('/api/v1/remark-templates/{remarkTemplateId}', [$remarkTemplateController, 'show']);
+    $router->get('/api/v1/remark-templates', $requireViewAuth([$remarkTemplateController, 'list'], 'Remark Templates'));
+    $router->get('/api/v1/remark-templates/{remarkTemplateId}', $requireViewAuth([$remarkTemplateController, 'show'], 'Remark Templates'));
     $router->post('/api/v1/remark-templates', $requireActionAuth([$remarkTemplateController, 'create'], 'Remark Templates', 'add'));
     $router->patch('/api/v1/remark-templates/{remarkTemplateId}', $requireActionAuth([$remarkTemplateController, 'update'], 'Remark Templates', 'edit'));
     $router->delete('/api/v1/remark-templates/{remarkTemplateId}', $requireActionAuth([$remarkTemplateController, 'delete'], 'Remark Templates', 'delete'));
-    $router->get('/api/v1/special-prices/products', $requireBearerAuth([$specialPriceController, 'products']));
-    $router->get('/api/v1/special-prices/customers', $requireBearerAuth([$specialPriceController, 'customers']));
-    $router->get('/api/v1/special-prices/areas', $requireBearerAuth([$specialPriceController, 'areas']));
-    $router->get('/api/v1/special-prices/categories', $requireBearerAuth([$specialPriceController, 'categories']));
-    $router->get('/api/v1/special-prices', $requireBearerAuth([$specialPriceController, 'list']));
+    $router->get('/api/v1/special-prices/products', $requireViewAuth([$specialPriceController, 'products'], 'Special Price'));
+    $router->get('/api/v1/special-prices/customers', $requireViewAuth([$specialPriceController, 'customers'], 'Special Price'));
+    $router->get('/api/v1/special-prices/areas', $requireViewAuth([$specialPriceController, 'areas'], 'Special Price'));
+    $router->get('/api/v1/special-prices/categories', $requireViewAuth([$specialPriceController, 'categories'], 'Special Price'));
+    $router->get('/api/v1/special-prices', $requireViewAuth([$specialPriceController, 'list'], 'Special Price'));
     $router->post('/api/v1/special-prices', $requireActionAuth([$specialPriceController, 'create'], 'Special Price', 'add'));
-    $router->get('/api/v1/special-prices/{refno}', $requireBearerAuth([$specialPriceController, 'show']));
+    $router->get('/api/v1/special-prices/{refno}', $requireViewAuth([$specialPriceController, 'show'], 'Special Price'));
     $router->patch('/api/v1/special-prices/{refno}', $requireActionAuth([$specialPriceController, 'update'], 'Special Price', 'edit'));
     $router->delete('/api/v1/special-prices/{refno}', $requireActionAuth([$specialPriceController, 'delete'], 'Special Price', 'delete'));
     $router->post('/api/v1/special-prices/{refno}/customers', $requireActionAuth([$specialPriceController, 'addCustomer'], 'Special Price', 'add'));
@@ -936,8 +936,8 @@ function app_router(): Router
     $router->post('/api/v1/special-prices/{refno}/categories', $requireActionAuth([$specialPriceController, 'addCategory'], 'Special Price', 'add'));
     $router->delete('/api/v1/special-prices/{refno}/categories/{categoryId}', $requireActionAuth([$specialPriceController, 'removeCategory'], 'Special Price', 'delete'));
     // Campaign Outreach
-    $router->get('/api/v1/campaigns/{campaignId}/outreach', [$campaignController, 'listOutreach']);
-    $router->get('/api/v1/campaigns/{campaignId}/outreach/{id}', [$campaignController, 'getOutreach']);
+    $router->get('/api/v1/campaigns/{campaignId}/outreach', $requireViewAuth([$campaignController, 'listOutreach'], 'Marketing Campaign'));
+    $router->get('/api/v1/campaigns/{campaignId}/outreach/{id}', $requireViewAuth([$campaignController, 'getOutreach'], 'Marketing Campaign'));
     $router->post('/api/v1/campaigns/{campaignId}/outreach', $requireActionAuth([$campaignController, 'createOutreach'], 'Campaign', 'add'));
     $router->patch('/api/v1/outreach/{id}', $requireActionAuth([$campaignController, 'updateOutreachStatus'], 'Campaign', 'edit'));
     $router->post('/api/v1/outreach/{id}/response', $requireActionAuth([$campaignController, 'recordOutreachResponse'], 'Campaign', 'edit'));
@@ -949,8 +949,8 @@ function app_router(): Router
     // Campaign Stats
     $router->get('/api/v1/campaigns/{campaignId}/stats', [$campaignController, 'getStats']);
     // Message Templates
-    $router->get('/api/v1/message-templates', [$campaignController, 'listTemplates']);
-    $router->get('/api/v1/message-templates/{id}', [$campaignController, 'getTemplate']);
+    $router->get('/api/v1/message-templates', $requireViewAuth([$campaignController, 'listTemplates'], 'Message Templates'));
+    $router->get('/api/v1/message-templates/{id}', $requireViewAuth([$campaignController, 'getTemplate'], 'Message Templates'));
     $router->post('/api/v1/message-templates', $requireActionAuth([$campaignController, 'createTemplate'], 'Message Templates', 'add'));
 
     // SMS Gateway (Authenticated by Gateway Device ID)
@@ -966,25 +966,25 @@ function app_router(): Router
     // Queue Processing
     $router->post('/api/v1/outreach/queue/process', $requireActionAuth([$campaignController, 'processOutreachQueue'], 'Campaign', 'edit'));
     // Promotions
-    $router->get('/api/v1/promotions', [$promotionController, 'listPromotions']);
+    $router->get('/api/v1/promotions', $requireViewAuth([$promotionController, 'listPromotions'], 'Marketing Campaign'));
     // Promotion Stats & Extended Operations (static routes before {promotionId})
     $router->get('/api/v1/promotions/stats/summary', [$promotionController, 'getStats']);
     $router->get('/api/v1/promotions/assigned/list', [$promotionController, 'getAssignedPromotions']);
     $router->get('/api/v1/promotions/status/{status}', [$promotionController, 'getPromotionsByStatus']);
     $router->get('/api/v1/promotions/active/list', [$promotionController, 'getActivePromotions']);
     $router->post('/api/v1/promotions', $requireActionAuth([$promotionController, 'createPromotion'], 'Promotion', 'add'));
-    $router->get('/api/v1/promotions/{promotionId}', [$promotionController, 'getPromotion']);
+    $router->get('/api/v1/promotions/{promotionId}', $requireViewAuth([$promotionController, 'getPromotion'], 'Marketing Campaign'));
     $router->patch('/api/v1/promotions/{promotionId}', $requireActionAuth([$promotionController, 'updatePromotion'], 'Promotion', 'edit'));
     $router->delete('/api/v1/promotions/{promotionId}', $requireActionAuth([$promotionController, 'deletePromotion'], 'Promotion', 'delete'));
     // Promotion Products
-    $router->get('/api/v1/promotions/{promotionId}/products', [$promotionController, 'listProducts']);
-    $router->get('/api/v1/promotion-products/{productId}', [$promotionController, 'getProduct']);
+    $router->get('/api/v1/promotions/{promotionId}/products', $requireViewAuth([$promotionController, 'listProducts'], 'Marketing Campaign'));
+    $router->get('/api/v1/promotion-products/{productId}', $requireViewAuth([$promotionController, 'getProduct'], 'Marketing Campaign'));
     $router->post('/api/v1/promotions/{promotionId}/products', $requireActionAuth([$promotionController, 'addProduct'], 'Promotion', 'add'));
     $router->patch('/api/v1/promotion-products/{productId}', $requireActionAuth([$promotionController, 'updateProduct'], 'Promotion', 'edit'));
     $router->delete('/api/v1/promotion-products/{productId}', $requireActionAuth([$promotionController, 'deleteProduct'], 'Promotion', 'delete'));
     // Promotion Postings
-    $router->get('/api/v1/promotions/{promotionId}/postings', [$promotionController, 'listPostings']);
-    $router->get('/api/v1/promotion-postings/{postingId}', [$promotionController, 'getPosting']);
+    $router->get('/api/v1/promotions/{promotionId}/postings', $requireViewAuth([$promotionController, 'listPostings'], 'Marketing Campaign'));
+    $router->get('/api/v1/promotion-postings/{postingId}', $requireViewAuth([$promotionController, 'getPosting'], 'Marketing Campaign'));
     $router->post('/api/v1/promotions/{promotionId}/postings', $requireActionAuth([$promotionController, 'createPosting'], 'Promotion', 'add'));
     $router->patch('/api/v1/promotion-postings/{postingId}', $requireActionAuth([$promotionController, 'updatePosting'], 'Promotion', 'edit'));
     $router->post('/api/v1/promotion-postings/{postingId}/review', $requireApproverAction([$promotionController, 'reviewPosting'], ['Promotion', 'Promotion Posting']));
@@ -996,15 +996,15 @@ function app_router(): Router
     $router->delete('/api/v1/promotions/{promotionId}/products/by-product/{productId}', $requireActionAuth([$promotionController, 'removeProductByProductId'], 'Promotion', 'delete'));
     $router->post('/api/v1/promotions/upload-screenshot', $requireActionAuth([$promotionController, 'uploadScreenshot'], 'Promotion', 'edit'));
     // Loyalty Discounts
-    $router->get('/api/v1/loyalty-discounts', [$loyaltyDiscountController, 'list']);
-    $router->get('/api/v1/loyalty-discounts/stats', [$loyaltyDiscountController, 'stats']);
-    $router->get('/api/v1/loyalty-discounts/customer/{customerId}/active-discount', [$loyaltyDiscountController, 'customerActiveDiscount']);
+    $router->get('/api/v1/loyalty-discounts', $requireViewAuth([$loyaltyDiscountController, 'list'], 'Loyalty Discounts'));
+    $router->get('/api/v1/loyalty-discounts/stats', $requireViewAuth([$loyaltyDiscountController, 'stats'], 'Loyalty Discounts'));
+    $router->get('/api/v1/loyalty-discounts/customer/{customerId}/active-discount', $requireViewAuth([$loyaltyDiscountController, 'customerActiveDiscount'], 'Loyalty Discounts'));
     $router->post('/api/v1/loyalty-discounts', $requireActionAuth([$loyaltyDiscountController, 'create'], 'Loyalty Discounts', 'add'));
     $router->patch('/api/v1/loyalty-discounts/{ruleId}', $requireActionAuth([$loyaltyDiscountController, 'update'], 'Loyalty Discounts', 'edit'));
     $router->patch('/api/v1/loyalty-discounts/{ruleId}/status', $requireActionAuth([$loyaltyDiscountController, 'updateStatus'], 'Loyalty Discounts', 'edit'));
     $router->delete('/api/v1/loyalty-discounts/{ruleId}', $requireActionAuth([$loyaltyDiscountController, 'delete'], 'Loyalty Discounts', 'delete'));
     // Profit Protection
-    $router->get('/api/v1/profit-protection/threshold', [$profitProtectionController, 'threshold']);
+    $router->get('/api/v1/profit-protection/threshold', $requireViewAuth([$profitProtectionController, 'threshold'], 'Profit Protection'));
     $router->patch('/api/v1/profit-protection/threshold', $requireActionAuth([$profitProtectionController, 'updateThreshold'], 'Profit Protection', 'edit'));
     // VIP Tier Settings
     $router->get('/api/v1/vip-tier-settings', $requireBearerAuthWithClaims([$vipTierSettingsController, 'index']));
