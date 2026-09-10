@@ -173,6 +173,13 @@ assert_eq('Legacy Sync Address', (string) ($salesAfterHeader['body']['data']['or
 assert_eq($inquiryNo, (string) ($salesAfterHeader['body']['data']['order']['reference_no'] ?? ''), 'Linked sales order reference no is synced from inquiry no', $p, $f, $e);
 assert_eq("SYNC-CUST-{$seed}", (string) ($salesAfterHeader['body']['data']['order']['customer_reference'] ?? ''), 'Linked sales order customer reference is synced from inquiry', $p, $f, $e);
 
+$directLinkedSalesOrderEdit = request('PATCH', "{$API_BASE}/api/v1/sales-orders/{$salesRefno}", [
+    'main_id' => $MAIN_ID,
+    'user_id' => $USER_ID,
+    'sales_person' => 'Must Edit From Inquiry',
+]);
+assert_eq(422, $directLinkedSalesOrderEdit['http_code'], 'Linked Sales Order edits must be made from its Sales Inquiry', $p, $f, $e);
+
 $addApproved = request('POST', "{$API_BASE}/api/v1/sales-inquiries/{$inquiryRefno}/items", [
     'main_id' => $MAIN_ID,
     'item_id' => $pendingItemRefno,
@@ -259,16 +266,18 @@ $lockedOrderSlipCount = count($salesAfterOrderSlip['body']['data']['items'] ?? [
 $lockedOrderSlipRef = (string) ($salesAfterOrderSlip['body']['data']['order']['order_slip_refno'] ?? '');
 assert_true($lockedOrderSlipRef !== '', 'Sales order is linked to an order slip', $p, $f, $e);
 
+$directSalesOrderEdit = request('PATCH', "{$API_BASE}/api/v1/sales-orders/{$salesRefno}", [
+    'main_id' => $MAIN_ID,
+    'user_id' => $USER_ID,
+    'sales_person' => 'Must Not Edit While Order Slip Is Posted',
+]);
+assert_eq(422, $directSalesOrderEdit['http_code'], 'Sales Order update is rejected while its linked Order Slip is posted', $p, $f, $e);
+
 $editAfterOrderSlip = request('PATCH', "{$API_BASE}/api/v1/sales-inquiries/{$inquiryRefno}", [
     'main_id' => $MAIN_ID,
     'sales_person' => 'Should Not Sync Order Slip',
 ]);
-assert_eq(200, $editAfterOrderSlip['http_code'], 'Inquiry update after order slip returns 200', $p, $f, $e);
-
-$salesAfterOrderSlipEdit = request('GET', "{$API_BASE}/api/v1/sales-orders/{$salesRefno}?main_id={$MAIN_ID}");
-assert_eq(200, $salesAfterOrderSlipEdit['http_code'], 'Sales order fetch after locked order slip edit returns 200', $p, $f, $e);
-assert_eq($lockedOrderSlipCount, count($salesAfterOrderSlipEdit['body']['data']['items'] ?? []), 'Sales order items stop syncing once order slip exists', $p, $f, $e);
-assert_eq('Legacy Sync Header', (string) ($salesAfterOrderSlipEdit['body']['data']['order']['sales_person'] ?? ''), 'Sales order header stops syncing once order slip exists', $p, $f, $e);
+assert_eq(422, $editAfterOrderSlip['http_code'], 'Inquiry update is rejected while its linked Order Slip is posted', $p, $f, $e);
 
 $invoiceSeed = $seed . '-inv';
 $createInvoiceInquiry = request('POST', "{$API_BASE}/api/v1/sales-inquiries", [
@@ -329,12 +338,7 @@ $editAfterInvoice = request('PATCH', "{$API_BASE}/api/v1/sales-inquiries/{$invoi
     'main_id' => $MAIN_ID,
     'sales_person' => 'Should Not Sync Invoice',
 ]);
-assert_eq(200, $editAfterInvoice['http_code'], 'Inquiry update after invoice returns 200', $p, $f, $e);
-
-$salesAfterInvoiceEdit = request('GET', "{$API_BASE}/api/v1/sales-orders/{$invoiceSalesRefno}?main_id={$MAIN_ID}");
-assert_eq(200, $salesAfterInvoiceEdit['http_code'], 'Sales order fetch after locked invoice edit returns 200', $p, $f, $e);
-assert_eq($lockedInvoiceCount, count($salesAfterInvoiceEdit['body']['data']['items'] ?? []), 'Sales order items stop syncing once invoice exists', $p, $f, $e);
-assert_eq('Invoice Guard', (string) ($salesAfterInvoiceEdit['body']['data']['order']['sales_person'] ?? ''), 'Sales order header stops syncing once invoice exists', $p, $f, $e);
+assert_eq(422, $editAfterInvoice['http_code'], 'Inquiry update is rejected while its linked Invoice is posted', $p, $f, $e);
 
 echo "\n==========================================================\n";
 echo " Passed: {$passed}\n";

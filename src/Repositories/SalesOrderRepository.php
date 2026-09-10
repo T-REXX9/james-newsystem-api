@@ -144,6 +144,7 @@ SELECT
     COALESCE(so.ldr_no, '') AS order_slip_no,
     COALESCE(so.invoice_refno, '') AS invoice_refno,
     COALESCE(so.invoice_no, '') AS invoice_no,
+    CASE WHEN COALESCE(so.ldr_refno, '') = '' AND COALESCE(so.invoice_refno, '') = '' THEN 1 ELSE 0 END AS is_editable,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by
 FROM tbltransaction so
 LEFT JOIN tblaccount acc
@@ -332,6 +333,8 @@ SQL;
         }
 
         $items = $this->listItems($salesRefno);
+        $order['is_editable'] = trim((string) ($order['order_slip_refno'] ?? '')) === ''
+            && trim((string) ($order['invoice_refno'] ?? '')) === '';
         $order['viewer_is_approver'] = $viewerUserId > 0 ? $this->isApprover($mainId, $viewerUserId, 'SO') : false;
         $summary = [
             'item_count' => count($items),
@@ -504,6 +507,12 @@ SQL;
         }
 
         $order = $existing['order'];
+        if (trim((string) ($order['inquiry_refno'] ?? '')) !== '') {
+            throw new RuntimeException('Edit this Sales Order from its linked Sales Inquiry');
+        }
+        if (trim((string) ($order['order_slip_refno'] ?? '')) !== '' || trim((string) ($order['invoice_refno'] ?? '')) !== '') {
+            throw new RuntimeException('Unpost the linked Order Slip or Invoice before editing this Sales Order');
+        }
         $salesDate = $this->normalizeDate((string) ($payload['sales_date'] ?? (string) ($order['sales_date'] ?? date('Y-m-d'))));
         $status = $this->normalizeSubmitStatus((string) ($payload['status'] ?? (string) ($order['status'] ?? 'Pending')));
         $transactionStatus = $this->normalizeTransactionStatus((string) ($payload['transaction_status'] ?? (string) ($order['transaction_status'] ?? $status)));
@@ -619,6 +628,7 @@ SQL;
         if ($so === null) {
             throw new RuntimeException('Sales order not found');
         }
+        $this->assertDirectSalesOrderItemEditingAllowed($so);
 
         $salesDate = (string) ($so['order']['sales_date'] ?? date('Y-m-d'));
         $this->insertItem($this->db->pdo(), $mainId, $userId, $salesRefno, $salesDate, $payload);
@@ -641,6 +651,11 @@ SQL;
         if ($existing === null) {
             return null;
         }
+        $salesOrder = $this->getSalesOrder($mainId, (string) ($existing['sales_refno'] ?? ''));
+        if ($salesOrder === null) {
+            return null;
+        }
+        $this->assertDirectSalesOrderItemEditingAllowed($salesOrder);
 
         $fields = [];
         $params = ['item_id' => $itemId];
@@ -691,6 +706,11 @@ SQL;
         if ($existing === null) {
             return false;
         }
+        $salesOrder = $this->getSalesOrder($mainId, (string) ($existing['sales_refno'] ?? ''));
+        if ($salesOrder === null) {
+            return false;
+        }
+        $this->assertDirectSalesOrderItemEditingAllowed($salesOrder);
 
         $stmt = $this->db->pdo()->prepare('DELETE FROM tbltransaction_item WHERE lid = :item_id');
         $stmt->execute(['item_id' => $itemId]);
@@ -1217,8 +1237,22 @@ SQL;
     }
 
     /**
-     * @return array<string, mixed>|null
+     * Linked Sales Orders mirror their Sales Inquiry; accepting edits here would
+     * make the two records diverge. This matches the legacy Edit → Inquiry flow.
+     *
+     * @param array<string, mixed> $salesOrder
      */
+    private function assertDirectSalesOrderItemEditingAllowed(array $salesOrder): void
+    {
+        $order = is_array($salesOrder['order'] ?? null) ? $salesOrder['order'] : [];
+        if (trim((string) ($order['inquiry_refno'] ?? '')) !== '') {
+            throw new RuntimeException('Edit this Sales Order from its linked Sales Inquiry');
+        }
+        if (trim((string) ($order['order_slip_refno'] ?? '')) !== '' || trim((string) ($order['invoice_refno'] ?? '')) !== '') {
+            throw new RuntimeException('Unpost the linked Order Slip or Invoice before editing this Sales Order');
+        }
+    }
+
     private function getItemById(int $mainId, int $itemId): ?array
     {
         $sql = <<<SQL
@@ -1283,7 +1317,7 @@ SQL;
             'litem_refno' => (string) ($resolved['session'] ?? ''),
             'litemcode' => (string) ($item['item_code'] ?? $resolved['item_code'] ?? ''),
             'lpartno' => (string) ($item['part_no'] ?? $resolved['part_no'] ?? ''),
-            'lbrand' => (string) ($resolved['brand'] ?? ''),
+            'lbrand' => (string) ($item['brand'] ?? $resolved['brand'] ?? ''),
             'llocation' => (string) ($item['location'] ?? $resolved['location'] ?? ''),
             'lremark' => (string) ($item['remark'] ?? 'OnStock'),
             'ltransaction_date' => $salesDate,
