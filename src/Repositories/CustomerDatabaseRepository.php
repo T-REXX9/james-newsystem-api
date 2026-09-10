@@ -695,6 +695,7 @@ SQL;
             'phone' => ['column' => 'lphone', 'value' => static fn ($value): string => (string) $value],
             'mobile' => ['column' => 'lmobile', 'value' => static fn ($value): string => (string) $value],
             'sales_person_id' => ['column' => 'lsales_person', 'value' => static fn ($value): string => (string) $value],
+            'sales_team_id' => ['column' => 'lsales_team', 'value' => static fn ($value): ?int => ($value === '' || $value === null) ? null : (int) $value],
             'refer_by' => ['column' => 'lrefer_by', 'value' => static fn ($value): string => (string) $value],
             'address' => ['column' => 'laddress', 'value' => static fn ($value): string => (string) $value],
             'delivery_address' => ['column' => 'ldelivery_address', 'value' => static fn ($value): string => (string) $value],

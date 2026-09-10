@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\DailyCallAccessPolicy;
 use App\Support\DailyCallClaimPolicy;
 use App\Support\Exceptions\HttpException;
 use App\Support\SqlDateTimeNormalizer;
@@ -322,9 +323,15 @@ SQL);
         ];
     }
 
-    public function getPurchaseMasterList(int $mainId, string $fromDate = '2025-10-01', string $search = ''): array
+    public function getPurchaseMasterList(
+        int $mainId,
+        string $fromDate = '2025-10-01',
+        string $search = '',
+        ?int $viewerUserId = null
+    ): array
     {
         $normalizedFromDate = $this->normalizeDateOrDefault($fromDate, '2025-10-01');
+        $viewerAssignmentId = $this->resolveViewerAssignmentId($mainId, $viewerUserId);
         $where = [
             'p.lmain_id = :main_id',
             'COALESCE(p.ldeleted, 0) = 0',
@@ -340,6 +347,23 @@ SQL);
             'latest_active_main_id' => $mainIdStr,
             'verification_main_id' => $mainId,
         ];
+
+        if ($viewerAssignmentId !== null) {
+            $where[] = '(
+                CAST(COALESCE(p.lsales_person, 0) AS SIGNED) = :master_viewer_user_id
+                OR (
+                    CAST(COALESCE(p.lsales_team, 0) AS SIGNED) > 0
+                    AND CAST(COALESCE(p.lsales_team, 0) AS SIGNED) = (
+                    SELECT CAST(COALESCE(lteam, 0) AS SIGNED)
+                    FROM tblaccount
+                    WHERE lid = :master_viewer_team_user_id
+                    LIMIT 1
+                    )
+                )
+            )';
+            $params['master_viewer_user_id'] = $viewerAssignmentId;
+            $params['master_viewer_team_user_id'] = $viewerAssignmentId;
+        }
 
         if (trim($search) !== '') {
             $where[] = "(
@@ -380,6 +404,8 @@ SELECT
     TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))) AS assigned_to,
     p.ldate_assigned AS assigned_date_raw,
     CAST(COALESCE(p.lsales_person, '') AS CHAR) AS assigned_agent_id,
+    CAST(COALESCE(p.lsales_team, 0) AS CHAR) AS assigned_team_id,
+    COALESCE(team.lteamname, '') AS assigned_team,
     COALESCE(p.lprofile_type, '') AS profile_type,
     COALESCE(p.lverification, '') AS verification,
     COALESCE(p.lstatus, 1) AS customer_status,
@@ -408,6 +434,8 @@ SELECT
 FROM tblpatient p
 LEFT JOIN tblaccount a
     ON a.lid = p.lsales_person
+LEFT JOIN tblteamstaff team
+    ON team.lid = p.lsales_team AND team.lmain_id = p.lmain_id
 LEFT JOIN (
     SELECT cp.lrefno, cp.lc_mobile, cp.lc_phone
     FROM tblcontact_person cp
@@ -548,6 +576,10 @@ SQL;
                 'assigned_date' => $this->formatDateText($row['assigned_date_raw'] ?? null),
                 'assignedAgentId' => trim((string) ($row['assigned_agent_id'] ?? '')),
                 'assigned_agent_id' => trim((string) ($row['assigned_agent_id'] ?? '')),
+                'assignedTeamId' => trim((string) ($row['assigned_team_id'] ?? '')) === '0' ? '' : trim((string) ($row['assigned_team_id'] ?? '')),
+                'assigned_team_id' => trim((string) ($row['assigned_team_id'] ?? '')) === '0' ? '' : trim((string) ($row['assigned_team_id'] ?? '')),
+                'assignedTeam' => $this->cleanDisplayText($row['assigned_team'] ?? '', ''),
+                'assigned_team' => $this->cleanDisplayText($row['assigned_team'] ?? '', ''),
                 'profileType' => (string) ($row['profile_type'] ?? ''),
                 'profile_type' => (string) ($row['profile_type'] ?? ''),
                 'verification' => (string) ($row['verification'] ?? ''),
@@ -643,6 +675,43 @@ SQL;
             'purchases' => $this->getPurchaseRows($mainId, $contactIds, $twelveMonthsAgo),
             'team_messages' => $this->getRecentOwnerMessages($viewerUserId),
         ];
+    }
+
+    public function assertCustomerViewAccess(int $mainId, string $contactId, int $viewerUserId): void
+    {
+        $assignmentId = $this->resolveViewerAssignmentId($mainId, $viewerUserId);
+        if ($assignmentId === null) {
+            return;
+        }
+
+        $statement = $this->db->pdo()->prepare(
+            'SELECT 1 FROM tblpatient
+             WHERE lmain_id = :main_id
+               AND lsessionid = :contact_id
+               AND COALESCE(ldeleted, 0) = 0
+               AND (
+                    CAST(COALESCE(lsales_person, 0) AS SIGNED) = :viewer_user_id
+                    OR (
+                        CAST(COALESCE(lsales_team, 0) AS SIGNED) > 0
+                        AND CAST(COALESCE(lsales_team, 0) AS SIGNED) = (
+                            SELECT CAST(COALESCE(lteam, 0) AS SIGNED)
+                            FROM tblaccount
+                            WHERE lid = :viewer_team_user_id
+                            LIMIT 1
+                        )
+                    )
+               )
+             LIMIT 1'
+        );
+        $statement->execute([
+            'main_id' => $mainId,
+            'contact_id' => $contactId,
+            'viewer_user_id' => $assignmentId,
+            'viewer_team_user_id' => $assignmentId,
+        ]);
+        if (!$statement->fetchColumn()) {
+            throw new HttpException(403, 'You can only view customers assigned to you');
+        }
     }
 
     public function createCallLog(int $mainId, array $data): array
@@ -1504,7 +1573,7 @@ SQL;
 
     private function getCustomerBaseRows(int $mainId, string $status, string $search, ?int $viewerUserId = null): array
     {
-        $viewerTeamContext = $this->resolveViewerTeamContext($viewerUserId);
+        $viewerAssignmentId = $this->resolveViewerAssignmentId($mainId, $viewerUserId);
 
         $sql = <<<SQL
 SELECT
@@ -1529,8 +1598,10 @@ SELECT
     p.lrefer_by AS source,
     COALESCE(a.lfname, '') AS assigned_to_fname,
     COALESCE(a.llname, '') AS assigned_to_lname,
-    CAST(COALESCE(a.lteam, 0) AS SIGNED) AS assigned_team_id,
+    CAST(COALESCE(a.lteam, 0) AS SIGNED) AS assigned_agent_team_id,
     p.ldate_assigned AS assigned_date,
+    CAST(COALESCE(p.lsales_team, 0) AS CHAR) AS assigned_team_id,
+    COALESCE(team.lteamname, '') AS assigned_team,
     p.lsince AS client_since,
     p.llast_transaction AS last_transaction_date,
     p.ldatetime AS status_date,
@@ -1543,6 +1614,7 @@ SELECT
     END AS status_label
 FROM tblpatient p
 LEFT JOIN tblaccount a ON a.lid = p.lsales_person
+LEFT JOIN tblteamstaff team ON team.lid = p.lsales_team AND team.lmain_id = p.lmain_id
 LEFT JOIN (
     SELECT cp.lrefno, cp.lc_mobile, cp.lc_phone
     FROM tblcontact_person cp
@@ -1555,53 +1627,18 @@ WHERE p.lmain_id = :main_id
 SQL;
         $params = ['main_id' => $mainId];
 
-        if ($viewerTeamContext !== null) {
-            $teamAId = (int) $viewerTeamContext['team_a_id'];
-            $teamBId = (int) $viewerTeamContext['team_b_id'];
-            $viewerTeamId = (int) $viewerTeamContext['viewer_team_id'];
-            $teamAFrom = '2025-10-01';
-            $teamATo = '2026-02-28';
-            $teamBInactiveCutoff = '2025-09-01';
-
-            if ($viewerTeamId === $teamAId) {
-                $sql .= " AND (
-                    CAST(COALESCE(a.lteam, 0) AS SIGNED) <> :team_b_id_exclude
-                    AND LOWER(COALESCE(p.lprofile_type, '')) NOT LIKE '%prospective%'
-                    AND NOT (
-                        (
-                            LOWER(COALESCE(p.lactive, '')) LIKE '%inactive%'
-                            OR COALESCE(p.lstatus, 1) = 0
-                        )
-                        AND COALESCE(p.llast_transaction, '') <> ''
-                        AND COALESCE(p.llast_transaction, '') < :team_b_inactive_cutoff
+        if ($viewerAssignmentId !== null) {
+            $sql .= ' AND (
+                CAST(COALESCE(p.lsales_person, 0) AS SIGNED) = :viewer_user_id
+                OR (
+                    CAST(COALESCE(p.lsales_team, 0) AS SIGNED) > 0
+                    AND CAST(COALESCE(p.lsales_team, 0) AS SIGNED) = (
+                    SELECT CAST(COALESCE(lteam, 0) AS SIGNED) FROM tblaccount WHERE lid = :viewer_team_user_id LIMIT 1
                     )
-                    AND (
-                        COALESCE(p.llast_transaction, '') >= :team_a_from
-                        AND COALESCE(p.llast_transaction, '') <= :team_a_to
-                    )
-                )";
-                $params['team_b_id_exclude'] = $teamBId;
-                $params['team_a_from'] = $teamAFrom;
-                $params['team_a_to'] = $teamATo;
-                $params['team_b_inactive_cutoff'] = $teamBInactiveCutoff;
-            } elseif ($viewerTeamId === $teamBId) {
-                $sql .= " AND (
-                    CAST(COALESCE(a.lteam, 0) AS SIGNED) = :team_b_id_primary
-                    OR (
-                        LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%'
-                        OR (
-                            (
-                                LOWER(COALESCE(p.lactive, '')) LIKE '%inactive%'
-                                OR COALESCE(p.lstatus, 1) = 0
-                            )
-                            AND COALESCE(p.llast_transaction, '') <> ''
-                            AND COALESCE(p.llast_transaction, '') < :team_b_inactive_cutoff
-                        )
-                    )
-                )";
-                $params['team_b_id_primary'] = $teamBId;
-                $params['team_b_inactive_cutoff'] = $teamBInactiveCutoff;
-            }
+                )
+            )';
+            $params['viewer_user_id'] = $viewerAssignmentId;
+            $params['viewer_team_user_id'] = $viewerAssignmentId;
         }
 
         $statusLower = strtolower(trim($status));
@@ -1647,6 +1684,42 @@ SQL;
         }
 
         return $rows;
+    }
+
+    private function resolveViewerAssignmentId(int $mainId, ?int $viewerUserId): ?int
+    {
+        if ($viewerUserId === null || $viewerUserId <= 0) {
+            return 0;
+        }
+
+        $statement = $this->db->pdo()->prepare(
+            'SELECT CAST(COALESCE(a.ltype, 0) AS SIGNED) AS user_type,
+                    LOWER(TRIM(COALESCE(role.ltype_name, \'\'))) AS role_name
+             FROM tblaccount a
+             LEFT JOIN tblusertype role ON role.lid = a.ltype
+             WHERE a.lid = :viewer_id
+               AND (a.lid = :main_id_owner OR a.lmother_id = :main_id_staff)
+               AND COALESCE(a.lstatus, 0) = 1
+             LIMIT 1'
+        );
+        $statement->execute([
+            'viewer_id' => $viewerUserId,
+            'main_id_owner' => $mainId,
+            'main_id_staff' => $mainId,
+        ]);
+        $viewer = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!$viewer) {
+            return 0;
+        }
+
+        if (DailyCallAccessPolicy::canViewAll(
+            (string) ($viewer['user_type'] ?? ''),
+            (string) ($viewer['role_name'] ?? '')
+        )) {
+            return null;
+        }
+
+        return $viewerUserId;
     }
 
     private function resolveViewerTeamContext(?int $viewerUserId): ?array

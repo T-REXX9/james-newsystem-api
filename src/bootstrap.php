@@ -486,7 +486,7 @@ function app_router(): Router
     $requireCustomerUpdateAuth = static function (callable $handler) use ($requireBearerAuthWithClaims, $requireActionAuth, $requireMasterUser): callable {
         return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($handler, $requireActionAuth, $requireMasterUser): array {
             $updates = is_array($body['updates'] ?? null) ? $body['updates'] : $body;
-            $assignmentFields = ['sales_person_id', 'salesman', 'salesPerson', 'assignedAgent'];
+            $assignmentFields = ['sales_person_id', 'sales_team_id', 'salesman', 'salesPerson', 'assignedAgent'];
             $hasAssignment = is_array($updates) && array_intersect($assignmentFields, array_keys($updates)) !== [];
             if (!$hasAssignment && is_array($updates)) {
                 foreach ($updates as $update) {

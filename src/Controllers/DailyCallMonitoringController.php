@@ -19,20 +19,20 @@ final class DailyCallMonitoringController
 
     public function excelRows(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $this->authenticatedMainId($body, $query);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
         $status = (string) ($query['status'] ?? 'all');
         $search = (string) ($query['search'] ?? '');
-        $viewerUserId = isset($query['viewer_user_id']) ? (int) $query['viewer_user_id'] : null;
+        $viewerUserId = $this->authenticatedViewerUserId($body);
 
         return $this->repo->getExcelRows($mainId, $status, $search, $viewerUserId);
     }
 
     public function salesPerformanceDashboard(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $this->authenticatedMainId($body, $query);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
@@ -45,20 +45,21 @@ final class DailyCallMonitoringController
 
     public function masterList(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $this->authenticatedMainId($body, $query);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
 
         $fromDate = trim((string) ($query['from_date'] ?? '2025-10-01'));
         $search = trim((string) ($query['search'] ?? ''));
+        $viewerUserId = $this->authenticatedViewerUserId($body);
 
-        return $this->repo->getPurchaseMasterList($mainId, $fromDate, $search);
+        return $this->repo->getPurchaseMasterList($mainId, $fromDate, $search, $viewerUserId);
     }
 
     public function ownerSnapshot(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $this->authenticatedMainId($body, $query);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
@@ -68,22 +69,19 @@ final class DailyCallMonitoringController
 
     public function agentSnapshot(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $this->authenticatedMainId($body, $query);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
 
-        $viewerUserId = (int) ($query['viewer_user_id'] ?? 0);
-        if ($viewerUserId <= 0) {
-            throw new HttpException(422, 'viewer_user_id is required');
-        }
+        $viewerUserId = $this->authenticatedViewerUserId($body);
 
         return $this->repo->getAgentSnapshot($mainId, $viewerUserId);
     }
 
     public function customerPurchaseHistory(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $this->authenticatedMainId($body, $query);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
@@ -92,13 +90,14 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->repo->getCustomerPurchaseHistory($mainId, $contactId);
     }
 
     public function customerSalesReports(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $this->authenticatedMainId($body, $query);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
@@ -107,13 +106,14 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->repo->getCustomerSalesReports($mainId, $contactId);
     }
 
     public function customerIncidentReports(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $this->authenticatedMainId($body, $query);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
@@ -122,6 +122,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->repo->getCustomerIncidentReports($mainId, $contactId);
     }
@@ -227,7 +228,7 @@ final class DailyCallMonitoringController
      */
     public function callLogs(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $this->authenticatedMainId($body, $query);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
@@ -236,6 +237,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         $fromDate = isset($query['from_date']) ? trim((string) $query['from_date']) : null;
         $toDate = isset($query['to_date']) ? trim((string) $query['to_date']) : null;
@@ -245,7 +247,7 @@ final class DailyCallMonitoringController
 
     public function customerLogs(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $this->authenticatedMainId($body, $query);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
@@ -254,6 +256,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->repo->getCustomerLogs($mainId, $contactId);
     }
@@ -264,7 +267,7 @@ final class DailyCallMonitoringController
      */
     public function returnRecords(array $params = [], array $query = [], array $body = []): array
     {
-        $mainId = (int) ($query['main_id'] ?? 0);
+        $mainId = $this->authenticatedMainId($body, $query);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
@@ -273,6 +276,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->repo->getReturnRecords($mainId, $contactId);
     }
@@ -435,6 +439,7 @@ final class DailyCallMonitoringController
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
 
         try {
             $this->callReportRepo->backfillThreadsFromCallLogs($mainId, $contactId, $viewerUserId);
@@ -487,5 +492,24 @@ final class DailyCallMonitoringController
         }
 
         return ['read' => $this->callReportRepo->markThreadRead($mainId, $threadId, $viewerUserId)];
+    }
+
+    private function authenticatedViewerUserId(array $body): int
+    {
+        $userId = (int) (($body['__auth_claims']['sub'] ?? 0));
+        if ($userId <= 0) {
+            throw new HttpException(401, 'Authenticated account is required');
+        }
+        return $userId;
+    }
+
+    private function authenticatedMainId(array $body, array $query): int
+    {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $mainId = (int) ($claims['main_userid'] ?? $query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        return $mainId;
     }
 }
