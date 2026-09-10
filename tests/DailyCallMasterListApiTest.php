@@ -103,6 +103,24 @@ $badAgeGroupRows = array_values(array_filter($rows, static function (array $row)
 }));
 assert_true(count($badAgeGroupRows) === 0, 'Rows include correct purchase-age groups', $passed, $failed, $errors);
 
+$bmcRows = array_values(array_filter($rows, static function (array $row): bool {
+    return (string) ($row['shopName'] ?? '') === 'BMC CALIBRATION';
+}));
+assert_true(count($bmcRows) === 1, 'BMC calibration fixture is present', $passed, $failed, $errors);
+if (count($bmcRows) === 1) {
+    $bmc = $bmcRows[0];
+    assert_true(
+        (string) ($bmc['last_purchase_date_raw'] ?? '') === '2026-07-18'
+            && (int) ($bmc['average_monthly_sales_year'] ?? 0) === 2026
+            && (int) ($bmc['average_monthly_sales_month_count'] ?? 0) === 2
+            && abs((float) ($bmc['average_monthly_sales'] ?? 0) - 16240.0) < 0.01,
+        'BMC recovery average uses the latest purchase window',
+        $passed,
+        $failed,
+        $errors
+    );
+}
+
 $sorted = true;
 for ($i = 1; $i < count($rows); $i++) {
     if ((string) ($rows[$i - 1]['last_purchase_date_raw'] ?? '') < (string) ($rows[$i]['last_purchase_date_raw'] ?? '')) {

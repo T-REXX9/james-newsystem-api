@@ -577,14 +577,15 @@ function app_router(): Router
     $router->post('/api/v1/adjustment-entries/{refno}/actions/{action}', $requireApproverAction([$adjustmentEntryController, 'action'], ['Adjustment Entry', 'Adjustment']));
     $router->get('/api/v1/activity-logs', [$activityLogController, 'list']);
     $router->get('/api/v1/activity-logs/users', [$activityLogController, 'users']);
-    $router->get('/api/v1/customer-database', [$customerDatabaseController, 'list']);
+    $router->get('/api/v1/customer-database', $requireBearerAuth([$customerDatabaseController, 'list']));
+    $router->get('/api/v1/customer-database/name-check', [$customerDatabaseController, 'nameCheck']);
     $router->get('/api/v1/customer-database/province-summary', [$customerDatabaseController, 'provinceSummary']);
     $router->get('/api/v1/customer-groups', [$customerGroupController, 'list']);
     $router->get('/api/v1/customer-groups/{groupId}', [$customerGroupController, 'show']);
     $router->post('/api/v1/customer-groups', $requireActionAuth([$customerGroupController, 'create'], 'Customer', 'add'));
     $router->patch('/api/v1/customer-groups/{groupId}', $requireActionAuth([$customerGroupController, 'update'], 'Customer', 'edit'));
     $router->delete('/api/v1/customer-groups/{groupId}', $requireActionAuth([$customerGroupController, 'delete'], 'Customer', 'delete'));
-    $router->get('/api/v1/customer-database/{sessionId}', [$customerDatabaseController, 'show']);
+    $router->get('/api/v1/customer-database/{sessionId}', $requireBearerAuth([$customerDatabaseController, 'show']));
     $router->post('/api/v1/customer-database', $requireActionAuth([$customerDatabaseController, 'create'], 'Customer Database', 'add'));
     $router->patch('/api/v1/customer-database/bulk', $requireCustomerUpdateAuth([$customerDatabaseController, 'bulkUpdate']));
     $router->patch('/api/v1/customer-database/{sessionId}', $requireCustomerUpdateAuth([$customerDatabaseController, 'update']));

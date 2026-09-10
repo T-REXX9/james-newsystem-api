@@ -333,12 +333,11 @@ SQL);
         $params = [
             'main_id' => $mainId,
             'priority_from_date' => $normalizedFromDate,
-            'historical_before_date' => $normalizedFromDate,
             'historical_before_date_count' => $normalizedFromDate,
             'current_month' => date('Y-m'),
             'last_month' => date('Y-m', strtotime('-1 month')),
             'ledger_main_id' => $mainIdStr,
-            'historical_ledger_main_id' => $mainIdStr,
+            'latest_active_main_id' => $mainIdStr,
             'verification_main_id' => $mainId,
         ];
 
@@ -452,19 +451,19 @@ LEFT JOIN (
         DATEDIFF(CURDATE(), DATE(MAX(lg.ldatetime))) AS days_since_last_purchase,
         TIMESTAMPDIFF(MONTH, DATE(MAX(lg.ldatetime)), CURDATE()) AS months_since_last_purchase
     FROM tblledger lg
-    LEFT JOIN (
-        SELECT
-            historical.lcustomerid,
-            historical.lmainid,
-            MAX(YEAR(historical.ldatetime)) AS last_active_year,
-            MAX(historical.ldatetime) AS last_active_purchase_at
-        FROM tblledger historical
-        WHERE historical.lmainid = :historical_ledger_main_id
-          AND historical.ldatetime < :historical_before_date
-          AND COALESCE(historical.ldebit, 0) > 0
-          AND COALESCE(historical.lcustomerid, '') <> ''
-        GROUP BY historical.lcustomerid, historical.lmainid
-    ) ly ON ly.lcustomerid = lg.lcustomerid
+        LEFT JOIN (
+            SELECT
+                latest_active.lcustomerid,
+                latest_active.lmainid,
+                MAX(YEAR(latest_active.ldatetime)) AS last_active_year,
+                MAX(latest_active.ldatetime) AS last_active_purchase_at
+            FROM tblledger latest_active
+            WHERE latest_active.lmainid = :latest_active_main_id
+              AND latest_active.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+              AND COALESCE(latest_active.ldebit, 0) > 0
+              AND COALESCE(latest_active.lcustomerid, '') <> ''
+            GROUP BY latest_active.lcustomerid, latest_active.lmainid
+        ) ly ON ly.lcustomerid = lg.lcustomerid
         AND ly.lmainid = lg.lmainid
     WHERE lg.lmainid = :ledger_main_id
       AND lg.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
