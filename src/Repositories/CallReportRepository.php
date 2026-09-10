@@ -126,12 +126,16 @@ final class CallReportRepository
              FROM tblpatient p
              INNER JOIN tblaccount a ON a.lid = p.lencoded_by
              WHERE p.lmain_id = :main_id
-               AND CAST(p.lid AS CHAR) = :contact_id
+               AND (CAST(p.lid AS CHAR) = :contact_id_lid OR p.lsessionid = :contact_id_session)
                AND TRIM(COALESCE(p.lnotes, \'\')) <> \'\'
                AND (COALESCE(p.lstatus, 1) = 3 OR LOWER(COALESCE(p.lprofile_type, \'\')) LIKE \'%prospect%\')
              LIMIT 1'
         );
-        $prospectStmt->execute(['main_id' => $mainId, 'contact_id' => $contactId]);
+        $prospectStmt->execute([
+            'main_id' => $mainId,
+            'contact_id_lid' => $contactId,
+            'contact_id_session' => $contactId,
+        ]);
         $prospect = $prospectStmt->fetch(PDO::FETCH_ASSOC);
         if (is_array($prospect)) {
             $threads[] = [
