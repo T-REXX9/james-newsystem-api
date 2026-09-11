@@ -401,6 +401,7 @@ SELECT
         NULLIF(TRIM(cp_first.lc_phone), ''),
         ''
     ) AS contact_number,
+    NULLIF(TRIM(CONCAT_WS(' ', cp_first.lfname, cp_first.lmname, cp_first.llname)), '') AS contact_person_name,
     TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))) AS assigned_to,
     p.ldate_assigned AS assigned_date_raw,
     CAST(COALESCE(p.lsales_person, '') AS CHAR) AS assigned_agent_id,
@@ -438,7 +439,7 @@ LEFT JOIN tblaccount a
 LEFT JOIN tblteamstaff team
     ON team.lid = p.lsales_team AND team.lmain_id = p.lmain_id
 LEFT JOIN (
-    SELECT cp.lrefno, cp.lc_mobile, cp.lc_phone
+    SELECT cp.lrefno, cp.lfname, cp.lmname, cp.llname, cp.lc_mobile, cp.lc_phone
     FROM tblcontact_person cp
     INNER JOIN (
         SELECT lrefno, MIN(lid) AS min_lid FROM tblcontact_person GROUP BY lrefno
@@ -571,6 +572,7 @@ SQL;
                 'province' => $this->cleanDisplayText($row['province'] ?? '', '—'),
                 'city' => $this->cleanDisplayText($row['city'] ?? '', '—'),
                 'contactNumber' => $this->cleanDisplayText($row['contact_number'] ?? '', '—'),
+                'contactPersonName' => $this->cleanDisplayText($row['contact_person_name'] ?? '', ''),
                 'assignedTo' => $this->cleanDisplayText($row['assigned_to'] ?? '', 'Unassigned'),
                 'assigned_to' => $this->cleanDisplayText($row['assigned_to'] ?? '', 'Unassigned'),
                 'assignedDate' => $this->formatDateText($row['assigned_date_raw'] ?? null),
