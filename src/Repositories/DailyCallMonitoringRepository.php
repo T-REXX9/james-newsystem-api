@@ -667,6 +667,7 @@ SQL;
     public function getAgentSnapshot(int $mainId, int $viewerUserId): array
     {
         $customers = $this->getCustomerBaseRows($mainId, 'all', '', $viewerUserId);
+        $masterList = $this->getPurchaseMasterList($mainId, '2025-10-01', '', $viewerUserId);
         $contactIds = array_values(array_filter(array_map(
             static fn(array $row): string => (string) ($row['id'] ?? ''),
             $customers
@@ -679,6 +680,7 @@ SQL;
             'inquiries' => $this->getInquiryRows($mainId, $contactIds),
             'purchases' => $this->getPurchaseRows($mainId, $contactIds, $twelveMonthsAgo),
             'team_messages' => $this->getRecentOwnerMessages($viewerUserId),
+            'master_list' => $masterList['items'] ?? [],
         ];
     }
 
