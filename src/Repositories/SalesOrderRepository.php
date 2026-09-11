@@ -12,6 +12,8 @@ use RuntimeException;
 
 final class SalesOrderRepository
 {
+    private const INVOICE_ITEM_LIMIT = 16;
+
     public function __construct(private readonly Database $db)
     {
     }
@@ -377,6 +379,9 @@ SQL;
             throw new RuntimeException('Customer not found for contact_id');
         }
 
+        $items = is_array($payload['items'] ?? null) ? $payload['items'] : [];
+        $this->assertInvoiceItemLimit($customer, $items);
+
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
@@ -448,7 +453,6 @@ SQL;
                 'lurgency_date' => $this->normalizeNullableDate((string) ($payload['urgency_date'] ?? '')),
             ]);
 
-            $items = is_array($payload['items'] ?? null) ? $payload['items'] : [];
             foreach ($items as $item) {
                 if (!is_array($item)) {
                     continue;
@@ -513,6 +517,13 @@ SQL;
         if (trim((string) ($order['order_slip_refno'] ?? '')) !== '' || trim((string) ($order['invoice_refno'] ?? '')) !== '') {
             throw new RuntimeException('Unpost the linked Order Slip or Invoice before editing this Sales Order');
         }
+        $contactId = (string) ($payload['contact_id'] ?? $order['contact_id'] ?? '');
+        $customer = $this->getCustomerSnapshot($mainId, $contactId);
+        if ($customer === null) {
+            throw new RuntimeException('Customer not found for contact_id');
+        }
+        $itemsForLimit = is_array($payload['items'] ?? null) ? $payload['items'] : (array) ($existing['items'] ?? []);
+        $this->assertInvoiceItemLimit($customer, $itemsForLimit);
         $salesDate = $this->normalizeDate((string) ($payload['sales_date'] ?? (string) ($order['sales_date'] ?? date('Y-m-d'))));
         $status = $this->normalizeSubmitStatus((string) ($payload['status'] ?? (string) ($order['status'] ?? 'Pending')));
         $transactionStatus = $this->normalizeTransactionStatus((string) ($payload['transaction_status'] ?? (string) ($order['transaction_status'] ?? $status)));
@@ -629,6 +640,11 @@ SQL;
             throw new RuntimeException('Sales order not found');
         }
         $this->assertDirectSalesOrderItemEditingAllowed($so);
+
+        $customer = $this->getCustomerSnapshot($mainId, (string) ($so['order']['contact_id'] ?? ''));
+        if ($customer !== null) {
+            $this->assertInvoiceItemLimit($customer, [...(array) ($so['items'] ?? []), $payload]);
+        }
 
         $salesDate = (string) ($so['order']['sales_date'] ?? date('Y-m-d'));
         $this->insertItem($this->db->pdo(), $mainId, $userId, $salesRefno, $salesDate, $payload);
@@ -1132,6 +1148,7 @@ SELECT
     p.lterms,
     p.lsales_person,
     p.lcity,
+    p.ltransaction_type,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person_name
 FROM tblpatient p
 LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person
@@ -1146,6 +1163,19 @@ SQL;
         ]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row === false ? null : $row;
+    }
+
+    /** @param array<string, mixed> $customer @param array<int, mixed> $items */
+    private function assertInvoiceItemLimit(array $customer, array $items): void
+    {
+        if (strcasecmp(trim((string) ($customer['ltransaction_type'] ?? '')), 'Invoice') !== 0) {
+            return;
+        }
+
+        $entryCount = count(array_filter($items, 'is_array'));
+        if ($entryCount > self::INVOICE_ITEM_LIMIT) {
+            throw new RuntimeException('Invoice-sale customers are limited to 16 entries per Sales Order.');
+        }
     }
 
     /**

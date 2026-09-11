@@ -11,6 +11,8 @@ use RuntimeException;
 
 final class SalesInquiryRepository
 {
+    private const INVOICE_ITEM_LIMIT = 16;
+
     public function __construct(private readonly Database $db)
     {
     }
@@ -306,6 +308,9 @@ SQL;
             throw new RuntimeException('Customer not found for contact_id');
         }
 
+        $items = is_array($payload['items'] ?? null) ? $payload['items'] : [];
+        $this->assertInvoiceItemLimit($customer, $items);
+
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
@@ -359,7 +364,6 @@ SQL;
                 'lcity' => (string) ($customer['lcity'] ?? ''),
             ]);
 
-            $items = is_array($payload['items'] ?? null) ? $payload['items'] : [];
             foreach ($items as $item) {
                 if (!is_array($item)) {
                     continue;
@@ -389,6 +393,14 @@ SQL;
             return null;
         }
         $this->assertInquiryEditable($mainId, $inquiryRefno);
+
+        $contactId = (string) ($payload['contact_id'] ?? $existing['contact_id'] ?? '');
+        $customer = $this->getCustomerSnapshot($mainId, $contactId);
+        if ($customer === null) {
+            throw new RuntimeException('Customer not found for contact_id');
+        }
+        $itemsForLimit = is_array($payload['items'] ?? null) ? $payload['items'] : (array) ($existing['items'] ?? []);
+        $this->assertInvoiceItemLimit($customer, $itemsForLimit);
 
         $salesDate = $this->normalizeDate((string) ($payload['sales_date'] ?? (string) ($existing['sales_date'] ?? date('Y-m-d'))));
         $status = $this->normalizeStatus((string) ($payload['status'] ?? (string) ($existing['status'] ?? 'Pending')));
@@ -573,6 +585,11 @@ SQL;
             throw new RuntimeException('Sales inquiry not found');
         }
         $this->assertInquiryEditable($mainId, $inquiryRefno);
+
+        $customer = $this->getCustomerSnapshot($mainId, (string) ($inquiry['contact_id'] ?? ''));
+        if ($customer !== null) {
+            $this->assertInvoiceItemLimit($customer, [...$this->listItems($inquiryRefno), $payload]);
+        }
 
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -1185,6 +1202,7 @@ SELECT
     p.lvat_type,
     p.lvat_percent,
     p.lcity,
+    p.ltransaction_type,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person_name
 FROM tblpatient p
 LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person
@@ -1199,6 +1217,19 @@ SQL;
         ]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row === false ? null : $row;
+    }
+
+    /** @param array<string, mixed> $customer @param array<int, mixed> $items */
+    private function assertInvoiceItemLimit(array $customer, array $items): void
+    {
+        if (strcasecmp(trim((string) ($customer['ltransaction_type'] ?? '')), 'Invoice') !== 0) {
+            return;
+        }
+
+        $entryCount = count(array_filter($items, 'is_array'));
+        if ($entryCount > self::INVOICE_ITEM_LIMIT) {
+            throw new RuntimeException('Invoice-sale customers are limited to 16 entries per Sales Inquiry.');
+        }
     }
 
     /**
