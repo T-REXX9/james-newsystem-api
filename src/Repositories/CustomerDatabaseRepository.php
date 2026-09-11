@@ -311,6 +311,9 @@ SQL;
 
     public function createCustomer(int $mainId, int $userId, array $payload): array
     {
+        if (array_key_exists('sales_person_id', $payload)) {
+            $payload['sales_person_id'] = $this->normalizeSalesPersonIdForAssignment($mainId, $payload['sales_person_id']);
+        }
         $company = trim((string) ($payload['company'] ?? ''));
         if ($company === '') {
             throw new RuntimeException('company is required');
@@ -561,6 +564,9 @@ SQL;
             $sessionId
         );
 
+        if (array_key_exists('sales_person_id', $payload)) {
+            $payload['sales_person_id'] = $this->normalizeSalesPersonIdForAssignment($mainId, $payload['sales_person_id']);
+        }
         $nextSalesPerson = (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? '');
         $currentSalesPerson = (string) ($existing['sales_person_id'] ?? '');
         $salesPersonChanged = array_key_exists('sales_person_id', $payload)
@@ -688,6 +694,9 @@ SQL;
         if ($normalizedSessionIds === []) {
             throw new RuntimeException('session_ids must include at least one valid session ID');
         }
+        if (array_key_exists('sales_person_id', $payload)) {
+            $payload['sales_person_id'] = $this->normalizeSalesPersonIdForAssignment($mainId, $payload['sales_person_id']);
+        }
 
         $fieldMap = [
             'company' => ['column' => 'lcompany', 'value' => static fn ($value): string => (string) $value],
@@ -753,6 +762,20 @@ SQL;
             $params[$paramKey] = $sessionId;
         }
 
+        $countParams = ['main_id' => $mainId];
+        foreach ($normalizedSessionIds as $index => $sessionId) {
+            $countParams['session_id_' . $index] = $sessionId;
+        }
+        $countSql = sprintf(
+            'SELECT COUNT(DISTINCT lsessionid) FROM tblpatient WHERE lmain_id = :main_id AND lsessionid IN (%s)',
+            implode(', ', $sessionPlaceholders)
+        );
+        $countStmt = $this->db->pdo()->prepare($countSql);
+        $countStmt->execute($countParams);
+        if ((int) $countStmt->fetchColumn() !== count($normalizedSessionIds)) {
+            throw new RuntimeException('Not all selected customers belong to this account; no customers were reassigned');
+        }
+
         $sql = sprintf(
             'UPDATE tblpatient SET %s WHERE lmain_id = :main_id AND lsessionid IN (%s)',
             implode(', ', $assignments),
@@ -781,9 +804,39 @@ SQL;
 
         return [
             'updated' => true,
-            'updated_count' => $stmt->rowCount(),
+            'updated_count' => count($normalizedSessionIds),
+            'changed_count' => $stmt->rowCount(),
             'session_ids' => $normalizedSessionIds,
         ];
+    }
+
+    private function normalizeSalesPersonIdForAssignment(int $mainId, mixed $value): string
+    {
+        $salesPersonId = trim((string) $value);
+        if ($salesPersonId === '') {
+            return '';
+        }
+        if (!ctype_digit($salesPersonId) || (int) $salesPersonId <= 0) {
+            throw new RuntimeException('Sales agent assignment must use a valid staff account ID');
+        }
+
+        $statement = $this->db->pdo()->prepare(
+            'SELECT 1 FROM tblaccount
+             WHERE lid = :sales_person_id
+               AND (lid = :main_id_owner OR lmother_id = :main_id_staff)
+               AND COALESCE(lstatus, 0) = 1
+             LIMIT 1'
+        );
+        $statement->execute([
+            'sales_person_id' => (int) $salesPersonId,
+            'main_id_owner' => $mainId,
+            'main_id_staff' => $mainId,
+        ]);
+        if (!$statement->fetchColumn()) {
+            throw new RuntimeException('Sales agent assignment must use a valid staff account ID');
+        }
+
+        return (string) ((int) $salesPersonId);
     }
 
     public function deleteCustomer(int $mainId, string $sessionId): bool

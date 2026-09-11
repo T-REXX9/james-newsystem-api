@@ -199,7 +199,15 @@ final class SalesInquiryController
         }
 
         try {
-            if (in_array(strtolower($action), ['convert', 'convert-to-order', 'convertsales'], true)) {
+            $normalized = strtolower($action);
+            if (in_array($normalized, ['approve', 'approved', 'approverecord', 'submitted'], true)) {
+                $record = $this->repo->updateInquiry($mainId, $inquiryRefno, ['status' => 'Submitted']);
+                if ($record === null) {
+                    throw new HttpException(404, 'Sales inquiry not found');
+                }
+                return $record;
+            }
+            if (in_array($normalized, ['convert', 'convert-to-order', 'convertsales'], true)) {
                 return $this->repo->convertToSalesOrder($mainId, $userId, $inquiryRefno);
             }
         } catch (RuntimeException $e) {

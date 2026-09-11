@@ -32,9 +32,11 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
      *(Required for notification polling and the automatic inventory-alert scan. Idempotent.)*
    - `mysql -u root topnotch < migrations/016_create_incident_reports.sql`
    - `mysql -u root topnotch < migrations/020_create_call_logs_v2.sql`
-  - `mysql -u root topnotch < migrations/022_add_lbc_rto_to_incident_reports.sql`
-  - `mysql -u root topnotch < migrations/032_backfill_product_created_suggested_stock.sql`
+   - `mysql -u root topnotch < migrations/022_add_lbc_rto_to_incident_reports.sql`
      *(Required before users can create LBC RTO incident reports.)*
+   - `mysql -u root topnotch < migrations/032_backfill_product_created_suggested_stock.sql`
+   - `mysql -u root topnotch < migrations/047_repair_customer_sales_agent_ids.sql`
+     *(Repairs legacy customer-agent assignments that stored a unique staff display name instead of its account ID.)*
   - Apply `migrations/017_create_customer_requests.sql`,
     `migrations/019_add_procurement_recovery_columns.sql`, and
     `migrations/023_add_customer_product_soft_delete_columns.sql` to your configured

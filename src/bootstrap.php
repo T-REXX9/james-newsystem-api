@@ -513,24 +513,21 @@ function app_router(): Router
         });
     };
 
-    // Approval is a separate capability from module access. Every approval or
-    // post action must derive the actor from the verified token. Approve/post
-    // may require Maintenance Approver listing; unpost uses Posting permission
-    // (can_unpost) only — same as Sales Return / Purchase Order / Receiving.
-    $requireApproverAction = static function (callable $handler, array $approverModules, bool $approvalOnly = false, ?string $fixedActionPermission = null) use ($requireBearerAuthWithClaims, $permissionMiddleware, $db): callable {
-        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $approverModules, $db, $approvalOnly, $fixedActionPermission, $requireBearerAuthWithClaims, $permissionMiddleware): array {
+    // Approve/post/reject derive the actor from the verified token and are gated
+    // only by System Access page action permissions (can_approve / can_post / …).
+    // Maintenance Approver (tblapprover) is no longer required at this gate.
+    // Unpost uses Posting permission (can_unpost) via requireActionAuth on peer routes.
+    // $approvalOnly remains on the signature for existing route registrations.
+    $requireApproverAction = static function (callable $handler, array $approverModules, bool $approvalOnly = false, ?string $fixedActionPermission = null) use ($requireBearerAuthWithClaims, $permissionMiddleware): callable {
+        return static function (array $params = [], array $query = [], array $body = []) use ($handler, $approverModules, $fixedActionPermission, $requireBearerAuthWithClaims, $permissionMiddleware): array {
             $action = strtolower(trim((string) ($params['action'] ?? $body['action'] ?? $body['status'] ?? $body['decision'] ?? '')));
-            // Unpost is a Posting permission (can_unpost), not Approver listing.
-            // Peer routes (Sales Return / PO / Receiving) already use requireActionAuth for unpost.
-            $approvalActions = ['approve', 'approved', 'approverecord', 'post', 'postrecord', 'posttoledger', 'finalize', 'review', 'reject', 'rejected', 'disapprove', 'disapproved', 'disapproverecord', 'submitted'];
-            $requiresApproval = $approvalOnly || in_array($action, $approvalActions, true);
 
-            return $requireBearerAuthWithClaims(static function (array $authParams = [], array $authQuery = [], array $authBody = []) use ($handler, $approverModules, $db, $action, $fixedActionPermission, $permissionMiddleware, $requiresApproval): array {
+            return $requireBearerAuthWithClaims(static function (array $authParams = [], array $authQuery = [], array $authBody = []) use ($handler, $approverModules, $action, $fixedActionPermission, $permissionMiddleware): array {
                 $claims = is_array($authBody['__auth_claims'] ?? null) ? $authBody['__auth_claims'] : [];
                 $userId = (int) ($claims['sub'] ?? 0);
                 $mainId = (int) ($claims['main_userid'] ?? $authBody['main_id'] ?? 0);
                 if ($userId <= 0 || $mainId <= 0) {
-                    throw new HttpException(403, 'An authenticated approver is required');
+                    throw new HttpException(403, 'An authenticated account is required');
                 }
                 if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
                     throw new HttpException(403, 'Invalid account scope');
@@ -561,18 +558,6 @@ function app_router(): Router
                 }
                 if ($actionPermission !== null) {
                     $permissionMiddleware->assertActionPermission($claims, $actionPermission, $approverModules[0] ?? null);
-                }
-
-                if ($requiresApproval && $actionPermission !== 'approve' && (string) ($claims['user_type'] ?? '') !== '1') {
-                    $modules = array_values(array_unique(array_map('strval', $approverModules)));
-                    $placeholders = implode(',', array_fill(0, count($modules), '?'));
-                    $statement = $db->pdo()->prepare(
-                        "SELECT 1 FROM tblapprover WHERE lmain_id = ? AND lstaff_id = ? AND UPPER(COALESCE(ltrans_type, '')) IN ({$placeholders}) LIMIT 1"
-                    );
-                    $statement->execute(array_merge([$mainId, $userId], array_map('strtoupper', $modules)));
-                    if (!$statement->fetchColumn()) {
-                        throw new HttpException(403, 'Only approver accounts can approve records');
-                    }
                 }
 
                 return $handler($authParams, $authQuery, $authBody);
@@ -628,19 +613,19 @@ function app_router(): Router
     $router->post('/api/v1/customer-database/{sessionId}/terms', $requireActionAuth([$customerDatabaseController, 'addTerm'], 'Customer Database', 'add'));
     $router->patch('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'updateTerm'], 'Customer Database', 'edit'));
     $router->delete('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'deleteTerm'], 'Customer Database', 'delete'));
-    $router->get('/api/v1/collections', $requireViewAuth([$collectionController, 'list'], 'Collection'));
-    $router->post('/api/v1/collections', $requireActionAuth([$collectionController, 'create'], 'Collection', 'add'));
-    $router->get('/api/v1/collections/unpaid', $requireViewAuth([$collectionController, 'unpaid'], 'Collection'));
-    $router->get('/api/v1/collections/summary', $requireViewAuth([$collectionController, 'summary'], 'Collection'));
-    $router->delete('/api/v1/collections/{collectionRefno}', $requireActionAuth([$collectionController, 'delete'], 'Collection', 'delete'));
-    $router->get('/api/v1/collections/{collectionRefno}', $requireViewAuth([$collectionController, 'show'], 'Collection'));
-    $router->get('/api/v1/collections/{collectionRefno}/items', $requireViewAuth([$collectionController, 'items'], 'Collection'));
-    $router->get('/api/v1/collections/{collectionRefno}/approver-logs', $requireViewAuth([$collectionController, 'approverLogs'], 'Collection'));
-    $router->post('/api/v1/collections/{collectionRefno}/items/post', $requireActionAuth([$collectionController, 'postItems'], 'Collection', 'post'));
-    $router->post('/api/v1/collections/{collectionRefno}/payments', $requireActionAuth([$collectionController, 'addPayment'], 'Collection', 'add'));
-    $router->post('/api/v1/collections/{collectionRefno}/actions/{action}', $requireApproverAction([$collectionController, 'action'], ['Collection']));
-    $router->patch('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'updateItem'], 'Collection', 'edit'));
-    $router->delete('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'deleteItem'], 'Collection', 'delete'));
+    $router->get('/api/v1/collections', $requireViewAuth([$collectionController, 'list'], 'Daily Collection Entry'));
+    $router->post('/api/v1/collections', $requireActionAuth([$collectionController, 'create'], 'Daily Collection Entry', 'add'));
+    $router->get('/api/v1/collections/unpaid', $requireViewAuth([$collectionController, 'unpaid'], 'Daily Collection Entry'));
+    $router->get('/api/v1/collections/summary', $requireViewAuth([$collectionController, 'summary'], 'Daily Collection Entry'));
+    $router->delete('/api/v1/collections/{collectionRefno}', $requireActionAuth([$collectionController, 'delete'], 'Daily Collection Entry', 'delete'));
+    $router->get('/api/v1/collections/{collectionRefno}', $requireViewAuth([$collectionController, 'show'], 'Daily Collection Entry'));
+    $router->get('/api/v1/collections/{collectionRefno}/items', $requireViewAuth([$collectionController, 'items'], 'Daily Collection Entry'));
+    $router->get('/api/v1/collections/{collectionRefno}/approver-logs', $requireViewAuth([$collectionController, 'approverLogs'], 'Daily Collection Entry'));
+    $router->post('/api/v1/collections/{collectionRefno}/items/post', $requireActionAuth([$collectionController, 'postItems'], 'Daily Collection Entry', 'post'));
+    $router->post('/api/v1/collections/{collectionRefno}/payments', $requireActionAuth([$collectionController, 'addPayment'], 'Daily Collection Entry', 'add'));
+    $router->post('/api/v1/collections/{collectionRefno}/actions/{action}', $requireApproverAction([$collectionController, 'action'], ['Daily Collection Entry', 'Collection']));
+    $router->patch('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'updateItem'], 'Daily Collection Entry', 'edit'));
+    $router->delete('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'deleteItem'], 'Daily Collection Entry', 'delete'));
     $router->get('/api/v1/contacts', [$contactsController, 'list']);
     $router->get('/api/v1/contacts/{id}', [$contactsController, 'show']);
     $router->post('/api/v1/contacts', $requireActionAuth([$contactsController, 'create'], 'Customer Database', 'add'));
@@ -701,8 +686,8 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/call-report-threads', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'callReportThreads']));
     $router->post('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/messages', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createCallReportReply']));
     $router->patch('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/read', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'markCallReportThreadRead']));
-    $router->post('/api/v1/daily-call-monitoring/incident-reports', $requireActionAuth([$dailyCallMonitoringController, 'createIncidentReport'], 'Incident Report', 'add'));
-    $router->patch('/api/v1/daily-call-monitoring/incident-reports/{reportId}/decision', $requireApproverAction([$dailyCallMonitoringController, 'reviewIncidentReport'], ['Incident Report', 'Incident', 'IR', 'Sales Return', 'SR']));
+    $router->post('/api/v1/daily-call-monitoring/incident-reports', $requireActionAuth([$dailyCallMonitoringController, 'createIncidentReport'], 'Daily Call Monitoring', 'add'));
+    $router->patch('/api/v1/daily-call-monitoring/incident-reports/{reportId}/decision', $requireApproverAction([$dailyCallMonitoringController, 'reviewIncidentReport'], ['Daily Call Monitoring', 'Incident Report', 'Incident', 'IR', 'Sales Return', 'SR']));
     $router->post('/api/v1/call-system/devices/register', $requireBearerAuthWithClaims([$callSystemController, 'registerDevice']));
     $router->post('/api/v1/call-system/devices/heartbeat', $requireBearerAuthWithClaims([$callSystemController, 'heartbeat']));
     $router->post('/api/v1/call-system/call-logs', $requireBearerAuthWithClaims([$callSystemController, 'createCallLog']));

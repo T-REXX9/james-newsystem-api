@@ -7,8 +7,8 @@ declare(strict_types=1);
  * (and without Maintenance Approver listing) must be allowed to unpost.
  *
  * Covers every unpost-capable page: dedicated requireActionAuth routes must
- * win over Approver-gated dynamic {action} routes, and unpost must not appear
- * in the Approver action list.
+ * win over dynamic {action} routes. Post/approve are gated by System Access
+ * action permissions only (not tblapprover).
  */
 
 $source = file_get_contents(__DIR__ . '/../src/bootstrap.php');
@@ -24,31 +24,23 @@ $assert = static function (bool $condition, string $label): void {
 };
 
 if (!preg_match(
-    '/\$approvalActions\s*=\s*\[(.*?)\];/s',
+    '/\$requireApproverAction\s*=\s*static function.*?\$router\s*=\s*new Router/s',
     $source,
-    $matches
+    $gateMatch
 )) {
-    throw new RuntimeException('FAIL: could not find $approvalActions in requireApproverAction');
+    throw new RuntimeException('FAIL: could not isolate requireApproverAction');
 }
 
-$listed = [];
-if (preg_match_all("/'([^']+)'/", $matches[1], $actionMatches)) {
-    $listed = $actionMatches[1];
-}
+$gate = $gateMatch[0];
 
 $assert(
-    in_array('approve', $listed, true),
-    'approve remains an Approver-gated action'
+    !str_contains($gate, 'tblapprover'),
+    'post/approve use System Access only — no Maintenance Approver listing in requireApproverAction'
 );
 
 $assert(
-    in_array('post', $listed, true) || in_array('finalize', $listed, true),
-    'post/finalize remain Approver-gated where the old system required Approver'
-);
-
-$assert(
-    !in_array('unpost', $listed, true),
-    'unpost must not require Maintenance Approver listing (Posting permission is enough)'
+    str_contains($gate, "'post'") && str_contains($gate, "'approve'"),
+    'post and approve still map to System Access action permissions'
 );
 
 $unpostRoutes = [

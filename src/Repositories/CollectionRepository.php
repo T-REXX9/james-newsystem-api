@@ -633,7 +633,12 @@ SQL,
                 $stmt = $pdo->prepare('UPDATE tblcollection SET lstatus = :status WHERE lrefno = :refno');
                 $stmt->execute(['status' => $finalStatus, 'refno' => $refno]);
                 $ledgerRowsReversed = $this->reverseCollectionLedgerEffects($pdo, $refno);
-            } elseif ($currentOrder !== null && $maxOrder !== null && $currentOrder >= $maxOrder) {
+            } elseif ($currentOrder === null || $maxOrder === null) {
+                // No Maintenance Approver chain — System Access can_approve is enough.
+                $finalStatus = 'Approved';
+                $stmt = $pdo->prepare('UPDATE tblcollection SET lstatus = :status WHERE lrefno = :refno');
+                $stmt->execute(['status' => $finalStatus, 'refno' => $refno]);
+            } elseif ($currentOrder >= $maxOrder) {
                 $approved = $this->getCountApprove($mainId, $refno);
                 $unapproved = $this->getCountUnapprove($mainId, $refno);
 
@@ -645,7 +650,7 @@ SQL,
 
                 $stmt = $pdo->prepare('UPDATE tblcollection SET lstatus = :status WHERE lrefno = :refno');
                 $stmt->execute(['status' => $finalStatus, 'refno' => $refno]);
-            } elseif ($currentOrder !== null) {
+            } else {
                 $nextOrder = $currentOrder + 1;
                 $approvers = $this->getApproverByOrder($mainId, $nextOrder);
 
