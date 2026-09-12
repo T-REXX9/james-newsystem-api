@@ -261,6 +261,7 @@ LEFT JOIN (
         lrefno,
         SUM(COALESCE(lqty, 0)) AS ordered_qty
     FROM tblpr_item
+    WHERE lrefno = :refno_totals
     GROUP BY lrefno
 ) pr_totals
     ON pr_totals.lrefno = pr.lrefno
@@ -276,19 +277,24 @@ LEFT JOIN (
     LEFT JOIN tblpo_itemlist poi ON poi.lrefno = po.lrefno
     LEFT JOIN (
         SELECT
-            lmain_id,
-            lpo_refno,
-            GROUP_CONCAT(DISTINCT lrefno ORDER BY lid SEPARATOR ',') AS rr_refno,
-            GROUP_CONCAT(DISTINCT lpurchaseno ORDER BY lid SEPARATOR ', ') AS rr_numbers,
-            GROUP_CONCAT(DISTINCT ldate ORDER BY lid SEPARATOR ',') AS rr_dates
-        FROM tblpurchase_order
-        WHERE COALESCE(ldeleted, 0) = 0
-          AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted")
-        GROUP BY lmain_id, lpo_refno
+            rr.lmain_id,
+            rr.lpo_refno,
+            GROUP_CONCAT(DISTINCT rr.lrefno ORDER BY rr.lid SEPARATOR ',') AS rr_refno,
+            GROUP_CONCAT(DISTINCT rr.lpurchaseno ORDER BY rr.lid SEPARATOR ', ') AS rr_numbers,
+            GROUP_CONCAT(DISTINCT rr.ldate ORDER BY rr.lid SEPARATOR ',') AS rr_dates
+        FROM tblpurchase_order rr
+        INNER JOIN tblpo_list scoped_po
+            ON scoped_po.lrefno = rr.lpo_refno
+           AND scoped_po.lpr_refno = :refno_rr
+           AND COALESCE(scoped_po.ldeleted, 0) = 0
+        WHERE COALESCE(rr.ldeleted, 0) = 0
+          AND LOWER(COALESCE(rr.ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted")
+        GROUP BY rr.lmain_id, rr.lpo_refno
     ) rr_cycle
         ON rr_cycle.lmain_id = po.lmain_id
        AND rr_cycle.lpo_refno = po.lrefno
     WHERE COALESCE(po.ldeleted, 0) = 0
+      AND po.lpr_refno = :refno_po
     GROUP BY po.lpr_refno
 ) po_cycle
     ON po_cycle.lpr_refno = pr.lrefno
@@ -298,6 +304,9 @@ LIMIT 1
 SQL;
         $headerStmt = $this->db->pdo()->prepare($headerSql);
         $headerStmt->bindValue('refno', $prRefno, PDO::PARAM_STR);
+        $headerStmt->bindValue('refno_totals', $prRefno, PDO::PARAM_STR);
+        $headerStmt->bindValue('refno_po', $prRefno, PDO::PARAM_STR);
+        $headerStmt->bindValue('refno_rr', $prRefno, PDO::PARAM_STR);
         $headerStmt->execute();
         $header = $headerStmt->fetch(PDO::FETCH_ASSOC);
         if ($header === false) {
@@ -337,13 +346,7 @@ SQL;
         $itemsStmt->execute();
         $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
         try {
-            try {
             $items = $this->enrichPurchaseRequestItems($mainId, $items);
-        } catch (\Throwable $e) {
-            // Enrichment (SR/IR counts, supplier prices) is best-effort.
-            // A slow or failing enrichment must never prevent the PR detail from loading.
-            error_log('PurchaseRequestRepository::enrichPurchaseRequestItems failed: ' . $e->getMessage());
-        }
         } catch (\Throwable $e) {
             // Enrichment is best-effort (SR/IR counts, supplier prices).
             // A slow or failing enrichment must never prevent the PR detail from loading.
@@ -374,119 +377,201 @@ SQL;
 
     /**
      * Enrich PR items from existing inventory and procurement history.
-     * This is intentionally read-only; no schema changes are required.
+     * Uses bulk lookups (not per-row correlated subqueries) so detail stays fast.
      *
      * @param array<int, array<string, mixed>> $items
      * @return array<int, array<string, mixed>>
      */
     private function enrichPurchaseRequestItems(int $mainId, array $items): array
     {
-        if (count($items) === 0) return $items;
+        if (count($items) === 0) {
+            return $items;
+        }
 
         $sessions = [];
         $codes = [];
         foreach ($items as $item) {
             $session = trim((string) ($item['item_id'] ?? ''));
             $code = trim((string) ($item['item_code'] ?? ''));
-            if ($session !== '') $sessions[] = $session;
-            if ($code !== '') $codes[] = $code;
+            if ($session !== '') {
+                $sessions[] = $session;
+            }
+            if ($code !== '') {
+                $codes[] = $code;
+            }
         }
         $sessions = array_values(array_unique($sessions));
         $codes = array_values(array_unique($codes));
-        if (count($sessions) === 0 && count($codes) === 0) return $items;
-
-        $sessionTokens = [];
-        $codeTokens = [];
-        $params = ['main_id' => $mainId, 'since' => date('Y-m-d', strtotime('-12 months'))];
-        foreach ($sessions as $index => $session) {
-            $key = 'session_' . $index;
-            $sessionTokens[] = ':'.$key;
-            $params[$key] = $session;
+        if (count($sessions) === 0 && count($codes) === 0) {
+            return $items;
         }
-        foreach ($codes as $index => $code) {
-            $key = 'code_' . $index;
-            $codeTokens[] = ':'.$key;
-            $params[$key] = $code;
-        }
-        $sessionSql = count($sessionTokens) > 0 ? implode(',', $sessionTokens) : 'NULL';
-        $codeSql = count($codeTokens) > 0 ? implode(',', $codeTokens) : 'NULL';
 
-        $sql = <<<SQL
+        [$sessionSql, $codeSql, $lookupParams] = $this->buildSessionCodeInClauses($sessions, $codes);
+        $since = date('Y-m-d', strtotime('-12 months'));
+
+        $inventorySql = <<<SQL
 SELECT
     COALESCE(inv.lsession, '') AS item_session,
     COALESCE(inv.litemcode, '') AS item_code,
     COALESCE(inv.lopn_number, '') AS original_part_no,
     COALESCE(inv.lbrand, '') AS brand,
-    CAST(COALESCE(inv.lcog, inv.lcost, 0) AS DECIMAL(15,2)) AS inventory_cost,
-    CAST(COALESCE((
-        SELECT sc.lcost
-        FROM tblsupplier_cost sc
-        WHERE sc.litemsession = inv.lsession
-          AND CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) > 0
-        ORDER BY CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) ASC, sc.lid DESC
-        LIMIT 1
-    ), 0) AS DECIMAL(15,2)) AS preferred_supplier_price,
-    COALESCE((
-        SELECT s.lname
-        FROM tblsupplier_cost sc
-        LEFT JOIN tblsupplier s ON s.lid = sc.lsupplier_id
-        WHERE sc.litemsession = inv.lsession
-          AND CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) > 0
-        ORDER BY CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) ASC, sc.lid DESC
-        LIMIT 1
-    ), '') AS preferred_supplier_name,
-    CAST(COALESCE((
-        SELECT COUNT(DISTINCT cm.lrefno)
-        FROM tblcredit_return_item cri
-        INNER JOIN tblcredit_memo cm ON cm.lrefno = cri.lrefno
-        WHERE CAST(COALESCE(cm.lmainid, 0) AS SIGNED) = :main_id
-          AND LOWER(COALESCE(cm.lstatus, '')) = 'posted'
-          AND COALESCE(cm.ldate, '1000-01-01') >= :since
-          AND (cri.linv_refno = inv.lsession OR cri.litemcode = inv.litemcode)
-    ), 0) AS UNSIGNED) AS sr_cases,
-    CAST(COALESCE((
-        SELECT COUNT(DISTINCT rs.lrefno)
-        FROM tblreturn_supplier_item rsi
-        INNER JOIN tblreturn_supplier rs ON rs.lrefno = rsi.lrefno
-        WHERE CAST(COALESCE(rs.lmainid, 0) AS SIGNED) = :main_id_ir
-          AND LOWER(COALESCE(rs.lstatus, '')) = 'posted'
-          AND COALESCE(rs.ldate, '1000-01-01') >= :since_ir
-          AND (rsi.linv_refno = inv.lsession OR rsi.litem_refno = inv.lsession OR rsi.litemcode = inv.litemcode)
-    ), 0) AS UNSIGNED) AS ir_cases
+    CAST(COALESCE(inv.lcog, inv.lcost, 0) AS DECIMAL(15,2)) AS inventory_cost
 FROM tblinventory_item inv
 WHERE inv.lmain_id = :inventory_main_id
   AND (inv.lsession IN ({$sessionSql}) OR inv.litemcode IN ({$codeSql}))
 SQL;
-        $params['main_id_ir'] = $mainId;
-        $params['since_ir'] = $params['since'];
-        $params['inventory_main_id'] = $mainId;
-        $stmt = $this->db->pdo()->prepare($sql);
-        foreach ($params as $key => $value) {
-            $stmt->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
-        }
-        $stmt->execute();
+        $inventoryStmt = $this->db->pdo()->prepare($inventorySql);
+        $this->bindNamedParams($inventoryStmt, $lookupParams + ['inventory_main_id' => $mainId]);
+        $inventoryStmt->execute();
 
         $metadata = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        foreach ($inventoryStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $normalized = [
                 'original_part_no' => (string) ($row['original_part_no'] ?? ''),
                 'brand' => (string) ($row['brand'] ?? ''),
                 'inventory_cost' => (float) ($row['inventory_cost'] ?? 0),
-                'preferred_supplier_price' => (float) ($row['preferred_supplier_price'] ?? 0),
-                'preferred_supplier_name' => (string) ($row['preferred_supplier_name'] ?? ''),
-                'sr_cases' => (int) ($row['sr_cases'] ?? 0),
-                'ir_cases' => (int) ($row['ir_cases'] ?? 0),
+                'preferred_supplier_price' => 0.0,
+                'preferred_supplier_name' => '',
             ];
             $metadata['session:' . (string) ($row['item_session'] ?? '')] = $normalized;
             $metadata['code:' . (string) ($row['item_code'] ?? '')] = $normalized;
         }
 
-        return array_map(function (array $item) use ($metadata): array {
-            $lookup = $metadata['session:' . trim((string) ($item['item_id'] ?? ''))]
-                ?? $metadata['code:' . trim((string) ($item['item_code'] ?? ''))]
+        if (count($sessions) > 0) {
+            [$supplierSessionSql, , $supplierParams] = $this->buildSessionCodeInClauses($sessions, []);
+            $supplierSql = <<<SQL
+SELECT
+    ranked.litemsession AS item_session,
+    ranked.lcost AS preferred_supplier_price,
+    ranked.lname AS preferred_supplier_name
+FROM (
+    SELECT
+        sc.litemsession,
+        CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) AS lcost,
+        COALESCE(s.lname, '') AS lname,
+        ROW_NUMBER() OVER (
+            PARTITION BY sc.litemsession
+            ORDER BY CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) ASC, sc.lid DESC
+        ) AS rn
+    FROM tblsupplier_cost sc
+    LEFT JOIN tblsupplier s ON s.lid = sc.lsupplier_id
+    WHERE sc.litemsession IN ({$supplierSessionSql})
+      AND CAST(COALESCE(sc.lcost, 0) AS DECIMAL(15,2)) > 0
+) ranked
+WHERE ranked.rn = 1
+SQL;
+            $supplierStmt = $this->db->pdo()->prepare($supplierSql);
+            $this->bindNamedParams($supplierStmt, $supplierParams);
+            $supplierStmt->execute();
+            foreach ($supplierStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $sessionKey = 'session:' . (string) ($row['item_session'] ?? '');
+                if (!isset($metadata[$sessionKey])) {
+                    continue;
+                }
+                $metadata[$sessionKey]['preferred_supplier_price'] = (float) ($row['preferred_supplier_price'] ?? 0);
+                $metadata[$sessionKey]['preferred_supplier_name'] = (string) ($row['preferred_supplier_name'] ?? '');
+            }
+        }
+
+        $srMemoBySession = [];
+        $srMemoByCode = [];
+        $srSql = <<<SQL
+SELECT
+    COALESCE(cri.linv_refno, '') AS inv_refno,
+    COALESCE(cri.litemcode, '') AS item_code,
+    cm.lrefno AS memo_refno
+FROM tblcredit_return_item cri
+INNER JOIN tblcredit_memo cm ON cm.lrefno = cri.lrefno
+WHERE CAST(COALESCE(cm.lmainid, 0) AS SIGNED) = :main_id
+  AND LOWER(COALESCE(cm.lstatus, '')) = 'posted'
+  AND COALESCE(cm.ldate, '1000-01-01') >= :since
+  AND (cri.linv_refno IN ({$sessionSql}) OR cri.litemcode IN ({$codeSql}))
+SQL;
+        $srStmt = $this->db->pdo()->prepare($srSql);
+        $this->bindNamedParams($srStmt, $lookupParams + ['main_id' => $mainId, 'since' => $since]);
+        $srStmt->execute();
+        foreach ($srStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $memo = (string) ($row['memo_refno'] ?? '');
+            if ($memo === '') {
+                continue;
+            }
+            $invRef = trim((string) ($row['inv_refno'] ?? ''));
+            $itemCode = trim((string) ($row['item_code'] ?? ''));
+            if ($invRef !== '') {
+                $srMemoBySession[$invRef][$memo] = true;
+            }
+            if ($itemCode !== '') {
+                $srMemoByCode[$itemCode][$memo] = true;
+            }
+        }
+
+        $irMemoBySession = [];
+        $irMemoByCode = [];
+        [$irSessionSql, $irCodeSql, $irLookupParams] = $this->buildSessionCodeInClauses($sessions, $codes);
+        [$irSessionSqlAlt, , $irSessionAltParams] = $this->buildSessionCodeInClauses($sessions, [], 'session_alt_');
+        $irSql = <<<SQL
+SELECT
+    COALESCE(rsi.linv_refno, '') AS inv_refno,
+    COALESCE(rsi.litem_refno, '') AS item_refno,
+    COALESCE(rsi.litemcode, '') AS item_code,
+    rs.lrefno AS return_refno
+FROM tblreturn_supplier_item rsi
+INNER JOIN tblreturn_supplier rs ON rs.lrefno = rsi.lrefno
+WHERE CAST(COALESCE(rs.lmainid, 0) AS SIGNED) = :main_id
+  AND LOWER(COALESCE(rs.lstatus, '')) = 'posted'
+  AND COALESCE(rs.ldate, '1000-01-01') >= :since
+  AND (
+        rsi.linv_refno IN ({$irSessionSql})
+     OR rsi.litem_refno IN ({$irSessionSqlAlt})
+     OR rsi.litemcode IN ({$irCodeSql})
+  )
+SQL;
+        $irStmt = $this->db->pdo()->prepare($irSql);
+        $this->bindNamedParams($irStmt, $irLookupParams + $irSessionAltParams + ['main_id' => $mainId, 'since' => $since]);
+        $irStmt->execute();
+        foreach ($irStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $returnRef = (string) ($row['return_refno'] ?? '');
+            if ($returnRef === '') {
+                continue;
+            }
+            $invRef = trim((string) ($row['inv_refno'] ?? ''));
+            $itemRef = trim((string) ($row['item_refno'] ?? ''));
+            $itemCode = trim((string) ($row['item_code'] ?? ''));
+            if ($invRef !== '') {
+                $irMemoBySession[$invRef][$returnRef] = true;
+            }
+            if ($itemRef !== '') {
+                $irMemoBySession[$itemRef][$returnRef] = true;
+            }
+            if ($itemCode !== '') {
+                $irMemoByCode[$itemCode][$returnRef] = true;
+            }
+        }
+
+        return array_map(static function (array $item) use ($metadata, $srMemoBySession, $srMemoByCode, $irMemoBySession, $irMemoByCode): array {
+            $session = trim((string) ($item['item_id'] ?? ''));
+            $code = trim((string) ($item['item_code'] ?? ''));
+            $lookup = $metadata['session:' . $session]
+                ?? $metadata['code:' . $code]
                 ?? [];
-            $srCases = (int) ($lookup['sr_cases'] ?? 0);
-            $irCases = (int) ($lookup['ir_cases'] ?? 0);
+
+            $srMemos = [];
+            if ($session !== '' && isset($srMemoBySession[$session])) {
+                $srMemos += $srMemoBySession[$session];
+            }
+            if ($code !== '' && isset($srMemoByCode[$code])) {
+                $srMemos += $srMemoByCode[$code];
+            }
+            $irMemos = [];
+            if ($session !== '' && isset($irMemoBySession[$session])) {
+                $irMemos += $irMemoBySession[$session];
+            }
+            if ($code !== '' && isset($irMemoByCode[$code])) {
+                $irMemos += $irMemoByCode[$code];
+            }
+
+            $srCases = count($srMemos);
+            $irCases = count($irMemos);
             $item['original_part_no'] = (string) ($item['original_part_no'] ?? ($lookup['original_part_no'] ?? ''));
             $item['brand'] = (string) ($item['brand'] ?? ($lookup['brand'] ?? ''));
             $item['unit'] = (string) ($item['unit'] ?? 'PCS');
@@ -497,6 +582,41 @@ SQL;
             $item['recommendation'] = ($srCases + $irCases) === 0 ? 'Good' : 'Review Supplier';
             return $item;
         }, $items);
+    }
+
+    /**
+     * @param list<string> $sessions
+     * @param list<string> $codes
+     * @return array{0:string,1:string,2:array<string,string>}
+     */
+    private function buildSessionCodeInClauses(array $sessions, array $codes, string $sessionPrefix = 'session_', string $codePrefix = 'code_'): array
+    {
+        $params = [];
+        $sessionTokens = [];
+        $codeTokens = [];
+        foreach ($sessions as $index => $session) {
+            $key = $sessionPrefix . $index;
+            $sessionTokens[] = ':' . $key;
+            $params[$key] = $session;
+        }
+        foreach ($codes as $index => $code) {
+            $key = $codePrefix . $index;
+            $codeTokens[] = ':' . $key;
+            $params[$key] = $code;
+        }
+        $sessionSql = count($sessionTokens) > 0 ? implode(',', $sessionTokens) : 'NULL';
+        $codeSql = count($codeTokens) > 0 ? implode(',', $codeTokens) : 'NULL';
+        return [$sessionSql, $codeSql, $params];
+    }
+
+    /**
+     * @param array<string, int|string> $params
+     */
+    private function bindNamedParams(\PDOStatement $stmt, array $params): void
+    {
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value, is_int($value) ? \PDO::PARAM_INT : \PDO::PARAM_STR);
+        }
     }
 
     public function createPurchaseRequest(int $mainId, int $userId, array $payload): array
