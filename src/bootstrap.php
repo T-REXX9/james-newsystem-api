@@ -317,7 +317,9 @@ function app_router(): Router
     );
     $dailyCallMonitoringController = new DailyCallMonitoringController(
         new App\Repositories\DailyCallMonitoringRepository($db),
-        new App\Repositories\CallReportRepository($db)
+        new App\Repositories\CallReportRepository($db),
+        new App\Repositories\CustomerDatabaseRepository($db),
+        new App\Repositories\CustomerRepository($db)
     );
     $callSystemController = new CallSystemController(
         new App\Repositories\CallSystemRepository($db),
@@ -674,6 +676,8 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/sales-performance-dashboard', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'salesPerformanceDashboard']));
     $router->get('/api/v1/daily-call-monitoring/owner-snapshot', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'ownerSnapshot']));
     $router->get('/api/v1/daily-call-monitoring/agent-snapshot', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'agentSnapshot']));
+    $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/profile', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerProfile']));
+    $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/metrics', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerMetrics']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/purchase-history', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerPurchaseHistory']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-reports', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerSalesReports']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/incident-reports', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerIncidentReports']));

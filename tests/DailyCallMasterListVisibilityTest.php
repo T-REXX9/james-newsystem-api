@@ -48,7 +48,9 @@ if ($unassignedCompany === '') {
 
 $controller = new DailyCallMonitoringController(
     new DailyCallMonitoringRepository($db),
-    new CallReportRepository($db)
+    new CallReportRepository($db),
+    new App\Repositories\CustomerDatabaseRepository($db),
+    new App\Repositories\CustomerRepository($db)
 );
 $claims = ['__auth_claims' => ['sub' => $viewerId, 'main_userid' => $mainId]];
 $allRows = $controller->masterList([], [], $claims);

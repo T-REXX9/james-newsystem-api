@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\CallReportRepository;
+use App\Repositories\CustomerDatabaseRepository;
+use App\Repositories\CustomerRepository;
 use App\Repositories\DailyCallMonitoringRepository;
 use App\Support\Exceptions\HttpException;
 use InvalidArgumentException;
@@ -13,7 +15,9 @@ final class DailyCallMonitoringController
 {
     public function __construct(
         private readonly DailyCallMonitoringRepository $repo,
-        private readonly CallReportRepository $callReportRepo
+        private readonly CallReportRepository $callReportRepo,
+        private readonly CustomerDatabaseRepository $customerDatabaseRepo,
+        private readonly CustomerRepository $customerRepo
     ) {
     }
 
@@ -93,6 +97,42 @@ final class DailyCallMonitoringController
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->repo->getCustomerPurchaseHistory($mainId, $contactId);
+    }
+
+    public function customerProfile(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = $this->authenticatedMainId($body, $query);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $contactId = trim((string) ($params['contactId'] ?? ''));
+        if ($contactId === '') {
+            throw new HttpException(422, 'contactId is required');
+        }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
+
+        $record = $this->customerDatabaseRepo->getCustomer($mainId, $contactId);
+        if ($record === null) {
+            throw new HttpException(404, 'Customer not found');
+        }
+        return $record;
+    }
+
+    public function customerMetrics(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = $this->authenticatedMainId($body, $query);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $contactId = trim((string) ($params['contactId'] ?? ''));
+        if ($contactId === '') {
+            throw new HttpException(422, 'contactId is required');
+        }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
+
+        return $this->customerRepo->getCustomerLedger($contactId, 'detailed', 'all', null, null);
     }
 
     public function customerSalesReports(array $params = [], array $query = [], array $body = []): array

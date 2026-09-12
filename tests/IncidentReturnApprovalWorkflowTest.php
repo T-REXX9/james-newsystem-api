@@ -51,7 +51,12 @@ $config = new Config('test', true, '*', 'secret', 3600, $dbHost, $dbPort, $dbNam
 $db = new Database($config);
 $pdo = $db->pdo();
 $repo = new DailyCallMonitoringRepository($db);
-$controller = new DailyCallMonitoringController($repo, new CallReportRepository($db));
+$controller = new DailyCallMonitoringController(
+    $repo,
+    new CallReportRepository($db),
+    new App\Repositories\CustomerDatabaseRepository($db),
+    new App\Repositories\CustomerRepository($db)
+);
 
 $cleanup = static function () use ($pdo, $mainId, $prefix, $contactA, $contactB): void {
     $pdo->prepare('DELETE FROM incident_return_actions WHERE main_id = :main_id AND incident_report_id LIKE :prefix')
