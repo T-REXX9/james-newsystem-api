@@ -145,6 +145,22 @@ try {
         'part_no' => 'CY-PART-2',
         'description' => 'Cancellable item',
     ]);
+    $insertInventory->execute([
+        'id' => 991103,
+        'main_id' => $mainId,
+        'session' => 'CY-SESSION-3',
+        'item_code' => 'CY-ITEM-3',
+        'part_no' => 'CY-PART-3',
+        'description' => 'Retried item',
+    ]);
+    $insertInventory->execute([
+        'id' => 991104,
+        'main_id' => $mainId,
+        'session' => 'CY-SESSION-4',
+        'item_code' => 'CY-ITEM-4',
+        'part_no' => 'CY-PART-4',
+        'description' => 'Discarded item',
+    ]);
 
     $prRepo = new PurchaseRequestRepository($db);
     $poRepo = new PurchaseOrderRepository($db);
@@ -365,6 +381,87 @@ try {
     cycle_assert(
         1 === (int) ($secondAttempt['conversion']['po_count'] ?? 0),
         'the request can raise a fresh purchase order after the first was cancelled'
+    );
+
+    // Unposting exists so the same document can be corrected and posted again,
+    // or thrown away. The corrected-and-reposted half is covered above, so this
+    // covers throwing away, on the same records rather than replacements.
+    echo "\nThrowing away an unposted chain instead of reposting it\n";
+
+    $binPr = $prRepo->createPurchaseRequest($mainId, $userId, [
+        'refno' => 'UT-cycle-pr-bin',
+        'pr_number' => 'PR-CY-04',
+        'status' => 'Pending',
+        'items' => [[
+            'item_id' => 'CY-SESSION-4',
+            'item_code' => 'CY-ITEM-4',
+            'part_number' => 'CY-PART-4',
+            'description' => 'Discarded item',
+            'quantity' => 5,
+            'unit_cost' => 40,
+            'supplier_id' => '7101',
+        ]],
+    ]);
+    $binPrRefno = (string) ($binPr['request']['refno'] ?? '');
+    $prRepo->applyAction($mainId, $userId, $binPrRefno, 'approve', []);
+    $binPoRefno = (string) ($prRepo->applyAction($mainId, $userId, $binPrRefno, 'convert-po', [])['conversion']['po_refno'] ?? '');
+    $poRepo->updatePurchaseOrder($mainId, $binPoRefno, ['status' => 'Posted']);
+    $binPoItemId = (int) ($poRepo->getPurchaseOrder($mainId, $binPoRefno)['items'][0]['id'] ?? 0);
+    $binRrRefno = (string) ($rrRepo->createReceivingStock($mainId, $userId, [
+        'refno' => 'UT-cycle-rr-bin',
+        'rr_number' => 'RR-CY-04',
+        'po_refno' => $binPoRefno,
+    ])['record']['refno'] ?? '');
+    $rrRepo->addReceivingStockItem($mainId, $userId, $binRrRefno, [
+        'po_refno' => $binPoRefno,
+        'po_item_id' => $binPoItemId,
+        'item_id' => 'CY-SESSION-4',
+        'item_code' => 'CY-ITEM-4',
+        'part_number' => 'CY-PART-4',
+        'description' => 'Discarded item',
+        'qty' => 5,
+        'unit_cost' => 40,
+    ]);
+    $rrRepo->finalizeReceivingStock($mainId, $binRrRefno);
+
+    $prRepo->unpostPurchaseRequest($mainId, $userId, $binPrRefno, 'Ordered the wrong part');
+
+    cycle_assert(
+        $rrRepo->deleteReceivingStock($mainId, $userId, $binRrRefno, 'Wrong part received'),
+        'an unposted receiving report can be deleted'
+    );
+    cycle_assert_eq(null, $rrRepo->getReceivingStock($mainId, $binRrRefno), 'the deleted receiving report is gone from the module');
+
+    cycle_assert(
+        $poRepo->deletePurchaseOrder($mainId, $userId, $binPoRefno, 'Wrong part ordered'),
+        'an unposted purchase order can be deleted once its receiving report is gone'
+    );
+    cycle_assert_eq(null, $poRepo->getPurchaseOrder($mainId, $binPoRefno), 'the deleted purchase order is gone from the module');
+
+    cycle_assert(
+        $prRepo->deletePurchaseRequest($mainId, $userId, $binPrRefno, 'Wrong part requested'),
+        'an unposted purchase request can be deleted once its purchase order is gone'
+    );
+    cycle_assert_eq(null, $prRepo->getPurchaseRequest($mainId, $binPrRefno), 'the deleted purchase request is gone from the module');
+
+    // A cancelled document must be recoverable or removable on its own terms.
+    echo "\nRecovering and removing cancelled documents in place\n";
+
+    $cancelledPoRefno = $abandonedPoRefno;
+    $reopenedPo = $poRepo->updatePurchaseOrder($mainId, $cancelledPoRefno, ['status' => 'Pending']);
+    cycle_assert_eq('Pending', $reopenedPo['order']['status'] ?? null, 'a cancelled purchase order can be reopened in place');
+    $repostedCancelledPo = $poRepo->updatePurchaseOrder($mainId, $cancelledPoRefno, ['status' => 'Posted']);
+    cycle_assert_eq('Posted', $repostedCancelledPo['order']['status'] ?? null, 'the reopened purchase order can be posted again');
+
+    $poRepo->updatePurchaseOrder($mainId, $cancelledPoRefno, ['status' => 'Cancelled']);
+    cycle_assert(
+        $poRepo->deletePurchaseOrder($mainId, $userId, $cancelledPoRefno, 'Not going ahead'),
+        'a cancelled purchase order can be deleted instead'
+    );
+
+    cycle_assert(
+        $prRepo->deletePurchaseRequest($mainId, $userId, $cancelPrRefno, 'Not going ahead'),
+        'a cancelled purchase request can be deleted instead'
     );
 
     echo "\nMock PR/PO/RR data used temporary tables only; no persistent rows were inserted.\n";
