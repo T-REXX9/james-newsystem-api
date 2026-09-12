@@ -480,6 +480,26 @@ function app_router(): Router
         });
     };
 
+    /**
+     * Action auth plus Backdated posting checks for named body date fields.
+     * When a key is present and non-empty, assertDocumentDateWrite runs (previous=null).
+     * Prefer for creates and for updates that only send a date when it changes.
+     *
+     * @param list<string> $dateKeys
+     */
+    $requireActionAuthGuardingDates = static function (callable $handler, string $page, string $action, array $dateKeys) use ($requireActionAuth, $permissionMiddleware): callable {
+        return $requireActionAuth(static function (array $params = [], array $query = [], array $body = []) use ($handler, $dateKeys, $permissionMiddleware): array {
+            $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+            foreach ($dateKeys as $key) {
+                if (!array_key_exists($key, $body) || $body[$key] === null || $body[$key] === '') {
+                    continue;
+                }
+                $permissionMiddleware->assertDocumentDateWrite($claims, (string) $body[$key], null);
+            }
+            return $handler($params, $query, $body);
+        }, $page, $action);
+    };
+
 
     $requireSalesInquiryWriteAuth = static function (callable $handler, string $action) use (
         $requireBearerAuthWithClaims,
@@ -681,7 +701,7 @@ function app_router(): Router
     $router->get('/api/v1/accounts-receivable', [$accountsReceivableController, 'report']);
     $router->get('/api/v1/adjustment-entries', $requireViewAuth([$adjustmentEntryController, 'list'], 'Adjustment Entry'));
     $router->get('/api/v1/adjustment-entries/{refno}', $requireViewAuth([$adjustmentEntryController, 'show'], 'Adjustment Entry'));
-    $router->post('/api/v1/adjustment-entries', $requireActionAuth([$adjustmentEntryController, 'create'], 'Adjustment Entry', 'add'));
+    $router->post('/api/v1/adjustment-entries', $requireActionAuthGuardingDates([$adjustmentEntryController, 'create'], 'Adjustment Entry', 'add', ['date']));
     $router->patch('/api/v1/adjustment-entries/{refno}', $requireActionAuth([$adjustmentEntryController, 'update'], 'Adjustment Entry', 'edit'));
     $router->delete('/api/v1/adjustment-entries/{refno}', $requireActionAuth([$adjustmentEntryController, 'delete'], 'Adjustment Entry', 'delete'));
     $router->post('/api/v1/adjustment-entries/{refno}/actions/unpost', $requireActionAuth($withFixedAction([$adjustmentEntryController, 'action'], 'unpost'), 'Adjustment Entry', 'unpost'));
@@ -829,7 +849,7 @@ function app_router(): Router
     $router->get('/api/v1/freight-charges', $requireViewAuth([$freightChargesController, 'list'], 'Freight Charges'));
     $router->get('/api/v1/freight-charges/report', $requireViewAuth([$freightChargesController, 'report'], 'Freight Charges'));
     $router->get('/api/v1/freight-charges/{refno}', $requireViewAuth([$freightChargesController, 'show'], 'Freight Charges'));
-    $router->post('/api/v1/freight-charges', $requireActionAuth([$freightChargesController, 'create'], 'Freight Charges', 'add'));
+    $router->post('/api/v1/freight-charges', $requireActionAuthGuardingDates([$freightChargesController, 'create'], 'Freight Charges', 'add', ['date']));
     $router->patch('/api/v1/freight-charges/{refno}', $requireActionAuth([$freightChargesController, 'update'], 'Freight Charges', 'edit'));
     $router->delete('/api/v1/freight-charges/{refno}', $requireActionAuth([$freightChargesController, 'delete'], 'Freight Charges', 'delete'));
     $router->post('/api/v1/freight-charges/{refno}/actions/unpost', $requireActionAuth($withFixedAction([$freightChargesController, 'action'], 'unpost'), 'Freight Charges', 'unpost'));
@@ -855,8 +875,8 @@ function app_router(): Router
     $router->get('/api/v1/purchase-requests', $requireViewAuth([$purchaseRequestController, 'list'], 'Purchase Request'));
     $router->get('/api/v1/purchase-requests/next-number', $requireViewAuth([$purchaseRequestController, 'nextNumber'], 'Purchase Request'));
     $router->get('/api/v1/purchase-requests/{prRefno}', $requireViewAuth([$purchaseRequestController, 'show'], 'Purchase Request'));
-    $router->post('/api/v1/purchase-requests', $requireActionAuth([$purchaseRequestController, 'create'], 'Purchase Request', 'add'));
-    $router->patch('/api/v1/purchase-requests/{prRefno}', $requireActionAuth([$purchaseRequestController, 'update'], 'Purchase Request', 'edit'));
+    $router->post('/api/v1/purchase-requests', $requireActionAuthGuardingDates([$purchaseRequestController, 'create'], 'Purchase Request', 'add', ['request_date']));
+    $router->patch('/api/v1/purchase-requests/{prRefno}', $requireActionAuthGuardingDates([$purchaseRequestController, 'update'], 'Purchase Request', 'edit', ['request_date']));
     $router->delete('/api/v1/purchase-requests/{prRefno}', $requireActionAuth([$purchaseRequestController, 'delete'], 'Purchase Request', 'delete'));
     $router->post('/api/v1/purchase-requests/{prRefno}/items', $requireActionAuth([$purchaseRequestController, 'addItem'], 'Purchase Request', 'add'));
     $router->patch('/api/v1/purchase-request-items/{itemId}', $requireActionAuth([$purchaseRequestController, 'updateItem'], 'Purchase Request', 'edit'));
@@ -866,8 +886,8 @@ function app_router(): Router
     $router->get('/api/v1/purchase-orders', $requireViewAuth([$purchaseOrderController, 'list'], 'Purchase Order'));
     $router->get('/api/v1/purchase-orders/suppliers', $requireViewAuth([$purchaseOrderController, 'suppliers'], 'Purchase Order'));
     $router->get('/api/v1/purchase-orders/{purchaseRefno}', $requireViewAuth([$purchaseOrderController, 'show'], 'Purchase Order'));
-    $router->post('/api/v1/purchase-orders', $requireActionAuth([$purchaseOrderController, 'create'], 'Purchase Order', 'add'));
-    $router->patch('/api/v1/purchase-orders/{purchaseRefno}', $requireActionAuth([$purchaseOrderController, 'update'], 'Purchase Order', 'edit'));
+    $router->post('/api/v1/purchase-orders', $requireActionAuthGuardingDates([$purchaseOrderController, 'create'], 'Purchase Order', 'add', ['order_date']));
+    $router->patch('/api/v1/purchase-orders/{purchaseRefno}', $requireActionAuthGuardingDates([$purchaseOrderController, 'update'], 'Purchase Order', 'edit', ['order_date']));
     $router->delete('/api/v1/purchase-orders/{purchaseRefno}', $requireActionAuth([$purchaseOrderController, 'delete'], 'Purchase Order', 'delete'));
     $router->post('/api/v1/purchase-orders/{purchaseRefno}/items', $requireActionAuth([$purchaseOrderController, 'addItem'], 'Purchase Order', 'add'));
     $router->post('/api/v1/purchase-orders/{purchaseRefno}/actions/unpost', $requireActionAuth([$purchaseOrderController, 'unpost'], 'Purchase Order', 'unpost'));
@@ -881,8 +901,8 @@ function app_router(): Router
     $router->get('/api/v1/receiving-stocks', $requireViewAuth([$receivingStockController, 'list'], 'Receiving Stock'));
     $router->get('/api/v1/receiving-stocks/purchase-orders/eligible', $requireViewAuth([$receivingStockController, 'eligiblePurchaseOrders'], 'Receiving Stock'));
     $router->get('/api/v1/receiving-stocks/{receivingRefno}', $requireViewAuth([$receivingStockController, 'show'], 'Receiving Stock'));
-    $router->post('/api/v1/receiving-stocks', $requireActionAuth([$receivingStockController, 'create'], 'Receiving Stock', 'add'));
-    $router->patch('/api/v1/receiving-stocks/{receivingRefno}', $requireActionAuth([$receivingStockController, 'update'], 'Receiving Stock', 'edit'));
+    $router->post('/api/v1/receiving-stocks', $requireActionAuthGuardingDates([$receivingStockController, 'create'], 'Receiving Stock', 'add', ['receive_date']));
+    $router->patch('/api/v1/receiving-stocks/{receivingRefno}', $requireActionAuthGuardingDates([$receivingStockController, 'update'], 'Receiving Stock', 'edit', ['receive_date']));
     $router->delete('/api/v1/receiving-stocks/{receivingRefno}', $requireActionAuth([$receivingStockController, 'delete'], 'Receiving Stock', 'delete'));
     $router->post('/api/v1/receiving-stocks/{receivingRefno}/items', $requireActionAuth([$receivingStockController, 'addItem'], 'Receiving Stock', 'add'));
     $router->patch('/api/v1/receiving-stock-items/{itemId}', $requireActionAuth([$receivingStockController, 'updateItem'], 'Receiving Stock', 'edit'));
@@ -896,8 +916,8 @@ function app_router(): Router
     $router->get('/api/v1/return-to-suppliers/rr/search', $requireViewAuth([$returnToSupplierController, 'searchReceivingReports'], 'Return to Supplier'));
     $router->get('/api/v1/return-to-suppliers/rr/{rrRefno}/items', $requireViewAuth([$returnToSupplierController, 'receivingReportItems'], 'Return to Supplier'));
     $router->get('/api/v1/return-to-suppliers/{returnRefno}', $requireViewAuth([$returnToSupplierController, 'show'], 'Return to Supplier'));
-    $router->post('/api/v1/return-to-suppliers', $requireActionAuth([$returnToSupplierController, 'create'], 'Return to Supplier', 'add'));
-    $router->patch('/api/v1/return-to-suppliers/{returnRefno}', $requireActionAuth([$returnToSupplierController, 'update'], 'Return to Supplier', 'edit'));
+    $router->post('/api/v1/return-to-suppliers', $requireActionAuthGuardingDates([$returnToSupplierController, 'create'], 'Return to Supplier', 'add', ['return_date']));
+    $router->patch('/api/v1/return-to-suppliers/{returnRefno}', $requireActionAuthGuardingDates([$returnToSupplierController, 'update'], 'Return to Supplier', 'edit', ['return_date']));
     $router->delete('/api/v1/return-to-suppliers/{returnRefno}', $requireActionAuth([$returnToSupplierController, 'delete'], 'Return to Supplier', 'delete'));
     $router->get('/api/v1/return-to-suppliers/{returnRefno}/items', $requireViewAuth([$returnToSupplierController, 'items'], 'Return to Supplier'));
     $router->post('/api/v1/return-to-suppliers/{returnRefno}/items', $requireActionAuth([$returnToSupplierController, 'addItem'], 'Return to Supplier', 'add'));
@@ -941,7 +961,7 @@ function app_router(): Router
     $router->get('/api/v1/inventory-audits/stock-adjustments', $requireViewAuth([$inventoryAuditController, 'listStockAdjustments'], 'Inventory Audit'));
     $router->post('/api/v1/inventory-audits/stock-adjustments', $requireActionAuth([$inventoryAuditController, 'createStockAdjustment'], 'Inventory Audit', 'add'));
     $router->get('/api/v1/inventory-audits/stock-adjustments/{refno}', $requireViewAuth([$inventoryAuditController, 'showStockAdjustment'], 'Inventory Audit'));
-    $router->patch('/api/v1/inventory-audits/stock-adjustments/{refno}/date', $requireActionAuth([$inventoryAuditController, 'updateStockAdjustmentDate'], 'Inventory Audit', 'edit'));
+    $router->patch('/api/v1/inventory-audits/stock-adjustments/{refno}/date', $requireActionAuthGuardingDates([$inventoryAuditController, 'updateStockAdjustmentDate'], 'Inventory Audit', 'edit', ['date']));
     $router->post('/api/v1/inventory-audits/stock-adjustments/{refno}/counts', $requireActionAuth([$inventoryAuditController, 'saveStockAdjustmentCounts'], 'Inventory Audit', 'edit'));
     $router->post('/api/v1/inventory-audits/stock-adjustments/{refno}/post', $requireApproverAction([$inventoryAuditController, 'postStockAdjustment'], ['Inventory Audit', 'IA'], true, 'post'));
     $router->delete('/api/v1/inventory-audits/stock-adjustments/{refno}/items/{itemSession}', $requireActionAuth([$inventoryAuditController, 'deleteStockAdjustmentItem'], 'Inventory Audit', 'delete'));
@@ -980,9 +1000,9 @@ function app_router(): Router
     $router->get('/api/v1/sales-development-report/summary', $requireViewAuth([$salesDevelopmentReportController, 'summary'], 'Sales Development Report'));
     $router->get('/api/v1/sales-returns', $requireViewAuth([$salesReturnController, 'list'], 'Sales Return'));
     $router->get('/api/v1/sales-returns/source-documents', $requireViewAuth([$salesReturnController, 'sourceDocuments'], 'Sales Return'));
-    $router->post('/api/v1/sales-returns', $requireActionAuth([$salesReturnController, 'create'], 'Sales Return', 'add'));
+    $router->post('/api/v1/sales-returns', $requireActionAuthGuardingDates([$salesReturnController, 'create'], 'Sales Return', 'add', ['date']));
     $router->get('/api/v1/sales-returns/{refno}', $requireViewAuth([$salesReturnController, 'show'], 'Sales Return'));
-    $router->patch('/api/v1/sales-returns/{refno}', $requireActionAuth([$salesReturnController, 'update'], 'Sales Return', 'edit'));
+    $router->patch('/api/v1/sales-returns/{refno}', $requireActionAuthGuardingDates([$salesReturnController, 'update'], 'Sales Return', 'edit', ['date']));
     $router->get('/api/v1/sales-returns/{refno}/items', $requireViewAuth([$salesReturnController, 'items'], 'Sales Return'));
     $router->get('/api/v1/sales-returns/{refno}/source-items', $requireViewAuth([$salesReturnController, 'sourceItems'], 'Sales Return'));
     $router->post('/api/v1/sales-returns/{refno}/items', $requireActionAuth([$salesReturnController, 'addItem'], 'Sales Return', 'add'));
@@ -993,7 +1013,7 @@ function app_router(): Router
     $router->get('/api/v1/sales-inquiries/{inquiryRefno}', $requireViewAuth([$salesInquiryController, 'show'], 'Sales Inquiry'));
     $router->post('/api/v1/sales-inquiries', $requireSalesInquiryWriteAuth([$salesInquiryController, 'create'], 'add'));
     $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', $requireSalesInquiryWriteAuth([$salesInquiryController, 'update'], 'edit'));
-    $router->post('/api/v1/sales-documents/cascade-date', $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($salesDocumentDateController, $permissionMiddleware): array {
+    $router->post('/api/v1/sales-documents/cascade-date', $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($salesDocumentDateController, $permissionMiddleware, $db): array {
         $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
         $mainId = (int) ($claims['main_userid'] ?? 0);
         if ($mainId <= 0) {
@@ -1011,7 +1031,26 @@ function app_router(): Router
         }
         $permissionMiddleware->assertActionPermission($claims, 'edit', $page);
         if (isset($body['sales_date']) && $body['sales_date'] !== '') {
-            $permissionMiddleware->assertDocumentDateWrite($claims, (string) $body['sales_date'], null);
+            $previousDate = null;
+            $pdo = $db->pdo();
+            if (trim((string) ($body['invoice_refno'] ?? '')) !== '') {
+                $stmt = $pdo->prepare('SELECT ldate FROM tblinvoice_list WHERE lmain_id = :main_id AND lrefno = :refno LIMIT 1');
+                $stmt->execute(['main_id' => (string) $mainId, 'refno' => trim((string) $body['invoice_refno'])]);
+                $previousDate = trim((string) ($stmt->fetchColumn() ?: '')) ?: null;
+            } elseif (trim((string) ($body['order_slip_refno'] ?? '')) !== '') {
+                $stmt = $pdo->prepare('SELECT ldate FROM tbldelivery_receipt WHERE lmain_id = :main_id AND lrefno = :refno LIMIT 1');
+                $stmt->execute(['main_id' => (string) $mainId, 'refno' => trim((string) $body['order_slip_refno'])]);
+                $previousDate = trim((string) ($stmt->fetchColumn() ?: '')) ?: null;
+            } elseif (trim((string) ($body['sales_order_refno'] ?? '')) !== '') {
+                $stmt = $pdo->prepare('SELECT ldate FROM tbltransaction WHERE lmain_id = :main_id AND lrefno = :refno LIMIT 1');
+                $stmt->execute(['main_id' => (string) $mainId, 'refno' => trim((string) $body['sales_order_refno'])]);
+                $previousDate = trim((string) ($stmt->fetchColumn() ?: '')) ?: null;
+            } elseif (trim((string) ($body['inquiry_refno'] ?? '')) !== '') {
+                $stmt = $pdo->prepare('SELECT ldate FROM tblinquiry WHERE lmain_id = :main_id AND lrefno = :refno LIMIT 1');
+                $stmt->execute(['main_id' => (string) $mainId, 'refno' => trim((string) $body['inquiry_refno'])]);
+                $previousDate = trim((string) ($stmt->fetchColumn() ?: '')) ?: null;
+            }
+            $permissionMiddleware->assertDocumentDateWrite($claims, (string) $body['sales_date'], $previousDate);
         }
         return $salesDocumentDateController->cascadeDate($params, $query, $body);
     }));

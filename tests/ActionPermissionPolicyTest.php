@@ -83,6 +83,8 @@ require __DIR__ . '/../src/Support/DocumentDatePolicy.php';
 use App\Support\DocumentDatePolicy;
 
 $assert(DocumentDatePolicy::validateWrite(false, '2026-09-10', '2026-09-10', '2026-09-12')['ok'] === true, 'allows unchanged past date without backdate');
-$assert(DocumentDatePolicy::validateWrite(false, '2026-09-10', '2026-09-12', '2026-09-12')['ok'] === false, 'rejects new past date without backdate');
+$denied = DocumentDatePolicy::validateWrite(false, '2026-09-10', '2026-09-12', '2026-09-12');
+$assert(($denied['ok'] ?? true) === false, 'rejects new past date without backdate');
+$assert(str_contains((string) ($denied['reason'] ?? ''), 'Backdated posting'), 'API rejection reason names Backdated posting');
 $assert(DocumentDatePolicy::validateWrite(true, '2026-09-01', '2026-09-12', '2026-09-12')['ok'] === true, 'allows past date with backdate');
 $assert(DocumentDatePolicy::validateWrite(true, '2026-09-20', '2026-09-12', '2026-09-12')['ok'] === false, 'rejects future document date');

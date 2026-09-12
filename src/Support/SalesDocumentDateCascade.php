@@ -77,10 +77,14 @@ final class SalesDocumentDateCascade
             }
         }
 
+        // Skip posted/finalized/cancelled docs so cascade cannot overwrite locked dates
+        // (Unpost → edit → Post). Converted inquiries/orders still receive the date.
         if ($inquiryRefno !== '') {
             $upd = $pdo->prepare(
                 'UPDATE tblinquiry SET ldate = :ldate
-                 WHERE lmain_id = :main_id AND lrefno = :refno'
+                 WHERE lmain_id = :main_id AND lrefno = :refno
+                   AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled")
+                   AND COALESCE(IsCancel, 0) = 0'
             );
             $upd->execute(['ldate' => $ymd, 'main_id' => (string) $mainId, 'refno' => $inquiryRefno]);
         }
@@ -88,19 +92,22 @@ final class SalesDocumentDateCascade
         if ($salesOrderRefno !== '') {
             $upd = $pdo->prepare(
                 'UPDATE tbltransaction SET ldate = :ldate
-                 WHERE lmain_id = :main_id AND lrefno = :refno'
+                 WHERE lmain_id = :main_id AND lrefno = :refno
+                   AND LOWER(COALESCE(ltransaction_status, lsubmitstat, "")) NOT IN ("posted", "cancelled", "canceled")'
             );
             $upd->execute(['ldate' => $ymd, 'main_id' => (string) $mainId, 'refno' => $salesOrderRefno]);
 
             $updOs = $pdo->prepare(
                 'UPDATE tbldelivery_receipt SET ldate = :ldate
-                 WHERE lmain_id = :main_id AND lsales_refno = :sales_refno'
+                 WHERE lmain_id = :main_id AND lsales_refno = :sales_refno
+                   AND LOWER(COALESCE(lstatus, "")) NOT IN ("finalized", "posted", "cancelled", "canceled")'
             );
             $updOs->execute(['ldate' => $ymd, 'main_id' => (string) $mainId, 'sales_refno' => $salesOrderRefno]);
 
             $updInv = $pdo->prepare(
                 'UPDATE tblinvoice_list SET ldate = :ldate
-                 WHERE lmain_id = :main_id AND lsales_refno = :sales_refno'
+                 WHERE lmain_id = :main_id AND lsales_refno = :sales_refno
+                   AND LOWER(COALESCE(lstatus, "")) NOT IN ("posted", "sent", "paid", "overdue", "cancelled", "canceled")'
             );
             $updInv->execute(['ldate' => $ymd, 'main_id' => (string) $mainId, 'sales_refno' => $salesOrderRefno]);
         }
@@ -108,7 +115,8 @@ final class SalesDocumentDateCascade
         if ($orderSlipRefno !== '') {
             $upd = $pdo->prepare(
                 'UPDATE tbldelivery_receipt SET ldate = :ldate
-                 WHERE lmain_id = :main_id AND lrefno = :refno'
+                 WHERE lmain_id = :main_id AND lrefno = :refno
+                   AND LOWER(COALESCE(lstatus, "")) NOT IN ("finalized", "posted", "cancelled", "canceled")'
             );
             $upd->execute(['ldate' => $ymd, 'main_id' => (string) $mainId, 'refno' => $orderSlipRefno]);
         }
@@ -116,7 +124,8 @@ final class SalesDocumentDateCascade
         if ($invoiceRefno !== '') {
             $upd = $pdo->prepare(
                 'UPDATE tblinvoice_list SET ldate = :ldate
-                 WHERE lmain_id = :main_id AND lrefno = :refno'
+                 WHERE lmain_id = :main_id AND lrefno = :refno
+                   AND LOWER(COALESCE(lstatus, "")) NOT IN ("posted", "sent", "paid", "overdue", "cancelled", "canceled")'
             );
             $upd->execute(['ldate' => $ymd, 'main_id' => (string) $mainId, 'refno' => $invoiceRefno]);
         }
