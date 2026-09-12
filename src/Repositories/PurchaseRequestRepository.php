@@ -244,9 +244,6 @@ SELECT
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS created_by_name,
     CAST(COALESCE(pr_totals.ordered_qty, 0) AS DECIMAL(15,2)) AS ordered_qty,
     CAST(COALESCE(po_cycle.received_qty, 0) AS DECIMAL(15,2)) AS received_qty,
-    COALESCE(po_cycle.rr_refno, '') AS rr_refno,
-    COALESCE(po_cycle.rr_numbers, '') AS rr_numbers,
-    COALESCE(po_cycle.rr_dates, '') AS rr_dates,
     CASE
         WHEN COALESCE(po_cycle.po_count, 0) = 0 THEN 'Pending'
         WHEN COALESCE(po_cycle.received_qty, 0) <= 0 THEN 'PO Created'
@@ -269,30 +266,9 @@ LEFT JOIN (
     SELECT
         po.lpr_refno,
         COUNT(DISTINCT po.lrefno) AS po_count,
-        GROUP_CONCAT(DISTINCT rr_cycle.rr_refno ORDER BY po.lid SEPARATOR ',') AS rr_refno,
-        GROUP_CONCAT(DISTINCT rr_cycle.rr_numbers ORDER BY po.lid SEPARATOR ', ') AS rr_numbers,
-        GROUP_CONCAT(DISTINCT rr_cycle.rr_dates ORDER BY po.lid SEPARATOR ',') AS rr_dates,
         SUM(COALESCE(poi.lreceiving_qty, 0)) AS received_qty
     FROM tblpo_list po
     LEFT JOIN tblpo_itemlist poi ON poi.lrefno = po.lrefno
-    LEFT JOIN (
-        SELECT
-            rr.lmain_id,
-            rr.lpo_refno,
-            GROUP_CONCAT(DISTINCT rr.lrefno ORDER BY rr.lid SEPARATOR ',') AS rr_refno,
-            GROUP_CONCAT(DISTINCT rr.lpurchaseno ORDER BY rr.lid SEPARATOR ', ') AS rr_numbers,
-            GROUP_CONCAT(DISTINCT rr.ldate ORDER BY rr.lid SEPARATOR ',') AS rr_dates
-        FROM tblpurchase_order rr
-        INNER JOIN tblpo_list scoped_po
-            ON scoped_po.lrefno = rr.lpo_refno
-           AND scoped_po.lpr_refno = :refno_rr
-           AND COALESCE(scoped_po.ldeleted, 0) = 0
-        WHERE COALESCE(rr.ldeleted, 0) = 0
-          AND LOWER(COALESCE(rr.ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted")
-        GROUP BY rr.lmain_id, rr.lpo_refno
-    ) rr_cycle
-        ON rr_cycle.lmain_id = po.lmain_id
-       AND rr_cycle.lpo_refno = po.lrefno
     WHERE COALESCE(po.ldeleted, 0) = 0
       AND po.lpr_refno = :refno_po
     GROUP BY po.lpr_refno
@@ -306,12 +282,12 @@ SQL;
         $headerStmt->bindValue('refno', $prRefno, PDO::PARAM_STR);
         $headerStmt->bindValue('refno_totals', $prRefno, PDO::PARAM_STR);
         $headerStmt->bindValue('refno_po', $prRefno, PDO::PARAM_STR);
-        $headerStmt->bindValue('refno_rr', $prRefno, PDO::PARAM_STR);
         $headerStmt->execute();
         $header = $headerStmt->fetch(PDO::FETCH_ASSOC);
         if ($header === false) {
             return null;
         }
+        $header += $this->receivingReportSummary($prRefno);
 
         $itemsSql = <<<SQL
 SELECT
@@ -619,6 +595,40 @@ SQL;
         }
     }
 
+    /**
+     * Receiving reports reached through this request's purchase orders. Kept as a
+     * separate query so the header never opens tblpo_list twice.
+     *
+     * @return array{rr_refno: string, rr_numbers: string, rr_dates: string}
+     */
+    private function receivingReportSummary(string $prRefno): array
+    {
+        $sql = <<<SQL
+SELECT
+    COALESCE(GROUP_CONCAT(DISTINCT rr.lrefno ORDER BY rr.lrefno SEPARATOR ','), '') AS rr_refno,
+    COALESCE(GROUP_CONCAT(DISTINCT rr.lpurchaseno ORDER BY rr.lpurchaseno SEPARATOR ', '), '') AS rr_numbers,
+    COALESCE(GROUP_CONCAT(DISTINCT rr.ldate ORDER BY rr.ldate SEPARATOR ','), '') AS rr_dates
+FROM tblpurchase_order rr
+INNER JOIN tblpo_list po
+    ON po.lrefno = rr.lpo_refno
+   AND po.lmain_id = rr.lmain_id
+   AND COALESCE(po.ldeleted, 0) = 0
+   AND po.lpr_refno = :refno
+WHERE COALESCE(rr.ldeleted, 0) = 0
+  AND LOWER(COALESCE(rr.ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted")
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->bindValue('refno', $prRefno, PDO::PARAM_STR);
+        $stmt->execute();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        return [
+            'rr_refno' => (string) ($row['rr_refno'] ?? ''),
+            'rr_numbers' => (string) ($row['rr_numbers'] ?? ''),
+            'rr_dates' => (string) ($row['rr_dates'] ?? ''),
+        ];
+    }
+
     public function createPurchaseRequest(int $mainId, int $userId, array $payload): array
     {
         $pdo = $this->db->pdo();
@@ -817,6 +827,10 @@ SELECT
         ELSE NULL
     END AS eta_date
 FROM tblpr_item itm
+LEFT JOIN tblpo_list linked_po
+    ON linked_po.lrefno = itm.lpo_refno
+   AND COALESCE(linked_po.ldeleted, 0) = 0
+   AND LOWER(COALESCE(linked_po.ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted")
 WHERE itm.lid = LAST_INSERT_ID()
 LIMIT 1
 SQL;
@@ -934,17 +948,54 @@ SQL;
         if (!in_array($status, ['submitted', 'approved'], true)) throw new RuntimeException('Only a submitted or approved purchase request can be unposted');
         $this->assertReason($reason);
         $this->assertPrivilegedAction($mainId, $userId);
+
+        // Dependent purchase orders are unposted along with the request. Anything
+        // that cannot be unposted on its own (a PO still Pending, for example)
+        // has to be resolved by hand first, so say so instead of failing silently.
         $poDependencies = $this->activePurchaseOrderDependencies($mainId, $prRefno);
-        if ($poDependencies !== []) throw new RuntimeException('Purchase request cannot be unposted because ' . $this->formatPurchaseOrderDependencies($poDependencies) . ' depends on it');
+        $cascadablePos = [];
+        $blockingPos = [];
+        foreach ($poDependencies as $dependency) {
+            if (in_array(strtolower(trim((string) ($dependency['status'] ?? ''))), ['posted', 'completed'], true)) {
+                $cascadablePos[] = $dependency;
+            } else {
+                $blockingPos[] = $dependency;
+            }
+        }
+        if ($blockingPos !== []) throw new RuntimeException('Purchase request cannot be unposted because ' . $this->formatPurchaseOrderDependencies($blockingPos) . ' depends on it');
+
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
+            $purchaseOrders = new PurchaseOrderRepository($this->db);
+            $unpostedPurchaseOrders = [];
+            $unpostedReceivingReports = [];
+            foreach ($cascadablePos as $dependency) {
+                $poRefno = trim((string) ($dependency['refno'] ?? ''));
+                if ($poRefno === '') continue;
+                $receivingReports = $purchaseOrders->unpostPurchaseOrderWithinTransaction($pdo, $mainId, $userId, $poRefno, trim($reason));
+                $unpostedPurchaseOrders[] = (string) ($dependency['number'] ?? $poRefno);
+                foreach ($receivingReports as $receivingReport) {
+                    $number = trim((string) ($receivingReport['number'] ?? ''));
+                    if ($number !== '') $unpostedReceivingReports[] = $number;
+                }
+            }
+
             $stmt = $pdo->prepare('UPDATE tblpr_list SET lstatus = "Unposted", lapproval = "Pending", lunposted_at = NOW(), lunposted_by = :user_id, lunpost_reason = :reason WHERE lrefno = :refno');
             $stmt->execute(['user_id' => $userId, 'reason' => trim($reason), 'refno' => $prRefno]);
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Request', 'Unpost', $prRefno, $reason, (string) ($record['request']['status'] ?? ''), 'Unposted');
             $pdo->commit();
+            $this->clearReorderReportCache();
         } catch (\Throwable $e) { if ($pdo->inTransaction()) $pdo->rollBack(); throw $e; }
-        return $this->getPurchaseRequest($mainId, $prRefno);
+
+        $updated = $this->getPurchaseRequest($mainId, $prRefno);
+        if ($updated !== null) {
+            $updated['cascade'] = [
+                'purchase_orders' => $unpostedPurchaseOrders,
+                'receiving_reports' => array_values(array_unique($unpostedReceivingReports)),
+            ];
+        }
+        return $updated;
     }
 
     private function assertReason(string $reason): void
@@ -972,19 +1023,20 @@ SQL;
     private function activePurchaseOrderDependencies(int $mainId, string $prRefno): array
     {
         $stmt = $this->db->pdo()->prepare(
-            'SELECT COALESCE(lpurchaseno, lrefno, "") AS number,
+            'SELECT COALESCE(lrefno, "") AS refno,
+                    COALESCE(lpurchaseno, lrefno, "") AS number,
                     COALESCE(ltransaction_status, "Pending") AS status
              FROM tblpo_list
              WHERE lmain_id = :main_id
                AND lpr_refno = :refno
                AND COALESCE(ldeleted, 0) = 0
                AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted", "unposted")
-             ORDER BY lid DESC
-             LIMIT 5'
+             ORDER BY lid DESC'
         );
         $stmt->execute(['main_id' => $mainId, 'refno' => $prRefno]);
         return array_map(
             static fn (array $row): array => [
+                'refno' => (string) ($row['refno'] ?? ''),
                 'number' => (string) ($row['number'] ?? ''),
                 'status' => (string) ($row['status'] ?? ''),
             ],

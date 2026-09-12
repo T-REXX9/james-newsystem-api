@@ -438,8 +438,35 @@ SQL;
 
     public function unpostPurchaseOrder(int $mainId, int $userId, string $purchaseRefno, string $reason): ?array
     {
+        if ($this->getPurchaseOrder($mainId, $purchaseRefno) === null) return null;
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $this->unpostPurchaseOrderWithinTransaction($pdo, $mainId, $userId, $purchaseRefno, $reason);
+            $pdo->commit();
+            $this->clearReorderReportCache();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+
+        return $this->getPurchaseOrder($mainId, $purchaseRefno);
+    }
+
+    /**
+     * Unposts a purchase order and cascades to its receiving reports using a
+     * transaction the caller already owns, so an upstream document (such as a
+     * purchase request) can unpost its whole chain atomically.
+     *
+     * @return array<int, array<string, mixed>> the receiving reports that were unposted
+     */
+    public function unpostPurchaseOrderWithinTransaction(PDO $pdo, int $mainId, int $userId, string $purchaseRefno, string $reason): array
+    {
         $existing = $this->getPurchaseOrder($mainId, $purchaseRefno);
-        if ($existing === null) return null;
+        if ($existing === null) {
+            throw new RuntimeException('Purchase order not found');
+        }
 
         $status = strtolower(trim((string) ($existing['order']['status'] ?? '')));
         if (!in_array($status, ['posted', 'completed'], true)) {
@@ -450,30 +477,21 @@ SQL;
             throw new RuntimeException('You do not have permission to unpost purchase orders');
         }
 
-        $pdo = $this->db->pdo();
-        $pdo->beginTransaction();
-        try {
-            $receivingReports = $this->activeReceivingReportsForCascade($pdo, $mainId, $purchaseRefno);
-            foreach ($receivingReports as $receivingReport) {
-                $this->unpostReceivingReportWithinPurchaseOrder($pdo, $mainId, $userId, $receivingReport, trim($reason));
-            }
-
-            $update = $pdo->prepare(
-                'UPDATE tblpo_list
-                 SET ltransaction_status = "Unposted", lunposted_at = NOW(),
-                     lunposted_by = :user_id, lunpost_reason = :reason
-                 WHERE lmain_id = :main_id AND lrefno = :refno'
-            );
-            $update->execute(['main_id' => $mainId, 'user_id' => $userId, 'reason' => trim($reason), 'refno' => $purchaseRefno]);
-            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Order', 'Unpost', $purchaseRefno, $reason, (string) ($existing['order']['status'] ?? ''), 'Unposted');
-            $pdo->commit();
-            $this->clearReorderReportCache();
-        } catch (\Throwable $e) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
-            throw $e;
+        $receivingReports = $this->activeReceivingReportsForCascade($pdo, $mainId, $purchaseRefno);
+        foreach ($receivingReports as $receivingReport) {
+            $this->unpostReceivingReportWithinPurchaseOrder($pdo, $mainId, $userId, $receivingReport, trim($reason));
         }
 
-        return $this->getPurchaseOrder($mainId, $purchaseRefno);
+        $update = $pdo->prepare(
+            'UPDATE tblpo_list
+             SET ltransaction_status = "Unposted", lunposted_at = NOW(),
+                 lunposted_by = :user_id, lunpost_reason = :reason
+             WHERE lmain_id = :main_id AND lrefno = :refno'
+        );
+        $update->execute(['main_id' => $mainId, 'user_id' => $userId, 'reason' => trim($reason), 'refno' => $purchaseRefno]);
+        (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Order', 'Unpost', $purchaseRefno, $reason, (string) ($existing['order']['status'] ?? ''), 'Unposted');
+
+        return $receivingReports;
     }
 
     /**
