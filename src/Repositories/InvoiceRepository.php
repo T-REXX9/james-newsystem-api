@@ -5,14 +5,26 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Services\InvoiceNumberSequenceStore;
 use App\Support\AuditTrailWriter;
+use App\Support\InvoiceNumberSequence;
+use InvalidArgumentException;
 use PDO;
 use RuntimeException;
 
 final class InvoiceRepository
 {
-    public function __construct(private readonly Database $db)
+    public function __construct(
+        private readonly Database $db,
+        private readonly ?InvoiceNumberSequenceStore $sequenceStore = null,
+    ) {
+    }
+
+    private function sequenceStore(): InvoiceNumberSequenceStore
     {
+        return $this->sequenceStore ?? new InvoiceNumberSequenceStore(
+            dirname(__DIR__, 2) . '/storage/invoice-number-sequence.json'
+        );
     }
 
     /**
@@ -368,9 +380,8 @@ SQL;
 
             $invoiceNo = trim((string) ($payload['invoice_no'] ?? ''));
             if ($invoiceNo === '') {
-                $nextNo = $this->nextNumber('Invoice');
-                $invoiceNo = 'T-' . $nextNo;
-                $this->insertNumberGenerator('Invoice', $nextNo);
+                $allocated = $this->allocateNextInvoiceNumber($mainId);
+                $invoiceNo = $allocated['invoice_no'];
             }
 
             $salesRefno = trim((string) ($payload['order_id'] ?? $payload['sales_refno'] ?? ''));
@@ -777,7 +788,43 @@ SQL;
             return $result;
         }
 
+        if ($normalized === 'update_number') {
+            return $this->updateInvoiceNumber($mainId, $invoiceRefno, $payload);
+        }
+
         throw new RuntimeException('Unsupported action: ' . $action);
+    }
+
+    /**
+     * @return array{prefix: string, pad_width: int, next_number: int, next_invoice_no: string}
+     */
+    public function getNumberSequence(int $mainId): array
+    {
+        return $this->resolveNumberSequence($mainId);
+    }
+
+    /**
+     * @return array{prefix: string, pad_width: int, next_number: int, next_invoice_no: string}
+     */
+    public function setNumberSequenceStart(int $mainId, string $startValue): array
+    {
+        try {
+            $settings = InvoiceNumberSequence::fromStartValue($startValue);
+        } catch (InvalidArgumentException $e) {
+            throw new RuntimeException($e->getMessage());
+        }
+
+        if ($this->invoiceNumberExists($mainId, $settings['next_invoice_no'])) {
+            throw new RuntimeException('Invoice number already exists: ' . $settings['next_invoice_no']);
+        }
+
+        $saved = $this->sequenceStore()->saveForMain($mainId, $settings);
+        $generatorNext = $this->nextNumber('Invoice');
+        if ($saved['next_number'] > $generatorNext) {
+            $this->insertNumberGenerator('Invoice', $saved['next_number'] - 1);
+        }
+
+        return $saved;
     }
 
     /**
@@ -1159,6 +1206,178 @@ SQL;
         $stmt->execute(['type' => $type]);
         $max = (int) ($stmt->fetchColumn() ?: 0);
         return $max + 1;
+    }
+
+    /**
+     * @return array{invoice_no: string, number: int}
+     */
+    private function allocateNextInvoiceNumber(int $mainId): array
+    {
+        $sequence = $this->resolveNumberSequence($mainId);
+        $invoiceNo = $sequence['next_invoice_no'];
+        if ($this->invoiceNumberExists($mainId, $invoiceNo)) {
+            throw new RuntimeException('Invoice number already exists: ' . $invoiceNo);
+        }
+
+        $this->insertNumberGenerator('Invoice', $sequence['next_number']);
+        $this->sequenceStore()->saveForMain($mainId, [
+            'prefix' => $sequence['prefix'],
+            'pad_width' => $sequence['pad_width'],
+            'next_number' => $sequence['next_number'] + 1,
+        ]);
+
+        return [
+            'invoice_no' => $invoiceNo,
+            'number' => $sequence['next_number'],
+        ];
+    }
+
+    /**
+     * @return array{prefix: string, pad_width: int, next_number: int, next_invoice_no: string}
+     */
+    private function resolveNumberSequence(int $mainId): array
+    {
+        $store = $this->sequenceStore();
+        if ($store->hasMain($mainId)) {
+            return $store->loadForMain($mainId);
+        }
+
+        return InvoiceNumberSequence::normalize([
+            'prefix' => 'T-',
+            'pad_width' => 0,
+            'next_number' => $this->nextNumber('Invoice'),
+        ]);
+    }
+
+    private function invoiceNumberExists(int $mainId, string $invoiceNo, ?string $exceptRefno = null): bool
+    {
+        $sql = 'SELECT 1
+             FROM tblinvoice_list
+             WHERE lmain_id = :main_id
+               AND linvoice_no = :invoice_no';
+        $params = [
+            'main_id' => (string) $mainId,
+            'invoice_no' => $invoiceNo,
+        ];
+        if ($exceptRefno !== null && $exceptRefno !== '') {
+            $sql .= ' AND lrefno <> :except_refno';
+            $params['except_refno'] = $exceptRefno;
+        }
+        $sql .= ' LIMIT 1';
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute($params);
+        return (bool) $stmt->fetchColumn();
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>|null
+     */
+    private function updateInvoiceNumber(int $mainId, string $invoiceRefno, array $payload): ?array
+    {
+        $existing = $this->getInvoice($mainId, $invoiceRefno);
+        if ($existing === null) {
+            return null;
+        }
+
+        $invoiceNo = trim((string) ($payload['invoice_no'] ?? ''));
+        if ($invoiceNo === '') {
+            throw new RuntimeException('invoice_no is required');
+        }
+
+        $reason = trim((string) ($payload['reason'] ?? ''));
+        if ($reason === '') {
+            throw new RuntimeException('reason is required');
+        }
+
+        if ($this->invoiceNumberExists($mainId, $invoiceNo, $invoiceRefno)) {
+            throw new RuntimeException('Invoice number already exists: ' . $invoiceNo);
+        }
+
+        $salesDate = trim((string) ($payload['sales_date'] ?? ''));
+        $trackingNo = trim((string) ($payload['tracking_no'] ?? ''));
+        $userId = (int) ($payload['user_id'] ?? 0);
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $fields = ['linvoice_no = :invoice_no'];
+            $params = [
+                'invoice_no' => $invoiceNo,
+                'main_id' => (string) $mainId,
+                'invoice_refno' => $invoiceRefno,
+            ];
+
+            if ($salesDate !== '') {
+                $fields[] = 'ldate = :sales_date';
+                $fields[] = 'ldatetime = CONCAT(:sales_date, \' \', TIME(COALESCE(ldatetime, NOW())))';
+                $params['sales_date'] = $salesDate;
+            }
+
+            if (array_key_exists('tracking_no', $payload)) {
+                $fields[] = 'ldm_trackingno = :tracking_no';
+                $params['tracking_no'] = $trackingNo;
+            }
+
+            $stmt = $pdo->prepare(
+                'UPDATE tblinvoice_list
+                 SET ' . implode(', ', $fields) . '
+                 WHERE lmain_id = :main_id AND lrefno = :invoice_refno
+                 LIMIT 1'
+            );
+            $stmt->execute($params);
+            if ($stmt->rowCount() === 0) {
+                $pdo->rollBack();
+                return null;
+            }
+
+            $salesRefno = trim((string) ($existing['invoice']['order_id'] ?? ''));
+            if ($salesRefno !== '') {
+                $sync = $pdo->prepare(
+                    'UPDATE tbltransaction
+                     SET invoice_no = :invoice_no
+                     WHERE lmain_id = :main_id
+                       AND lrefno = :sales_refno
+                     LIMIT 1'
+                );
+                $sync->execute([
+                    'invoice_no' => $invoiceNo,
+                    'main_id' => (string) $mainId,
+                    'sales_refno' => $salesRefno,
+                ]);
+            }
+
+            (new AuditTrailWriter($pdo))->write(
+                $mainId,
+                $userId > 0 ? $userId : (int) ($existing['invoice']['user_id'] ?? 0),
+                'Invoice',
+                'Update Number',
+                $invoiceRefno,
+                $reason
+            );
+
+            try {
+                $parsed = InvoiceNumberSequence::parse($invoiceNo);
+                $sequence = $this->resolveNumberSequence($mainId);
+                if ($parsed['number'] >= $sequence['next_number']) {
+                    $this->sequenceStore()->saveForMain($mainId, [
+                        'prefix' => $sequence['prefix'],
+                        'pad_width' => $sequence['pad_width'],
+                        'next_number' => $parsed['number'] + 1,
+                    ]);
+                    $this->insertNumberGenerator('Invoice', $parsed['number']);
+                }
+            } catch (InvalidArgumentException) {
+                // Manual numbers that do not end in digits still save; sequence is unchanged.
+            }
+
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+
+        return $this->getInvoice($mainId, $invoiceRefno);
     }
 
     private function insertNumberGenerator(string $type, int $number): void

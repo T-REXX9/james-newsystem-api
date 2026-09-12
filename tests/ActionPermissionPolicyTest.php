@@ -37,3 +37,19 @@ $assert(ActionPermissionPolicy::allows([
     'global' => ['can_view' => true],
     'pages' => ['Product Database' => ['can_view' => false]],
 ], 'view', false, 'Product Database') === false, 'isolates page-specific view permissions');
+$assert(ActionPermissionPolicy::normalize(null)['can_edit_invoice_number'] === false, 'edit invoice number defaults off');
+$assert(ActionPermissionPolicy::allows([
+    'global' => ActionPermissionPolicy::DEFAULTS,
+    'pages' => ['Invoice' => ['can_edit_invoice_number' => true]],
+], 'update_number', false, 'Invoice') === true, 'allows update_number when Invoice edit-number is enabled');
+$assert(ActionPermissionPolicy::allows([
+    'global' => ActionPermissionPolicy::DEFAULTS,
+    'pages' => ['Invoice' => ['can_edit_invoice_number' => false]],
+], 'update_number', false, 'Invoice') === false, 'denies update_number when Invoice edit-number is disabled');
+$assert(ActionPermissionPolicy::allows([
+    'global' => ActionPermissionPolicy::DEFAULTS,
+    'pages' => ['Invoice' => ['can_edit' => true, 'can_edit_invoice_number' => false]],
+], 'update_number', false, 'Invoice') === false, 'general edit does not grant edit invoice number');
+$assert(ActionPermissionPolicy::allows([
+    'pages' => ['Invoice' => ['can_edit_invoice_number' => false]],
+], 'update_number', true, 'Invoice') === true, 'Master User bypasses edit invoice number restriction');

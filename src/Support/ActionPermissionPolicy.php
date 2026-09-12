@@ -15,6 +15,8 @@ final class ActionPermissionPolicy
         'can_delete' => true,
         'can_post' => true,
         'can_unpost' => true,
+        // Booklet catch-up only; Master User enables explicitly on System Access.
+        'can_edit_invoice_number' => false,
     ];
 
     /**
@@ -72,6 +74,7 @@ final class ActionPermissionPolicy
             'delete' => 'can_delete',
             'post' => 'can_post',
             'unpost' => 'can_unpost',
+            'update_number', 'edit_invoice_number' => 'can_edit_invoice_number',
             default => null,
         };
 

@@ -227,4 +227,33 @@ final class InvoiceController
 
         return $record;
     }
+
+    public function numberSequence(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? $body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        return $this->repo->getNumberSequence($mainId);
+    }
+
+    public function updateNumberSequence(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $startValue = trim((string) ($body['start_invoice_no'] ?? $body['next_invoice_no'] ?? ''));
+        if ($startValue === '') {
+            throw new HttpException(422, 'start_invoice_no is required');
+        }
+
+        try {
+            return $this->repo->setNumberSequenceStart($mainId, $startValue);
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
+    }
 }

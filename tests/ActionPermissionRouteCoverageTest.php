@@ -48,6 +48,8 @@ $expected = [
     '/api/v1/profit-protection/overrides' => '$requireActionAuth',
     '/api/v1/profit-protection/admin-overrides' => '$requireMasterUser',
     '/api/v1/vip-tier-settings' => '$requireMasterUser',
+    '/api/v1/invoices/{invoiceRefno}/actions/update_number' => '$requireActionAuth',
+    '/api/v1/invoices/number-sequence' => '$requireMasterUser',
     '/api/v1/server-maintenance/automatic-backup' => '$requireMasterUser',
 ];
 

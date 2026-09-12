@@ -555,6 +555,8 @@ function app_router(): Router
                     $actionPermission = 'delete';
                 } elseif ($actionPermission === null && in_array($action, ['submitrecord', 'edit', 'editrecord', 'update'], true)) {
                     $actionPermission = 'edit';
+                } elseif ($actionPermission === null && in_array($action, ['update_number', 'edit_invoice_number'], true)) {
+                    $actionPermission = 'update_number';
                 } elseif ($actionPermission === null && in_array($action, ['convert', 'convert-to-order', 'convertsales'], true)) {
                     $actionPermission = 'add';
                 }
@@ -800,6 +802,8 @@ function app_router(): Router
     $router->post('/api/v1/order-slips/{orderSlipRefno}/actions/unpost', $requireActionAuth($withFixedAction([$orderSlipController, 'action'], 'unpost'), 'Order Slip', 'unpost'));
     $router->post('/api/v1/order-slips/{orderSlipRefno}/actions/{action}', $requireApproverAction([$orderSlipController, 'action'], ['Order Slip', 'OS']));
     $router->get('/api/v1/invoices', $requireViewAuth([$invoiceController, 'list'], 'Invoice'));
+    $router->get('/api/v1/invoices/number-sequence', $requireMasterUser([$invoiceController, 'numberSequence']));
+    $router->patch('/api/v1/invoices/number-sequence', $requireMasterUser([$invoiceController, 'updateNumberSequence']));
     $router->get('/api/v1/invoices/{invoiceRefno}', $requireViewAuth([$invoiceController, 'show'], 'Invoice'));
     $router->post('/api/v1/invoices', $requireActionAuth([$invoiceController, 'create'], 'Invoice', 'add'));
     $router->patch('/api/v1/invoices/{invoiceRefno}', $requireActionAuth([$invoiceController, 'update'], 'Invoice', 'edit'));
@@ -808,6 +812,7 @@ function app_router(): Router
     $router->patch('/api/v1/invoice-items/{itemId}', $requireActionAuth([$invoiceController, 'updateItem'], 'Invoice', 'edit'));
     $router->delete('/api/v1/invoice-items/{itemId}', $requireActionAuth([$invoiceController, 'deleteItem'], 'Invoice', 'delete'));
     $router->post('/api/v1/invoices/{invoiceRefno}/actions/unpost', $requireActionAuth($withFixedAction([$invoiceController, 'action'], 'unpost'), 'Invoice', 'unpost'));
+    $router->post('/api/v1/invoices/{invoiceRefno}/actions/update_number', $requireActionAuth($withFixedAction([$invoiceController, 'action'], 'update_number'), 'Invoice', 'update_number'));
     $router->post('/api/v1/invoices/{invoiceRefno}/actions/{action}', $requireApproverAction([$invoiceController, 'action'], ['Invoice', 'SI']));
     $router->get('/api/v1/inquiry-reports/customers', $requireViewAuth([$inquiryReportController, 'customers'], 'Inquiry Report'));
     $router->get('/api/v1/inquiry-reports', $requireViewAuth([$inquiryReportController, 'report'], 'Inquiry Report'));
