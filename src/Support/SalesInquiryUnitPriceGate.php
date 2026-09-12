@@ -48,7 +48,8 @@ final class SalesInquiryUnitPriceGate
             }
             $listPrice = $listPriceForItem($item);
             if ($listPrice === null) {
-                continue;
+                // Cannot verify against Product Database — treat as an override.
+                return true;
             }
             $submitted = round((float) $item['unit_price'], 2);
             if ($submitted !== round($listPrice, 2)) {
@@ -57,5 +58,79 @@ final class SalesInquiryUnitPriceGate
         }
 
         return false;
+    }
+
+    /**
+     * True when payload catalog lines change unit_price vs existing inquiry lines,
+     * or introduce new catalog lines that diverge from list price.
+     *
+     * @param array<int, mixed> $items
+     * @param array<int, mixed> $existingItems
+     * @param callable(array<string, mixed>): ?float $listPriceForItem
+     */
+    public static function itemsChangeCatalogUnitPrices(
+        array $items,
+        array $existingItems,
+        callable $listPriceForItem
+    ): bool {
+        $existingByKey = [];
+        foreach ($existingItems as $existing) {
+            if (!is_array($existing)) {
+                continue;
+            }
+            foreach (self::itemMatchKeys($existing) as $key) {
+                $existingByKey[$key] = $existing;
+            }
+        }
+
+        foreach ($items as $item) {
+            if (!is_array($item) || self::isNotListed($item) || !array_key_exists('unit_price', $item)) {
+                continue;
+            }
+
+            $matched = null;
+            foreach (self::itemMatchKeys($item) as $key) {
+                if (isset($existingByKey[$key])) {
+                    $matched = $existingByKey[$key];
+                    break;
+                }
+            }
+
+            if ($matched !== null) {
+                $submitted = round((float) $item['unit_price'], 2);
+                $current = round((float) ($matched['unit_price'] ?? 0), 2);
+                if ($submitted !== $current) {
+                    return true;
+                }
+                continue;
+            }
+
+            // New catalog line: require permission when price differs from list (or list unknown).
+            $listPrice = $listPriceForItem($item);
+            if ($listPrice === null) {
+                return true;
+            }
+            if (round((float) $item['unit_price'], 2) !== round($listPrice, 2)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $item
+     * @return array<int, string>
+     */
+    private static function itemMatchKeys(array $item): array
+    {
+        $keys = [];
+        foreach (['id', 'item_refno', 'item_id'] as $field) {
+            $value = trim((string) ($item[$field] ?? ''));
+            if ($value !== '') {
+                $keys[] = $field . ':' . $value;
+            }
+        }
+        return $keys;
     }
 }

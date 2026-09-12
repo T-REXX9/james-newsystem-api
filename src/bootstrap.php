@@ -500,27 +500,36 @@ function app_router(): Router
 
             $needsUnitPricePermission = false;
             $itemId = (int) ($params['itemId'] ?? 0);
+            $listPriceForItem = static function (array $item) use ($salesInquiryRepository, $body): ?float {
+                $priceGroup = (string) ($body['price_group'] ?? '');
+                $ref = trim((string) ($item['item_refno'] ?? $item['item_id'] ?? ''));
+                return $salesInquiryRepository->resolveCatalogListUnitPrice($ref, $priceGroup);
+            };
             if ($itemId > 0) {
                 $needsUnitPricePermission = SalesInquiryUnitPriceGate::itemUpdateChangesCatalogUnitPrice(
                     $body,
                     $salesInquiryRepository->findItemById($itemId)
                 );
             } elseif (is_array($body['items'] ?? null)) {
-                $priceGroup = (string) ($body['price_group'] ?? '');
-                $needsUnitPricePermission = SalesInquiryUnitPriceGate::itemsOverrideCatalogListPrices(
-                    $body['items'],
-                    static function (array $item) use ($salesInquiryRepository, $priceGroup): ?float {
-                        $ref = trim((string) ($item['item_refno'] ?? $item['item_id'] ?? ''));
-                        return $salesInquiryRepository->resolveCatalogListUnitPrice($ref, $priceGroup);
-                    }
-                );
+                $inquiryRefno = trim((string) ($params['inquiryRefno'] ?? ''));
+                if ($inquiryRefno !== '') {
+                    $existing = $salesInquiryRepository->getInquiry($mainId, $inquiryRefno);
+                    $existingItems = is_array($existing['items'] ?? null) ? $existing['items'] : [];
+                    $needsUnitPricePermission = SalesInquiryUnitPriceGate::itemsChangeCatalogUnitPrices(
+                        $body['items'],
+                        $existingItems,
+                        $listPriceForItem
+                    );
+                } else {
+                    $needsUnitPricePermission = SalesInquiryUnitPriceGate::itemsOverrideCatalogListPrices(
+                        $body['items'],
+                        $listPriceForItem
+                    );
+                }
             } elseif (array_key_exists('unit_price', $body) && !SalesInquiryUnitPriceGate::isNotListed($body)) {
-                $priceGroup = (string) ($body['price_group'] ?? '');
-                $ref = trim((string) ($body['item_refno'] ?? $body['item_id'] ?? ''));
-                $listPrice = $salesInquiryRepository->resolveCatalogListUnitPrice($ref, $priceGroup);
                 $needsUnitPricePermission = SalesInquiryUnitPriceGate::itemsOverrideCatalogListPrices(
                     [$body],
-                    static fn (): ?float => $listPrice
+                    $listPriceForItem
                 );
             }
 
@@ -751,6 +760,12 @@ function app_router(): Router
     $router->post('/api/v1/daily-call-monitoring/call-claims/{contactId}/release', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'releaseCallClaim']));
     $router->post('/api/v1/daily-call-monitoring/call-logs', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createCallLog']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/call-report-threads', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'callReportThreads']));
+    $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-conversation', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'salesReportConversation']));
+    $router->post('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-messages', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createSalesReportMessage']));
+    $router->patch('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-conversation/read', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'markSalesReportConversationRead']));
+    $router->post('/api/v1/daily-call-monitoring/sales-report-attachments/upload', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'uploadSalesReportAttachment']));
+    $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-attachments/{filename}', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'downloadSalesReportAttachment']));
+    $router->get('/api/v1/daily-call-monitoring/sales-report-unread-counts', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'salesReportUnreadCounts']));
     $router->post('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/messages', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createCallReportReply']));
     $router->patch('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/read', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'markCallReportThreadRead']));
     $router->post('/api/v1/daily-call-monitoring/incident-reports', $requireActionAuth([$dailyCallMonitoringController, 'createIncidentReport'], 'Daily Call Monitoring', 'add'));

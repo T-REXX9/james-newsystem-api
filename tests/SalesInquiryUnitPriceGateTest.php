@@ -45,3 +45,30 @@ $assert(SalesInquiryUnitPriceGate::itemsOverrideCatalogListPrices(
     ],
     static fn (array $item): ?float => 100.0
 ) === false, 'allows catalog lines at list price');
+
+$assert(SalesInquiryUnitPriceGate::itemsOverrideCatalogListPrices(
+    [
+        ['remark' => 'OnStock', 'unit_price' => 80, 'item_refno' => 'missing'],
+    ],
+    static fn (array $item): ?float => null
+) === true, 'treats unknown list price as an override');
+
+$assert(SalesInquiryUnitPriceGate::itemsChangeCatalogUnitPrices(
+    [
+        ['remark' => 'OnStock', 'unit_price' => 90, 'item_refno' => 'p1'],
+    ],
+    [
+        ['remark' => 'OnStock', 'unit_price' => 90, 'item_refno' => 'p1'],
+    ],
+    static fn (): ?float => 100.0
+) === false, 'allows re-saving existing negotiated catalog prices unchanged');
+
+$assert(SalesInquiryUnitPriceGate::itemsChangeCatalogUnitPrices(
+    [
+        ['remark' => 'OnStock', 'unit_price' => 85, 'item_refno' => 'p1'],
+    ],
+    [
+        ['remark' => 'OnStock', 'unit_price' => 90, 'item_refno' => 'p1'],
+    ],
+    static fn (): ?float => 100.0
+) === true, 'flags changing an existing negotiated catalog price');
