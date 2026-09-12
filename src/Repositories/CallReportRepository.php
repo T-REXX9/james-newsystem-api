@@ -557,6 +557,58 @@ GROUP BY t.contact_id";
         return $normalized;
     }
 
+    /**
+     * Return the contacts that have any Agent Sales Report activity. This is
+     * deliberately independent of read state: a manager must still be able to
+     * find a report after opening its notification.
+     *
+     * @param list<string> $contactIds
+     * @return list<string>
+     */
+    public function getReportedContactIds(int $mainId, array $contactIds): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map(
+            static fn ($contactId): string => trim((string) $contactId),
+            $contactIds
+        ))));
+        if ($ids === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $reported = [];
+        $queries = [
+            "SELECT DISTINCT contact_id FROM call_report_threads WHERE main_id = ? AND contact_id IN ($placeholders)",
+            "SELECT DISTINCT CAST(lcustomer_id AS CHAR) AS contact_id
+             FROM tblcustomer_logs
+             WHERE lmain_id = ? AND CAST(lcustomer_id AS CHAR) IN ($placeholders)
+               AND LOWER(COALESCE(ltopic, '')) = 'comment'
+               AND LOWER(COALESCE(ltype, 'note')) <> 'status'",
+            "SELECT DISTINCT lsessionid AS contact_id
+             FROM tblpatient
+             WHERE lmain_id = ? AND lsessionid IN ($placeholders)
+               AND TRIM(COALESCE(lnotes, '')) <> ''
+               AND (COALESCE(lstatus, 1) = 3 OR LOWER(COALESCE(lprofile_type, '')) LIKE '%prospect%')",
+        ];
+
+        foreach ($queries as $sql) {
+            try {
+                $stmt = $this->db->pdo()->prepare($sql);
+                $stmt->execute(array_merge([$mainId], $ids));
+                foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                    $contactId = trim((string) ($row['contact_id'] ?? ''));
+                    if ($contactId !== '') {
+                        $reported[$contactId] = true;
+                    }
+                }
+            } catch (\Throwable) {
+                // Older installations may not yet have the conversation tables.
+            }
+        }
+
+        return array_keys($reported);
+    }
+
     public function backfillThreadsFromCallLogs(int $mainId, string $contactId, int $viewerUserId): void
     {
         $sql = <<<SQL

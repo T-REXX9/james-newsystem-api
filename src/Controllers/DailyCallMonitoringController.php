@@ -679,7 +679,10 @@ final class DailyCallMonitoringController
             } catch (HttpException) {
             }
         }
-        return ['counts' => $this->callReportRepo->getUnreadCountsForContacts($mainId, $contactIds, $viewerUserId)];
+        return [
+            'counts' => $this->callReportRepo->getUnreadCountsForContacts($mainId, $contactIds, $viewerUserId),
+            'reported_contact_ids' => $this->callReportRepo->getReportedContactIds($mainId, $contactIds),
+        ];
     }
 
     public function markCallReportThreadRead(array $params = [], array $query = [], array $body = []): array

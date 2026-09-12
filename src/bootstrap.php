@@ -291,7 +291,7 @@ function app_router(): Router
 
     $healthController = new HealthController();
     $customerController = new CustomerController(new App\Repositories\CustomerRepository($db));
-    $customerDatabaseController = new CustomerDatabaseController(new App\Repositories\CustomerDatabaseRepository($db));
+    $customerDatabaseController = new CustomerDatabaseController(new App\Repositories\CustomerDatabaseRepository($db), $db);
     $customerGroupController = new CustomerGroupController(new App\Repositories\CustomerGroupRepository($db));
     $adjustmentEntryController = new AdjustmentEntryController(new App\Repositories\AdjustmentEntryRepository($db));
     $approverController = new ApproverController(new App\Repositories\ApproverRepository($db));

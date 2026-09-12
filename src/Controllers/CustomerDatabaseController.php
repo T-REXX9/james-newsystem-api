@@ -4,14 +4,19 @@ declare(strict_types=1);
 
 namespace App\Controllers;
 
+use App\Database;
 use App\Repositories\CustomerDatabaseRepository;
+use App\Repositories\NotificationsRepository;
 use App\Support\Exceptions\HttpException;
 use RuntimeException;
 use InvalidArgumentException;
 
 final class CustomerDatabaseController
 {
-    public function __construct(private readonly CustomerDatabaseRepository $repo)
+    public function __construct(
+        private readonly CustomerDatabaseRepository $repo,
+        private readonly Database $db,
+    )
     {
     }
 
@@ -72,7 +77,34 @@ final class CustomerDatabaseController
         }
 
         try {
-            return $this->repo->createCustomer($mainId, $userId, $body);
+            $customer = $this->repo->createCustomer($mainId, $userId, $body);
+            $comment = trim((string) ($body['notes'] ?? ''));
+            $isProspect = (int) ($body['status'] ?? 1) === 3
+                || str_contains(strtolower((string) ($body['profile_type'] ?? '')), 'prospect');
+            if ($isProspect && $comment !== '' && $userId !== $mainId) {
+                $contactId = (string) ($customer['session_id'] ?? $customer['lsessionid'] ?? '');
+                (new NotificationsRepository($this->db))->create([
+                    'recipient_id' => (string) $mainId,
+                    'title' => 'New prospective customer comment',
+                    'message' => sprintf('A sales agent submitted %s for management review: %s', (string) ($customer['company'] ?? 'a prospective customer'), $comment),
+                    'type' => 'info',
+                    'category' => 'notification',
+                    'main_id' => (string) $mainId,
+                    'action_url' => 'sales-transaction-daily-call-monitoring',
+                    'metadata' => [
+                        'entity_type' => 'prospect_customer_comment',
+                        'entity_id' => $contactId,
+                        'contact_id' => $contactId,
+                        'action' => 'review',
+                        'status' => 'unread',
+                        'action_url' => 'sales-transaction-daily-call-monitoring',
+                        'refno' => 'prospect-customer-comment:' . $contactId,
+                        'idempotency_key' => 'prospect-customer-comment:' . $contactId,
+                        'category' => 'notification',
+                    ],
+                ]);
+            }
+            return $customer;
         } catch (RuntimeException|InvalidArgumentException $e) {
             throw new HttpException(422, $e->getMessage());
         }

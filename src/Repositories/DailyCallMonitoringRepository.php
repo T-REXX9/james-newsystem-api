@@ -86,11 +86,12 @@ final class DailyCallMonitoringRepository
                 'source' => $customer['source'] ?: 'Manual',
                 'assignedTo' => $customer['assigned_to'] ?: 'Unassigned',
                 'assignedDate' => $this->formatDateText($customer['assigned_date']),
-                'clientSince' => $this->formatDateText($customer['client_since']),
+                'clientSince' => $this->formatDateText($metricsRow['first_purchase_date'] ?? null),
                 'province' => $customer['province'] ?: '—',
                 'city' => $customer['city'] ?: '—',
                 'shopName' => $customer['shop_name'] ?: 'Unnamed Shop',
                 'contactNumber' => $customer['contact_number'] ?: '—',
+                'contactPersonName' => $customer['contact_person_name'] ?: '',
                 'codeDate' => $this->formatCodeDate($customer['code_text'], $customer['code_date']),
                 'dealerPriceGroup' => $customer['dealer_price_group'] ?: '',
                 'dealerPriceDate' => $this->formatDateText($customer['dealer_price_date']),
@@ -103,6 +104,7 @@ final class DailyCallMonitoringRepository
                 'courier' => $customer['courier'] ?: '—',
                 'status' => $statusLabel,
                 'statusDate' => $this->formatDateText($customer['status_date']),
+                'lastPurchaseDate' => $this->formatDateText($metricsRow['last_purchase_date'] ?? null),
                 'outstandingBalance' => (float) ($metricsRow['outstanding_balance'] ?? 0),
                 'averageMonthlyOrder' => (float) ($metricsRow['average_monthly_purchase'] ?? 0),
                 'monthlyOrder' => $monthlyOrder,
@@ -422,6 +424,12 @@ SELECT
     COALESCE(p.lnotes, '') AS prospect_comment,
     COALESCE(p.lprice_group, '') AS price_group,
     CASE
+        WHEN ledger_summary.first_purchase_date_raw IS NULL THEN txn_summary.first_purchase_date_raw
+        WHEN txn_summary.first_purchase_date_raw IS NULL THEN ledger_summary.first_purchase_date_raw
+        WHEN ledger_summary.first_purchase_date_raw <= txn_summary.first_purchase_date_raw THEN ledger_summary.first_purchase_date_raw
+        ELSE txn_summary.first_purchase_date_raw
+    END AS first_purchase_date_raw,
+    CASE
         WHEN ledger_summary.last_purchase_date_raw IS NULL THEN txn_summary.last_purchase_date_raw
         WHEN txn_summary.last_purchase_date_raw IS NULL THEN ledger_summary.last_purchase_date_raw
         WHEN ledger_summary.last_purchase_date_raw >= txn_summary.last_purchase_date_raw THEN ledger_summary.last_purchase_date_raw
@@ -489,6 +497,7 @@ LEFT JOIN (
     SELECT
         lg.lcustomerid,
         lg.lmainid,
+        DATE(MIN(lg.ldatetime)) AS first_purchase_date_raw,
         DATE(MAX(lg.ldatetime)) AS last_purchase_date_raw,
         COUNT(DISTINCT lg.lrefno) AS purchase_count,
         COUNT(CASE WHEN lg.ldatetime >= :priority_from_date THEN lg.lid END) AS priority_transaction_count,
@@ -538,6 +547,8 @@ LEFT JOIN (
     WHERE lg.lmainid = :ledger_main_id
       AND lg.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
       AND COALESCE(lg.lcustomerid, '') <> ''
+      AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
+      AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
     GROUP BY lg.lcustomerid, lg.lmainid, ly.last_active_year, ly.last_active_purchase_at
 ) ledger_summary ON ledger_summary.lcustomerid = p.lsessionid
     AND ledger_summary.lmainid = CAST(p.lmain_id AS CHAR)
@@ -545,6 +556,7 @@ LEFT JOIN (
     SELECT
         tr.lcustomerid,
         CAST(tr.lmain_id AS CHAR) AS lmainid,
+        DATE(MIN(tr.ldate)) AS first_purchase_date_raw,
         DATE(MAX(tr.ldate)) AS last_purchase_date_raw,
         COUNT(tr.lid) AS purchase_count,
         COUNT(CASE WHEN tr.ldate >= :txn_priority_from_date THEN tr.lid END) AS priority_transaction_count,
@@ -635,6 +647,7 @@ SQL;
         $stmt->execute($params);
 
         $items = array_map(function (array $row): array {
+            $firstPurchaseDate = (string) ($row['first_purchase_date_raw'] ?? '');
             $rawDate = (string) ($row['last_purchase_date_raw'] ?? '');
             $daysSinceLastPurchase = max(0, (int) ($row['days_since_last_purchase'] ?? 0));
             $totalSales = (float) ($row['total_sales'] ?? 0);
@@ -703,6 +716,8 @@ SQL;
                 'prospect_comment' => $this->cleanDisplayText($row['prospect_comment'] ?? '', ''),
                 'priceGroup' => (string) ($row['price_group'] ?? ''),
                 'price_group' => (string) ($row['price_group'] ?? ''),
+                'firstPurchaseDate' => $this->formatDateText($firstPurchaseDate),
+                'first_purchase_date_raw' => $firstPurchaseDate,
                 'lastPurchaseDate' => $this->formatDateText($rawDate),
                 'last_purchase_date_raw' => $rawDate,
                 'purchaseCount' => $purchaseCount,
@@ -1697,6 +1712,7 @@ SELECT
     p.lphone AS phone,
     cp_first.lc_mobile AS cp_mobile,
     cp_first.lc_phone AS cp_phone,
+    NULLIF(TRIM(CONCAT_WS(' ', cp_first.lfname, cp_first.lmname, cp_first.llname)), '') AS contact_person_name,
     p.lterms AS mode_of_payment,
     p.ldelivery_address AS courier,
     p.ldealer_quota AS quota,
@@ -1728,7 +1744,7 @@ FROM tblpatient p
 LEFT JOIN tblaccount a ON a.lid = p.lsales_person
 LEFT JOIN tblteamstaff team ON team.lid = p.lsales_team AND team.lmain_id = p.lmain_id
 LEFT JOIN (
-    SELECT cp.lrefno, cp.lc_mobile, cp.lc_phone
+    SELECT cp.lrefno, cp.lfname, cp.lmname, cp.llname, cp.lc_mobile, cp.lc_phone
     FROM tblcontact_person cp
     INNER JOIN (
         SELECT lrefno, MIN(lid) AS min_lid FROM tblcontact_person GROUP BY lrefno
@@ -2058,7 +2074,17 @@ SQL;
         $ledgerSql = <<<SQL
 SELECT
     lg.lcustomerid AS contact_id,
-    SUM(COALESCE(lg.ldebit, 0) - COALESCE(lg.lcredit, 0)) AS outstanding_balance
+    SUM(COALESCE(lg.ldebit, 0) - COALESCE(lg.lcredit, 0)) AS outstanding_balance,
+    DATE(MIN(CASE
+        WHEN LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
+         AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+        THEN lg.ldatetime
+    END)) AS first_purchase_date,
+    DATE(MAX(CASE
+        WHEN LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
+         AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+        THEN lg.ldatetime
+    END)) AS last_purchase_date
 FROM tblledger lg
 WHERE lg.lcustomerid IN ({$placeholders})
 GROUP BY lg.lcustomerid
@@ -2070,6 +2096,8 @@ SQL;
             $result[(string) $row['contact_id']] = [
                 'outstanding_balance' => (float) ($row['outstanding_balance'] ?? 0),
                 'average_monthly_purchase' => 0.0,
+                'first_purchase_date' => (string) ($row['first_purchase_date'] ?? ''),
+                'last_purchase_date' => (string) ($row['last_purchase_date'] ?? ''),
             ];
         }
 
@@ -2109,6 +2137,8 @@ SQL;
                 $result[$contactId] = [
                     'outstanding_balance' => 0.0,
                     'average_monthly_purchase' => 0.0,
+                    'first_purchase_date' => '',
+                    'last_purchase_date' => '',
                 ];
             }
             $result[$contactId]['average_monthly_purchase'] = (float) ($row['average_monthly_purchase'] ?? 0);
