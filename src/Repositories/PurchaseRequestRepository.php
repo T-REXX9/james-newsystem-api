@@ -765,7 +765,6 @@ SQL;
         }
 
         $this->assertReason($reason);
-        $this->assertPrivilegedAction($mainId, $userId);
         $poDependencies = $this->activePurchaseOrderDependencies($mainId, $prRefno);
         if ($poDependencies !== []) throw new RuntimeException('Purchase request cannot be deleted because ' . $this->formatPurchaseOrderDependencies($poDependencies) . ' depends on it');
 
@@ -947,7 +946,6 @@ SQL;
         $status = strtolower(trim((string) ($record['request']['status'] ?? '')));
         if (!in_array($status, ['submitted', 'approved'], true)) throw new RuntimeException('Only a submitted or approved purchase request can be unposted');
         $this->assertReason($reason);
-        $this->assertPrivilegedAction($mainId, $userId);
 
         // Dependent purchase orders are unposted along with the request. Anything
         // that cannot be unposted on its own (a PO still Pending, for example)
@@ -1003,18 +1001,6 @@ SQL;
         if (trim($reason) === '') throw new RuntimeException('A reason is required for this action');
         // Keep recovery actions available on PHP deployments without ext-mbstring.
         if (strlen(trim($reason)) > 500) throw new RuntimeException('Reason must be 500 characters or fewer');
-    }
-
-    private function assertPrivilegedAction(
-        int $mainId,
-        int $userId,
-        string $message = 'You do not have permission to recover purchase requests'
-    ): void
-    {
-        $stmt = $this->db->pdo()->prepare('SELECT COALESCE(acc.ltype, ""), LOWER(COALESCE(role.ltype_name, "")) FROM tblaccount acc LEFT JOIN tblusertype role ON role.lid = acc.ltype WHERE acc.lid = :user_id AND (acc.lid = :main_id1 OR acc.lmother_id = :main_id2) LIMIT 1');
-        $stmt->execute(['user_id' => $userId, 'main_id1' => $mainId, 'main_id2' => $mainId]);
-        $row = $stmt->fetch(PDO::FETCH_NUM);
-        if ($row === false || ((string) ($row[0] ?? '') !== '1' && !in_array((string) ($row[1] ?? ''), ['owner', 'company owner', 'administrator', 'purchasing manager'], true))) throw new RuntimeException($message);
     }
 
     /**
@@ -1128,11 +1114,6 @@ SQL;
 
         $requestStatus = (string) ($record['request']['status'] ?? '');
         if (strcasecmp($requestStatus, 'Submitted') === 0) {
-            $this->assertPrivilegedAction(
-                $mainId,
-                $userId,
-                'You do not have permission to approve a submitted purchase request while creating a purchase order'
-            );
             $approve = $this->db->pdo()->prepare('UPDATE tblpr_list SET lapproval = "Approved" WHERE lrefno = :refno');
             $approve->execute(['refno' => $prRefno]);
             $record = $this->getPurchaseRequest($mainId, $prRefno) ?? $record;

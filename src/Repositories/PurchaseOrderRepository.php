@@ -473,9 +473,6 @@ SQL;
             throw new RuntimeException('Only a posted or completed purchase order can be unposted');
         }
         $this->assertReason($reason);
-        if (!$this->canUnpostPurchaseOrder($mainId, $userId)) {
-            throw new RuntimeException('You do not have permission to unpost purchase orders');
-        }
 
         $receivingReports = $this->activeReceivingReportsForCascade($pdo, $mainId, $purchaseRefno);
         foreach ($receivingReports as $receivingReport) {
@@ -609,30 +606,11 @@ SQL;
         return 'return-to-supplier transactions ' . implode(', ', $labels);
     }
 
-    private function canUnpostPurchaseOrder(int $mainId, int $userId): bool
-    {
-        $stmt = $this->db->pdo()->prepare(
-            'SELECT COALESCE(acc.ltype, ""), LOWER(COALESCE(role.ltype_name, ""))
-             FROM tblaccount acc
-             LEFT JOIN tblusertype role ON role.lid = acc.ltype
-             WHERE acc.lid = :user_id
-               AND (acc.lid = :main_id1 OR acc.lmother_id = :main_id2)
-             LIMIT 1'
-        );
-        $stmt->execute(['user_id' => $userId, 'main_id1' => $mainId, 'main_id2' => $mainId]);
-        $row = $stmt->fetch(PDO::FETCH_NUM);
-        if ($row === false) return false;
-        $type = (string) ($row[0] ?? '');
-        $role = (string) ($row[1] ?? '');
-        return $type === '1' || in_array($role, ['owner', 'company owner', 'administrator', 'purchasing manager'], true);
-    }
-
     public function deletePurchaseOrder(int $mainId, int $userId, string $purchaseRefno, string $reason): bool
     {
         $exists = $this->getPurchaseOrder($mainId, $purchaseRefno);
         if ($exists === null) return false;
         $this->assertReason($reason);
-        $this->assertPrivilegedAction($mainId, $userId, 'delete');
 
         $receivingDependencies = $this->activeReceivingDependencies($mainId, $purchaseRefno);
         if ($receivingDependencies !== []) {
@@ -709,13 +687,6 @@ SQL;
         if ($labels === []) return 'a receiving report';
         if (count($labels) === 1) return 'receiving report ' . $labels[0];
         return 'receiving reports ' . implode(', ', $labels);
-    }
-
-    private function assertPrivilegedAction(int $mainId, int $userId, string $action): void
-    {
-        if (!$this->canUnpostPurchaseOrder($mainId, $userId)) {
-            throw new RuntimeException('You do not have permission to ' . $action . ' purchase orders');
-        }
     }
 
     public function addPurchaseOrderItem(int $mainId, int $userId, string $purchaseRefno, array $payload): array

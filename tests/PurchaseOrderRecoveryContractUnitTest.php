@@ -14,7 +14,12 @@ $checks = [
     'PR recovery names active PO dependencies' => str_contains($pr, 'activePurchaseOrderDependencies')
         && str_contains($pr, 'formatPurchaseOrderDependencies')
         && str_contains($pr, 'Purchase request cannot be unposted because'),
-    'unpost is permission controlled' => str_contains($po, 'canUnpostPurchaseOrder'),
+    // Unpost permission belongs to System Access, enforced once at the route by
+    // $requireActionAuth(..., 'unpost'). Repositories must not re-decide it from
+    // hardcoded role names, which used to override whatever an admin granted.
+    'unpost permission is not hardcoded in the repository' => !str_contains($po, 'purchasing manager')
+        && !str_contains($po, 'canUnpostPurchaseOrder')
+        && !str_contains($po, 'ltype_name'),
     'unpost cascades through receiving dependency' => str_contains($po, 'activeReceivingReportsForCascade')
         && str_contains($po, 'unpostReceivingReportWithinPurchaseOrder')
         && str_contains($po, "'Receiving Report',")

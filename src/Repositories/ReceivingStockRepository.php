@@ -462,7 +462,6 @@ SQL;
         $existing = $this->getReceivingStock($mainId, $receivingRefno);
         if ($existing === null) return false;
         $this->assertReason($reason);
-        $this->assertPrivilegedAction($mainId, $userId);
         if (in_array(strtolower((string) ($existing['record']['status'] ?? '')), ['posted', 'delivered'], true)) throw new RuntimeException('Posted receiving reports must be unposted before deletion');
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -498,7 +497,6 @@ SQL;
         $status = strtolower(trim((string) ($existing['record']['status'] ?? '')));
         if (!in_array($status, ['posted', 'delivered'], true)) throw new RuntimeException('Only a posted receiving report can be unposted');
         $this->assertReason($reason);
-        $this->assertPrivilegedAction($mainId, $userId);
         $returnDependencies = $this->activeReturnToSupplierDependencies($mainId, $receivingRefno);
         if ($returnDependencies !== []) throw new RuntimeException('Receiving report cannot be unposted because ' . $this->formatReturnToSupplierDependencies($returnDependencies) . ' depends on it');
         $pdo = $this->db->pdo();
@@ -533,14 +531,6 @@ SQL;
         if (trim($reason) === '') throw new RuntimeException('A reason is required for this action');
         // Keep recovery actions available on PHP deployments without ext-mbstring.
         if (strlen(trim($reason)) > 500) throw new RuntimeException('Reason must be 500 characters or fewer');
-    }
-
-    private function assertPrivilegedAction(int $mainId, int $userId): void
-    {
-        $stmt = $this->db->pdo()->prepare('SELECT COALESCE(acc.ltype, ""), LOWER(COALESCE(role.ltype_name, "")) FROM tblaccount acc LEFT JOIN tblusertype role ON role.lid = acc.ltype WHERE acc.lid = :user_id AND (acc.lid = :main_id1 OR acc.lmother_id = :main_id2) LIMIT 1');
-        $stmt->execute(['user_id' => $userId, 'main_id1' => $mainId, 'main_id2' => $mainId]);
-        $row = $stmt->fetch(PDO::FETCH_NUM);
-        if ($row === false || ((string) ($row[0] ?? '') !== '1' && !in_array((string) ($row[1] ?? ''), ['owner', 'company owner', 'administrator', 'warehouse manager'], true))) throw new RuntimeException('You do not have permission to recover receiving reports');
     }
 
     /**
