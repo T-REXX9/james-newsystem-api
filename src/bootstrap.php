@@ -77,6 +77,7 @@ use App\Support\Env;
 use App\Support\InternalChatReactionStore;
 use App\Support\InternalChatReplyStore;
 use App\Support\InternalChatTypingStore;
+use App\Support\SalesInquiryUnitPriceGate;
 
 require __DIR__ . '/Support/Env.php';
 require __DIR__ . '/Support/CustomerLedgerCalculator.php';
@@ -94,6 +95,8 @@ require __DIR__ . '/Support/AuditTrailWriter.php';
 require __DIR__ . '/Support/RecordImageValidator.php';
 require __DIR__ . '/Support/VipDocumentDiscount.php';
 require __DIR__ . '/Support/VipStanding.php';
+require __DIR__ . '/Support/SalesInquiryUnitPriceGate.php';
+require __DIR__ . '/Support/ActionPermissionPolicy.php';
 require __DIR__ . '/Config.php';
 require __DIR__ . '/Database.php';
 require __DIR__ . '/Http/Response.php';
@@ -353,7 +356,8 @@ function app_router(): Router
     $salesReturnController = new SalesReturnController(new App\Repositories\SalesReturnRepository($db));
     $salesReportController = new SalesReportController(new App\Repositories\SalesReportRepository($db));
     $salesReturnReportController = new SalesReturnReportController(new App\Repositories\SalesReturnReportRepository($db));
-    $salesInquiryController = new SalesInquiryController(new App\Repositories\SalesInquiryRepository($db));
+    $salesInquiryRepository = new App\Repositories\SalesInquiryRepository($db);
+    $salesInquiryController = new SalesInquiryController($salesInquiryRepository);
     $salesOrderController = new SalesOrderController(new App\Repositories\SalesOrderRepository($db));
     $stockMovementController = new StockMovementController(new App\Repositories\StockMovementRepository($db));
     $stockAdjustmentController = new StockAdjustmentController(new App\Repositories\StockAdjustmentRepository($db));
@@ -467,6 +471,63 @@ function app_router(): Router
             $query['main_id'] = (string) $mainId;
             $body['user_id'] = (int) ($claims['sub'] ?? 0);
             $permissionMiddleware->assertActionPermission($claims, $action, $page);
+            return $handler($params, $query, $body);
+        });
+    };
+
+
+    $requireSalesInquiryWriteAuth = static function (callable $handler, string $action) use (
+        $requireBearerAuthWithClaims,
+        $permissionMiddleware,
+        $salesInquiryRepository
+    ): callable {
+        return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use (
+            $handler,
+            $action,
+            $permissionMiddleware,
+            $salesInquiryRepository
+        ): array {
+            $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+            $mainId = (int) ($claims['main_userid'] ?? 0);
+            if ($mainId <= 0) {
+                throw new HttpException(403, 'Invalid account scope');
+            }
+
+            $body['main_id'] = $mainId;
+            $query['main_id'] = (string) $mainId;
+            $body['user_id'] = (int) ($claims['sub'] ?? 0);
+            $permissionMiddleware->assertActionPermission($claims, $action, 'Sales Inquiry');
+
+            $needsUnitPricePermission = false;
+            $itemId = (int) ($params['itemId'] ?? 0);
+            if ($itemId > 0) {
+                $needsUnitPricePermission = SalesInquiryUnitPriceGate::itemUpdateChangesCatalogUnitPrice(
+                    $body,
+                    $salesInquiryRepository->findItemById($itemId)
+                );
+            } elseif (is_array($body['items'] ?? null)) {
+                $priceGroup = (string) ($body['price_group'] ?? '');
+                $needsUnitPricePermission = SalesInquiryUnitPriceGate::itemsOverrideCatalogListPrices(
+                    $body['items'],
+                    static function (array $item) use ($salesInquiryRepository, $priceGroup): ?float {
+                        $ref = trim((string) ($item['item_refno'] ?? $item['item_id'] ?? ''));
+                        return $salesInquiryRepository->resolveCatalogListUnitPrice($ref, $priceGroup);
+                    }
+                );
+            } elseif (array_key_exists('unit_price', $body) && !SalesInquiryUnitPriceGate::isNotListed($body)) {
+                $priceGroup = (string) ($body['price_group'] ?? '');
+                $ref = trim((string) ($body['item_refno'] ?? $body['item_id'] ?? ''));
+                $listPrice = $salesInquiryRepository->resolveCatalogListUnitPrice($ref, $priceGroup);
+                $needsUnitPricePermission = SalesInquiryUnitPriceGate::itemsOverrideCatalogListPrices(
+                    [$body],
+                    static fn (): ?float => $listPrice
+                );
+            }
+
+            if ($needsUnitPricePermission) {
+                $permissionMiddleware->assertActionPermission($claims, 'edit_unit_price', 'Sales Inquiry');
+            }
+
             return $handler($params, $query, $body);
         });
     };
@@ -877,11 +938,11 @@ function app_router(): Router
     $router->post('/api/v1/sales-returns/{refno}/actions/unpost', $requireActionAuth([$salesReturnController, 'unpostAction'], 'Sales Return', 'unpost'));
     $router->get('/api/v1/sales-inquiries', $requireViewAuth([$salesInquiryController, 'list'], 'Sales Inquiry'));
     $router->get('/api/v1/sales-inquiries/{inquiryRefno}', $requireViewAuth([$salesInquiryController, 'show'], 'Sales Inquiry'));
-    $router->post('/api/v1/sales-inquiries', $requireActionAuth([$salesInquiryController, 'create'], 'Sales Inquiry', 'add'));
-    $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', $requireActionAuth([$salesInquiryController, 'update'], 'Sales Inquiry', 'edit'));
+    $router->post('/api/v1/sales-inquiries', $requireSalesInquiryWriteAuth([$salesInquiryController, 'create'], 'add'));
+    $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', $requireSalesInquiryWriteAuth([$salesInquiryController, 'update'], 'edit'));
     $router->delete('/api/v1/sales-inquiries/{inquiryRefno}', $requireActionAuth([$salesInquiryController, 'delete'], 'Sales Inquiry', 'delete'));
-    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/items', $requireActionAuth([$salesInquiryController, 'addItem'], 'Sales Inquiry', 'add'));
-    $router->patch('/api/v1/sales-inquiry-items/{itemId}', $requireActionAuth([$salesInquiryController, 'updateItem'], 'Sales Inquiry', 'edit'));
+    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/items', $requireSalesInquiryWriteAuth([$salesInquiryController, 'addItem'], 'add'));
+    $router->patch('/api/v1/sales-inquiry-items/{itemId}', $requireSalesInquiryWriteAuth([$salesInquiryController, 'updateItem'], 'edit'));
     $router->delete('/api/v1/sales-inquiry-items/{itemId}', $requireActionAuth([$salesInquiryController, 'deleteItem'], 'Sales Inquiry', 'delete'));
     $router->post('/api/v1/sales-inquiries/{inquiryRefno}/actions/{action}', $requireApproverAction([$salesInquiryController, 'action'], ['Sales Inquiry', 'SI']));
     $router->get('/api/v1/sales-orders', $requireViewAuth([$salesOrderController, 'list'], 'Sales Order'));

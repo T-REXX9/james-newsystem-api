@@ -17,6 +17,8 @@ final class ActionPermissionPolicy
         'can_unpost' => true,
         // Booklet catch-up only; Master User enables explicitly on System Access.
         'can_edit_invoice_number' => false,
+        // Catalog unit-price overrides on Sales Inquiry; Master User enables explicitly.
+        'can_edit_unit_price' => false,
     ];
 
     /**
@@ -75,6 +77,7 @@ final class ActionPermissionPolicy
             'post' => 'can_post',
             'unpost' => 'can_unpost',
             'update_number', 'edit_invoice_number' => 'can_edit_invoice_number',
+            'edit_unit_price' => 'can_edit_unit_price',
             default => null,
         };
 

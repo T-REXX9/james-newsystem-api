@@ -1267,6 +1267,62 @@ SQL;
     /**
      * @return array<string, mixed>|null
      */
+    public function findItemById(int $itemId): ?array
+    {
+        return $this->getItemById($itemId);
+    }
+
+    /**
+     * Product Database list unit price for a catalog item under the inquiry Price Code.
+     */
+    public function resolveCatalogListUnitPrice(string $itemRefno, string $priceGroup): ?float
+    {
+        $itemRefno = trim($itemRefno);
+        if ($itemRefno === '') {
+            return null;
+        }
+
+        $key = strtolower(preg_replace('/[\s_-]+/', '', $priceGroup) ?? '');
+        $names = match (true) {
+            in_array($key, ['vip1', 'vip'], true) => ['VIP 1', 'AAA'],
+            $key === 'vip2' => ['VIP2', 'AAA'],
+            $key === 'vip3' => ['VIP3'],
+            default => ['AAA'],
+        };
+
+        $pdo = $this->db->pdo();
+        foreach ($names as $name) {
+            $stmt = $pdo->prepare(
+                'SELECT lprice_amt
+                 FROM tblinventory_price
+                 WHERE linv_refno = :session
+                   AND lprice_name = :name
+                 ORDER BY lid DESC
+                 LIMIT 1'
+            );
+            $stmt->execute([
+                'session' => $itemRefno,
+                'name' => $name,
+            ]);
+            $amount = $stmt->fetchColumn();
+            if ($amount === false) {
+                continue;
+            }
+            $price = (float) $amount;
+            if ($name === 'VIP3') {
+                return $price;
+            }
+            if ($price > 0 || $name === 'AAA') {
+                return $price;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
     private function getItemById(int $itemId): ?array
     {
         $sql = <<<SQL

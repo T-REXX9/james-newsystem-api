@@ -53,3 +53,15 @@ $assert(ActionPermissionPolicy::allows([
 $assert(ActionPermissionPolicy::allows([
     'pages' => ['Invoice' => ['can_edit_invoice_number' => false]],
 ], 'update_number', true, 'Invoice') === true, 'Master User bypasses edit invoice number restriction');
+$assert(ActionPermissionPolicy::normalize(null)['can_edit_unit_price'] === false, 'edit unit price defaults off');
+$assert(ActionPermissionPolicy::allows([
+    'global' => ActionPermissionPolicy::DEFAULTS,
+    'pages' => ['Sales Inquiry' => ['can_edit_unit_price' => true]],
+], 'edit_unit_price', false, 'Sales Inquiry') === true, 'allows edit_unit_price when Sales Inquiry permission is enabled');
+$assert(ActionPermissionPolicy::allows([
+    'global' => ActionPermissionPolicy::DEFAULTS,
+    'pages' => ['Sales Inquiry' => ['can_edit' => true, 'can_edit_unit_price' => false]],
+], 'edit_unit_price', false, 'Sales Inquiry') === false, 'general edit does not grant edit unit price');
+$assert(ActionPermissionPolicy::allows([
+    'pages' => ['Sales Inquiry' => ['can_edit_unit_price' => false]],
+], 'edit_unit_price', true, 'Sales Inquiry') === true, 'Master User bypasses edit unit price restriction');

@@ -51,6 +51,10 @@ $expected = [
     '/api/v1/invoices/{invoiceRefno}/actions/update_number' => '$requireActionAuth',
     '/api/v1/invoices/number-sequence' => '$requireMasterUser',
     '/api/v1/server-maintenance/automatic-backup' => '$requireMasterUser',
+    '/api/v1/sales-inquiries' => '$requireSalesInquiryWriteAuth',
+    '/api/v1/sales-inquiries/{inquiryRefno}' => '$requireSalesInquiryWriteAuth',
+    '/api/v1/sales-inquiries/{inquiryRefno}/items' => '$requireSalesInquiryWriteAuth',
+    '/api/v1/sales-inquiry-items/{itemId}' => '$requireSalesInquiryWriteAuth',
 ];
 
 foreach ($expected as $route => $wrapper) {
