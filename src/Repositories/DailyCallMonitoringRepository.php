@@ -1805,10 +1805,8 @@ SQL;
         }
 
         $statement = $this->db->pdo()->prepare(
-            'SELECT CAST(COALESCE(a.ltype, 0) AS SIGNED) AS user_type,
-                    LOWER(TRIM(COALESCE(role.ltype_name, \'\'))) AS role_name
+            'SELECT CAST(COALESCE(a.ltype, 0) AS SIGNED) AS user_type
              FROM tblaccount a
-             LEFT JOIN tblusertype role ON role.lid = a.ltype
              WHERE a.lid = :viewer_id
                AND (a.lid = :main_id_owner OR a.lmother_id = :main_id_staff)
                AND COALESCE(a.lstatus, 0) = 1
@@ -1824,10 +1822,10 @@ SQL;
             return 0;
         }
 
-        if (DailyCallAccessPolicy::canViewAll(
-            (string) ($viewer['user_type'] ?? ''),
-            (string) ($viewer['role_name'] ?? '')
-        )) {
+        $userType = (string) ($viewer['user_type'] ?? '');
+        $permissions = (new RolePermissionRepository($this->db))
+            ->getActionPermissionsForAccount($mainId, $viewerUserId, (int) $userType);
+        if (DailyCallAccessPolicy::canViewAll($permissions, $userType === '1')) {
             return null;
         }
 

@@ -19,6 +19,9 @@ final class ActionPermissionPolicy
         'can_edit_invoice_number' => false,
         // Catalog unit-price overrides on Sales Inquiry; Master User enables explicitly.
         'can_edit_unit_price' => false,
+        // Widens a page from "only the records assigned to me" to every record.
+        // Defaults off so nobody gains reach from an unconfigured account.
+        'can_view_all_records' => false,
     ];
 
     /** Account-wide; defaults off. Not a per-page Page Action Permission. */
@@ -92,6 +95,7 @@ final class ActionPermissionPolicy
             'unpost' => 'can_unpost',
             'update_number', 'edit_invoice_number' => 'can_edit_invoice_number',
             'edit_unit_price' => 'can_edit_unit_price',
+            'view_all', 'view_all_records' => 'can_view_all_records',
             default => null,
         };
 

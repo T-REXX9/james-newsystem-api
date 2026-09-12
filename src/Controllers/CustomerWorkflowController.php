@@ -7,15 +7,26 @@ use App\Database;
 use App\Repositories\AuthRepository;
 use App\Repositories\CustomerRequestRepository;
 use App\Repositories\NotificationsRepository;
+use App\Repositories\RolePermissionRepository;
 use App\Repositories\SalesInquiryRepository;
 use App\Repositories\SalesReturnRepository;
+use App\Support\ActionPermissionPolicy;
 use App\Support\Exceptions\HttpException;
 
 final class CustomerWorkflowController
 {
     public function __construct(private readonly Database $db, private readonly AuthRepository $auth) {}
 
-    private function context(array $query, array $body, bool $customerAccess = true): array
+    /**
+     * @return array{0: int, 1: int, 2: bool} main id, user id, and whether the
+     *         viewer reaches every record instead of only their own
+     */
+    private function context(
+        array $query,
+        array $body,
+        bool $customerAccess = true,
+        string $page = 'Customer Data'
+    ): array
     {
         $claims = $body['__auth_claims'] ?? [];
         $userId = (int) ($claims['sub'] ?? 0);
@@ -23,11 +34,15 @@ final class CustomerWorkflowController
         $account = $this->auth->findUserById($userId);
         if (!$account || $mainId <= 0) throw new HttpException(401, 'Invalid authenticated account');
         if ($this->auth->resolveMainUserId($account) !== $mainId || (int) ($query['main_id'] ?? $mainId) !== $mainId || (int) ($body['main_id'] ?? $mainId) !== $mainId) throw new HttpException(403, 'Invalid account scope');
-        $role = strtolower(trim((string) $this->auth->getRoleName((int) ($account['ltype'] ?? 0))));
-        $owner = (string) $account['ltype'] === '1' || in_array($role, ['owner','company owner','developer'], true);
+        $isMasterUser = (string) $account['ltype'] === '1';
+        // Reach across other people's records is the "See all records" Page
+        // Action Permission, set on System Access, not a role name kept here.
+        $permissions = (new RolePermissionRepository($this->db))
+            ->getActionPermissionsForAccount($mainId, $userId, (int) ($account['ltype'] ?? 0));
+        $seesAllRecords = ActionPermissionPolicy::allows($permissions, 'view_all_records', $isMasterUser, $page);
         $rights = $this->auth->getDerivedAccessRights($account);
-        if ($customerAccess && !$owner && !array_intersect($rights, ['*','sales-transaction-daily-call-monitoring','sales-database-customer-database','maintenance-customer-customer-data'])) throw new HttpException(403, 'Customer workflow access required');
-        return [$mainId, $userId, $owner];
+        if ($customerAccess && !$isMasterUser && !array_intersect($rights, ['*','sales-transaction-daily-call-monitoring','sales-database-customer-database','maintenance-customer-customer-data'])) throw new HttpException(403, 'Customer workflow access required');
+        return [$mainId, $userId, $seesAllRecords];
     }
 
     public function inquiries(array $params, array $query, array $body): array
@@ -48,14 +63,14 @@ final class CustomerWorkflowController
 
     public function requests(array $params, array $query, array $body): array
     {
-        [$mainId, $userId, $owner] = $this->context($query, $body);
-        return (new CustomerRequestRepository($this->db))->list($mainId, rawurldecode($params['contactId']), $owner ? null : $userId);
+        [$mainId, $userId, $seesAllRecords] = $this->context($query, $body);
+        return (new CustomerRequestRepository($this->db))->list($mainId, rawurldecode($params['contactId']), $seesAllRecords ? null : $userId);
     }
 
     public function allRequests(array $params, array $query, array $body): array
     {
-        [$mainId, , $owner] = $this->context($query, $body);
-        if (!$owner) throw new HttpException(403, 'Only an owner can view all customer detail update requests');
+        [$mainId, , $seesAllRecords] = $this->context($query, $body);
+        if (!$seesAllRecords) throw new HttpException(403, 'You do not have permission to see all customer detail update requests');
         return (new CustomerRequestRepository($this->db))->listAll($mainId);
     }
 
@@ -104,15 +119,15 @@ final class CustomerWorkflowController
     }
     public function recycleBin(array $params, array $query, array $body): array
     {
-        [$mainId, , $owner] = $this->context($query, $body);
-        if (!$owner) throw new HttpException(403, 'Only an owner can access recovery records');
+        [$mainId, , $seesAllRecords] = $this->context($query, $body, true, 'Recycle Bin');
+        if (!$seesAllRecords) throw new HttpException(403, 'You do not have permission to see deleted records');
         return (new \App\Repositories\LocalRecycleBinRepository($this->db))->list($mainId);
     }
 
     public function restoreRecycleBinItem(array $params, array $query, array $body): array
     {
-        [$mainId, , $owner] = $this->context($query, $body);
-        if (!$owner) throw new HttpException(403, 'Only an owner can restore deleted records');
+        [$mainId, , $seesAllRecords] = $this->context($query, $body, true, 'Recycle Bin');
+        if (!$seesAllRecords) throw new HttpException(403, 'You do not have permission to restore deleted records');
         $type = rawurldecode((string) ($params['type'] ?? ''));
         $itemId = rawurldecode((string) ($params['itemId'] ?? ''));
         $restored = (new \App\Repositories\LocalRecycleBinRepository($this->db))->restore($mainId, $type, $itemId);

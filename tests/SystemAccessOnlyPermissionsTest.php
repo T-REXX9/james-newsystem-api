@@ -36,6 +36,15 @@ $documentRepositories = [
     'src/Repositories/ReceivingStockRepository.php',
 ];
 
+/**
+ * Record scope — whether a viewer reaches other people's rows — used to be
+ * role names too. It is now the can_view_all_records Page Action Permission.
+ */
+$scopeGates = [
+    'src/Support/DailyCallAccessPolicy.php' => ['accountant', 'assistant accountant'],
+    'src/Controllers/CustomerWorkflowController.php' => ['company owner', 'developer'],
+];
+
 $bootstrap = $read('src/bootstrap.php');
 $policy = $read('src/Support/ActionPermissionPolicy.php');
 $middleware = $read('src/Middleware/PermissionMiddleware.php');
@@ -61,6 +70,29 @@ foreach ($documentRepositories as $relative) {
     $checks["{$name} does not read a user's role to authorize"] =
         !str_contains($source, 'ltype_name') && !str_contains($source, 'assertPrivilegedAction');
 }
+
+foreach ($scopeGates as $relative => $roleNames) {
+    $source = $read($relative);
+    $name = basename($relative, '.php');
+
+    $found = [];
+    foreach ($roleNames as $role) {
+        if (stripos($source, $role) !== false) {
+            $found[] = $role;
+        }
+    }
+    $checks["{$name} decides record scope from a permission, not a role name"] = $found === []
+        ? true
+        : 'still mentions ' . implode(', ', $found);
+    $checks["{$name} asks System Access for the scope"] = str_contains($source, 'view_all_records');
+}
+
+// A permission nobody can see on System Access is no better than a hardcoded
+// one, so the migration that carries existing access over must be present.
+$migration = $root . '/migrations/049_seed_view_all_records_permission.sql';
+$checks['record scope defaults off'] = str_contains($policy, "'can_view_all_records' => false");
+$checks['scope grant is seeded for accounts that already had the reach'] = file_exists($migration)
+    && str_contains((string) file_get_contents($migration), 'can_view_all_records');
 
 // The single enforcement point still has to be there.
 $checks['routes gate actions through System Access'] = str_contains($bootstrap, '$requireActionAuth')
