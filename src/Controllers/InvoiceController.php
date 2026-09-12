@@ -77,6 +77,10 @@ final class InvoiceController
             throw new HttpException(422, 'main_id and user_id are required');
         }
 
+        // Manual invoice numbers require the dedicated edit-number permission via
+        // update_number. HTTP create only gets can_add, so ignore client overrides.
+        unset($body['invoice_no']);
+
         try {
             return $this->repo->createInvoice($mainId, $userId, $body);
         } catch (RuntimeException $e) {
