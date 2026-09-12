@@ -65,3 +65,24 @@ $assert(ActionPermissionPolicy::allows([
 $assert(ActionPermissionPolicy::allows([
     'pages' => ['Sales Inquiry' => ['can_edit_unit_price' => false]],
 ], 'edit_unit_price', true, 'Sales Inquiry') === true, 'Master User bypasses edit unit price restriction');
+$assert(ActionPermissionPolicy::normalizePagePermissions(null)['can_backdate'] === false, 'backdated posting defaults off');
+$assert(ActionPermissionPolicy::allows([
+    'global' => ActionPermissionPolicy::DEFAULTS,
+    'can_backdate' => true,
+], 'backdate', false) === true, 'allows account-wide backdated posting when enabled');
+$assert(ActionPermissionPolicy::allows([
+    'global' => ActionPermissionPolicy::DEFAULTS,
+    'can_backdate' => false,
+], 'backdate', false) === false, 'denies account-wide backdated posting when disabled');
+$assert(ActionPermissionPolicy::allows([
+    'can_backdate' => false,
+], 'backdate', true) === true, 'Master User bypasses backdated posting restriction');
+
+require __DIR__ . '/../src/Support/DocumentDatePolicy.php';
+
+use App\Support\DocumentDatePolicy;
+
+$assert(DocumentDatePolicy::validateWrite(false, '2026-09-10', '2026-09-10', '2026-09-12')['ok'] === true, 'allows unchanged past date without backdate');
+$assert(DocumentDatePolicy::validateWrite(false, '2026-09-10', '2026-09-12', '2026-09-12')['ok'] === false, 'rejects new past date without backdate');
+$assert(DocumentDatePolicy::validateWrite(true, '2026-09-01', '2026-09-12', '2026-09-12')['ok'] === true, 'allows past date with backdate');
+$assert(DocumentDatePolicy::validateWrite(true, '2026-09-20', '2026-09-12', '2026-09-12')['ok'] === false, 'rejects future document date');

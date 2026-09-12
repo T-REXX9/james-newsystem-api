@@ -44,6 +44,7 @@ use App\Controllers\SalesReturnController;
 use App\Controllers\SalesReportController;
 use App\Controllers\SalesReturnReportController;
 use App\Controllers\SalesInquiryController;
+use App\Controllers\SalesDocumentDateController;
 use App\Controllers\SalesOrderController;
 use App\Controllers\StockMovementController;
 use App\Controllers\StockAdjustmentController;
@@ -97,6 +98,8 @@ require __DIR__ . '/Support/VipDocumentDiscount.php';
 require __DIR__ . '/Support/VipStanding.php';
 require __DIR__ . '/Support/SalesInquiryUnitPriceGate.php';
 require __DIR__ . '/Support/ActionPermissionPolicy.php';
+require __DIR__ . '/Support/DocumentDatePolicy.php';
+require __DIR__ . '/Support/SalesDocumentDateCascade.php';
 require __DIR__ . '/Config.php';
 require __DIR__ . '/Database.php';
 require __DIR__ . '/Http/Response.php';
@@ -211,6 +214,7 @@ require __DIR__ . '/Controllers/SalesReturnController.php';
 require __DIR__ . '/Controllers/SalesReportController.php';
 require __DIR__ . '/Controllers/SalesReturnReportController.php';
 require __DIR__ . '/Controllers/SalesInquiryController.php';
+require __DIR__ . '/Controllers/SalesDocumentDateController.php';
 require __DIR__ . '/Controllers/SalesOrderController.php';
 require __DIR__ . '/Controllers/StockMovementController.php';
 require __DIR__ . '/Controllers/StockAdjustmentController.php';
@@ -358,6 +362,7 @@ function app_router(): Router
     $salesReturnReportController = new SalesReturnReportController(new App\Repositories\SalesReturnReportRepository($db));
     $salesInquiryRepository = new App\Repositories\SalesInquiryRepository($db);
     $salesInquiryController = new SalesInquiryController($salesInquiryRepository);
+    $salesDocumentDateController = new SalesDocumentDateController($db);
     $salesOrderController = new SalesOrderController(new App\Repositories\SalesOrderRepository($db));
     $stockMovementController = new StockMovementController(new App\Repositories\StockMovementRepository($db));
     $stockAdjustmentController = new StockAdjustmentController(new App\Repositories\StockAdjustmentRepository($db));
@@ -537,6 +542,22 @@ function app_router(): Router
                 $permissionMiddleware->assertActionPermission($claims, 'edit_unit_price', 'Sales Inquiry');
             }
 
+            if (array_key_exists('sales_date', $body)) {
+                $previousDate = null;
+                $inquiryRefnoForDate = trim((string) ($params['inquiryRefno'] ?? ''));
+                if ($inquiryRefnoForDate !== '') {
+                    $existingForDate = $salesInquiryRepository->getInquiry($mainId, $inquiryRefnoForDate);
+                    if (is_array($existingForDate)) {
+                        $previousDate = (string) ($existingForDate['sales_date'] ?? '');
+                    }
+                }
+                $permissionMiddleware->assertDocumentDateWrite(
+                    $claims,
+                    (string) $body['sales_date'],
+                    $previousDate !== '' ? $previousDate : null
+                );
+            }
+
             return $handler($params, $query, $body);
         });
     };
@@ -696,7 +717,24 @@ function app_router(): Router
     $router->get('/api/v1/collections/{collectionRefno}/items', $requireViewAuth([$collectionController, 'items'], 'Daily Collection Entry'));
     $router->get('/api/v1/collections/{collectionRefno}/approver-logs', $requireViewAuth([$collectionController, 'approverLogs'], 'Daily Collection Entry'));
     $router->post('/api/v1/collections/{collectionRefno}/items/post', $requireActionAuth([$collectionController, 'postItems'], 'Daily Collection Entry', 'post'));
-    $router->post('/api/v1/collections/{collectionRefno}/payments', $requireActionAuth([$collectionController, 'addPayment'], 'Daily Collection Entry', 'add'));
+    $router->post('/api/v1/collections/{collectionRefno}/payments', $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($collectionController, $permissionMiddleware): array {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $mainId = (int) ($claims['main_userid'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        $body['main_id'] = $mainId;
+        $query['main_id'] = (string) $mainId;
+        $body['user_id'] = (int) ($claims['sub'] ?? 0);
+        $permissionMiddleware->assertActionPermission($claims, 'add', 'Daily Collection Entry');
+        if (isset($body['collect_date']) && $body['collect_date'] !== '') {
+            $permissionMiddleware->assertDocumentDateWrite($claims, (string) $body['collect_date'], null);
+        }
+        if (isset($body['check_date']) && $body['check_date'] !== '') {
+            $permissionMiddleware->assertDocumentDateWrite($claims, (string) $body['check_date'], null);
+        }
+        return $collectionController->addPayment($params, $query, $body);
+    }));
     $router->post('/api/v1/collections/{collectionRefno}/actions/{action}', $requireApproverAction([$collectionController, 'action'], ['Daily Collection Entry', 'Collection']));
     $router->patch('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'updateItem'], 'Daily Collection Entry', 'edit'));
     $router->delete('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'deleteItem'], 'Daily Collection Entry', 'delete'));
@@ -955,6 +993,28 @@ function app_router(): Router
     $router->get('/api/v1/sales-inquiries/{inquiryRefno}', $requireViewAuth([$salesInquiryController, 'show'], 'Sales Inquiry'));
     $router->post('/api/v1/sales-inquiries', $requireSalesInquiryWriteAuth([$salesInquiryController, 'create'], 'add'));
     $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', $requireSalesInquiryWriteAuth([$salesInquiryController, 'update'], 'edit'));
+    $router->post('/api/v1/sales-documents/cascade-date', $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($salesDocumentDateController, $permissionMiddleware): array {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $mainId = (int) ($claims['main_userid'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        $body['main_id'] = $mainId;
+        $body['user_id'] = (int) ($claims['sub'] ?? 0);
+        $page = 'Sales Inquiry';
+        if (trim((string) ($body['invoice_refno'] ?? '')) !== '') {
+            $page = 'Invoice';
+        } elseif (trim((string) ($body['order_slip_refno'] ?? '')) !== '') {
+            $page = 'Order Slip';
+        } elseif (trim((string) ($body['sales_order_refno'] ?? '')) !== '') {
+            $page = 'Sales Order';
+        }
+        $permissionMiddleware->assertActionPermission($claims, 'edit', $page);
+        if (isset($body['sales_date']) && $body['sales_date'] !== '') {
+            $permissionMiddleware->assertDocumentDateWrite($claims, (string) $body['sales_date'], null);
+        }
+        return $salesDocumentDateController->cascadeDate($params, $query, $body);
+    }));
     $router->delete('/api/v1/sales-inquiries/{inquiryRefno}', $requireActionAuth([$salesInquiryController, 'delete'], 'Sales Inquiry', 'delete'));
     $router->post('/api/v1/sales-inquiries/{inquiryRefno}/items', $requireSalesInquiryWriteAuth([$salesInquiryController, 'addItem'], 'add'));
     $router->patch('/api/v1/sales-inquiry-items/{itemId}', $requireSalesInquiryWriteAuth([$salesInquiryController, 'updateItem'], 'edit'));

@@ -92,6 +92,27 @@ final class PermissionMiddleware
     }
 
     /**
+     * Enforce Backdated posting rules for a document-date write.
+     *
+     * @throws HttpException
+     */
+    public function assertDocumentDateWrite(array $claims, string $proposedYmd, ?string $previousYmd): void
+    {
+        $isMaster = (string) ($claims['user_type'] ?? '') === '1';
+        $permissions = $this->getActionPermissionsForUser($claims);
+        $hasBackdate = \App\Support\ActionPermissionPolicy::allows($permissions, 'backdate', $isMaster);
+        $result = \App\Support\DocumentDatePolicy::validateWrite(
+            $hasBackdate,
+            $proposedYmd,
+            $previousYmd,
+            \App\Support\DocumentDatePolicy::todayYmd()
+        );
+        if (!($result['ok'] ?? false)) {
+            throw new HttpException(403, (string) ($result['reason'] ?? 'Document date is not allowed.'));
+        }
+    }
+
+    /**
      * Extract and verify JWT claims from the Authorization header.
      *
      * @return array The decoded JWT claims

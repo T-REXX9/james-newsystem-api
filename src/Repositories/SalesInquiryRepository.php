@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\AuditTrailWriter;
+use App\Support\SalesDocumentDateCascade;
 use PDO;
 use RuntimeException;
 
@@ -471,6 +472,12 @@ SQL;
             }
 
             $this->syncLinkedSalesOrderFromInquiry($pdo, $mainId, $inquiryRefno, true, $syncItems);
+            $previousDate = $this->normalizeDate((string) ($existing['sales_date'] ?? ''));
+            if ($salesDate !== $previousDate) {
+                SalesDocumentDateCascade::apply($pdo, $mainId, $salesDate, [
+                    'inquiry_refno' => $inquiryRefno,
+                ]);
+            }
             $this->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
             $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
             (new AuditTrailWriter($pdo))->write($mainId, $auditUserId, 'Sales Inquiry', 'Update', $inquiryRefno);

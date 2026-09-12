@@ -21,6 +21,9 @@ final class ActionPermissionPolicy
         'can_edit_unit_price' => false,
     ];
 
+    /** Account-wide; defaults off. Not a per-page Page Action Permission. */
+    public const DEFAULT_CAN_BACKDATE = false;
+
     /**
      * @param array<string, mixed>|null $permissions
      * @return array<string, bool>
@@ -42,7 +45,7 @@ final class ActionPermissionPolicy
     /**
      * Normalize the new page-scoped shape while accepting legacy flat values.
      *
-     * @return array{global: array<string, bool>, pages: array<string, array<string, bool>>}
+     * @return array{global: array<string, bool>, pages: array<string, array<string, bool>>, can_backdate: bool}
      */
     public static function normalizePagePermissions(?array $permissions): array
     {
@@ -54,7 +57,14 @@ final class ActionPermissionPolicy
             $pages[$page] = self::normalize(array_merge($global, $pagePermissions));
         }
 
-        return ['global' => $global, 'pages' => $pages];
+        $canBackdate = self::DEFAULT_CAN_BACKDATE;
+        if (is_bool($permissions['can_backdate'] ?? null)) {
+            $canBackdate = $permissions['can_backdate'];
+        } elseif (isset($permissions['can_backdate'])) {
+            $canBackdate = (int) $permissions['can_backdate'] === 1;
+        }
+
+        return ['global' => $global, 'pages' => $pages, 'can_backdate' => $canBackdate];
     }
 
     /**
@@ -66,6 +76,10 @@ final class ActionPermissionPolicy
     {
         if ($isMasterUser) {
             return true;
+        }
+
+        if ($action === 'backdate' || $action === 'can_backdate') {
+            return self::normalizePagePermissions($permissions)['can_backdate'];
         }
 
         $field = match ($action) {
