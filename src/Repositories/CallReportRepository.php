@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\Exceptions\HttpException;
+use App\Support\SalesReportAttachmentStore;
 use PDO;
 
 final class CallReportRepository
@@ -185,7 +186,9 @@ final class CallReportRepository
         int $senderUserId,
         string $senderName,
         string $senderRole,
-        string $body
+        string $body,
+        ?string $attachmentUrl = null,
+        ?string $attachmentMime = null
     ): array {
         $thread = $this->getThreadById($mainId, $threadId, $senderUserId);
         if ($thread === null) {
@@ -201,26 +204,55 @@ final class CallReportRepository
         }
 
         if ($senderRole === 'agent' && (int) ($thread['agent_user_id'] ?? 0) !== $senderUserId) {
-            throw new HttpException(403, 'You can only follow up on your own call reports.');
+            $assignedAgentId = $this->resolveAssignedAgentId($mainId, (string) ($thread['contact_id'] ?? ''));
+            if ($assignedAgentId !== $senderUserId) {
+                throw new HttpException(403, 'You can only follow up on your own call reports.');
+            }
         }
 
         $trimmedBody = trim($body);
-        if ($trimmedBody === '') {
-            throw new HttpException(422, 'Reply message is required.');
+        $normalizedAttachmentUrl = trim((string) $attachmentUrl);
+        $normalizedAttachmentMime = trim((string) $attachmentMime);
+        if ($normalizedAttachmentUrl !== '') {
+            $this->assertImageAttachment($normalizedAttachmentUrl, $normalizedAttachmentMime);
+        }
+        if ($trimmedBody === '' && $normalizedAttachmentUrl === '') {
+            throw new HttpException(422, 'Reply message or picture attachment is required.');
         }
 
-        $insert = $this->db->pdo()->prepare(
-            'INSERT INTO call_report_messages
-             (thread_id, sender_user_id, sender_name, sender_role, body)
-             VALUES (:thread_id, :sender_user_id, :sender_name, :sender_role, :body)'
-        );
-        $insert->execute([
-            'thread_id' => $threadId,
-            'sender_user_id' => $senderUserId,
-            'sender_name' => $senderName !== '' ? $senderName : ('User ' . $senderUserId),
-            'sender_role' => $senderRole,
-            'body' => $trimmedBody,
-        ]);
+        $hasAttachmentColumns = $this->hasColumn('call_report_messages', 'attachment_url');
+        if ($hasAttachmentColumns) {
+            $insert = $this->db->pdo()->prepare(
+                'INSERT INTO call_report_messages
+                 (thread_id, sender_user_id, sender_name, sender_role, body, attachment_url, attachment_mime)
+                 VALUES (:thread_id, :sender_user_id, :sender_name, :sender_role, :body, :attachment_url, :attachment_mime)'
+            );
+            $insert->execute([
+                'thread_id' => $threadId,
+                'sender_user_id' => $senderUserId,
+                'sender_name' => $senderName !== '' ? $senderName : ('User ' . $senderUserId),
+                'sender_role' => $senderRole,
+                'body' => $trimmedBody !== '' ? $trimmedBody : ($normalizedAttachmentUrl !== '' ? '[Picture]' : ''),
+                'attachment_url' => $normalizedAttachmentUrl !== '' ? $normalizedAttachmentUrl : null,
+                'attachment_mime' => $normalizedAttachmentUrl !== '' ? ($normalizedAttachmentMime !== '' ? $normalizedAttachmentMime : 'image/jpeg') : null,
+            ]);
+        } else {
+            if ($normalizedAttachmentUrl !== '') {
+                throw new HttpException(503, 'Picture attachments are not available until the database migration is applied.');
+            }
+            $insert = $this->db->pdo()->prepare(
+                'INSERT INTO call_report_messages
+                 (thread_id, sender_user_id, sender_name, sender_role, body)
+                 VALUES (:thread_id, :sender_user_id, :sender_name, :sender_role, :body)'
+            );
+            $insert->execute([
+                'thread_id' => $threadId,
+                'sender_user_id' => $senderUserId,
+                'sender_name' => $senderName !== '' ? $senderName : ('User ' . $senderUserId),
+                'sender_role' => $senderRole,
+                'body' => $trimmedBody,
+            ]);
+        }
 
         $messageId = (int) $this->db->pdo()->lastInsertId();
         $message = $this->getMessageById($messageId, $senderUserId);
@@ -230,6 +262,8 @@ final class CallReportRepository
 
         if ($senderRole === 'master') {
             $this->notifyAgentOnReply($mainId, $thread, $message, $senderName);
+        } else {
+            $this->notifyMasterOnAgentMessage($mainId, $thread, $message, $senderName);
         }
 
         return $message;
@@ -250,6 +284,277 @@ final class CallReportRepository
         $stmt->execute(['thread_id' => $threadId, 'user_id' => $userId]);
 
         return true;
+    }
+
+    /**
+     * One chronological Agent Sales Report conversation per customer/prospect.
+     * Merges call-report threads, replies, and legacy management-instruction / staff-comment logs.
+     *
+     * @return array{contact_id: string, messages: list<array<string, mixed>>, unread_count: int}
+     */
+    public function getUnifiedConversation(int $mainId, string $contactId, int $viewerUserId): array
+    {
+        $this->backfillThreadsFromCallLogs($mainId, $contactId, $viewerUserId);
+        $threads = $this->getThreadsByContact($mainId, $contactId, $viewerUserId);
+        $messages = [];
+
+        foreach ($threads as $thread) {
+            $threadId = (string) ($thread['id'] ?? '');
+            $isSynthetic = str_starts_with($threadId, 'prospect_') || (($thread['replyable'] ?? true) === false && ($thread['call_log_entry_id'] ?? '') === '');
+            $reportBody = trim((string) ($thread['report_body'] ?? ''));
+            if ($reportBody !== '') {
+                $agentUserId = (string) ($thread['agent_user_id'] ?? '');
+                $messages[] = [
+                    'id' => 'report:' . $threadId,
+                    'thread_id' => $threadId,
+                    'contact_id' => $contactId,
+                    'kind' => 'agent_report',
+                    'sender_user_id' => $agentUserId,
+                    'sender_name' => (string) ($thread['agent_name'] ?? 'Sales Agent'),
+                    'sender_role' => 'agent',
+                    'body' => $reportBody,
+                    'attachment_url' => null,
+                    'attachment_mime' => null,
+                    'created_at' => (string) ($thread['created_at'] ?? ''),
+                    'is_from_current_user' => $agentUserId !== '' && (int) $agentUserId === $viewerUserId,
+                    'is_from_master' => false,
+                    'outcome' => (string) ($thread['outcome'] ?? 'note'),
+                    'call_started_at' => (string) ($thread['call_started_at'] ?? ''),
+                    'call_ended_at' => (string) ($thread['call_ended_at'] ?? ''),
+                    'duration_seconds' => (int) ($thread['duration_seconds'] ?? 0),
+                    'replyable' => !$isSynthetic && (($thread['replyable'] ?? true) !== false),
+                ];
+            }
+
+            foreach (($thread['messages'] ?? []) as $message) {
+                $messages[] = array_merge($message, [
+                    'contact_id' => $contactId,
+                    'kind' => 'reply',
+                    'attachment_url' => $message['attachment_url'] ?? null,
+                    'attachment_mime' => $message['attachment_mime'] ?? null,
+                ]);
+            }
+        }
+
+        foreach ($this->fetchLegacyConversationLogs($mainId, $contactId) as $log) {
+            $status = trim((string) ($log['status'] ?? ''));
+            $kind = strcasecmp($status, 'Management Instruction') === 0
+                ? 'management_instruction'
+                : 'staff_comment';
+            $authorId = (string) ($log['created_by'] ?? '');
+            $isMasterAuthor = $kind === 'management_instruction' || $this->isMasterUser((int) $authorId, $mainId);
+            $messages[] = [
+                'id' => 'legacy:' . (string) ($log['id'] ?? ''),
+                'thread_id' => '',
+                'contact_id' => $contactId,
+                'kind' => $kind,
+                'sender_user_id' => $authorId,
+                'sender_name' => (string) ($log['created_by_name'] ?? 'Staff'),
+                'sender_role' => $isMasterAuthor ? 'master' : 'agent',
+                'body' => trim((string) ($log['note'] ?? $log['comments'] ?? '')),
+                'attachment_url' => $this->normalizeLegacyAttachmentUrl((string) ($log['attachment'] ?? '')),
+                'attachment_mime' => null,
+                'created_at' => (string) ($log['occurred_at'] ?? ''),
+                'is_from_current_user' => $authorId !== '' && (int) $authorId === $viewerUserId,
+                'is_from_master' => $isMasterAuthor,
+                'replyable' => false,
+            ];
+        }
+
+        usort($messages, static function (array $left, array $right): int {
+            $timeCmp = strcmp((string) ($left['created_at'] ?? ''), (string) ($right['created_at'] ?? ''));
+            if ($timeCmp !== 0) {
+                return $timeCmp;
+            }
+            return strcmp((string) ($left['id'] ?? ''), (string) ($right['id'] ?? ''));
+        });
+
+        $readAt = $this->getContactLastReadAt($mainId, $contactId, $viewerUserId);
+        $unreadCount = 0;
+        foreach ($messages as $message) {
+            if ((bool) ($message['is_from_current_user'] ?? false)) {
+                continue;
+            }
+            if ($readAt === null || strcmp((string) ($message['created_at'] ?? ''), $readAt) > 0) {
+                $unreadCount++;
+            }
+        }
+
+        return [
+            'contact_id' => $contactId,
+            'messages' => array_values($messages),
+            'unread_count' => $unreadCount,
+        ];
+    }
+
+    public function addContactMessage(
+        int $mainId,
+        string $contactId,
+        int $senderUserId,
+        string $senderName,
+        string $senderRole,
+        string $body,
+        ?string $attachmentUrl = null,
+        ?string $attachmentMime = null
+    ): array {
+        if ($senderRole !== 'master' && $senderRole !== 'agent') {
+            throw new HttpException(422, 'sender_role must be agent or master');
+        }
+        if ($senderRole === 'master' && !$this->isMasterUser($senderUserId, $mainId)) {
+            throw new HttpException(403, 'Only the Master User can send management messages.');
+        }
+
+        $threadId = $this->resolveOrCreateConversationThreadId($mainId, $contactId, $senderUserId, $senderName, $senderRole);
+        $message = $this->addReply(
+            $mainId,
+            $threadId,
+            $senderUserId,
+            $senderName,
+            $senderRole,
+            $body,
+            $attachmentUrl,
+            $attachmentMime
+        );
+
+        return array_merge($message, [
+            'contact_id' => $contactId,
+            'kind' => 'reply',
+        ]);
+    }
+
+    public function markContactConversationRead(int $mainId, string $contactId, int $userId): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'INSERT INTO call_report_contact_read_states (main_id, contact_id, user_id, last_read_at)
+             VALUES (:main_id, :contact_id, :user_id, NOW())
+             ON DUPLICATE KEY UPDATE last_read_at = NOW()'
+        );
+        $stmt->execute([
+            'main_id' => $mainId,
+            'contact_id' => $contactId,
+            'user_id' => $userId,
+        ]);
+
+        $threads = $this->getThreadsByContact($mainId, $contactId, $userId);
+        foreach ($threads as $thread) {
+            $threadId = (int) ($thread['id'] ?? 0);
+            if ($threadId > 0) {
+                $this->markThreadRead($mainId, $threadId, $userId);
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * @return array{url: string, mime: string}
+     */
+    /**
+     * @return array{url: string, mime: string, filename: string}
+     */
+    public function storeConversationImage(string $imageData, string $contactId): array
+    {
+        $decoded = SalesReportAttachmentStore::decodeImageData($imageData);
+        $uploadsDir = SalesReportAttachmentStore::ensureStorageDirectory();
+        $safeContact = preg_replace('/[^a-zA-Z0-9_-]/', '', $contactId) ?: 'contact';
+        $filename = $safeContact . '_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $decoded['ext'];
+        $filepath = $uploadsDir . '/' . $filename;
+        if (file_put_contents($filepath, $decoded['binary']) === false) {
+            throw new HttpException(500, 'Unable to save the picture attachment.');
+        }
+
+        return [
+            'url' => SalesReportAttachmentStore::buildApiPath($contactId, $filename),
+            'mime' => $decoded['mime'],
+            'filename' => $filename,
+        ];
+    }
+
+    /**
+     * @return array{path: string, mime: string, filename: string}
+     */
+    public function resolveAttachmentForDownload(string $contactId, string $filename): array
+    {
+        SalesReportAttachmentStore::assertBelongsToContact($filename, $contactId);
+        $safeName = SalesReportAttachmentStore::sanitizeFilename($filename);
+        $path = SalesReportAttachmentStore::absolutePath($safeName);
+        if (!is_file($path)) {
+            throw new HttpException(404, 'Attachment was not found.');
+        }
+
+        return [
+            'path' => $path,
+            'mime' => SalesReportAttachmentStore::mimeFromFilename($safeName),
+            'filename' => $safeName,
+        ];
+    }
+
+    /**
+     * @param list<string> $contactIds
+     * @return array<string, int>
+     */
+    public function getUnreadCountsForContacts(int $mainId, array $contactIds, int $viewerUserId): array
+    {
+        $normalized = [];
+        foreach ($contactIds as $contactId) {
+            $id = trim((string) $contactId);
+            if ($id !== '') {
+                $normalized[$id] = 0;
+            }
+        }
+        if ($normalized === []) {
+            return [];
+        }
+
+        $ids = array_keys($normalized);
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $params = array_merge([$viewerUserId, $mainId], $ids, [$viewerUserId]);
+
+        $messageSql = "SELECT t.contact_id AS contact_id, COUNT(m.id) AS unread_count
+FROM call_report_messages m
+INNER JOIN call_report_threads t ON t.id = m.thread_id
+LEFT JOIN call_report_contact_read_states r
+  ON r.main_id = t.main_id AND r.contact_id = t.contact_id AND r.user_id = ?
+WHERE t.main_id = ?
+  AND t.contact_id IN ($placeholders)
+  AND m.sender_user_id <> ?
+  AND (r.last_read_at IS NULL OR m.created_at > r.last_read_at)
+GROUP BY t.contact_id";
+        try {
+            $stmt = $this->db->pdo()->prepare($messageSql);
+            $stmt->execute($params);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                $contactId = (string) ($row['contact_id'] ?? '');
+                if ($contactId !== '' && array_key_exists($contactId, $normalized)) {
+                    $normalized[$contactId] += (int) ($row['unread_count'] ?? 0);
+                }
+            }
+        } catch (\Throwable) {
+        }
+
+        $reportSql = "SELECT t.contact_id AS contact_id, COUNT(t.id) AS unread_count
+FROM call_report_threads t
+LEFT JOIN call_report_contact_read_states r
+  ON r.main_id = t.main_id AND r.contact_id = t.contact_id AND r.user_id = ?
+WHERE t.main_id = ?
+  AND t.contact_id IN ($placeholders)
+  AND TRIM(COALESCE(t.report_body, '')) <> ''
+  AND t.agent_user_id <> ?
+  AND (r.last_read_at IS NULL OR t.created_at > r.last_read_at)
+GROUP BY t.contact_id";
+        try {
+            $stmt = $this->db->pdo()->prepare($reportSql);
+            $stmt->execute($params);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) ?: [] as $row) {
+                $contactId = (string) ($row['contact_id'] ?? '');
+                if ($contactId !== '' && array_key_exists($contactId, $normalized)) {
+                    $normalized[$contactId] += (int) ($row['unread_count'] ?? 0);
+                }
+            }
+        } catch (\Throwable) {
+        }
+
+        return $normalized;
     }
 
     public function backfillThreadsFromCallLogs(int $mainId, string $contactId, int $viewerUserId): void
@@ -390,6 +695,8 @@ SQL;
     {
         $senderUserId = (int) ($row['sender_user_id'] ?? 0);
         $senderRole = (string) ($row['sender_role'] ?? 'agent');
+        $attachmentUrl = trim((string) ($row['attachment_url'] ?? ''));
+        $attachmentMime = trim((string) ($row['attachment_mime'] ?? ''));
 
         return [
             'id' => (string) ($row['id'] ?? ''),
@@ -398,6 +705,8 @@ SQL;
             'sender_name' => (string) ($row['sender_name'] ?? ''),
             'sender_role' => $senderRole,
             'body' => (string) ($row['body'] ?? ''),
+            'attachment_url' => $attachmentUrl !== '' ? $attachmentUrl : null,
+            'attachment_mime' => $attachmentUrl !== '' ? ($attachmentMime !== '' ? $attachmentMime : null) : null,
             'created_at' => (string) ($row['created_at'] ?? ''),
             'is_from_current_user' => $senderUserId === $viewerUserId,
             'is_from_master' => $senderRole === 'master',
@@ -560,6 +869,10 @@ SQL;
         try {
             $agentUserId = trim((string) ($thread['agent_user_id'] ?? ''));
             if ($agentUserId === '') {
+                $assigned = $this->resolveAssignedAgentId($mainId, (string) ($thread['contact_id'] ?? ''));
+                $agentUserId = $assigned > 0 ? (string) $assigned : '';
+            }
+            if ($agentUserId === '') {
                 return;
             }
 
@@ -605,6 +918,211 @@ SQL;
         } catch (\Throwable $error) {
             error_log('Call report agent notification failed: ' . $error->getMessage());
         }
+    }
+
+    private function notifyMasterOnAgentMessage(int $mainId, array $thread, array $message, string $senderName): void
+    {
+        try {
+            $notifications = new NotificationsRepository($this->db);
+            $customerName = $this->getCustomerName($mainId, (string) ($thread['contact_id'] ?? ''));
+            $snippet = $this->messageSnippet((string) ($message['body'] ?? ''));
+            $messageId = (string) ($message['id'] ?? '');
+            $contactId = (string) ($thread['contact_id'] ?? '');
+
+            $notifications->create([
+                'recipient_id' => (string) $mainId,
+                'title' => 'New Agent Sales Report message',
+                'message' => sprintf(
+                    '%s sent a message about %s. %s',
+                    $senderName !== '' ? $senderName : 'A sales agent',
+                    $customerName,
+                    $snippet
+                ),
+                'type' => 'info',
+                'category' => 'notification',
+                'main_id' => (string) $mainId,
+                'action_url' => 'sales-transaction-daily-call-monitoring',
+                'metadata' => [
+                    'entity_type' => 'call_report_reply',
+                    'entity_id' => $messageId,
+                    'contact_id' => $contactId,
+                    'thread_id' => (string) ($thread['id'] ?? ''),
+                    'action' => 'agent_message',
+                    'status' => 'unread',
+                    'action_url' => 'sales-transaction-daily-call-monitoring',
+                    'refno' => 'call-report-agent-message:' . $messageId,
+                    'idempotency_key' => 'call-report-agent-message:' . $messageId . ':master',
+                    'category' => 'notification',
+                    'actor_role' => 'Sales Agent',
+                ],
+            ]);
+        } catch (\Throwable $error) {
+            error_log('Call report master follow-up notification failed: ' . $error->getMessage());
+        }
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function fetchLegacyConversationLogs(int $mainId, string $contactId): array
+    {
+        $sql = <<<SQL
+SELECT
+    CAST(cl.lid AS CHAR) AS id,
+    CAST(cl.lcustomer_id AS CHAR) AS contact_id,
+    COALESCE(NULLIF(cl.lstatus, ''), 'Note') AS status,
+    cl.lnotes AS note,
+    cl.comments AS comments,
+    NULLIF(cl.lfile, '') AS attachment,
+    cl.ldatetime AS occurred_at,
+    CAST(cl.luser AS CHAR) AS created_by,
+    COALESCE(
+        NULLIF(TRIM(CONCAT(COALESCE(ua.lfname, ''), ' ', COALESCE(ua.llname, ''))), ''),
+        CAST(cl.luser AS CHAR)
+    ) AS created_by_name
+FROM tblcustomer_logs cl
+LEFT JOIN tblaccount ua ON CAST(ua.lid AS CHAR) = CAST(cl.luser AS CHAR)
+WHERE cl.lmain_id = :main_id
+  AND CAST(cl.lcustomer_id AS CHAR) = :contact_id
+  AND LOWER(COALESCE(cl.ltopic, '')) = 'comment'
+  AND LOWER(COALESCE(cl.ltype, 'note')) <> 'status'
+ORDER BY cl.ldatetime ASC, cl.lid ASC
+LIMIT 300
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute(['main_id' => $mainId, 'contact_id' => $contactId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    }
+
+    private function normalizeLegacyAttachmentUrl(string $attachment): ?string
+    {
+        $value = trim($attachment);
+        if ($value === '') {
+            return null;
+        }
+        if (str_starts_with($value, 'data:image/') || str_starts_with($value, 'http://') || str_starts_with($value, 'https://') || str_starts_with($value, '/')) {
+            return $value;
+        }
+        return null;
+    }
+
+    private function getContactLastReadAt(int $mainId, string $contactId, int $userId): ?string
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT last_read_at FROM call_report_contact_read_states
+             WHERE main_id = :main_id AND contact_id = :contact_id AND user_id = :user_id
+             LIMIT 1'
+        );
+        try {
+            $stmt->execute(['main_id' => $mainId, 'contact_id' => $contactId, 'user_id' => $userId]);
+            $value = $stmt->fetchColumn();
+            if ($value !== false && $value !== null && trim((string) $value) !== '') {
+                return (string) $value;
+            }
+        } catch (\Throwable) {
+            // Table may not exist until migration 048 is applied.
+        }
+        return null;
+    }
+
+    private function resolveAssignedAgentId(int $mainId, string $contactId): int
+    {
+        if ($contactId === '') {
+            return 0;
+        }
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT CAST(COALESCE(lsales_person, 0) AS SIGNED)
+             FROM tblpatient
+             WHERE lmain_id = :main_id
+               AND (CAST(lid AS CHAR) = :contact_id OR lsessionid = :contact_session)
+               AND COALESCE(ldeleted, 0) = 0
+             LIMIT 1'
+        );
+        $stmt->execute([
+            'main_id' => $mainId,
+            'contact_id' => $contactId,
+            'contact_session' => $contactId,
+        ]);
+        return (int) $stmt->fetchColumn();
+    }
+
+    private function resolveOrCreateConversationThreadId(
+        int $mainId,
+        string $contactId,
+        int $senderUserId,
+        string $senderName,
+        string $senderRole
+    ): int {
+        $threads = $this->getThreadsByContact($mainId, $contactId, $senderUserId);
+        foreach ($threads as $thread) {
+            if (($thread['replyable'] ?? true) === false) {
+                continue;
+            }
+            $threadId = (int) ($thread['id'] ?? 0);
+            if ($threadId > 0) {
+                return $threadId;
+            }
+        }
+
+        $assignedAgentId = $this->resolveAssignedAgentId($mainId, $contactId);
+        $agentUserId = $assignedAgentId > 0
+            ? $assignedAgentId
+            : ($senderRole === 'agent' ? $senderUserId : $senderUserId);
+        $agentName = $senderRole === 'agent'
+            ? ($senderName !== '' ? $senderName : ('User ' . $senderUserId))
+            : 'Sales Agent';
+
+        if ($assignedAgentId > 0 && $senderRole === 'master') {
+            $nameStmt = $this->db->pdo()->prepare(
+                'SELECT TRIM(CONCAT(COALESCE(lfname, \'\'), \' \', COALESCE(llname, \'\'))) FROM tblaccount WHERE lid = :id LIMIT 1'
+            );
+            $nameStmt->execute(['id' => $assignedAgentId]);
+            $resolvedName = trim((string) $nameStmt->fetchColumn());
+            if ($resolvedName !== '') {
+                $agentName = $resolvedName;
+            }
+            $agentUserId = $assignedAgentId;
+        }
+
+        $hasDirectColumn = $this->hasColumn('call_report_threads', 'is_direct');
+        $columns = 'main_id, contact_id, call_log_entry_id, call_log_refno, agent_user_id, agent_name, outcome, report_body, created_at';
+        $values = ':main_id, :contact_id, NULL, :call_log_refno, :agent_user_id, :agent_name, \'note\', \'\', NOW()';
+        $params = [
+            'main_id' => $mainId,
+            'contact_id' => $contactId,
+            'call_log_refno' => 'direct-' . $contactId,
+            'agent_user_id' => $agentUserId > 0 ? $agentUserId : $senderUserId,
+            'agent_name' => $agentName,
+        ];
+        if ($hasDirectColumn) {
+            $columns = 'main_id, contact_id, is_direct, call_log_entry_id, call_log_refno, agent_user_id, agent_name, outcome, report_body, created_at';
+            $values = ':main_id, :contact_id, 1, NULL, :call_log_refno, :agent_user_id, :agent_name, \'note\', \'\', NOW()';
+        }
+
+        $insert = $this->db->pdo()->prepare(
+            "INSERT INTO call_report_threads ($columns) VALUES ($values)"
+        );
+        $insert->execute($params);
+
+        return (int) $this->db->pdo()->lastInsertId();
+    }
+
+    private function assertImageAttachment(string $url, string $mime): void
+    {
+        SalesReportAttachmentStore::assertImageMime($mime);
+        if ($url === '') {
+            throw new HttpException(422, 'Picture attachment URL is required.');
+        }
+    }
+
+    private function hasColumn(string $table, string $column): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table_name AND COLUMN_NAME = :column_name'
+        );
+        $stmt->execute(['table_name' => $table, 'column_name' => $column]);
+        return (int) $stmt->fetchColumn() > 0;
     }
 
     private function getCustomerName(int $mainId, string $contactId): string

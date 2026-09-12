@@ -345,6 +345,12 @@ SQL);
             'last_month' => date('Y-m', strtotime('-1 month')),
             'ledger_main_id' => $mainIdStr,
             'latest_active_main_id' => $mainIdStr,
+            'txn_priority_from_date' => $normalizedFromDate,
+            'txn_historical_before_date' => $normalizedFromDate,
+            'txn_current_month' => date('Y-m'),
+            'txn_last_month' => date('Y-m', strtotime('-1 month')),
+            'txn_main_id' => $mainId,
+            'txn_latest_active_main_id' => $mainId,
             'verification_main_id' => $mainId,
         ];
 
@@ -415,24 +421,58 @@ SELECT
     COALESCE(p.ldatetime, '') AS created_at,
     COALESCE(p.lnotes, '') AS prospect_comment,
     COALESCE(p.lprice_group, '') AS price_group,
-    ledger_summary.last_purchase_date_raw,
-    COALESCE(ledger_summary.purchase_count, 0) AS purchase_count,
-    COALESCE(ledger_summary.priority_transaction_count, 0) AS priority_transaction_count,
-    COALESCE(ledger_summary.ledger_transaction_count, 0) AS ledger_transaction_count,
-    COALESCE(ledger_summary.historical_transaction_count, 0) AS historical_transaction_count,
-    COALESCE(ledger_summary.active_purchase_month_count, 0) AS active_purchase_month_count,
-    COALESCE(ledger_summary.total_sales, 0) AS total_sales,
-    COALESCE(ledger_summary.priority_trailing_12_month_sales, 0) AS priority_trailing_12_month_sales,
-    COALESCE(ledger_summary.priority_trailing_12_month_month_count, 0) AS priority_trailing_12_month_month_count,
-    COALESCE(ledger_summary.recovery_trailing_12_month_sales, 0) AS recovery_trailing_12_month_sales,
-    COALESCE(ledger_summary.recovery_trailing_12_month_month_count, 0) AS recovery_trailing_12_month_month_count,
-    ledger_summary.last_active_year,
-    COALESCE(ledger_summary.current_month_sales, 0) AS current_month_sales,
-    COALESCE(ledger_summary.last_month_sales, 0) AS last_month_sales,
-    COALESCE(ledger_summary.recent_three_month_sales, 0) AS recent_three_month_sales,
-    COALESCE(ledger_summary.previous_three_month_sales, 0) AS previous_three_month_sales,
-    ledger_summary.days_since_last_purchase,
-    ledger_summary.months_since_last_purchase
+    CASE
+        WHEN ledger_summary.last_purchase_date_raw IS NULL THEN txn_summary.last_purchase_date_raw
+        WHEN txn_summary.last_purchase_date_raw IS NULL THEN ledger_summary.last_purchase_date_raw
+        WHEN ledger_summary.last_purchase_date_raw >= txn_summary.last_purchase_date_raw THEN ledger_summary.last_purchase_date_raw
+        ELSE txn_summary.last_purchase_date_raw
+    END AS last_purchase_date_raw,
+    COALESCE(ledger_summary.purchase_count, 0) + COALESCE(txn_summary.purchase_count, 0) AS purchase_count,
+    COALESCE(ledger_summary.priority_transaction_count, 0) + COALESCE(txn_summary.priority_transaction_count, 0) AS priority_transaction_count,
+    COALESCE(ledger_summary.ledger_transaction_count, 0) + COALESCE(txn_summary.transaction_count, 0) AS ledger_transaction_count,
+    COALESCE(ledger_summary.historical_transaction_count, 0) + COALESCE(txn_summary.historical_transaction_count, 0) AS historical_transaction_count,
+    GREATEST(
+        COALESCE(ledger_summary.active_purchase_month_count, 0),
+        COALESCE(txn_summary.active_purchase_month_count, 0)
+    ) AS active_purchase_month_count,
+    COALESCE(ledger_summary.total_sales, 0) + COALESCE(txn_summary.total_sales, 0) AS total_sales,
+    COALESCE(ledger_summary.priority_trailing_12_month_sales, 0) + COALESCE(txn_summary.priority_trailing_12_month_sales, 0) AS priority_trailing_12_month_sales,
+    GREATEST(
+        COALESCE(ledger_summary.priority_trailing_12_month_month_count, 0),
+        COALESCE(txn_summary.priority_trailing_12_month_month_count, 0)
+    ) AS priority_trailing_12_month_month_count,
+    CASE
+        WHEN COALESCE(ledger_summary.recovery_trailing_12_month_sales, 0) > 0 THEN ledger_summary.recovery_trailing_12_month_sales
+        ELSE COALESCE(txn_summary.recovery_trailing_12_month_sales, 0)
+    END AS recovery_trailing_12_month_sales,
+    CASE
+        WHEN COALESCE(ledger_summary.recovery_trailing_12_month_month_count, 0) > 0 THEN ledger_summary.recovery_trailing_12_month_month_count
+        ELSE COALESCE(txn_summary.recovery_trailing_12_month_month_count, 0)
+    END AS recovery_trailing_12_month_month_count,
+    COALESCE(ledger_summary.last_active_year, txn_summary.last_active_year) AS last_active_year,
+    COALESCE(ledger_summary.current_month_sales, 0) + COALESCE(txn_summary.current_month_sales, 0) AS current_month_sales,
+    COALESCE(ledger_summary.last_month_sales, 0) + COALESCE(txn_summary.last_month_sales, 0) AS last_month_sales,
+    COALESCE(ledger_summary.recent_three_month_sales, 0) + COALESCE(txn_summary.recent_three_month_sales, 0) AS recent_three_month_sales,
+    COALESCE(ledger_summary.previous_three_month_sales, 0) + COALESCE(txn_summary.previous_three_month_sales, 0) AS previous_three_month_sales,
+    DATEDIFF(
+        CURDATE(),
+        CASE
+            WHEN ledger_summary.last_purchase_date_raw IS NULL THEN txn_summary.last_purchase_date_raw
+            WHEN txn_summary.last_purchase_date_raw IS NULL THEN ledger_summary.last_purchase_date_raw
+            WHEN ledger_summary.last_purchase_date_raw >= txn_summary.last_purchase_date_raw THEN ledger_summary.last_purchase_date_raw
+            ELSE txn_summary.last_purchase_date_raw
+        END
+    ) AS days_since_last_purchase,
+    TIMESTAMPDIFF(
+        MONTH,
+        CASE
+            WHEN ledger_summary.last_purchase_date_raw IS NULL THEN txn_summary.last_purchase_date_raw
+            WHEN txn_summary.last_purchase_date_raw IS NULL THEN ledger_summary.last_purchase_date_raw
+            WHEN ledger_summary.last_purchase_date_raw >= txn_summary.last_purchase_date_raw THEN ledger_summary.last_purchase_date_raw
+            ELSE txn_summary.last_purchase_date_raw
+        END,
+        CURDATE()
+    ) AS months_since_last_purchase
 FROM tblpatient p
 LEFT JOIN tblaccount a
     ON a.lid = p.lsales_person
@@ -502,6 +542,63 @@ LEFT JOIN (
 ) ledger_summary ON ledger_summary.lcustomerid = p.lsessionid
     AND ledger_summary.lmainid = CAST(p.lmain_id AS CHAR)
 LEFT JOIN (
+    SELECT
+        tr.lcustomerid,
+        CAST(tr.lmain_id AS CHAR) AS lmainid,
+        DATE(MAX(tr.ldate)) AS last_purchase_date_raw,
+        COUNT(tr.lid) AS purchase_count,
+        COUNT(CASE WHEN tr.ldate >= :txn_priority_from_date THEN tr.lid END) AS priority_transaction_count,
+        COUNT(tr.lid) AS transaction_count,
+        COUNT(CASE WHEN tr.ldate < :txn_historical_before_date THEN tr.lid END) AS historical_transaction_count,
+        COUNT(DISTINCT DATE_FORMAT(tr.ldate, '%Y-%m')) AS active_purchase_month_count,
+        SUM(COALESCE(NULLIF(tr.lamount, 0), 0)) AS total_sales,
+        SUM(CASE WHEN tr.ldate >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS priority_trailing_12_month_sales,
+        COUNT(DISTINCT CASE WHEN tr.ldate >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND COALESCE(NULLIF(tr.lamount, 0), 0) > 0 THEN DATE_FORMAT(tr.ldate, '%Y-%m') END) AS priority_trailing_12_month_month_count,
+        SUM(CASE
+            WHEN ty.last_active_purchase_at IS NOT NULL
+              AND tr.ldate >= DATE_SUB(ty.last_active_purchase_at, INTERVAL 12 MONTH)
+              AND tr.ldate <= ty.last_active_purchase_at
+            THEN COALESCE(NULLIF(tr.lamount, 0), 0)
+            ELSE 0
+        END) AS recovery_trailing_12_month_sales,
+        COUNT(DISTINCT CASE
+            WHEN ty.last_active_purchase_at IS NOT NULL
+              AND tr.ldate >= DATE_SUB(ty.last_active_purchase_at, INTERVAL 12 MONTH)
+              AND tr.ldate <= ty.last_active_purchase_at
+              AND COALESCE(NULLIF(tr.lamount, 0), 0) > 0
+            THEN DATE_FORMAT(tr.ldate, '%Y-%m')
+        END) AS recovery_trailing_12_month_month_count,
+        ty.last_active_year,
+        SUM(CASE WHEN DATE_FORMAT(tr.ldate, '%Y-%m') = :txn_current_month THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS current_month_sales,
+        SUM(CASE WHEN DATE_FORMAT(tr.ldate, '%Y-%m') = :txn_last_month THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS last_month_sales,
+        SUM(CASE WHEN tr.ldate >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS recent_three_month_sales,
+        SUM(CASE WHEN tr.ldate >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) AND tr.ldate < DATE_SUB(CURDATE(), INTERVAL 3 MONTH) THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS previous_three_month_sales
+    FROM tbltransaction tr
+        LEFT JOIN (
+            SELECT
+                latest_txn.lcustomerid,
+                latest_txn.lmain_id,
+                MAX(YEAR(latest_txn.ldate)) AS last_active_year,
+                MAX(latest_txn.ldate) AS last_active_purchase_at
+            FROM tbltransaction latest_txn
+            WHERE latest_txn.lmain_id = :txn_latest_active_main_id
+              AND latest_txn.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+              AND COALESCE(latest_txn.lcancel, 0) = 0
+              AND COALESCE(latest_txn.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+              AND COALESCE(NULLIF(latest_txn.lamount, 0), 0) > 0
+              AND COALESCE(latest_txn.lcustomerid, '') <> ''
+            GROUP BY latest_txn.lcustomerid, latest_txn.lmain_id
+        ) ty ON ty.lcustomerid = tr.lcustomerid
+        AND ty.lmain_id = tr.lmain_id
+    WHERE tr.lmain_id = :txn_main_id
+      AND tr.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+      AND COALESCE(tr.lcancel, 0) = 0
+      AND COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+      AND COALESCE(tr.lcustomerid, '') <> ''
+    GROUP BY tr.lcustomerid, tr.lmain_id, ty.last_active_year, ty.last_active_purchase_at
+) txn_summary ON txn_summary.lcustomerid = p.lsessionid
+    AND txn_summary.lmainid = CAST(p.lmain_id AS CHAR)
+LEFT JOIN (
     SELECT audit.lmain_id, audit.lrefno, audit.luser_id
     FROM tblaudit_trail audit
     INNER JOIN (
@@ -521,8 +618,16 @@ LEFT JOIN (
 LEFT JOIN tblaccount verifier ON verifier.lid = verification_audit.luser_id
 WHERE {$whereSql}
 ORDER BY
-    CASE WHEN ledger_summary.last_purchase_date_raw IS NULL THEN 1 ELSE 0 END ASC,
-    last_purchase_date_raw DESC,
+    CASE
+        WHEN ledger_summary.last_purchase_date_raw IS NULL AND txn_summary.last_purchase_date_raw IS NULL THEN 1
+        ELSE 0
+    END ASC,
+    CASE
+        WHEN ledger_summary.last_purchase_date_raw IS NULL THEN txn_summary.last_purchase_date_raw
+        WHEN txn_summary.last_purchase_date_raw IS NULL THEN ledger_summary.last_purchase_date_raw
+        WHEN ledger_summary.last_purchase_date_raw >= txn_summary.last_purchase_date_raw THEN ledger_summary.last_purchase_date_raw
+        ELSE txn_summary.last_purchase_date_raw
+    END DESC,
     total_sales DESC,
     shop_name ASC
 SQL;

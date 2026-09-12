@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Controllers;
 
+use App\Http\Response;
 use App\Repositories\CallReportRepository;
 use App\Repositories\CustomerDatabaseRepository;
 use App\Repositories\CustomerRepository;
@@ -499,6 +500,8 @@ final class DailyCallMonitoringController
 
         $senderName = trim((string) ($body['sender_name'] ?? 'Master User')) ?: 'Master User';
         $messageBody = trim((string) ($body['body'] ?? ''));
+        $attachmentUrl = trim((string) ($body['attachment_url'] ?? ''));
+        $attachmentMime = trim((string) ($body['attachment_mime'] ?? ''));
         $userType = (string) ($claims['user_type'] ?? '');
         $senderRole = $userType === '1' ? 'master' : 'agent';
 
@@ -508,8 +511,175 @@ final class DailyCallMonitoringController
             $senderUserId,
             $senderName,
             $senderRole,
-            $messageBody
+            $messageBody,
+            $attachmentUrl !== '' ? $attachmentUrl : null,
+            $attachmentMime !== '' ? $attachmentMime : null
         );
+    }
+
+    public function salesReportConversation(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $viewerUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($query['main_id'] ?? 0);
+        $contactId = trim((string) ($params['contactId'] ?? ''));
+        if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '') {
+            throw new HttpException(422, 'main_id, contactId, and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
+
+        return $this->callReportRepo->getUnifiedConversation($mainId, $contactId, $viewerUserId);
+    }
+
+    public function createSalesReportMessage(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $senderUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $contactId = trim((string) ($params['contactId'] ?? ''));
+        if ($senderUserId <= 0 || $mainId <= 0 || $contactId === '') {
+            throw new HttpException(422, 'main_id, contactId, and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $senderUserId);
+
+        $senderName = trim((string) ($body['sender_name'] ?? '')) ?: 'Staff';
+        $messageBody = trim((string) ($body['body'] ?? ''));
+        $attachmentUrl = trim((string) ($body['attachment_url'] ?? ''));
+        $attachmentMime = trim((string) ($body['attachment_mime'] ?? ''));
+        $userType = (string) ($claims['user_type'] ?? '');
+        $senderRole = $userType === '1' ? 'master' : 'agent';
+
+        return $this->callReportRepo->addContactMessage(
+            $mainId,
+            $contactId,
+            $senderUserId,
+            $senderName,
+            $senderRole,
+            $messageBody,
+            $attachmentUrl !== '' ? $attachmentUrl : null,
+            $attachmentMime !== '' ? $attachmentMime : null
+        );
+    }
+
+    public function markSalesReportConversationRead(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $viewerUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? $query['main_id'] ?? 0);
+        $contactId = trim((string) ($params['contactId'] ?? ''));
+        if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '') {
+            throw new HttpException(422, 'main_id, contactId, and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
+
+        return ['read' => $this->callReportRepo->markContactConversationRead($mainId, $contactId, $viewerUserId)];
+    }
+
+    public function uploadSalesReportAttachment(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $viewerUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $contactId = trim((string) ($body['contact_id'] ?? ''));
+        $imageData = (string) ($body['image_data'] ?? '');
+        if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '' || trim($imageData) === '') {
+            throw new HttpException(422, 'main_id, contact_id, image_data, and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
+
+        return $this->callReportRepo->storeConversationImage($imageData, $contactId);
+    }
+
+
+    public function downloadSalesReportAttachment(array $params = [], array $query = [], array $body = []): ?array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $viewerUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($query['main_id'] ?? $body['main_id'] ?? 0);
+        $contactId = trim((string) ($params['contactId'] ?? ''));
+        $filename = trim((string) ($params['filename'] ?? ''));
+        if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '' || $filename === '') {
+            throw new HttpException(422, 'main_id, contactId, filename, and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
+
+        $file = $this->callReportRepo->resolveAttachmentForDownload($contactId, $filename);
+        $bytes = filesize($file['path']);
+        if ($bytes === false) {
+            throw new HttpException(500, 'Unable to read attachment.');
+        }
+        $handle = fopen($file['path'], 'rb');
+        if ($handle === false) {
+            throw new HttpException(500, 'Unable to open attachment.');
+        }
+
+        http_response_code(200);
+        header('Content-Type: ' . $file['mime']);
+        header('Content-Length: ' . (string) $bytes);
+        header('Content-Disposition: inline; filename="' . $file['filename'] . '"');
+        header('Cache-Control: private, no-store');
+        header('X-Content-Type-Options: nosniff');
+        header('Access-Control-Allow-Origin: *');
+        header('Access-Control-Allow-Headers: Content-Type, Authorization');
+        header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
+        Response::flush();
+        try {
+            while (!feof($handle)) {
+                $chunk = fread($handle, 1024 * 64);
+                if ($chunk === false || $chunk === '') break;
+                echo $chunk;
+                Response::flush();
+            }
+        } finally {
+            fclose($handle);
+        }
+        return null;
+    }
+
+    public function salesReportUnreadCounts(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $viewerUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($query['main_id'] ?? $body['main_id'] ?? 0);
+        if ($viewerUserId <= 0 || $mainId <= 0) {
+            throw new HttpException(422, 'main_id and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        $rawIds = $query['contact_ids'] ?? $body['contact_ids'] ?? [];
+        if (is_string($rawIds)) {
+            $rawIds = array_filter(array_map('trim', explode(',', $rawIds)));
+        }
+        if (!is_array($rawIds)) {
+            $rawIds = [];
+        }
+        $contactIds = [];
+        foreach ($rawIds as $rawId) {
+            $contactId = trim((string) $rawId);
+            if ($contactId === '') continue;
+            try {
+                $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
+                $contactIds[] = $contactId;
+            } catch (HttpException) {
+            }
+        }
+        return ['counts' => $this->callReportRepo->getUnreadCountsForContacts($mainId, $contactIds, $viewerUserId)];
     }
 
     public function markCallReportThreadRead(array $params = [], array $query = [], array $body = []): array

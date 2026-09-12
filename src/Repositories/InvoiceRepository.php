@@ -1285,9 +1285,10 @@ SQL;
             throw new RuntimeException('invoice_no is required');
         }
 
+        // Optional audit note; number-only edits do not require staff to fill a reason form.
         $reason = trim((string) ($payload['reason'] ?? ''));
         if ($reason === '') {
-            throw new RuntimeException('reason is required');
+            $reason = 'Updated invoice number';
         }
 
         if ($this->invoiceNumberExists($mainId, $invoiceNo, $invoiceRefno)) {

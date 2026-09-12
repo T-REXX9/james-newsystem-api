@@ -466,7 +466,12 @@ SQL;
             $dateFrom,
             $dateTo
         );
-        $normalizedReportType = strtolower(trim($reportType)) === 'summary' ? 'summary' : 'detailed';
+        $reportTypeKey = strtolower(trim($reportType));
+        $normalizedReportType = match ($reportTypeKey) {
+            'summary' => 'summary',
+            'yearly' => 'yearly',
+            default => 'detailed',
+        };
 
         $params = ['customer_id' => $sessionId];
         $dateSql = '';
@@ -518,7 +523,48 @@ SQL;
             $openingBalance = $this->computeBalanceBefore($sessionId, $fromDate);
         }
 
-        if ($normalizedReportType === 'summary') {
+        if ($normalizedReportType === 'yearly') {
+            $yearlySql = <<<SQL
+SELECT
+    YEAR(l.ldatetime) AS year,
+    SUM(COALESCE(l.ldebit, 0)) AS debit
+FROM tblledger l
+WHERE l.lcustomerid = :customer_id
+  AND LOWER(TRIM(COALESCE(l.ltype, ''))) = 'debit'
+  AND LOWER(TRIM(COALESCE(l.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+  AND DATE(l.ldatetime) <= CURDATE()
+{$dateSql}
+GROUP BY YEAR(l.ldatetime)
+ORDER BY YEAR(l.ldatetime) ASC
+SQL;
+            $stmt = $this->db->pdo()->prepare($yearlySql);
+            $stmt->execute($params);
+            $rawYearly = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $totalDebit = 0.0;
+            foreach ($rawYearly as $rawRow) {
+                $year = (int) ($rawRow['year'] ?? 0);
+                $debit = (float) ($rawRow['debit'] ?? 0);
+                if ($year <= 0) {
+                    continue;
+                }
+                $totalDebit += $debit;
+                $summaryRows[] = [
+                    'year' => $year,
+                    'month' => 0,
+                    'month_name' => '',
+                    'debit' => $debit,
+                    'credit' => 0.0,
+                    'balance' => 0.0,
+                ];
+            }
+            $totals = [
+                'debit' => $totalDebit,
+                'credit' => 0.0,
+                'pdc' => 0.0,
+                'balance' => 0.0,
+                'row_count' => count($summaryRows),
+            ];
+        } elseif ($normalizedReportType === 'summary') {
             $summarySql = <<<SQL
 SELECT
     YEAR(l.ldatetime) AS year,
