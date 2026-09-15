@@ -162,13 +162,19 @@ final class CollectionController
             throw new HttpException(422, 'collectionRefno and action are required');
         }
 
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $userId = (int) ($body['user_id'] ?? 0);
+        if (in_array($action, ['postrecord', 'posttoledger'], true) && ($mainId <= 0 || $userId <= 0)) {
+            throw new HttpException(422, 'Authenticated account details are required');
+        }
+
         return match ($action) {
             'submitrecord' => $this->submitRecord($refno, $body),
             'approverecord' => $this->approveRecord($refno, $body),
             'disapproverecord' => $this->disapproveRecord($refno, $body),
             'cancelrecord' => $this->repo->setCollectionStatus($refno, 'Cancelled'),
-            'postrecord' => $this->repo->postCollection($refno),
-            'posttoledger' => $this->repo->rebuildCollectionLedger($refno),
+            'postrecord' => $this->repo->postCollection($refno, $mainId, $userId),
+            'posttoledger' => $this->repo->rebuildCollectionLedger($refno, $mainId, $userId),
             default => throw new HttpException(422, 'Unsupported action'),
         };
     }

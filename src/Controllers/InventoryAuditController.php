@@ -221,7 +221,11 @@ final class InventoryAuditController
         $mainId = $this->requireMainId($body);
         $refno = $this->requireRefno($params);
         try {
-            $record = $this->repo->postStockAdjustment($mainId, $refno);
+            $userId = (int) ($body['user_id'] ?? 0);
+            if ($userId <= 0) {
+                throw new HttpException(422, 'user_id is required');
+            }
+            $record = $this->repo->postStockAdjustment($mainId, $userId, $refno);
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());
         }

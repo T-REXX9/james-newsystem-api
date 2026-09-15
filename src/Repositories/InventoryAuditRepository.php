@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use DateTimeImmutable;
 use PDO;
 use RuntimeException;
@@ -799,7 +800,7 @@ SQL;
     }
 
     /** @return array<string, mixed>|null */
-    public function postStockAdjustment(int $mainId, string $refno): ?array
+    public function postStockAdjustment(int $mainId, int $userId, string $refno): ?array
     {
         $this->requirePendingStockAdjustment($mainId, $refno);
         $stmt = $this->db->pdo()->prepare(
@@ -807,6 +808,7 @@ SQL;
              WHERE lrefno = :refno AND CAST(COALESCE(lmain_id, 0) AS SIGNED) = :main_id"
         );
         $stmt->execute(['refno' => $refno, 'main_id' => $mainId]);
+        (new AuditTrailWriter($this->db->pdo()))->write($mainId, $userId, 'Inventory Audit', 'Post Stock Adjustment', $refno, '', 'Pending', 'Posted');
         return $this->getStockAdjustmentHeader($mainId, $refno);
     }
 

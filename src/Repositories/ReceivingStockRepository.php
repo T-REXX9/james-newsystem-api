@@ -683,6 +683,7 @@ SQL;
      */
     public function finalizeReceivingStock(
         int $mainId,
+        int $userId,
         string $receivingRefno,
         string $status = 'Delivered',
         bool $closeRemainingPoQty = false,
@@ -801,6 +802,7 @@ SQL;
             }
 
             $pdo->commit();
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Receiving Report', 'Post Receiving Report', $receivingRefno, $incompleteDeliveryReason, (string) ($record['record']['status'] ?? 'Pending'), $status === '' ? 'Delivered' : $status);
             $this->clearReorderReportCache();
             return $this->getReceivingStock($mainId, $receivingRefno);
         } catch (\Throwable $e) {

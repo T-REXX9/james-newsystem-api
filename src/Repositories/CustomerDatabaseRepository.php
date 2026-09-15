@@ -17,6 +17,7 @@ final class CustomerDatabaseRepository
     private const DEFAULT_VAT_TYPE = 'Zero-Rated';
     private const CUSTOMER_PHONE_MAX_LENGTH = 15;
     private ?bool $hasCustomerDiscountCodeColumn = null;
+    private ?bool $hasCustomerDeliveryAddressesTable = null;
 
     public function __construct(private readonly Database $db)
     {
@@ -66,8 +67,8 @@ final class CustomerDatabaseRepository
             $params['search_code'] = '%' . $trimmedSearch . '%';
             $params['search_company'] = '%' . $trimmedSearch . '%';
             $params['search_mobile'] = '%' . $trimmedSearch . '%';
+            $params['search_old_name'] = '%' . $trimmedSearch . '%';
             if ($isPickerMode) {
-                $params['search_old_name'] = '%' . $trimmedSearch . '%';
                 $where[] = <<<SQL
 (
     COALESCE(p.lpatient_code, '') LIKE :search_code
@@ -96,9 +97,15 @@ SQL;
     OR COALESCE(p.ltin, '') LIKE :search_tin
     OR EXISTS (
         SELECT 1
+        FROM tlbCustomer_Details old_customer
+        WHERE old_customer.lsessionid = p.lsessionid
+          AND COALESCE(old_customer.loldname, '') LIKE :search_old_name
+    )
+    OR EXISTS (
+        SELECT 1
         FROM tblcontact_person cp
         WHERE cp.lrefno = p.lsessionid
-          AND CONCAT_WS(' ', COALESCE(cp.lfname, ''), COALESCE(cp.llname, ''), COALESCE(cp.lc_mobile, ''), COALESCE(cp.lemail, '')) LIKE :search_contact
+          AND CONCAT_WS(' ', COALESCE(cp.lfname, ''), COALESCE(cp.lmname, ''), COALESCE(cp.llname, ''), COALESCE(cp.lc_mobile, ''), COALESCE(cp.lemail, '')) LIKE :search_contact
     )
 )
 SQL;
@@ -144,6 +151,14 @@ SELECT
     COALESCE(p.lsessionid, '') AS session_id,
     COALESCE(p.lpatient_code, '') AS customer_code,
     COALESCE(p.lcompany, '') AS company,
+    COALESCE((
+        SELECT old_customer.loldname
+        FROM tlbCustomer_Details old_customer
+        WHERE old_customer.lsessionid = p.lsessionid
+          AND COALESCE(TRIM(old_customer.loldname), '') <> ''
+        ORDER BY old_customer.ldate DESC, old_customer.lid DESC
+        LIMIT 1
+    ), '') AS old_name,
     COALESCE(p.lemail, '') AS email,
     COALESCE(p.lphone, '') AS phone,
     COALESCE(p.lmobile, '') AS mobile,
@@ -153,7 +168,12 @@ SELECT
     COALESCE(p.ltransaction_type, '') AS transaction_type,
     COALESCE(p.lsales_person, '') AS sales_person_id,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person_name,
-    COALESCE(p.lrefer_by, '') AS refer_by,
+    CASE
+        WHEN TRIM(COALESCE(p.lrefer_by, '')) = ''
+             AND LOWER(TRIM(COALESCE(p.lprofile_type, 'Old'))) <> 'prospect'
+        THEN 'QBP'
+        ELSE COALESCE(p.lrefer_by, '')
+    END AS refer_by,
     COALESCE(p.laddress, '') AS address,
     COALESCE(p.ldelivery_address, '') AS delivery_address,
     COALESCE(p.larea, '') AS area,
@@ -255,7 +275,12 @@ SELECT
     COALESCE(p.ltransaction_type, '') AS transaction_type,
     COALESCE(p.lsales_person, '') AS sales_person_id,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person_name,
-    COALESCE(p.lrefer_by, '') AS refer_by,
+    CASE
+        WHEN TRIM(COALESCE(p.lrefer_by, '')) = ''
+             AND LOWER(TRIM(COALESCE(p.lprofile_type, 'Old'))) <> 'prospect'
+        THEN 'QBP'
+        ELSE COALESCE(p.lrefer_by, '')
+    END AS refer_by,
     COALESCE(p.laddress, '') AS address,
     COALESCE(p.ldelivery_address, '') AS delivery_address,
     COALESCE(p.larea, '') AS area,
@@ -305,6 +330,11 @@ SQL;
 
         $customer['contacts'] = $this->listContacts($sessionId);
         $customer['terms_history'] = $this->listTerms($sessionId);
+        $customer['delivery_addresses'] = $this->listDeliveryAddresses(
+            $mainId,
+            $sessionId,
+            (string) ($customer['delivery_address'] ?? '')
+        );
 
         return $customer;
     }
@@ -317,6 +347,14 @@ SQL;
         $company = trim((string) ($payload['company'] ?? ''));
         if ($company === '') {
             throw new RuntimeException('company is required');
+        }
+
+        $this->assertProspectSource($payload);
+        if ($this->isProspectPayload($payload)) {
+            $payload['refer_by'] = $this->formatProspectSource(
+                $userId,
+                (string) ($payload['refer_by'] ?? '')
+            );
         }
 
         $overrideReason = trim((string) ($payload['duplicate_override_reason'] ?? ''));
@@ -339,6 +377,10 @@ SQL;
         }
 
         $pdo = $this->db->pdo();
+        $deliveryAddresses = $this->normalizeDeliveryAddresses(
+            $payload['delivery_addresses'] ?? null,
+            (string) ($payload['delivery_address'] ?? $payload['address'] ?? '')
+        );
         $pdo->beginTransaction();
         try {
             $discountCodeInsertColumn = $this->hasCustomerDiscountCodeColumn() ? ', ldiscount_code' : '';
@@ -361,7 +403,7 @@ SQL;
                 'sales_person' => (string) ($payload['sales_person_id'] ?? ''),
                 'refer_by' => (string) ($payload['refer_by'] ?? ''),
                 'address' => (string) ($payload['address'] ?? ''),
-                'delivery_address' => (string) (($payload['delivery_address'] ?? '') !== '' ? $payload['delivery_address'] : ($payload['address'] ?? '')),
+                'delivery_address' => $deliveryAddresses[0] ?? (string) ($payload['address'] ?? ''),
                 'area' => (string) ($payload['area'] ?? ''),
                 'tin' => (string) ($payload['tin'] ?? ''),
                 'price_group' => (string) ($payload['price_group'] ?? ''),
@@ -390,6 +432,7 @@ SQL;
                 $insertParams['discount_code'] = $this->normalizeDiscountCode((string) ($payload['discount_code'] ?? ''));
             }
             $insert->execute($insertParams);
+            $this->syncDeliveryAddresses($pdo, $mainId, $sessionId, $deliveryAddresses);
 
             $initialTerms = trim((string) ($payload['terms'] ?? ''));
             if ($initialTerms !== '') {
@@ -539,6 +582,128 @@ SQL;
         return preg_replace('/[^a-z0-9]+/', '', strtolower(trim($value))) ?? '';
     }
 
+    /** @return array<int, string> */
+    private function listDeliveryAddresses(int $mainId, string $sessionId, string $legacyAddress): array
+    {
+        if (!$this->hasCustomerDeliveryAddressesTable()) {
+            return $legacyAddress === '' ? [] : [$legacyAddress];
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT laddress FROM tblpatient_delivery_address
+             WHERE lmain_id = :main_id AND lsessionid = :session_id
+             ORDER BY lsequence ASC, lid ASC'
+        );
+        $stmt->execute(['main_id' => $mainId, 'session_id' => $sessionId]);
+        $addresses = array_map(
+            static fn (array $row): string => trim((string) ($row['laddress'] ?? '')),
+            $stmt->fetchAll(PDO::FETCH_ASSOC)
+        );
+        $addresses = array_values(array_filter($addresses, static fn (string $address): bool => $address !== ''));
+
+        return $addresses !== [] ? $addresses : ($legacyAddress === '' ? [] : [$legacyAddress]);
+    }
+
+    /** @return array<int, string> */
+    private function normalizeDeliveryAddresses(mixed $value, string $fallback): array
+    {
+        $raw = is_array($value) ? $value : [];
+        if ($raw === [] && trim($fallback) !== '') {
+            $raw[] = $fallback;
+        }
+
+        $addresses = [];
+        $seen = [];
+        foreach ($raw as $address) {
+            $normalized = trim((string) $address);
+            $key = strtolower($normalized);
+            if ($normalized === '' || isset($seen[$key])) {
+                continue;
+            }
+            $seen[$key] = true;
+            $addresses[] = $normalized;
+        }
+
+        return $addresses;
+    }
+
+    /** @param array<int, string> $addresses */
+    private function syncDeliveryAddresses(PDO $pdo, int $mainId, string $sessionId, array $addresses): void
+    {
+        if (!$this->hasCustomerDeliveryAddressesTable()) {
+            return;
+        }
+
+        $delete = $pdo->prepare('DELETE FROM tblpatient_delivery_address WHERE lmain_id = :main_id AND lsessionid = :session_id');
+        $delete->execute(['main_id' => $mainId, 'session_id' => $sessionId]);
+        if ($addresses === []) {
+            return;
+        }
+
+        $insert = $pdo->prepare(
+            'INSERT INTO tblpatient_delivery_address (lmain_id, lsessionid, laddress, lsequence)
+             VALUES (:main_id, :session_id, :address, :sequence)'
+        );
+        foreach ($addresses as $sequence => $address) {
+            $insert->execute([
+                'main_id' => $mainId,
+                'session_id' => $sessionId,
+                'address' => $address,
+                'sequence' => $sequence,
+            ]);
+        }
+    }
+
+    /**
+     * New Prospects must retain how the lead reached James. Existing customer
+     * records predate this rule, so their blank values are represented as QBP
+     * on read rather than being changed in-place.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function assertProspectSource(array $payload): void
+    {
+        if ($this->isProspectPayload($payload) && trim((string) ($payload['refer_by'] ?? '')) === '') {
+            throw new RuntimeException('source is required when creating a Prospect');
+        }
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function isProspectPayload(array $payload): bool
+    {
+        return (int) ($payload['status'] ?? 1) === 3
+            || str_contains(strtolower((string) ($payload['profile_type'] ?? '')), 'prospect');
+    }
+
+    private function formatProspectSource(int $userId, string $source): string
+    {
+        $source = trim($source);
+        $staffName = $this->getAccountDisplayName($userId);
+        if ($staffName === '') {
+            throw new RuntimeException('unable to identify the staff member creating this Prospect');
+        }
+
+        return $staffName . ' - ' . $source;
+    }
+
+    private function getAccountDisplayName(int $accountId): string
+    {
+        if ($accountId <= 0) {
+            return '';
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT TRIM(CONCAT(COALESCE(lfname, ''), ' ', COALESCE(llname, ''))) AS full_name
+             FROM tblaccount
+             WHERE lid = :id
+             LIMIT 1"
+        );
+        $stmt->bindValue('id', $accountId, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return trim((string) ($stmt->fetchColumn() ?: ''));
+    }
+
     /**
      * @return array<string, mixed>|null
      */
@@ -574,6 +739,9 @@ SQL;
         $assignmentDateClause = $salesPersonChanged ? ",\n    ldate_assigned = CURDATE()" : '';
 
         $discountCodeAssignment = $this->hasCustomerDiscountCodeColumn() ? ",\n    ldiscount_code = :discount_code" : '';
+        $deliveryAddresses = array_key_exists('delivery_addresses', $payload)
+            ? $this->normalizeDeliveryAddresses($payload['delivery_addresses'], (string) ($payload['delivery_address'] ?? $existing['delivery_address'] ?? ''))
+            : null;
 
         $sql = <<<SQL
 UPDATE tblpatient
@@ -621,7 +789,7 @@ SQL;
                 'sales_person' => (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? ''),
                 'refer_by' => (string) ($payload['refer_by'] ?? $existing['refer_by'] ?? ''),
                 'address' => (string) ($payload['address'] ?? $existing['address'] ?? ''),
-                'delivery_address' => (string) ($payload['delivery_address'] ?? $existing['delivery_address'] ?? ''),
+                'delivery_address' => $deliveryAddresses[0] ?? (string) ($payload['delivery_address'] ?? $existing['delivery_address'] ?? ''),
                 'area' => (string) ($payload['area'] ?? $existing['area'] ?? ''),
                 'tin' => (string) ($payload['tin'] ?? $existing['tin'] ?? ''),
                 'price_group' => (string) ($payload['price_group'] ?? $existing['price_group'] ?? ''),
@@ -653,6 +821,9 @@ SQL;
                 $updateParams['discount_code'] = $this->normalizeDiscountCode((string) ($payload['discount_code'] ?? $existing['discount_code'] ?? ''));
             }
             $stmt->execute($updateParams);
+            if ($deliveryAddresses !== null) {
+                $this->syncDeliveryAddresses($this->db->pdo(), $mainId, $sessionId, $deliveryAddresses);
+            }
         } catch (\Throwable $e) {
             $this->rethrowAsFriendlyValidation($e);
         }
@@ -1287,6 +1458,22 @@ SQL;
         }
 
         return $this->hasCustomerDiscountCodeColumn;
+    }
+
+    private function hasCustomerDeliveryAddressesTable(): bool
+    {
+        if ($this->hasCustomerDeliveryAddressesTable !== null) {
+            return $this->hasCustomerDeliveryAddressesTable;
+        }
+
+        try {
+            $stmt = $this->db->pdo()->query("SHOW TABLES LIKE 'tblpatient_delivery_address'");
+            $this->hasCustomerDeliveryAddressesTable = $stmt !== false && $stmt->fetch(PDO::FETCH_NUM) !== false;
+        } catch (\Throwable) {
+            $this->hasCustomerDeliveryAddressesTable = false;
+        }
+
+        return $this->hasCustomerDeliveryAddressesTable;
     }
 
     private function normalizeDateNullable(string $value, string $fieldName = 'date'): ?string

@@ -15,6 +15,23 @@ final class CallReportRepository
     {
     }
 
+    public function resolveAccountDisplayName(int $userId): string
+    {
+        if ($userId <= 0) {
+            return '';
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT TRIM(CONCAT(COALESCE(lfname, \'\'), \' \', COALESCE(llname, \'\'))) AS full_name
+             FROM tblaccount
+             WHERE lid = :user_id
+             LIMIT 1'
+        );
+        $stmt->execute(['user_id' => $userId]);
+
+        return trim((string) ($stmt->fetchColumn() ?: ''));
+    }
+
     public function createThreadFromCallLog(
         int $mainId,
         array $callLog,
@@ -308,7 +325,10 @@ final class CallReportRepository
                     'id' => 'report:' . $threadId,
                     'thread_id' => $threadId,
                     'contact_id' => $contactId,
-                    'kind' => 'agent_report',
+                    // A prospect's initial comment is already stored on the prospect
+                    // record, but it belongs in the unified conversation as a staff
+                    // comment rather than looking like a completed call report.
+                    'kind' => $isSynthetic ? 'staff_comment' : 'agent_report',
                     'sender_user_id' => $agentUserId,
                     'sender_name' => (string) ($thread['agent_name'] ?? 'Sales Agent'),
                     'sender_role' => 'agent',

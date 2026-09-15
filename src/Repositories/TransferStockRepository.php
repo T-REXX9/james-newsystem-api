@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use PDO;
 use RuntimeException;
 
@@ -1038,6 +1039,7 @@ SQL;
             ]);
 
             $pdo->commit();
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Transfer Stock', 'Post Transfer Stock', $transferRefno, $transferNo, 'Submitted', 'Approved');
         } catch (\Throwable $e) {
             $pdo->rollBack();
             throw $e;

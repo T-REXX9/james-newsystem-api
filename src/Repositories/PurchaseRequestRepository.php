@@ -1077,6 +1077,7 @@ SQL;
             if ($record === null) {
                 throw new RuntimeException('Purchase request not found');
             }
+            (new AuditTrailWriter($this->db->pdo()))->write($mainId, $userId, 'Purchase Request', 'Approve Purchase Request', $prRefno, '', 'Pending', 'Approved');
             return $record;
         }
 
@@ -1102,7 +1103,10 @@ SQL;
             return $record;
         }
 
-        return $this->convertPurchaseRequestToPo($mainId, $userId, $prRefno, $payload);
+        $purchaseOrder = $this->convertPurchaseRequestToPo($mainId, $userId, $prRefno, $payload);
+        $purchaseRefno = (string) ($purchaseOrder['order']['refno'] ?? $purchaseOrder['purchase_order']['refno'] ?? $prRefno);
+        (new AuditTrailWriter($this->db->pdo()))->write($mainId, $userId, 'Purchase Order', 'Post Purchase Order', $purchaseRefno, 'Created from purchase request ' . $prRefno, 'Pending', 'Posted');
+        return $purchaseOrder;
     }
 
     private function convertPurchaseRequestToPo(int $mainId, int $userId, string $prRefno, array $payload): array

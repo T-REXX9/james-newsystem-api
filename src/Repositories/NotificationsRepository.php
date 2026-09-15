@@ -23,6 +23,7 @@ final class NotificationsRepository
         'ai' => 16,
         'ar' => 24,
         'at' => 24,
+        'ci' => 128,
     ];
 
     public function __construct(private readonly Database $db)
@@ -439,7 +440,7 @@ final class NotificationsRepository
 
         $existing = [];
         foreach (array_chunk($referenceKeys, self::INVENTORY_SCAN_REFERENCE_BATCH_SIZE) as $batchIndex => $referenceBatch) {
-            $params = [':status' => 1];
+            $params = [];
             $recipientPlaceholders = [];
             foreach ($recipientIds as $index => $recipientId) {
                 $placeholder = sprintf(':recipient_%d_%d', $batchIndex, $index);
@@ -457,7 +458,7 @@ final class NotificationsRepository
             $sql = sprintf(
                 'SELECT luserid, lrefno
                  FROM tblnotifications
-                 WHERE lstatus = :status
+                 WHERE (lstatus IS NULL OR lstatus != -1)
                    AND luserid IN (%s)
                    AND lrefno IN (%s)',
                 implode(', ', $recipientPlaceholders),
@@ -517,7 +518,13 @@ final class NotificationsRepository
         }
 
         $stmt = $this->db->pdo()->prepare(
-            'SELECT * FROM tblnotifications WHERE luserid = :user_id AND lrefno = :refno AND lstatus = 1 LIMIT 1'
+            'SELECT *
+             FROM tblnotifications
+             WHERE luserid = :user_id
+               AND lrefno = :refno
+               AND (lstatus IS NULL OR lstatus != -1)
+             ORDER BY lid DESC
+             LIMIT 1'
         );
         $stmt->execute([
             ':user_id' => $recipientId,
@@ -556,6 +563,7 @@ final class NotificationsRepository
                 'idempotency_key' => $referenceKey,
                 'refno' => $referenceKey,
                 'alert_type' => $metadata['at'] ?? null,
+                'contact_id' => (string) ($metadata['ci'] ?? ''),
             ],
             'is_read' => (int) ($row['lstatus'] ?? 0) !== 1,
             'created_at' => $this->normalizeTimestamp($row['ldatetime'] ?? null),
@@ -580,6 +588,7 @@ final class NotificationsRepository
             'ai' => trim((string) ($metadata['actor_id'] ?? 'system')),
             'ar' => trim((string) ($metadata['actor_role'] ?? 'system')),
             'at' => trim((string) ($metadata['alert_type'] ?? '')),
+            'ci' => trim((string) ($metadata['contact_id'] ?? '')),
         ];
 
         return array_filter($compact, static fn (mixed $value): bool => $value !== '');

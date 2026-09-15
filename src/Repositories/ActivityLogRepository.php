@@ -106,6 +106,9 @@ SELECT
     COALESCE(log.lpage, '') AS lpage,
     COALESCE(log.laction, '') AS laction,
     COALESCE(log.lrefno, '') AS lrefno,
+    COALESCE(log.lreason, '') AS lreason,
+    COALESCE(log.lold_status, '') AS lold_status,
+    COALESCE(log.lnew_status, '') AS lnew_status,
     COALESCE(log.ldatetime, '') AS ldatetime,
     COALESCE(acc.lfname, '') AS userfname,
     COALESCE(acc.llname, '') AS userlname

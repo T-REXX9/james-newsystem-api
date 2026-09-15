@@ -79,9 +79,23 @@ final class Router
 
     private function parseBody(): array
     {
+        $contentType = strtolower((string) ($_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? ''));
+
+        if (str_contains($contentType, 'multipart/form-data')) {
+            return is_array($_POST ?? null) ? $_POST : [];
+        }
+
         $raw = file_get_contents('php://input');
-        if (!is_string($raw) || trim($raw) === '') {
-            return $_POST ?? [];
+        if (!is_string($raw)) {
+            $raw = '';
+        }
+
+        if (str_contains($contentType, 'application/octet-stream')) {
+            return ['__raw_body' => $raw];
+        }
+
+        if (trim($raw) === '') {
+            return is_array($_POST ?? null) ? $_POST : [];
         }
 
         $decoded = json_decode($raw, true);

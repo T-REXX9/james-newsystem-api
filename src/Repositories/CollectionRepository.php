@@ -391,7 +391,9 @@ SELECT
     COALESCE(dm.ldm_no, '') AS ldm_no,
     COALESCE(dm.lcustomer_fname, '') AS lcustomer_code,
     COALESCE(dm.lcustomer_lname, '') AS lcustomer_name,
-    COALESCE(dm.ldatetime, '') AS ldatetime,
+    /* ldate is the legacy business date; ldatetime is the migration/audit timestamp. */
+    /* Avoid DATE('') in MySQL strict mode; ldate is the business date. */
+    COALESCE(dm.ldate, NULLIF(SUBSTRING(dm.ldatetime, 1, 10), ''), '') AS ldatetime,
     GREATEST(
       COALESCE(CAST(dm.lamt AS DECIMAL(15,2)), 0),
       COALESCE(
@@ -697,7 +699,7 @@ SQL,
         return $stmt->rowCount();
     }
 
-    public function postCollection(string $refno): array
+    public function postCollection(string $refno, int $mainId, int $userId): array
     {
         $pdo = $this->db->pdo();
         $collection = $this->getCollection($refno);
@@ -707,7 +709,7 @@ SQL,
              WHERE lrefno = :refno'
         );
         $stmt->execute(['status' => 'Posted', 'refno' => $refno]);
-        (new AuditTrailWriter($pdo))->write((int) ($collection['lmain_id'] ?? 0), (int) ($collection['luserid'] ?? 0), 'Daily Collection Entry', 'Post Collection Entry', $refno);
+        (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Daily Collection Entry', 'Post Collection Entry', $refno, '', (string) ($collection['lstatus'] ?? 'Pending'), 'Posted');
 
         return [
             'collection_refno' => $refno,
@@ -716,7 +718,7 @@ SQL,
         ];
     }
 
-    public function rebuildCollectionLedger(string $refno): array
+    public function rebuildCollectionLedger(string $refno, int $mainId, int $userId): array
     {
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -771,6 +773,14 @@ SQL;
             }
 
             $pdo->commit();
+            (new AuditTrailWriter($pdo))->write(
+                $mainId,
+                $userId,
+                'Daily Collection Entry',
+                'Post Collection Ledger',
+                $refno,
+                count($items) . ' ledger row(s) rebuilt'
+            );
             return [
                 'collection_refno' => $refno,
                 'ledger_rows_inserted' => count($items),
@@ -1019,6 +1029,16 @@ SQL;
             }
 
             $pdo->commit();
+            (new AuditTrailWriter($pdo))->write(
+                $mainId,
+                $userId,
+                'Daily Collection Entry',
+                'Post Collection Payments',
+                $collectionRefno,
+                $count . ' payment item(s)',
+                'Pending',
+                'Posted'
+            );
         } catch (\Throwable $e) {
             $pdo->rollBack();
             throw $e;

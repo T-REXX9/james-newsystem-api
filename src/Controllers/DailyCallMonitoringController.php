@@ -30,9 +30,8 @@ final class DailyCallMonitoringController
         }
         $status = (string) ($query['status'] ?? 'all');
         $search = (string) ($query['search'] ?? '');
-        $viewerUserId = $this->authenticatedViewerUserId($body);
 
-        return $this->repo->getExcelRows($mainId, $status, $search, $viewerUserId);
+        return $this->repo->getExcelRows($mainId, $status, $search);
     }
 
     public function salesPerformanceDashboard(array $params = [], array $query = [], array $body = []): array
@@ -57,9 +56,8 @@ final class DailyCallMonitoringController
 
         $fromDate = trim((string) ($query['from_date'] ?? '2025-10-01'));
         $search = trim((string) ($query['search'] ?? ''));
-        $viewerUserId = $this->authenticatedViewerUserId($body);
 
-        return $this->repo->getPurchaseMasterList($mainId, $fromDate, $search, $viewerUserId);
+        return $this->repo->getPurchaseMasterList($mainId, $fromDate, $search);
     }
 
     public function ownerSnapshot(array $params = [], array $query = [], array $body = []): array
@@ -498,7 +496,7 @@ final class DailyCallMonitoringController
             throw new HttpException(403, 'Invalid account scope');
         }
 
-        $senderName = trim((string) ($body['sender_name'] ?? 'Master User')) ?: 'Master User';
+        $senderName = $this->callReportRepo->resolveAccountDisplayName($senderUserId) ?: 'Master User';
         $messageBody = trim((string) ($body['body'] ?? ''));
         $attachmentUrl = trim((string) ($body['attachment_url'] ?? ''));
         $attachmentMime = trim((string) ($body['attachment_mime'] ?? ''));
@@ -548,7 +546,7 @@ final class DailyCallMonitoringController
         }
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $senderUserId);
 
-        $senderName = trim((string) ($body['sender_name'] ?? '')) ?: 'Staff';
+        $senderName = $this->callReportRepo->resolveAccountDisplayName($senderUserId) ?: 'Staff';
         $messageBody = trim((string) ($body['body'] ?? ''));
         $attachmentUrl = trim((string) ($body['attachment_url'] ?? ''));
         $attachmentMime = trim((string) ($body['attachment_mime'] ?? ''));

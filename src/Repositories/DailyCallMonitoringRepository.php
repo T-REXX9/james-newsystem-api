@@ -346,13 +346,11 @@ SQL);
             'current_month' => date('Y-m'),
             'last_month' => date('Y-m', strtotime('-1 month')),
             'ledger_main_id' => $mainIdStr,
-            'latest_active_main_id' => $mainIdStr,
             'txn_priority_from_date' => $normalizedFromDate,
             'txn_historical_before_date' => $normalizedFromDate,
             'txn_current_month' => date('Y-m'),
             'txn_last_month' => date('Y-m', strtotime('-1 month')),
             'txn_main_id' => $mainId,
-            'txn_latest_active_main_id' => $mainId,
             'verification_main_id' => $mainId,
         ];
 
@@ -396,7 +394,124 @@ SQL);
         }
 
         $whereSql = implode(' AND ', $where);
+        /*
+         * Aggregate each source into one row per customer-month before deriving
+         * trailing metrics.  The previous query counted "later active months"
+         * with a correlated subquery for every ledger/transaction row.  On a
+         * busy database that turned one dashboard load into millions of index
+         * lookups.  The row number below expresses the same last-12-active-
+         * months rule in one set-based pass.
+         */
         $sql = <<<SQL
+WITH
+ledger_monthly AS (
+    SELECT
+        lg.lcustomerid,
+        lg.lmainid,
+        DATE_FORMAT(lg.ldatetime, '%Y-%m') AS purchase_month,
+        DATE(MIN(lg.ldatetime)) AS first_purchase_date_raw,
+        DATE(MAX(lg.ldatetime)) AS last_purchase_date_raw,
+        COUNT(DISTINCT lg.lrefno) AS purchase_count,
+        COUNT(CASE WHEN lg.ldatetime >= :priority_from_date THEN lg.lid END) AS priority_transaction_count,
+        COUNT(lg.lid) AS ledger_transaction_count,
+        COUNT(CASE WHEN lg.ldatetime < :historical_before_date_count THEN lg.lid END) AS historical_transaction_count,
+        SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS total_sales,
+        SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS priority_trailing_12_month_sales,
+        MAX(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN 1 ELSE 0 END) AS priority_trailing_12_month_active,
+        SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :current_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS current_month_sales,
+        SUM(CASE WHEN DATE_FORMAT(lg.ldatetime, '%Y-%m') = :last_month AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS last_month_sales,
+        SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS recent_three_month_sales,
+        SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) AND lg.ldatetime < DATE_SUB(CURDATE(), INTERVAL 3 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS previous_three_month_sales,
+        ROW_NUMBER() OVER (
+            PARTITION BY lg.lmainid, lg.lcustomerid
+            ORDER BY CASE WHEN SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) > 0
+                THEN MAX(DATE_FORMAT(lg.ldatetime, '%Y-%m')) END DESC
+        ) AS active_month_rank
+    FROM tblledger lg
+    WHERE lg.lmainid = :ledger_main_id
+      AND lg.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+      AND COALESCE(lg.lcustomerid, '') <> ''
+      AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
+      AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+    GROUP BY lg.lcustomerid, lg.lmainid, DATE_FORMAT(lg.ldatetime, '%Y-%m')
+),
+ledger_summary AS (
+    SELECT
+        lcustomerid, lmainid,
+        MIN(first_purchase_date_raw) AS first_purchase_date_raw,
+        MAX(last_purchase_date_raw) AS last_purchase_date_raw,
+        SUM(purchase_count) AS purchase_count,
+        SUM(priority_transaction_count) AS priority_transaction_count,
+        SUM(ledger_transaction_count) AS ledger_transaction_count,
+        SUM(historical_transaction_count) AS historical_transaction_count,
+        COUNT(*) AS active_purchase_month_count,
+        SUM(total_sales) AS total_sales,
+        SUM(priority_trailing_12_month_sales) AS priority_trailing_12_month_sales,
+        SUM(priority_trailing_12_month_active) AS priority_trailing_12_month_month_count,
+        SUM(CASE WHEN active_month_rank <= 12 AND total_sales > 0 THEN total_sales ELSE 0 END) AS recovery_trailing_12_month_sales,
+        SUM(CASE WHEN active_month_rank <= 12 AND total_sales > 0 THEN 1 ELSE 0 END) AS recovery_trailing_12_month_month_count,
+        MAX(YEAR(last_purchase_date_raw)) AS last_active_year,
+        SUM(current_month_sales) AS current_month_sales,
+        SUM(last_month_sales) AS last_month_sales,
+        SUM(recent_three_month_sales) AS recent_three_month_sales,
+        SUM(previous_three_month_sales) AS previous_three_month_sales
+    FROM ledger_monthly
+    GROUP BY lcustomerid, lmainid
+),
+txn_monthly AS (
+    SELECT
+        tr.lcustomerid,
+        CAST(tr.lmain_id AS CHAR) AS lmainid,
+        DATE_FORMAT(tr.ldate, '%Y-%m') AS purchase_month,
+        DATE(MIN(tr.ldate)) AS first_purchase_date_raw,
+        DATE(MAX(tr.ldate)) AS last_purchase_date_raw,
+        COUNT(tr.lid) AS purchase_count,
+        COUNT(CASE WHEN tr.ldate >= :txn_priority_from_date THEN tr.lid END) AS priority_transaction_count,
+        COUNT(CASE WHEN tr.ldate < :txn_historical_before_date THEN tr.lid END) AS historical_transaction_count,
+        SUM(COALESCE(NULLIF(tr.lamount, 0), 0)) AS total_sales,
+        SUM(CASE WHEN COALESCE(NULLIF(tr.lamount, 0), 0) > 0 THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS positive_sales,
+        SUM(CASE WHEN tr.ldate >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS priority_trailing_12_month_sales,
+        MAX(CASE WHEN tr.ldate >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND COALESCE(NULLIF(tr.lamount, 0), 0) > 0 THEN 1 ELSE 0 END) AS priority_trailing_12_month_active,
+        SUM(CASE WHEN DATE_FORMAT(tr.ldate, '%Y-%m') = :txn_current_month THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS current_month_sales,
+        SUM(CASE WHEN DATE_FORMAT(tr.ldate, '%Y-%m') = :txn_last_month THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS last_month_sales,
+        SUM(CASE WHEN tr.ldate >= DATE_SUB(CURDATE(), INTERVAL 3 MONTH) THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS recent_three_month_sales,
+        SUM(CASE WHEN tr.ldate >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH) AND tr.ldate < DATE_SUB(CURDATE(), INTERVAL 3 MONTH) THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS previous_three_month_sales,
+        ROW_NUMBER() OVER (
+            PARTITION BY tr.lmain_id, tr.lcustomerid
+            ORDER BY CASE WHEN SUM(CASE WHEN COALESCE(NULLIF(tr.lamount, 0), 0) > 0 THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) > 0
+                THEN MAX(DATE_FORMAT(tr.ldate, '%Y-%m')) END DESC
+        ) AS active_month_rank
+    FROM tbltransaction tr
+    WHERE tr.lmain_id = :txn_main_id
+      AND tr.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+      AND COALESCE(tr.lcancel, 0) = 0
+      AND COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+      AND COALESCE(tr.lcustomerid, '') <> ''
+    GROUP BY tr.lcustomerid, tr.lmain_id, DATE_FORMAT(tr.ldate, '%Y-%m')
+),
+txn_summary AS (
+    SELECT
+        lcustomerid, lmainid,
+        MIN(first_purchase_date_raw) AS first_purchase_date_raw,
+        MAX(last_purchase_date_raw) AS last_purchase_date_raw,
+        SUM(purchase_count) AS purchase_count,
+        SUM(priority_transaction_count) AS priority_transaction_count,
+        SUM(purchase_count) AS transaction_count,
+        SUM(historical_transaction_count) AS historical_transaction_count,
+        COUNT(*) AS active_purchase_month_count,
+        SUM(total_sales) AS total_sales,
+        SUM(priority_trailing_12_month_sales) AS priority_trailing_12_month_sales,
+        SUM(priority_trailing_12_month_active) AS priority_trailing_12_month_month_count,
+        SUM(CASE WHEN active_month_rank <= 12 AND positive_sales > 0 THEN positive_sales ELSE 0 END) AS recovery_trailing_12_month_sales,
+        SUM(CASE WHEN active_month_rank <= 12 AND positive_sales > 0 THEN 1 ELSE 0 END) AS recovery_trailing_12_month_month_count,
+        MAX(YEAR(last_purchase_date_raw)) AS last_active_year,
+        SUM(current_month_sales) AS current_month_sales,
+        SUM(last_month_sales) AS last_month_sales,
+        SUM(recent_three_month_sales) AS recent_three_month_sales,
+        SUM(previous_three_month_sales) AS previous_three_month_sales
+    FROM txn_monthly
+    GROUP BY lcustomerid, lmainid
+)
 SELECT
     p.lsessionid AS id,
     COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Shop') AS shop_name,
@@ -493,6 +608,7 @@ LEFT JOIN (
         SELECT lrefno, MIN(lid) AS min_lid FROM tblcontact_person GROUP BY lrefno
     ) cp_min ON cp_min.lrefno = cp.lrefno AND cp_min.min_lid = cp.lid
 ) cp_first ON cp_first.lrefno = p.lsessionid
+/* Replaced by the set-based ledger_summary CTE above.
 LEFT JOIN (
     SELECT
         lg.lcustomerid,
@@ -508,18 +624,34 @@ LEFT JOIN (
         SUM(CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END) AS priority_trailing_12_month_sales,
         COUNT(DISTINCT CASE WHEN lg.ldatetime >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND COALESCE(lg.ldebit, 0) > 0 THEN DATE_FORMAT(lg.ldatetime, '%Y-%m') END) AS priority_trailing_12_month_month_count,
         SUM(CASE
-            WHEN ly.last_active_purchase_at IS NOT NULL
-              AND lg.ldatetime >= DATE_SUB(ly.last_active_purchase_at, INTERVAL 12 MONTH)
-              AND lg.ldatetime <= ly.last_active_purchase_at
-              AND COALESCE(lg.ldebit, 0) > 0
+            WHEN COALESCE(lg.ldebit, 0) > 0
+              AND (
+                  SELECT COUNT(DISTINCT DATE_FORMAT(later_ledger.ldatetime, '%Y-%m'))
+                  FROM tblledger later_ledger
+                  WHERE later_ledger.lmainid = lg.lmainid
+                    AND later_ledger.lcustomerid = lg.lcustomerid
+                    AND later_ledger.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                    AND LOWER(TRIM(COALESCE(later_ledger.ltype, ''))) = 'debit'
+                    AND LOWER(TRIM(COALESCE(later_ledger.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+                    AND COALESCE(later_ledger.ldebit, 0) > 0
+                    AND DATE_FORMAT(later_ledger.ldatetime, '%Y-%m') > DATE_FORMAT(lg.ldatetime, '%Y-%m')
+              ) < 12
             THEN COALESCE(lg.ldebit, 0)
             ELSE 0
         END) AS recovery_trailing_12_month_sales,
         COUNT(DISTINCT CASE
-            WHEN ly.last_active_purchase_at IS NOT NULL
-              AND lg.ldatetime >= DATE_SUB(ly.last_active_purchase_at, INTERVAL 12 MONTH)
-              AND lg.ldatetime <= ly.last_active_purchase_at
-              AND COALESCE(lg.ldebit, 0) > 0
+            WHEN COALESCE(lg.ldebit, 0) > 0
+              AND (
+                  SELECT COUNT(DISTINCT DATE_FORMAT(later_ledger.ldatetime, '%Y-%m'))
+                  FROM tblledger later_ledger
+                  WHERE later_ledger.lmainid = lg.lmainid
+                    AND later_ledger.lcustomerid = lg.lcustomerid
+                    AND later_ledger.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                    AND LOWER(TRIM(COALESCE(later_ledger.ltype, ''))) = 'debit'
+                    AND LOWER(TRIM(COALESCE(later_ledger.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+                    AND COALESCE(later_ledger.ldebit, 0) > 0
+                    AND DATE_FORMAT(later_ledger.ldatetime, '%Y-%m') > DATE_FORMAT(lg.ldatetime, '%Y-%m')
+              ) < 12
             THEN DATE_FORMAT(lg.ldatetime, '%Y-%m')
         END) AS recovery_trailing_12_month_month_count,
         ly.last_active_year,
@@ -550,8 +682,10 @@ LEFT JOIN (
       AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
       AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
     GROUP BY lg.lcustomerid, lg.lmainid, ly.last_active_year, ly.last_active_purchase_at
-) ledger_summary ON ledger_summary.lcustomerid = p.lsessionid
+*/
+LEFT JOIN ledger_summary ON ledger_summary.lcustomerid = p.lsessionid
     AND ledger_summary.lmainid = CAST(p.lmain_id AS CHAR)
+/* Replaced by the set-based txn_summary CTE above.
 LEFT JOIN (
     SELECT
         tr.lcustomerid,
@@ -567,17 +701,34 @@ LEFT JOIN (
         SUM(CASE WHEN tr.ldate >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) THEN COALESCE(NULLIF(tr.lamount, 0), 0) ELSE 0 END) AS priority_trailing_12_month_sales,
         COUNT(DISTINCT CASE WHEN tr.ldate >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND COALESCE(NULLIF(tr.lamount, 0), 0) > 0 THEN DATE_FORMAT(tr.ldate, '%Y-%m') END) AS priority_trailing_12_month_month_count,
         SUM(CASE
-            WHEN ty.last_active_purchase_at IS NOT NULL
-              AND tr.ldate >= DATE_SUB(ty.last_active_purchase_at, INTERVAL 12 MONTH)
-              AND tr.ldate <= ty.last_active_purchase_at
+            WHEN COALESCE(NULLIF(tr.lamount, 0), 0) > 0
+              AND (
+                  SELECT COUNT(DISTINCT DATE_FORMAT(later_txn.ldate, '%Y-%m'))
+                  FROM tbltransaction later_txn
+                  WHERE later_txn.lmain_id = tr.lmain_id
+                    AND later_txn.lcustomerid = tr.lcustomerid
+                    AND later_txn.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                    AND COALESCE(later_txn.lcancel, 0) = 0
+                    AND COALESCE(later_txn.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+                    AND COALESCE(NULLIF(later_txn.lamount, 0), 0) > 0
+                    AND DATE_FORMAT(later_txn.ldate, '%Y-%m') > DATE_FORMAT(tr.ldate, '%Y-%m')
+              ) < 12
             THEN COALESCE(NULLIF(tr.lamount, 0), 0)
             ELSE 0
         END) AS recovery_trailing_12_month_sales,
         COUNT(DISTINCT CASE
-            WHEN ty.last_active_purchase_at IS NOT NULL
-              AND tr.ldate >= DATE_SUB(ty.last_active_purchase_at, INTERVAL 12 MONTH)
-              AND tr.ldate <= ty.last_active_purchase_at
-              AND COALESCE(NULLIF(tr.lamount, 0), 0) > 0
+            WHEN COALESCE(NULLIF(tr.lamount, 0), 0) > 0
+              AND (
+                  SELECT COUNT(DISTINCT DATE_FORMAT(later_txn.ldate, '%Y-%m'))
+                  FROM tbltransaction later_txn
+                  WHERE later_txn.lmain_id = tr.lmain_id
+                    AND later_txn.lcustomerid = tr.lcustomerid
+                    AND later_txn.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                    AND COALESCE(later_txn.lcancel, 0) = 0
+                    AND COALESCE(later_txn.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+                    AND COALESCE(NULLIF(later_txn.lamount, 0), 0) > 0
+                    AND DATE_FORMAT(later_txn.ldate, '%Y-%m') > DATE_FORMAT(tr.ldate, '%Y-%m')
+              ) < 12
             THEN DATE_FORMAT(tr.ldate, '%Y-%m')
         END) AS recovery_trailing_12_month_month_count,
         ty.last_active_year,
@@ -608,7 +759,8 @@ LEFT JOIN (
       AND COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
       AND COALESCE(tr.lcustomerid, '') <> ''
     GROUP BY tr.lcustomerid, tr.lmain_id, ty.last_active_year, ty.last_active_purchase_at
-) txn_summary ON txn_summary.lcustomerid = p.lsessionid
+*/
+LEFT JOIN txn_summary ON txn_summary.lcustomerid = p.lsessionid
     AND txn_summary.lmainid = CAST(p.lmain_id AS CHAR)
 LEFT JOIN (
     SELECT audit.lmain_id, audit.lrefno, audit.luser_id
@@ -666,7 +818,7 @@ SQL;
                 || strtolower(trim((string) ($row['debt_type'] ?? 'Good'))) === 'bad';
             // Client formula:
             // Priority = avg monthly purchase over the last 12 months
-            // Recovery / Blacklisted = avg monthly purchase over the last 12 months of active year
+            // Recovery / Blacklisted = avg monthly purchase over the last 12 active months
             // Verified prospect potential is applied in the UI as ₱5,000 each
             // Unverified prospect potential is 0
             $useRecoveryAverage = $listCategory === 'recovery' || $isBlocked;
@@ -786,8 +938,12 @@ SQL;
 
     public function getAgentSnapshot(int $mainId, int $viewerUserId): array
     {
-        $customers = $this->getCustomerBaseRows($mainId, 'all', '', $viewerUserId);
-        $masterList = $this->getPurchaseMasterList($mainId, '2025-10-01', '', $viewerUserId);
+        // Category totals and the customers behind them are company-wide
+        // Daily Call data.  Assignment is for accountability, not a filter:
+        // filtering here made two agents see different Recovery, Prospect,
+        // and Blacklisted counts for the same ledger/customer records.
+        $customers = $this->getCustomerBaseRows($mainId, 'all', '');
+        $masterList = $this->getPurchaseMasterList($mainId, '2025-10-01', '');
         $contactIds = array_values(array_filter(array_map(
             static fn(array $row): string => (string) ($row['id'] ?? ''),
             $customers
@@ -1816,7 +1972,12 @@ SQL;
 
     private function resolveViewerAssignmentId(int $mainId, ?int $viewerUserId): ?int
     {
-        if ($viewerUserId === null || $viewerUserId <= 0) {
+        // An omitted viewer means this is the shared Daily Call dataset.
+        // An invalid authenticated viewer remains denied by returning 0.
+        if ($viewerUserId === null) {
+            return null;
+        }
+        if ($viewerUserId <= 0) {
             return 0;
         }
 

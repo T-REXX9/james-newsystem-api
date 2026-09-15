@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use App\Support\PurchasedItemMatcher;
 use App\Support\ReturnToSupplierStockPolicy;
 use PDO;
@@ -623,6 +624,12 @@ SQL;
             }
 
             $pdo->commit();
+            $userId = (int) ($payload['user_id'] ?? 0);
+            if (in_array($normalizedAction, ['post', 'finalize', 'submitrecord'], true)) {
+                (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Return to Supplier', 'Post Return to Supplier', $returnRefno, (string) ($header['remarks'] ?? ''), (string) ($header['status'] ?? 'Pending'), 'Posted');
+            } elseif ($normalizedAction === 'unpost') {
+                (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Return to Supplier', 'Unpost Return to Supplier', $returnRefno, '', (string) ($header['status'] ?? 'Posted'), 'Pending');
+            }
 
             $updated = $this->getReturn($mainId, $returnRefno);
             if ($updated === null) {

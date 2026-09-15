@@ -17,8 +17,8 @@ $checks = [
         str_contains($dailyCall, 'ORDER BY p.lcompany ASC')
         && !str_contains($dailyCall, "\$sql .= ' LIMIT")
         && str_contains($dailyCall, '$rows = $stmt->fetchAll(PDO::FETCH_ASSOC);'),
-    'agent snapshot uses the same category source as the master user list' =>
-        str_contains($dailyCall, "\$masterList = \$this->getPurchaseMasterList(\$mainId, '2025-10-01', '', \$viewerUserId);")
+    'agent snapshot uses the company-wide category source as the master user list' =>
+        str_contains($dailyCall, "\$masterList = \$this->getPurchaseMasterList(\$mainId, '2025-10-01', '');")
         && str_contains($dailyCall, "'master_list' => \$masterList['items'] ?? []"),
     'legacy name assignments are repaired only when the account name is unique' =>
         is_string($repairMigration)

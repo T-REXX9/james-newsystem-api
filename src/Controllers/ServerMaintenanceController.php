@@ -9,6 +9,8 @@ use App\Services\AutomaticBackupRunner;
 use App\Services\AutomaticBackupSettings;
 use App\Services\AutomaticBackupSettingsStore;
 use App\Services\BackupDestinationLister;
+use App\Services\CorporateDumpImportService;
+use App\Services\CorporateDumpUploadStore;
 use App\Services\DatabaseBackupService;
 use App\Support\Exceptions\HttpException;
 
@@ -19,7 +21,9 @@ final class ServerMaintenanceController
         private readonly string $backupDirectory,
         private readonly AutomaticBackupSettingsStore $automaticBackupStore,
         private readonly BackupDestinationLister $destinationLister,
-        private readonly AutomaticBackupRunner $automaticBackupRunner
+        private readonly AutomaticBackupRunner $automaticBackupRunner,
+        private readonly CorporateDumpImportService $corporateDumpImportService,
+        private readonly CorporateDumpUploadStore $corporateDumpUploadStore
     ) {
     }
 
@@ -33,7 +37,72 @@ final class ServerMaintenanceController
             'format' => 'sql.gz',
             'description' => 'Full logical dump of the application database (schema, data, routines, triggers, and events).',
             'automatic_backup' => $this->automaticBackupStore->load(),
+            'corporate_dump_import' => [
+                'supported_extensions' => ['.sql', '.sql.gz'],
+                'max_bytes' => CorporateDumpUploadStore::MAX_BYTES,
+                'chunk_max_bytes' => CorporateDumpUploadStore::CHUNK_MAX_BYTES,
+                'safety' => 'Never drops, truncates, deletes, or updates live data. Only inserts new rows using shared columns; local-only tables and columns stay untouched.',
+            ],
         ];
+    }
+
+    public function createCorporateDumpUpload(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+
+        $filename = trim((string) ($body['filename'] ?? ''));
+        $bytes = (int) ($body['bytes'] ?? 0);
+        if ($filename === '') {
+            throw new HttpException(422, 'filename is required');
+        }
+
+        try {
+            return $this->corporateDumpUploadStore->createSession($filename, $bytes);
+        } catch (\Throwable $error) {
+            throw new HttpException(422, $error->getMessage());
+        }
+    }
+
+    public function appendCorporateDumpChunk(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+
+        $uploadId = trim((string) ($params['uploadId'] ?? ''));
+        $chunk = $body['__raw_body'] ?? null;
+        if (!is_string($chunk) || $chunk === '') {
+            throw new HttpException(422, 'Chunk body is required');
+        }
+
+        try {
+            return $this->corporateDumpUploadStore->appendChunk($uploadId, $chunk);
+        } catch (\Throwable $error) {
+            throw new HttpException(422, $error->getMessage());
+        }
+    }
+
+    public function importCorporateDumpUpload(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+
+        $uploadId = trim((string) ($params['uploadId'] ?? ''));
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+
+        try {
+            $finalized = $this->corporateDumpUploadStore->finalize($uploadId);
+            $report = $this->corporateDumpImportService->importDumpFile($finalized['path']);
+            $this->corporateDumpUploadStore->deleteSession($uploadId);
+            return [
+                'filename' => $finalized['filename'],
+                'bytes' => $finalized['bytes'],
+                'import' => $report,
+            ];
+        } catch (HttpException $error) {
+            throw $error;
+        } catch (\Throwable $error) {
+            throw new HttpException(500, $error->getMessage());
+        }
     }
 
     public function getAutomaticBackup(array $params = [], array $query = [], array $body = []): array
@@ -140,7 +209,7 @@ final class ServerMaintenanceController
     {
         $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
         if ((string) ($claims['user_type'] ?? '') !== '1') {
-            throw new HttpException(403, 'Only the Master User can access server maintenance backups.');
+            throw new HttpException(403, 'Only the Master User can access server maintenance.');
         }
     }
 }

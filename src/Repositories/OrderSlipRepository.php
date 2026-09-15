@@ -779,6 +779,7 @@ SQL;
             if ($stmt->rowCount() === 0) {
                 return null;
             }
+            (new AuditTrailWriter($this->db->pdo()))->write($mainId, (int) ($payload['user_id'] ?? 0), 'Order Slip', 'Post Order Slip', $orderSlipRefno, '', 'Pending', 'Posted');
             return $this->getOrderSlip($mainId, $orderSlipRefno);
         }
 

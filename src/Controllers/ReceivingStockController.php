@@ -216,6 +216,10 @@ final class ReceivingStockController
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
+        $userId = (int) ($body['user_id'] ?? 0);
+        if ($userId <= 0) {
+            throw new HttpException(422, 'user_id is required');
+        }
 
         $refno = trim((string) ($params['receivingRefno'] ?? ''));
         if ($refno === '') {
@@ -230,6 +234,7 @@ final class ReceivingStockController
             ));
             $record = $this->repo->finalizeReceivingStock(
                 $mainId,
+                $userId,
                 $refno,
                 trim((string) ($body['status'] ?? 'Delivered')),
                 filter_var($body['close_remaining_po_qty'] ?? false, FILTER_VALIDATE_BOOL),

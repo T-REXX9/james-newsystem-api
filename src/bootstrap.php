@@ -66,6 +66,8 @@ use App\Controllers\ServerMaintenanceController;
 use App\Controllers\RolePermissionController;
 use App\Services\DatabaseBackupService;
 use App\Services\AutomaticBackupSettingsStore;
+use App\Services\CorporateDumpImportService;
+use App\Services\CorporateDumpUploadStore;
 use App\Services\AutomaticBackupRunner;
 use App\Services\AutomaticBackupNotifier;
 use App\Services\BackupDestinationLister;
@@ -234,6 +236,8 @@ require __DIR__ . '/Controllers/ServerMaintenanceController.php';
 require __DIR__ . '/Controllers/RolePermissionController.php';
 require __DIR__ . '/Services/DatabaseBackupService.php';
 require __DIR__ . '/Services/AutomaticBackupSettings.php';
+require __DIR__ . '/Services/CorporateDumpImportService.php';
+require __DIR__ . '/Services/CorporateDumpUploadStore.php';
 require __DIR__ . '/Services/AutomaticBackupSettingsStore.php';
 require __DIR__ . '/Services/AutomaticBackupOrganizer.php';
 require __DIR__ . '/Services/AutomaticBackupRunner.php';
@@ -241,7 +245,7 @@ require __DIR__ . '/Services/AutomaticBackupNotifier.php';
 require __DIR__ . '/Services/BackupDestinationLister.php';
 
 Env::load(dirname(__DIR__) . '/.env');
-date_default_timezone_set((string) Env::get('APP_TIMEZONE', 'UTC'));
+date_default_timezone_set((string) Env::get('APP_TIMEZONE', 'Asia/Manila'));
 
 spl_autoload_register(static function (string $class): void {
     $prefix = 'App\\';
@@ -391,10 +395,13 @@ function app_router(): Router
     $profitProtectionController = new ProfitProtectionController(new App\Repositories\ProfitProtectionRepository($db));
     $vipTierSettingsController = new VipTierSettingsController(new App\Repositories\VipTierSettingsRepository($db));
     $serverMaintenanceBackupDir = dirname(__DIR__) . '/storage/database-backups';
+    $corporateDumpUploadDir = dirname(__DIR__) . '/storage/corporate-dumps';
     $automaticBackupStore = new AutomaticBackupSettingsStore(
         dirname(__DIR__) . '/storage/automatic-backup-settings.json'
     );
     $databaseBackupService = new DatabaseBackupService($config);
+    $corporateDumpImportService = new CorporateDumpImportService($config);
+    $corporateDumpUploadStore = new CorporateDumpUploadStore($corporateDumpUploadDir);
     $automaticBackupNotifier = new AutomaticBackupNotifier($db);
     $automaticBackupRunner = new AutomaticBackupRunner(
         $automaticBackupStore,
@@ -403,14 +410,16 @@ function app_router(): Router
         static function (string $title, string $message) use ($automaticBackupNotifier): void {
             $automaticBackupNotifier->notifyMasters($title, $message);
         },
-        static fn (): \DateTimeImmutable => new \DateTimeImmutable('now', new \DateTimeZone('UTC'))
+        static fn (): \DateTimeImmutable => new \DateTimeImmutable('now', new \DateTimeZone('Asia/Manila'))
     );
     $serverMaintenanceController = new ServerMaintenanceController(
         $databaseBackupService,
         $serverMaintenanceBackupDir,
         $automaticBackupStore,
         new BackupDestinationLister(BackupDestinationLister::defaultRoots()),
-        $automaticBackupRunner
+        $automaticBackupRunner,
+        $corporateDumpImportService,
+        $corporateDumpUploadStore
     );
 
     $requireBearerAuth = static function (callable $handler) use ($tokenService, $authRepo): callable {
@@ -717,7 +726,16 @@ function app_router(): Router
     $router->patch('/api/v1/customer-groups/{groupId}', $requireActionAuth([$customerGroupController, 'update'], 'Customer', 'edit'));
     $router->delete('/api/v1/customer-groups/{groupId}', $requireActionAuth([$customerGroupController, 'delete'], 'Customer', 'delete'));
     $router->get('/api/v1/customer-database/{sessionId}', $requireViewAuth([$customerDatabaseController, 'show'], 'Customer Database'));
-    $router->post('/api/v1/customer-database', $requireActionAuth([$customerDatabaseController, 'create'], 'Customer Database', 'add'));
+    $router->post('/api/v1/customer-database', $requireActionAuth(static function (array $params = [], array $query = [], array $body = []) use ($customerDatabaseController): array {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $isMasterUser = (string) ($claims['user_type'] ?? '') === '1';
+        $isProspect = (int) ($body['status'] ?? 1) === 3
+            || str_contains(strtolower((string) ($body['profile_type'] ?? '')), 'prospect');
+        if (!$isMasterUser && !$isProspect) {
+            throw new HttpException(403, 'Staff may add prospects only; customer creation is restricted to the Master User');
+        }
+        return $customerDatabaseController->create($params, $query, $body);
+    }, 'Customer Database', 'add'));
     $router->patch('/api/v1/customer-database/bulk', $requireCustomerUpdateAuth([$customerDatabaseController, 'bulkUpdate']));
     $router->patch('/api/v1/customer-database/{sessionId}', $requireCustomerUpdateAuth([$customerDatabaseController, 'update']));
     $router->delete('/api/v1/customer-database/{sessionId}', $requireActionAuth([$customerDatabaseController, 'delete'], 'Customer Database', 'delete'));
@@ -1207,6 +1225,9 @@ function app_router(): Router
     $router->patch('/api/v1/server-maintenance/automatic-backup', $requireMasterUser([$serverMaintenanceController, 'updateAutomaticBackup']));
     $router->get('/api/v1/server-maintenance/backup-destinations', $requireBearerAuthWithClaims([$serverMaintenanceController, 'listBackupDestinations']));
     $router->post('/api/v1/server-maintenance/automatic-backup/run', $requireMasterUser([$serverMaintenanceController, 'runAutomaticBackup']));
+    $router->post('/api/v1/server-maintenance/corporate-dump/uploads', $requireMasterUser([$serverMaintenanceController, 'createCorporateDumpUpload']));
+    $router->post('/api/v1/server-maintenance/corporate-dump/uploads/{uploadId}/chunks', $requireMasterUser([$serverMaintenanceController, 'appendCorporateDumpChunk']));
+    $router->post('/api/v1/server-maintenance/corporate-dump/uploads/{uploadId}/import', $requireMasterUser([$serverMaintenanceController, 'importCorporateDumpUpload']));
     $router->post('/api/v1/profit-protection/validate-items', $requireBearerAuthWithClaims([$profitProtectionController, 'validateItems']));
     $router->post('/api/v1/profit-protection/overrides', $requireActionAuth([$profitProtectionController, 'createOverride'], 'Profit Protection', 'add'));
     $router->get('/api/v1/profit-protection/overrides', [$profitProtectionController, 'listOverrides']);

@@ -57,16 +57,17 @@ $allRows = $controller->masterList([], [], $claims);
 $items = $allRows['items'] ?? [];
 
 foreach ($items as $item) {
-    $agentMatches = (string) ($item['assignedAgentId'] ?? '') === (string) $viewerId;
-    $teamIsVisible = trim((string) ($item['assignedTeamId'] ?? '')) !== '';
-    if (!$agentMatches && !$teamIsVisible) {
-        throw new RuntimeException('FAIL: unassigned sales agent can view an unassigned customer');
+    if ((string) ($item['shopName'] ?? '') === $unassignedCompany) {
+        break;
     }
+}
+if (!isset($item) || (string) ($item['shopName'] ?? '') !== $unassignedCompany) {
+    throw new RuntimeException('FAIL: Daily Call list omits a company customer for a sales agent');
 }
 
 $searchRows = $controller->masterList([], ['search' => $unassignedCompany], $claims);
-if (($searchRows['items'] ?? []) !== []) {
-    throw new RuntimeException('FAIL: search exposes an unassigned customer to a sales agent');
+if (count($searchRows['items'] ?? []) === 0) {
+    throw new RuntimeException('FAIL: search omits a company customer for a sales agent');
 }
 
-echo "PASS: unassigned sales agents only receive assigned/team customers and cannot search unassigned customers\n";
+echo "PASS: sales agents receive the same company Daily Call customers and counts\n";

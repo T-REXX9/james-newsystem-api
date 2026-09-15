@@ -746,6 +746,7 @@ SQL;
             if ($stmt->rowCount() === 0) {
                 return null;
             }
+            (new AuditTrailWriter($this->db->pdo()))->write($mainId, (int) ($payload['user_id'] ?? 0), 'Invoice', 'Post Invoice', $invoiceRefno, '', 'Pending', 'Posted');
             return $this->getInvoice($mainId, $invoiceRefno);
         }
 

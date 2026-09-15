@@ -27,6 +27,20 @@ $checks = [
         $repository,
         '$notification = $this->insertNotification('
     ),
+    'general notification deduplication includes already-read rows' => (function () use ($repository): bool {
+        $start = strpos($repository, 'private function findExistingByRecipientAndMetadata');
+        $end = $start === false ? false : strpos($repository, "\n    }", $start);
+        $method = $start === false || $end === false ? '' : substr($repository, $start, $end - $start);
+
+        return str_contains($method, 'lstatus != -1') && !str_contains($method, 'lstatus = 1');
+    })(),
+    'inventory scan deduplication includes already-read rows' => (function () use ($repository): bool {
+        $start = strpos($repository, 'private function findExistingInventoryNotificationKeys');
+        $end = $start === false ? false : strpos($repository, "\n    }", $start);
+        $method = $start === false || $end === false ? '' : substr($repository, $start, $end - $start);
+
+        return str_contains($method, 'lstatus != -1') && !str_contains($method, 'lstatus = :status');
+    })(),
     'notification lookup index is included in the migration' => str_contains(
         $migration,
         'idx_notifications_user_ref_status (luserid, lrefno, lstatus)'

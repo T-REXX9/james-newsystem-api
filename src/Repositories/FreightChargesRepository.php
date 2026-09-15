@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use DateTimeImmutable;
 use PDO;
 use RuntimeException;
@@ -579,7 +580,7 @@ SQL;
 
         return match (strtolower(trim($action))) {
             'post', 'approverecord' => $this->postRecord($mainId, $userId, $existing),
-            'unpost' => $this->unpostRecord($refno),
+            'unpost' => $this->unpostRecord($mainId, $userId, $refno, (string) ($existing['lstatus'] ?? 'Posted')),
             default => throw new RuntimeException('Unsupported action'),
         };
     }
@@ -647,6 +648,7 @@ SQL;
             }
 
             $pdo->commit();
+            (new AuditTrailWriter($pdo))->write($mainId, (int) $userId, 'Freight Charges', 'Post Freight Charges', $refno, (string) ($record['lremarks'] ?? ''), (string) ($record['lstatus'] ?? 'Pending'), 'Posted');
         } catch (\Throwable $e) {
             $pdo->rollBack();
             throw $e;
@@ -659,7 +661,7 @@ SQL;
         ];
     }
 
-    private function unpostRecord(string $refno): array
+    private function unpostRecord(int $mainId, string $userId, string $refno, string $oldStatus): array
     {
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -671,6 +673,7 @@ SQL;
             $delete->execute(['refno' => $refno]);
 
             $pdo->commit();
+            (new AuditTrailWriter($pdo))->write($mainId, (int) $userId, 'Freight Charges', 'Unpost Freight Charges', $refno, '', $oldStatus, 'Pending');
         } catch (\Throwable $e) {
             $pdo->rollBack();
             throw $e;

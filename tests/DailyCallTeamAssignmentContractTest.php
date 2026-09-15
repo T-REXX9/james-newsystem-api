@@ -22,7 +22,7 @@ $assert(
 );
 $assert(str_contains($customerDatabase, "'sales_team_id'"), 'Bulk customer updates accept team assignment');
 $assert(
-    str_contains($controller, '$viewerUserId = $this->authenticatedViewerUserId($body);')
-        && str_contains($controller, 'getPurchaseMasterList($mainId, $fromDate, $search, $viewerUserId)'),
-    'Master list applies authenticated viewer visibility filtering'
+    str_contains($controller, 'getPurchaseMasterList($mainId, $fromDate, $search);')
+        && !str_contains($controller, 'getPurchaseMasterList($mainId, $fromDate, $search, $viewerUserId)'),
+    'Master list uses the company-wide ledger and customer dataset'
 );
