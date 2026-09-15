@@ -708,6 +708,13 @@ SQL;
         $checkStmt->execute(['refno' => $prRefno]);
         $poNo = $checkStmt->fetchColumn();
         if ($poNo) {
+            if (strcasecmp(trim((string) ($payload['status'] ?? '')), 'Cancelled') === 0) {
+                throw new RuntimeException(
+                    'To cancel this PR: cancel PO ' . $poNo
+                    . ' if it is Pending; otherwise unpost PO ' . $poNo
+                    . ' (and its RR). Then cancel this PR again.'
+                );
+            }
             throw new RuntimeException('This Purchase Requisition cannot be edited because PO ' . $poNo . ' has already been generated. Unpost or cancel the related Purchase Order first.');
         }
 
