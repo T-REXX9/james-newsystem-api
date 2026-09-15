@@ -707,14 +707,9 @@ SQL;
         );
         $checkStmt->execute(['refno' => $prRefno]);
         $poNo = $checkStmt->fetchColumn();
-        if ($poNo) {
-            if (strcasecmp(trim((string) ($payload['status'] ?? '')), 'Cancelled') === 0) {
-                throw new RuntimeException(
-                    'To cancel this PR: cancel PO ' . $poNo
-                    . ' if it is Pending; otherwise unpost PO ' . $poNo
-                    . ' (and its RR). Then cancel this PR again.'
-                );
-            }
+        // A cancellation is terminal for this PR only. Unlike an edit, it does
+        // not change its PO/RR chain, so it remains valid after a PO exists.
+        if ($poNo && strcasecmp(trim((string) ($payload['status'] ?? '')), 'Cancelled') !== 0) {
             throw new RuntimeException('This Purchase Requisition cannot be edited because PO ' . $poNo . ' has already been generated. Unpost or cancel the related Purchase Order first.');
         }
 
@@ -1064,15 +1059,14 @@ SQL;
             throw new RuntimeException('Unsupported action: ' . $action);
         }
 
-        if ($normalized === 'cancel' || $normalized === 'submit') {
+        if ($normalized === 'submit') {
             $checkStmt = $this->db->pdo()->prepare(
                 'SELECT lpurchaseno FROM tblpo_list WHERE lpr_refno = :refno AND COALESCE(ldeleted, 0) = 0 AND LOWER(COALESCE(ltransaction_status, "")) NOT IN ("cancelled", "canceled", "deleted", "unposted") LIMIT 1'
             );
             $checkStmt->execute(['refno' => $prRefno]);
             $poNo = $checkStmt->fetchColumn();
             if ($poNo) {
-                $actionName = $normalized === 'cancel' ? 'cancelled' : 'unposted';
-                throw new RuntimeException('This Purchase Requisition cannot be ' . $actionName . ' because PO ' . $poNo . ' has already been generated. Unpost or cancel the related Purchase Order first.');
+                throw new RuntimeException('This Purchase Requisition cannot be submitted because PO ' . $poNo . ' has already been generated. Unpost or cancel the related Purchase Order first.');
             }
         }
 
