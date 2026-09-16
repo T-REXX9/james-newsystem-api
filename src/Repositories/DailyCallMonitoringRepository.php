@@ -351,6 +351,9 @@ SQL);
             'txn_current_month' => date('Y-m'),
             'txn_last_month' => date('Y-m', strtotime('-1 month')),
             'txn_main_id' => $mainId,
+            'sales_report_txn_main_id' => $mainId,
+            'sales_report_invoice_main_id' => $mainId,
+            'sales_report_dr_main_id' => $mainId,
             'verification_main_id' => $mainId,
         ];
 
@@ -486,6 +489,11 @@ txn_monthly AS (
       AND tr.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
       AND COALESCE(tr.lcancel, 0) = 0
       AND COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+      -- A linked sales order is already represented by its posted invoice or
+      -- delivery receipt in tblledger.  Only standalone sales orders belong
+      -- here; otherwise every linked sale is counted a second time.
+      AND COALESCE(tr.invoice_refno, '') = ''
+      AND COALESCE(tr.ldr_refno, '') = ''
       AND COALESCE(tr.lcustomerid, '') <> ''
     GROUP BY tr.lcustomerid, tr.lmain_id, DATE_FORMAT(tr.ldate, '%Y-%m')
 ),
@@ -511,6 +519,64 @@ txn_summary AS (
         SUM(previous_three_month_sales) AS previous_three_month_sales
     FROM txn_monthly
     GROUP BY lcustomerid, lmainid
+),
+/*
+ * Current-month sales must use the exact same document rules and amounts as
+ * the Sales Report.  tblledger mirrors posted invoices/order slips, while
+ * tbltransaction also stores the linked sales order; combining those two
+ * tables inflated this dashboard total.  The three branches below mirror the
+ * Sales Report's standalone SO, invoice, and delivery-receipt rows.
+ */
+sales_report_current_month AS (
+    SELECT customer_id, SUM(amount) AS current_month_sales
+    FROM (
+        SELECT
+            t.lcustomerid AS customer_id,
+            SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)) AS amount
+        FROM tbltransaction t
+        INNER JOIN tbltransaction_item i
+            ON i.lrefno = t.lrefno
+            AND COALESCE(i.lcancel, 0) = 0
+        WHERE t.lmain_id = :sales_report_txn_main_id
+          AND COALESCE(t.lcancel, 0) = 0
+          AND LOWER(COALESCE(t.lsubmitstat, '')) IN ('submitted', 'approved', 'posted')
+          AND COALESCE(t.invoice_refno, '') = ''
+          AND COALESCE(t.ldr_refno, '') = ''
+          AND t.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND t.ldate < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
+          AND COALESCE(t.lcustomerid, '') <> ''
+        GROUP BY t.lcustomerid
+
+        UNION ALL
+
+        SELECT
+            l.lcustomerid AS customer_id,
+            SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
+                * CASE WHEN LOWER(COALESCE(l.ltax_type, '')) = 'exclusive' THEN 1.12 ELSE 1 END) AS amount
+        FROM tblinvoice_list l
+        INNER JOIN tblinvoice_itemrec i ON i.linvoice_refno = l.lrefno
+        WHERE l.lmain_id = :sales_report_invoice_main_id
+          AND COALESCE(l.lcancel, '') = ''
+          AND DATE(l.ldatetime) >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND DATE(l.ldatetime) < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
+          AND COALESCE(l.lcustomerid, '') <> ''
+        GROUP BY l.lcustomerid
+
+        UNION ALL
+
+        SELECT
+            l.lcustomerid AS customer_id,
+            SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)) AS amount
+        FROM tbldelivery_receipt l
+        INNER JOIN tbldelivery_receipt_items i ON i.lor_refno = l.lrefno
+        WHERE l.lmain_id = :sales_report_dr_main_id
+          AND COALESCE(l.lcancel, '') = ''
+          AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND l.ldate < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
+          AND COALESCE(l.lcustomerid, '') <> ''
+        GROUP BY l.lcustomerid
+    ) sales_report_rows
+    GROUP BY customer_id
 )
 SELECT
     p.lsessionid AS id,
@@ -573,7 +639,7 @@ SELECT
         ELSE COALESCE(txn_summary.recovery_trailing_12_month_month_count, 0)
     END AS recovery_trailing_12_month_month_count,
     COALESCE(ledger_summary.last_active_year, txn_summary.last_active_year) AS last_active_year,
-    COALESCE(ledger_summary.current_month_sales, 0) + COALESCE(txn_summary.current_month_sales, 0) AS current_month_sales,
+    COALESCE(sales_report_current_month.current_month_sales, 0) AS current_month_sales,
     COALESCE(ledger_summary.last_month_sales, 0) + COALESCE(txn_summary.last_month_sales, 0) AS last_month_sales,
     COALESCE(ledger_summary.recent_three_month_sales, 0) + COALESCE(txn_summary.recent_three_month_sales, 0) AS recent_three_month_sales,
     COALESCE(ledger_summary.previous_three_month_sales, 0) + COALESCE(txn_summary.previous_three_month_sales, 0) AS previous_three_month_sales,
@@ -762,6 +828,8 @@ LEFT JOIN (
 */
 LEFT JOIN txn_summary ON txn_summary.lcustomerid = p.lsessionid
     AND txn_summary.lmainid = CAST(p.lmain_id AS CHAR)
+LEFT JOIN sales_report_current_month
+    ON sales_report_current_month.customer_id = p.lsessionid
 LEFT JOIN (
     SELECT audit.lmain_id, audit.lrefno, audit.luser_id
     FROM tblaudit_trail audit
