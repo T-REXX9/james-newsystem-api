@@ -27,7 +27,7 @@ $assert(
 );
 $assert(str_contains($customerDatabase, "'sales_team_id'"), 'Bulk customer updates accept team assignment');
 $assert(
-    str_contains($controller, 'getPurchaseMasterList($mainId, $fromDate, $search);')
-        && !str_contains($controller, 'getPurchaseMasterList($mainId, $fromDate, $search, $viewerUserId)'),
-    'Master list uses the company-wide ledger and customer dataset'
+    str_contains($controller, 'getPurchaseMasterList(')
+        && str_contains($controller, '$this->authenticatedViewerUserId($body)'),
+    'Master list applies the authenticated viewer scope'
 );

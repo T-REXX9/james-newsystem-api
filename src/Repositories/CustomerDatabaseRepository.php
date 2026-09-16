@@ -266,6 +266,14 @@ SELECT
     COALESCE(p.lsessionid, '') AS session_id,
     COALESCE(p.lpatient_code, '') AS customer_code,
     COALESCE(p.lcompany, '') AS company,
+    COALESCE((
+        SELECT old_customer.loldname
+        FROM tlbCustomer_Details old_customer
+        WHERE old_customer.lsessionid = p.lsessionid
+          AND COALESCE(TRIM(old_customer.loldname), '') <> ''
+        ORDER BY old_customer.ldate DESC, old_customer.lid DESC
+        LIMIT 1
+    ), '') AS old_name,
     COALESCE(p.lemail, '') AS email,
     COALESCE(p.lphone, '') AS phone,
     COALESCE(p.lmobile, '') AS mobile,
@@ -821,6 +829,12 @@ SQL;
                 $updateParams['discount_code'] = $this->normalizeDiscountCode((string) ($payload['discount_code'] ?? $existing['discount_code'] ?? ''));
             }
             $stmt->execute($updateParams);
+            $this->savePreviousCustomerName(
+                $this->db->pdo(),
+                $sessionId,
+                (string) ($existing['company'] ?? ''),
+                (string) $updateParams['company']
+            );
             if ($deliveryAddresses !== null) {
                 $this->syncDeliveryAddresses($this->db->pdo(), $mainId, $sessionId, $deliveryAddresses);
             }
@@ -853,6 +867,50 @@ SQL;
         }
 
         return $this->getCustomer($mainId, $sessionId);
+    }
+
+    /**
+     * Keep the one previous company name used by the legacy Customer Database.
+     * The current name remains in tblpatient.lcompany; a later rename replaces
+     * this value rather than creating a rename-history list.
+     */
+    private function savePreviousCustomerName(PDO $pdo, string $sessionId, string $currentName, string $nextName): void
+    {
+        if ($currentName === $nextName) {
+            return;
+        }
+
+        $existingStmt = $pdo->prepare(
+            'SELECT lid
+             FROM tlbCustomer_Details
+             WHERE lsessionid = :session_id
+             ORDER BY lid ASC
+             LIMIT 1'
+        );
+        $existingStmt->execute(['session_id' => $sessionId]);
+        $detailId = $existingStmt->fetchColumn();
+
+        if ($detailId === false) {
+            $insertStmt = $pdo->prepare(
+                'INSERT INTO tlbCustomer_Details (lsessionid, loldname)
+                 VALUES (:session_id, :old_name)'
+            );
+            $insertStmt->execute([
+                'session_id' => $sessionId,
+                'old_name' => $currentName,
+            ]);
+            return;
+        }
+
+        $updateStmt = $pdo->prepare(
+            'UPDATE tlbCustomer_Details
+             SET loldname = :old_name
+             WHERE lid = :id'
+        );
+        $updateStmt->execute([
+            'old_name' => $currentName,
+            'id' => (int) $detailId,
+        ]);
     }
 
     public function bulkUpdateCustomers(int $mainId, array $sessionIds, array $payload): array

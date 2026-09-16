@@ -657,6 +657,10 @@ SQL;
             $fields[] = 'litem_code = :litem_code';
             $params['litem_code'] = (string) $payload['item_code'];
         }
+        if (array_key_exists('brand', $payload)) {
+            $fields[] = 'lbrand = :lbrand';
+            $params['lbrand'] = (string) $payload['brand'];
+        }
         if (array_key_exists('description', $payload)) {
             $fields[] = 'ldesc = :ldesc';
             $params['ldesc'] = (string) $payload['description'];
@@ -1121,7 +1125,7 @@ SQL;
                     'litem_refno' => $itemRef,
                     'litemcode' => (string) ($item['item_code'] ?? ''),
                     'lpartno' => (string) ($item['part_no'] ?? ''),
-                    'lbrand' => '',
+                    'lbrand' => (string) ($item['brand'] ?? ''),
                     'llocation' => (string) ($item['location'] ?? ''),
                     'lremark' => (string) ($item['remark'] ?? 'OnStock'),
                     'ltransaction_date' => $this->normalizeDate((string) ($inquiry['sales_date'] ?? '')),
@@ -1253,6 +1257,7 @@ SELECT
     COALESCE(i.litem_refno, '') AS item_refno,
     COALESCE(i.lpartno, '') AS part_no,
     COALESCE(i.litem_code, '') AS item_code,
+    COALESCE(i.lbrand, '') AS brand,
     COALESCE(i.ldesc, '') AS description,
     COALESCE(i.llocation, '') AS location,
     COALESCE(i.lqty, 0) AS qty,
@@ -1341,6 +1346,7 @@ SELECT
     COALESCE(i.litem_refno, '') AS item_refno,
     COALESCE(i.lpartno, '') AS part_no,
     COALESCE(i.litem_code, '') AS item_code,
+    COALESCE(i.lbrand, '') AS brand,
     COALESCE(i.ldesc, '') AS description,
     COALESCE(i.llocation, '') AS location,
     COALESCE(i.lqty, 0) AS qty,
@@ -1386,9 +1392,9 @@ SQL;
 
         $stmt = $pdo->prepare(
             'INSERT INTO tblinquiry_item
-            (linq_no, linq_refno, litem_id, litem_refno, lqty, lprice, litem_code, lpartno, ldesc, llocation, lremark, linquiry_date, lapproved)
+            (linq_no, linq_refno, litem_id, litem_refno, lqty, lprice, litem_code, lpartno, lbrand, ldesc, llocation, lremark, linquiry_date, lapproved)
             VALUES
-            (:linq_no, :linq_refno, :litem_id, :litem_refno, :lqty, :lprice, :litem_code, :lpartno, :ldesc, :llocation, :lremark, :linquiry_date, :lapproved)'
+            (:linq_no, :linq_refno, :litem_id, :litem_refno, :lqty, :lprice, :litem_code, :lpartno, :lbrand, :ldesc, :llocation, :lremark, :linquiry_date, :lapproved)'
         );
         $stmt->execute([
             'linq_no' => $inquiryNo,
@@ -1399,6 +1405,7 @@ SQL;
             'lprice' => $unitPrice,
             'litem_code' => (string) ($item['item_code'] ?? ''),
             'lpartno' => (string) ($item['part_no'] ?? ''),
+            'lbrand' => (string) ($item['brand'] ?? ''),
             'ldesc' => (string) ($item['description'] ?? ''),
             'llocation' => (string) ($item['location'] ?? ''),
             'lremark' => (string) ($item['remark'] ?? ''),

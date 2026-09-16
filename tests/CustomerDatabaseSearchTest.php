@@ -77,6 +77,9 @@ try {
     $oldNameMatch = $find($oldNameResult['items']);
     $assert($oldNameMatch !== null, 'full search finds a customer by former company name');
     $assert((string) ($oldNameMatch['old_name'] ?? '') === 'Former Search Company', 'full search returns the former company name');
+
+    $detail = $customers->getCustomer($mainId, $sessionId);
+    $assert((string) ($detail['old_name'] ?? '') === 'Former Search Company', 'customer detail returns the former company name after the list refresh');
 } finally {
     $pdo->prepare('DELETE FROM tblcontact_person WHERE lrefno = :session_id')->execute(['session_id' => $sessionId]);
     $pdo->prepare('DELETE FROM tlbCustomer_Details WHERE lsessionid = :session_id')->execute(['session_id' => $sessionId]);

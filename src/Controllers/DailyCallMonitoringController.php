@@ -31,7 +31,12 @@ final class DailyCallMonitoringController
         $status = (string) ($query['status'] ?? 'all');
         $search = (string) ($query['search'] ?? '');
 
-        return $this->repo->getExcelRows($mainId, $status, $search);
+        return $this->repo->getExcelRows(
+            $mainId,
+            $status,
+            $search,
+            $this->authenticatedViewerUserId($body)
+        );
     }
 
     public function salesPerformanceDashboard(array $params = [], array $query = [], array $body = []): array
@@ -57,7 +62,12 @@ final class DailyCallMonitoringController
         $fromDate = trim((string) ($query['from_date'] ?? '2025-10-01'));
         $search = trim((string) ($query['search'] ?? ''));
 
-        return $this->repo->getPurchaseMasterList($mainId, $fromDate, $search);
+        return $this->repo->getPurchaseMasterList(
+            $mainId,
+            $fromDate,
+            $search,
+            $this->authenticatedViewerUserId($body)
+        );
     }
 
     public function ownerSnapshot(array $params = [], array $query = [], array $body = []): array

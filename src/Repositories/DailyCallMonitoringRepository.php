@@ -90,6 +90,7 @@ final class DailyCallMonitoringRepository
                 'province' => $customer['province'] ?: '—',
                 'city' => $customer['city'] ?: '—',
                 'shopName' => $customer['shop_name'] ?: 'Unnamed Shop',
+                'pastName' => $customer['past_name'] ?: '',
                 'contactNumber' => $customer['contact_number'] ?: '—',
                 'contactPersonName' => $customer['contact_person_name'] ?: '',
                 'codeDate' => $this->formatCodeDate($customer['code_text'], $customer['code_date']),
@@ -377,6 +378,12 @@ SQL);
         if (trim($search) !== '') {
             $where[] = "(
                 p.lcompany LIKE :search_company
+                OR EXISTS (
+                    SELECT 1
+                    FROM tlbCustomer_Details old_customer
+                    WHERE old_customer.lsessionid = p.lsessionid
+                      AND COALESCE(old_customer.loldname, '') LIKE :search_old_name
+                )
                 OR p.lcity LIKE :search_city
                 OR p.lprovince LIKE :search_province
                 OR p.lmobile LIKE :search_mobile
@@ -387,6 +394,7 @@ SQL);
             )";
             $searchValue = '%' . trim($search) . '%';
             $params['search_company'] = $searchValue;
+            $params['search_old_name'] = $searchValue;
             $params['search_city'] = $searchValue;
             $params['search_province'] = $searchValue;
             $params['search_mobile'] = $searchValue;
@@ -581,6 +589,14 @@ sales_report_current_month AS (
 SELECT
     p.lsessionid AS id,
     COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Shop') AS shop_name,
+    COALESCE((
+        SELECT old_customer.loldname
+        FROM tlbCustomer_Details old_customer
+        WHERE old_customer.lsessionid = p.lsessionid
+          AND COALESCE(TRIM(old_customer.loldname), '') <> ''
+        ORDER BY old_customer.ldate DESC, old_customer.lid DESC
+        LIMIT 1
+    ), '') AS past_name,
     COALESCE(p.lprovince, '') AS province,
     COALESCE(p.lcity, '') AS city,
     COALESCE(
@@ -601,6 +617,7 @@ SELECT
     COALESCE(p.lstatus, 1) AS customer_status,
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
     COALESCE(NULLIF(TRIM(CONCAT(COALESCE(verifier.lfname, ''), ' ', COALESCE(verifier.llname, ''))), ''), '') AS verified_by,
+    CASE WHEN verification_audit.lid IS NULL THEN 0 ELSE 1 END AS verified_in_system,
     COALESCE(p.ldatetime, '') AS created_at,
     COALESCE(p.lnotes, '') AS prospect_comment,
     COALESCE(p.lprice_group, '') AS price_group,
@@ -831,7 +848,7 @@ LEFT JOIN txn_summary ON txn_summary.lcustomerid = p.lsessionid
 LEFT JOIN sales_report_current_month
     ON sales_report_current_month.customer_id = p.lsessionid
 LEFT JOIN (
-    SELECT audit.lmain_id, audit.lrefno, audit.luser_id
+    SELECT audit.lid, audit.lmain_id, audit.lrefno, audit.luser_id
     FROM tblaudit_trail audit
     INNER JOIN (
         SELECT lmain_id, lrefno, MAX(lid) AS latest_id
@@ -907,6 +924,7 @@ SQL;
             return [
                 'id' => (string) ($row['id'] ?? ''),
                 'shopName' => (string) ($row['shop_name'] ?? 'Unnamed Shop'),
+                'pastName' => $this->cleanDisplayText($row['past_name'] ?? '', ''),
                 'province' => $this->cleanDisplayText($row['province'] ?? '', '—'),
                 'city' => $this->cleanDisplayText($row['city'] ?? '', '—'),
                 'contactNumber' => $this->cleanDisplayText($row['contact_number'] ?? '', '—'),
@@ -930,6 +948,8 @@ SQL;
                 'debt_type' => (string) ($row['debt_type'] ?? 'Good'),
                 'verifiedBy' => $this->cleanDisplayText($row['verified_by'] ?? '', ''),
                 'verified_by' => $this->cleanDisplayText($row['verified_by'] ?? '', ''),
+                'verifiedInSystem' => (bool) ($row['verified_in_system'] ?? false),
+                'verified_in_system' => (bool) ($row['verified_in_system'] ?? false),
                 'createdAt' => (string) ($row['created_at'] ?? ''),
                 'created_at' => (string) ($row['created_at'] ?? ''),
                 'prospectComment' => $this->cleanDisplayText($row['prospect_comment'] ?? '', ''),
@@ -1006,12 +1026,11 @@ SQL;
 
     public function getAgentSnapshot(int $mainId, int $viewerUserId): array
     {
-        // Category totals and the customers behind them are company-wide
-        // Daily Call data.  Assignment is for accountability, not a filter:
-        // filtering here made two agents see different Recovery, Prospect,
-        // and Blacklisted counts for the same ledger/customer records.
-        $customers = $this->getCustomerBaseRows($mainId, 'all', '');
-        $masterList = $this->getPurchaseMasterList($mainId, '2025-10-01', '');
+        // Agents may see a customer/prospect when it is assigned directly to
+        // them or to their team. Never hydrate a company-wide list and rely on
+        // the browser search to hide records; the snapshot is the access gate.
+        $customers = $this->getCustomerBaseRows($mainId, 'all', '', $viewerUserId);
+        $masterList = $this->getPurchaseMasterList($mainId, '2025-10-01', '', $viewerUserId);
         $contactIds = array_values(array_filter(array_map(
             static fn(array $row): string => (string) ($row['id'] ?? ''),
             $customers
@@ -1930,6 +1949,14 @@ SQL;
 SELECT
     p.lsessionid AS id,
     p.lcompany AS shop_name,
+    COALESCE((
+        SELECT old_customer.loldname
+        FROM tlbCustomer_Details old_customer
+        WHERE old_customer.lsessionid = p.lsessionid
+          AND COALESCE(TRIM(old_customer.loldname), '') <> ''
+        ORDER BY old_customer.ldate DESC, old_customer.lid DESC
+        LIMIT 1
+    ), '') AS past_name,
     p.lprovince AS province,
     p.lcity AS city,
     p.lmobile AS mobile,
@@ -2008,6 +2035,12 @@ SQL;
         if (trim($search) !== '') {
             $sql .= " AND (
                 p.lcompany LIKE :search_company
+                OR EXISTS (
+                    SELECT 1
+                    FROM tlbCustomer_Details old_customer
+                    WHERE old_customer.lsessionid = p.lsessionid
+                      AND COALESCE(old_customer.loldname, '') LIKE :search_old_name
+                )
                 OR p.lcity LIKE :search_city
                 OR p.lprovince LIKE :search_province
                 OR p.lmobile LIKE :search_mobile
@@ -2016,6 +2049,7 @@ SQL;
             )";
             $searchValue = '%' . trim($search) . '%';
             $params['search_company'] = $searchValue;
+            $params['search_old_name'] = $searchValue;
             $params['search_city'] = $searchValue;
             $params['search_province'] = $searchValue;
             $params['search_mobile'] = $searchValue;
