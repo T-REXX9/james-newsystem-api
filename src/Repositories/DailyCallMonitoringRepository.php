@@ -2050,7 +2050,9 @@ SQL;
         }
 
         $statement = $this->db->pdo()->prepare(
-            'SELECT CAST(COALESCE(a.ltype, 0) AS SIGNED) AS user_type
+            'SELECT
+                CAST(COALESCE(a.ltype, 0) AS SIGNED) AS user_type,
+                CAST(COALESCE(a.lteam, 0) AS SIGNED) AS team_id
              FROM tblaccount a
              WHERE a.lid = :viewer_id
                AND (a.lid = :main_id_owner OR a.lmother_id = :main_id_staff)
@@ -2071,10 +2073,33 @@ SQL;
         $permissions = (new RolePermissionRepository($this->db))
             ->getActionPermissionsForAccount($mainId, $viewerUserId, (int) $userType);
         if (DailyCallAccessPolicy::canViewAll($permissions, $userType === '1')) {
-            return null;
+            if ($userType === '1'
+                || (int) ($viewer['team_id'] ?? 0) > 0
+                || $this->viewerHasIndividualAssignments($mainId, $viewerUserId)
+            ) {
+                return null;
+            }
         }
 
         return $viewerUserId;
+    }
+
+    private function viewerHasIndividualAssignments(int $mainId, int $viewerUserId): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT 1
+             FROM tblpatient
+             WHERE lmain_id = :main_id
+               AND COALESCE(ldeleted, 0) = 0
+               AND CAST(COALESCE(lsales_person, 0) AS SIGNED) = :viewer_id
+             LIMIT 1'
+        );
+        $stmt->execute([
+            'main_id' => $mainId,
+            'viewer_id' => $viewerUserId,
+        ]);
+
+        return (bool) $stmt->fetchColumn();
     }
 
     private function resolveViewerTeamContext(?int $viewerUserId): ?array

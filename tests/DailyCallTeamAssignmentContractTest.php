@@ -20,6 +20,11 @@ $assert(
     str_contains($dailyCall, 'lsales_team') && str_contains($dailyCall, 'viewer_team_user_id'),
     'Daily Call visibility includes the assigned team membership'
 );
+$assert(
+    str_contains($dailyCall, 'viewerHasIndividualAssignments')
+        && str_contains($dailyCall, "(int) (\$viewer['team_id'] ?? 0) > 0"),
+    'Unassigned staff cannot widen Daily Call visibility through view-all permission'
+);
 $assert(str_contains($customerDatabase, "'sales_team_id'"), 'Bulk customer updates accept team assignment');
 $assert(
     str_contains($controller, 'getPurchaseMasterList($mainId, $fromDate, $search);')
