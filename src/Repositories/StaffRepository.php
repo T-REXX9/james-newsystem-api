@@ -230,9 +230,10 @@ SQL;
             $params['team_id'] = $data['team_id'] === '' ? null : (int) $data['team_id'];
         }
 
-        if (isset($data['birthday'])) {
+        if (array_key_exists('birthday', $data)) {
             $updates[] = 'lbirthday = :birthday';
-            $params['birthday'] = $data['birthday'];
+            $birthday = trim((string) ($data['birthday'] ?? ''));
+            $params['birthday'] = $birthday === '' ? null : $birthday;
         }
 
         if (isset($data['gender'])) {
