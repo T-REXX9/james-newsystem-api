@@ -72,4 +72,4 @@ if (count($searchRows['items'] ?? []) !== 0) {
     throw new RuntimeException('FAIL: Daily Call search exposes an unassigned customer to a sales agent');
 }
 
-echo "PASS: sales agents only receive directly assigned or same-team Daily Call customers\n";
+echo "PASS: sales agents only receive customers assigned to their team or its members\n";

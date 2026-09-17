@@ -361,6 +361,18 @@ SQL);
         if ($viewerAssignmentId !== null) {
             $where[] = '(
                 CAST(COALESCE(p.lsales_person, 0) AS SIGNED) = :master_viewer_user_id
+                OR EXISTS (
+                    SELECT 1
+                    FROM tblaccount team_member
+                    WHERE team_member.lid = p.lsales_person
+                      AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) > 0
+                      AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) = (
+                          SELECT CAST(COALESCE(lteam, 0) AS SIGNED)
+                          FROM tblaccount
+                          WHERE lid = :master_viewer_teammate_user_id
+                          LIMIT 1
+                      )
+                )
                 OR (
                     CAST(COALESCE(p.lsales_team, 0) AS SIGNED) > 0
                     AND CAST(COALESCE(p.lsales_team, 0) AS SIGNED) = (
@@ -372,6 +384,7 @@ SQL);
                 )
             )';
             $params['master_viewer_user_id'] = $viewerAssignmentId;
+            $params['master_viewer_teammate_user_id'] = $viewerAssignmentId;
             $params['master_viewer_team_user_id'] = $viewerAssignmentId;
         }
 
@@ -1026,9 +1039,10 @@ SQL;
 
     public function getAgentSnapshot(int $mainId, int $viewerUserId): array
     {
-        // Agents may see a customer/prospect when it is assigned directly to
-        // them or to their team. Never hydrate a company-wide list and rely on
-        // the browser search to hide records; the snapshot is the access gate.
+        // Team membership is a shared workload: agents receive customers and
+        // prospects assigned to any teammate, as well as records assigned to
+        // their team. Never hydrate a company-wide list and rely on the browser
+        // search to hide records; the snapshot is the access gate.
         $customers = $this->getCustomerBaseRows($mainId, 'all', '', $viewerUserId);
         $masterList = $this->getPurchaseMasterList($mainId, '2025-10-01', '', $viewerUserId);
         $contactIds = array_values(array_filter(array_map(
@@ -1061,6 +1075,18 @@ SQL;
                AND COALESCE(ldeleted, 0) = 0
                AND (
                     CAST(COALESCE(lsales_person, 0) AS SIGNED) = :viewer_user_id
+                    OR EXISTS (
+                        SELECT 1
+                        FROM tblaccount team_member
+                        WHERE team_member.lid = tblpatient.lsales_person
+                          AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) > 0
+                          AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) = (
+                              SELECT CAST(COALESCE(lteam, 0) AS SIGNED)
+                              FROM tblaccount
+                              WHERE lid = :viewer_teammate_user_id
+                              LIMIT 1
+                          )
+                    )
                     OR (
                         CAST(COALESCE(lsales_team, 0) AS SIGNED) > 0
                         AND CAST(COALESCE(lsales_team, 0) AS SIGNED) = (
@@ -1077,6 +1103,7 @@ SQL;
             'main_id' => $mainId,
             'contact_id' => $contactId,
             'viewer_user_id' => $assignmentId,
+            'viewer_teammate_user_id' => $assignmentId,
             'viewer_team_user_id' => $assignmentId,
         ]);
         if (!$statement->fetchColumn()) {
@@ -2009,6 +2036,18 @@ SQL;
         if ($viewerAssignmentId !== null) {
             $sql .= ' AND (
                 CAST(COALESCE(p.lsales_person, 0) AS SIGNED) = :viewer_user_id
+                OR EXISTS (
+                    SELECT 1
+                    FROM tblaccount team_member
+                    WHERE team_member.lid = p.lsales_person
+                      AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) > 0
+                      AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) = (
+                          SELECT CAST(COALESCE(lteam, 0) AS SIGNED)
+                          FROM tblaccount
+                          WHERE lid = :viewer_teammate_user_id
+                          LIMIT 1
+                      )
+                )
                 OR (
                     CAST(COALESCE(p.lsales_team, 0) AS SIGNED) > 0
                     AND CAST(COALESCE(p.lsales_team, 0) AS SIGNED) = (
@@ -2017,6 +2056,7 @@ SQL;
                 )
             )';
             $params['viewer_user_id'] = $viewerAssignmentId;
+            $params['viewer_teammate_user_id'] = $viewerAssignmentId;
             $params['viewer_team_user_id'] = $viewerAssignmentId;
         }
 

@@ -17,8 +17,11 @@ $assert = static function (bool $condition, string $label): void {
 
 $assert(str_contains($migration, 'lsales_team'), 'Migration adds the customer team assignment field');
 $assert(
-    str_contains($dailyCall, 'lsales_team') && str_contains($dailyCall, 'viewer_team_user_id'),
-    'Daily Call visibility includes the assigned team membership'
+    str_contains($dailyCall, 'lsales_team')
+        && str_contains($dailyCall, 'viewer_team_user_id')
+        && str_contains($dailyCall, 'team_member.lteam')
+        && str_contains($dailyCall, 'viewer_teammate_user_id'),
+    'Daily Call visibility shares directly assigned customers with teammates'
 );
 $assert(
     str_contains($dailyCall, 'viewerHasIndividualAssignments')
