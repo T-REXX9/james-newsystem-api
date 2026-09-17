@@ -67,6 +67,19 @@ $run('buildMergeSql uses INSERT IGNORE when only primary keys are shared', stati
     }
 });
 
+$run('staging import does not require privileged server-variable changes', static function (): void {
+    $source = file_get_contents(__DIR__ . '/../src/Services/CorporateDumpImportService.php');
+    if ($source === false) {
+        throw new RuntimeException('unable to read import service');
+    }
+    if (str_contains($source, 'sql_log_bin=0') || str_contains($source, 'innodb_strict_mode=0')) {
+        throw new RuntimeException('staging import must not change privileged server variables');
+    }
+    if (!str_contains($source, 'foreign_key_checks=0') || !str_contains($source, 'unique_checks=0')) {
+        throw new RuntimeException('expected safe staging session checks');
+    }
+});
+
 $run('uses application database credentials when no import account is configured', static function (): void {
     putenv('CORPORATE_IMPORT_MYSQL_USER');
     putenv('CORPORATE_IMPORT_MYSQL_PASS');

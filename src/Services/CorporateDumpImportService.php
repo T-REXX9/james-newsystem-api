@@ -25,6 +25,7 @@ final class CorporateDumpImportService
 {
     private const STAGING_DB_PREFIX = 'corp_import_stg_';
     private const MAX_DUMP_BYTES = 2147483648; // 2 GiB
+    private const MYSQL_STAGING_INIT_COMMAND = 'SET SESSION foreign_key_checks=0; SET SESSION unique_checks=0;';
 
     public function __construct(private readonly Config $config)
     {
@@ -163,7 +164,7 @@ final class CorporateDumpImportService
             '--user=' . $user,
             '--default-character-set=utf8mb4',
             '--max_allowed_packet=1G',
-            '--init-command=SET SESSION foreign_key_checks=0; SET SESSION unique_checks=0; SET SESSION sql_log_bin=0; SET SESSION innodb_strict_mode=0;',
+            '--init-command=' . self::MYSQL_STAGING_INIT_COMMAND,
             $database,
         ];
 
