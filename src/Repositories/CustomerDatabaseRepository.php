@@ -694,7 +694,7 @@ SQL;
         return $staffName . ' - ' . $source;
     }
 
-    private function getAccountDisplayName(int $accountId): string
+    public function getAccountDisplayName(int $accountId): string
     {
         if ($accountId <= 0) {
             return '';

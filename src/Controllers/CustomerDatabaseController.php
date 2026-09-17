@@ -83,10 +83,17 @@ final class CustomerDatabaseController
                 || str_contains(strtolower((string) ($body['profile_type'] ?? '')), 'prospect');
             if ($isProspect && $comment !== '' && $userId !== $mainId) {
                 $contactId = (string) ($customer['session_id'] ?? $customer['lsessionid'] ?? '');
+                $actorName = $this->repo->getAccountDisplayName($userId);
+                $prospectName = trim((string) ($customer['company'] ?? '')) ?: 'an unnamed prospect';
                 (new NotificationsRepository($this->db))->create([
                     'recipient_id' => (string) $mainId,
                     'title' => 'New prospective customer comment',
-                    'message' => sprintf('A sales agent submitted %s for management review: %s', (string) ($customer['company'] ?? 'a prospective customer'), $comment),
+                    'message' => sprintf(
+                        '%s submitted prospect %s for management review: %s',
+                        $actorName !== '' ? $actorName : 'A sales agent',
+                        $prospectName,
+                        $comment
+                    ),
                     'type' => 'info',
                     'category' => 'notification',
                     'main_id' => (string) $mainId,
@@ -95,6 +102,10 @@ final class CustomerDatabaseController
                         'entity_type' => 'prospect_customer_comment',
                         'entity_id' => $contactId,
                         'contact_id' => $contactId,
+                        'prospect_name' => $prospectName,
+                        'actor_id' => (string) $userId,
+                        'actor_name' => $actorName,
+                        'actor_role' => 'Sales Agent',
                         'action' => 'review',
                         'status' => 'unread',
                         'action_url' => 'sales-transaction-daily-call-monitoring',
