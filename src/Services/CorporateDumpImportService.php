@@ -128,11 +128,7 @@ final class CorporateDumpImportService
 
     private function adminPdo(): PDO
     {
-        $user = trim((string) Env::get('CORPORATE_IMPORT_MYSQL_USER', 'root'));
-        $pass = (string) Env::get('CORPORATE_IMPORT_MYSQL_PASS', '');
-        if ($user === '') {
-            $user = 'root';
-        }
+        [$user, $pass] = $this->importDatabaseCredentials();
 
         try {
             return new PDO(
@@ -157,11 +153,7 @@ final class CorporateDumpImportService
     private function loadDumpIntoDatabase(string $dumpPath, string $database): void
     {
         $mysql = $this->resolveMysqlBinary();
-        $user = trim((string) Env::get('CORPORATE_IMPORT_MYSQL_USER', 'root'));
-        $pass = (string) Env::get('CORPORATE_IMPORT_MYSQL_PASS', '');
-        if ($user === '') {
-            $user = 'root';
-        }
+        [$user, $pass] = $this->importDatabaseCredentials();
 
         $isGzip = str_ends_with(strtolower($dumpPath), '.gz');
         $command = [
@@ -427,6 +419,30 @@ final class CorporateDumpImportService
     {
         $configured = trim((string) Env::get('MYSQL_PATH', ''));
         return $configured !== '' ? $configured : 'mysql';
+    }
+
+    /**
+     * Use an explicitly configured import account when provided. Otherwise the
+     * importer must use the same working database account as the application,
+     * never an implicit root@localhost connection.
+     *
+     * @return array{0: string, 1: string}
+     */
+    private function importDatabaseCredentials(): array
+    {
+        $configuredUser = trim((string) Env::get('CORPORATE_IMPORT_MYSQL_USER', ''));
+        if ($configuredUser !== '') {
+            return [$configuredUser, (string) Env::get('CORPORATE_IMPORT_MYSQL_PASS', '')];
+        }
+
+        $applicationUser = trim($this->config->dbUser);
+        if ($applicationUser === '') {
+            throw new RuntimeException(
+                'Corporate dump import requires DB_USER / DB_PASS or CORPORATE_IMPORT_MYSQL_USER / CORPORATE_IMPORT_MYSQL_PASS.'
+            );
+        }
+
+        return [$applicationUser, $this->config->dbPass];
     }
 
     /**

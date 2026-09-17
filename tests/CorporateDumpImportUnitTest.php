@@ -9,6 +9,7 @@ require __DIR__ . '/../src/Services/CorporateDumpUploadStore.php';
 
 use App\Services\CorporateDumpImportService;
 use App\Services\CorporateDumpUploadStore;
+use App\Config;
 
 $passed = 0;
 $failed = 0;
@@ -64,6 +65,32 @@ $run('buildMergeSql uses INSERT IGNORE when only primary keys are shared', stati
     if (!str_contains($plan['sql'], 'INSERT IGNORE')) {
         throw new RuntimeException('expected INSERT IGNORE SQL');
     }
+});
+
+$run('uses application database credentials when no import account is configured', static function (): void {
+    putenv('CORPORATE_IMPORT_MYSQL_USER');
+    putenv('CORPORATE_IMPORT_MYSQL_PASS');
+    $config = new Config('test', false, '*', 'test', 3600, '127.0.0.1', 3306, 'app_db', 'app_user', 'app_pass');
+    $service = new CorporateDumpImportService($config);
+    $method = new ReflectionMethod($service, 'importDatabaseCredentials');
+    $credentials = $method->invoke($service);
+    if ($credentials !== ['app_user', 'app_pass']) {
+        throw new RuntimeException('expected the application database credentials');
+    }
+});
+
+$run('uses an explicitly configured import account when present', static function (): void {
+    putenv('CORPORATE_IMPORT_MYSQL_USER=import_user');
+    putenv('CORPORATE_IMPORT_MYSQL_PASS=import_pass');
+    $config = new Config('test', false, '*', 'test', 3600, '127.0.0.1', 3306, 'app_db', 'app_user', 'app_pass');
+    $service = new CorporateDumpImportService($config);
+    $method = new ReflectionMethod($service, 'importDatabaseCredentials');
+    $credentials = $method->invoke($service);
+    if ($credentials !== ['import_user', 'import_pass']) {
+        throw new RuntimeException('expected the configured import credentials');
+    }
+    putenv('CORPORATE_IMPORT_MYSQL_USER');
+    putenv('CORPORATE_IMPORT_MYSQL_PASS');
 });
 
 $run('upload store rejects non-sql filenames', static function (): void {
