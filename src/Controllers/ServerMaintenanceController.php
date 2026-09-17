@@ -85,12 +85,16 @@ final class ServerMaintenanceController
         $this->assertMasterUser($body);
 
         $uploadId = trim((string) ($params['uploadId'] ?? ''));
+        $filename = null;
+        $bytes = null;
         if (function_exists('set_time_limit')) {
             @set_time_limit(0);
         }
 
         try {
             $finalized = $this->corporateDumpUploadStore->finalize($uploadId);
+            $filename = $finalized['filename'];
+            $bytes = $finalized['bytes'];
             $report = $this->corporateDumpImportService->importDumpFile($finalized['path']);
             $this->corporateDumpUploadStore->deleteSession($uploadId);
             return [
@@ -101,6 +105,14 @@ final class ServerMaintenanceController
         } catch (HttpException $error) {
             throw $error;
         } catch (\Throwable $error) {
+            error_log(json_encode([
+                'event' => 'corporate_dump_import_failed',
+                'upload_id' => $uploadId,
+                'filename' => $filename,
+                'bytes' => $bytes,
+                'error_class' => $error::class,
+                'error_message' => $error->getMessage(),
+            ], JSON_UNESCAPED_SLASHES));
             throw new HttpException(500, $error->getMessage());
         }
     }
