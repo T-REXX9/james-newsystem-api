@@ -185,6 +185,7 @@ final class CorporateDumpImportService
         $stdout = '';
         $stderr = '';
         $lineBuffer = '';
+        $streamError = null;
 
         try {
             $source = $isGzip
@@ -217,6 +218,10 @@ final class CorporateDumpImportService
                     fclose($source);
                 }
             }
+        } catch (\Throwable $error) {
+            // The mysql process can exit before stdin finishes. Preserve its
+            // stderr below instead of losing the actionable SQL/MySQL error.
+            $streamError = $error;
         } finally {
             fclose($pipes[0]);
             $stdout .= (string) stream_get_contents($pipes[1]);
@@ -224,6 +229,15 @@ final class CorporateDumpImportService
             fclose($pipes[1]);
             fclose($pipes[2]);
             $exit = proc_close($process);
+        }
+
+        if ($streamError !== null) {
+            throw new RuntimeException(
+                'Loading corporate dump into staging stopped while streaming'
+                . ': ' . $streamError->getMessage()
+                . ($stderr !== '' ? ' | mysql stderr: ' . trim($stderr) : '')
+                . ($stdout !== '' ? ' | mysql stdout: ' . trim($stdout) : '')
+            );
         }
 
         if ($exit !== 0) {
@@ -246,8 +260,8 @@ final class CorporateDumpImportService
         $toWrite = strlen($payload);
         while ($written < $toWrite) {
             $bytes = fwrite($stdin, substr($payload, $written));
-            if ($bytes === false) {
-                throw new RuntimeException('Failed while streaming dump into mysql');
+            if ($bytes === false || $bytes === 0) {
+                throw new RuntimeException('mysql stopped accepting dump data');
             }
             $written += $bytes;
             $stdout .= (string) fread($stdoutPipe, 8192);
