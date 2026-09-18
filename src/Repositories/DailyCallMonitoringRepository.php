@@ -157,15 +157,19 @@ final class DailyCallMonitoringRepository
 
         $summaryStmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT
-    MONTH(ldatetime) AS month,
-    COALESCE(SUM(CASE WHEN COALESCE(ldebit, 0) > 0 THEN COALESCE(ldebit, 0) ELSE 0 END), 0) AS sales,
-    COALESCE(SUM(CASE WHEN COALESCE(lcredit, 0) > 0 THEN COALESCE(lcredit, 0) ELSE 0 END), 0) AS collections
-FROM tblledger
-WHERE lmainid = :main_id
-  AND ldatetime >= :year_start
-  AND ldatetime < :next_year_start
-GROUP BY MONTH(ldatetime)
-ORDER BY MONTH(ldatetime)
+    MONTH(t.ldate) AS month,
+    COALESCE(SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
+        * CASE WHEN t.ltax_type = 'Exclusive' THEN 1.12 ELSE 1 END), 0) AS sales,
+    0 AS collections
+FROM tbltransaction t
+INNER JOIN tbltransaction_item i ON i.lrefno = t.lrefno
+WHERE t.lmain_id = :main_id
+  AND COALESCE(t.lcancel, 0) = 0
+  AND COALESCE(t.limported, 0) = 1
+  AND t.ldate >= :year_start
+  AND t.ldate < :next_year_start
+GROUP BY MONTH(t.ldate)
+ORDER BY MONTH(t.ldate)
 SQL);
         $summaryStmt->execute([
             'main_id' => $mainId,
@@ -1058,7 +1062,31 @@ SQL;
             'purchases' => $this->getPurchaseRows($mainId, $contactIds, $twelveMonthsAgo),
             'team_messages' => $this->getRecentOwnerMessages($viewerUserId),
             'master_list' => $masterList['items'] ?? [],
+            'legacy_current_month_sales' => $this->getLegacyCurrentMonthSales($mainId, $viewerUserId),
         ];
+    }
+
+    /** Mirrors the old Home dashboard's Total Sales for {month} calculation. */
+    private function getLegacyCurrentMonthSales(int $mainId, int $salespersonId): float
+    {
+        $statement = $this->db->pdo()->prepare(<<<'SQL'
+SELECT COALESCE(SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
+    * CASE WHEN t.ltax_type = 'Exclusive' THEN 1.12 ELSE 1 END), 0)
+FROM tbltransaction t
+INNER JOIN tbltransaction_item i ON i.lrefno = t.lrefno
+WHERE t.lmain_id = :main_id
+  AND COALESCE(t.lcancel, 0) = 0
+  AND COALESCE(t.limported, 0) = 1
+  AND t.lsales_person_id = :salesperson_id
+  AND t.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+  AND t.ldate <= LAST_DAY(CURDATE())
+SQL);
+        $statement->execute([
+            'main_id' => $mainId,
+            'salesperson_id' => $salespersonId,
+        ]);
+
+        return (float) ($statement->fetchColumn() ?: 0);
     }
 
     public function assertCustomerViewAccess(int $mainId, string $contactId, int $viewerUserId): void

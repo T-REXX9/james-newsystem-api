@@ -9,16 +9,19 @@ $checks = [
         $repository,
         "AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'\n      AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')"
     ),
-    'linked sales orders are excluded because their posted invoice or delivery receipt is already in the ledger' => str_contains(
+    'legacy current-month sales keeps the old imported and non-cancelled transaction filters' => str_contains(
         $repository,
-        "AND COALESCE(tr.invoice_refno, '') = ''\n      AND COALESCE(tr.ldr_refno, '') = ''"
+        "AND COALESCE(t.lcancel, 0) = 0\n  AND COALESCE(t.limported, 0) = 1"
     ),
-    'current-month sales uses the Sales Report document sources instead of summing mirrored ledger and transaction entries' => str_contains(
+    'agent snapshot exposes the old Home current-month sales calculation' => str_contains(
         $repository,
-        'sales_report_current_month AS ('
+        "'legacy_current_month_sales' => \$this->getLegacyCurrentMonthSales(\$mainId, \$viewerUserId)"
     ) && str_contains(
         $repository,
-        'COALESCE(sales_report_current_month.current_month_sales, 0) AS current_month_sales'
+        "AND t.lsales_person_id = :salesperson_id"
+    ) && str_contains(
+        $repository,
+        "AND t.ldate <= LAST_DAY(CURDATE())"
     ),
 ];
 
