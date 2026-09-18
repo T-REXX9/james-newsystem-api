@@ -82,6 +82,7 @@ SQL;
         }, $transactions);
 
         $summary = $this->buildSummary($transactions);
+        $summary['salespersonTotals'] = $this->fetchLegacySalespersonTotals($mainId, $fromDate, $toDate);
 
         return [
             'date_type' => $normalizedDateType,
@@ -189,17 +190,16 @@ SQL;
     ): array {
         $where = [
             'l.lmain_id = :main_id',
-            "COALESCE(l.lcancel_invoice, 0) = 0",
-            "LOWER(COALESCE(l.lstatus, '')) <> 'cancelled'",
+            'l.lcancel IS NULL',
         ];
 
         $params = ['main_id' => $mainId];
 
         if ($fromDate !== null && $toDate !== null) {
-            $where[] = 'DATE(l.ldatetime) >= :date_from';
-            $where[] = 'DATE(l.ldatetime) <= :date_to';
-            $params['date_from'] = $fromDate;
-            $params['date_to'] = $toDate;
+            $where[] = 'l.ldatetime >= :date_from';
+            $where[] = 'l.ldatetime <= :date_to';
+            $params['date_from'] = $fromDate . ' 01:00:00';
+            $params['date_to'] = $toDate . ' 23:59:59';
         }
 
         $trimmedCustomerId = trim((string) $customerId);
@@ -212,7 +212,7 @@ SQL;
             <<<SQL
 SELECT
     COALESCE(l.lrefno, '') AS id,
-    DATE(l.ldatetime) AS `date`,
+    l.ldatetime AS `date`,
     TRIM(COALESCE(l.lcustomer_name, '')) AS customer,
     COALESCE(l.lcustomerid, '') AS customer_id,
     COALESCE(l.lterms, '') AS terms,
@@ -223,7 +223,7 @@ SELECT
     l.lid AS sort_id
 FROM tblinvoice_list l
 WHERE %s
-ORDER BY DATE(l.ldatetime) DESC, l.lid DESC
+ORDER BY l.ldatetime DESC, l.lid DESC
 SQL,
             implode(' AND ', $where)
         );
@@ -299,8 +299,7 @@ SQL,
     ): array {
         $where = [
             'l.lmain_id = :main_id',
-            'COALESCE(l.lcancel, 0) = 0',
-            "LOWER(COALESCE(l.lstatus, '')) <> 'cancelled'",
+            'l.lcancel IS NULL',
         ];
 
         $params = ['main_id' => $mainId];
@@ -466,7 +465,6 @@ SELECT
 FROM tbltransaction t
 LEFT JOIN tbltransaction_item i
   ON i.lrefno = t.lrefno
- AND COALESCE(i.lcancel, 0) = 0
 WHERE t.lrefno IN ({{IN}})
 GROUP BY t.lrefno
 SQL;
@@ -498,6 +496,77 @@ SQL;
         }
 
         return $mapped;
+    }
+
+    private function fetchLegacySalespersonTotals(int $mainId, ?string $fromDate, ?string $toDate): array
+    {
+        if ($fromDate === null || $toDate === null) {
+            return [];
+        }
+
+        $sql = <<<SQL
+SELECT
+    a.lid AS salesperson_id,
+    TRIM(COALESCE(a.lfname, '')) AS salesperson,
+    c.lname AS category,
+    SUM(
+        COALESCE(i.lprice, 0) * COALESCE(i.lqty, 0)
+        * CASE WHEN t.ltax_type = 'Exclusive' THEN 1.12 ELSE 1 END
+    ) AS amount
+FROM tblaccount a
+INNER JOIN tbltransaction t
+    ON t.lsales_person_id = a.lid
+   AND t.lmain_id = :transaction_main_id
+INNER JOIN tbltransaction_item i
+    ON i.lrefno = t.lrefno
+   AND i.lremark = 'OnStock'
+   AND i.ltransaction_date >= :date_from
+   AND i.ltransaction_date <= :date_to
+INNER JOIN tblcategory c
+    ON c.lname = i.lcategory
+   AND c.lmain_id = :category_main_id
+WHERE a.larchieve = 0
+  AND a.ltype = '2'
+  AND a.lmother_id = :account_main_id
+GROUP BY a.lid, a.lfname, c.lid, c.lname
+HAVING amount <> 0
+ORDER BY a.lid ASC, c.lname ASC
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->bindValue('transaction_main_id', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('category_main_id', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('account_main_id', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('date_from', $fromDate, PDO::PARAM_STR);
+        $stmt->bindValue('date_to', $toDate, PDO::PARAM_STR);
+        $stmt->execute();
+
+        $totals = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $salespersonId = (string) ($row['salesperson_id'] ?? '');
+            if ($salespersonId === '') {
+                continue;
+            }
+
+            if (!isset($totals[$salespersonId])) {
+                $totals[$salespersonId] = [
+                    'salesperson' => (string) ($row['salesperson'] ?? ''),
+                    'categories' => [],
+                    'total' => 0.0,
+                ];
+            }
+
+            $amount = (float) ($row['amount'] ?? 0);
+            $totals[$salespersonId]['categories'][] = [
+                'category' => (string) ($row['category'] ?? ''),
+                'soAmount' => $amount,
+                'drAmount' => 0.0,
+                'invoiceAmount' => 0.0,
+            ];
+            $totals[$salespersonId]['total'] += $amount;
+        }
+
+        return array_values($totals);
     }
 
     /**
@@ -628,7 +697,7 @@ SQL;
             'month' => ['month', $today->format('Y-m-01'), $today->format('Y-m-t')],
             'year' => ['year', $today->modify('-1 year')->format('Y-m-d'), $today->format('Y-m-d')],
             'custom' => ['custom', $this->normalizeDate((string) $dateFrom), $this->normalizeDate((string) $dateTo)],
-            default => ['all', null, null],
+            default => ['all', '2013-06-01', $today->format('Y-m-d')],
         };
     }
 
