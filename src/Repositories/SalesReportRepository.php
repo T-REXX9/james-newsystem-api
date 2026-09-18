@@ -62,11 +62,13 @@ SQL;
     ): array {
         [$normalizedDateType, $fromDate, $toDate] = $this->resolveDateRange($dateType, $dateFrom, $dateTo);
 
-        $salesOrderRows = $this->fetchSalesOrderRows($mainId, $fromDate, $toDate, $customerId, $limit);
+        // The legacy Sales Report is a posted-sales report. It intentionally
+        // reads only invoices and delivery receipts; sales orders are shown as
+        // references on those records and must not become sales rows of their own.
         $invoiceRows = $this->fetchInvoiceRows($mainId, $fromDate, $toDate, $customerId, $limit);
         $drRows = $this->fetchDrRows($mainId, $fromDate, $toDate, $customerId, $limit);
 
-        $transactions = array_merge($salesOrderRows, $invoiceRows, $drRows);
+        $transactions = array_merge($invoiceRows, $drRows);
         usort(
             $transactions,
             static fn(array $a, array $b): int => strcmp(
@@ -178,101 +180,6 @@ SQL;
         );
     }
 
-    private function fetchSalesOrderRows(
-        int $mainId,
-        ?string $fromDate,
-        ?string $toDate,
-        ?string $customerId,
-        int $limit
-    ): array {
-        $where = [
-            't.lmain_id = :main_id',
-            'COALESCE(t.lcancel, 0) = 0',
-            "LOWER(COALESCE(t.lsubmitstat, '')) IN ('submitted', 'approved', 'posted')",
-            "COALESCE(t.invoice_refno, '') = ''",
-            "COALESCE(t.ldr_refno, '') = ''",
-        ];
-
-        $params = ['main_id' => $mainId];
-
-        if ($fromDate !== null && $toDate !== null) {
-            $where[] = 't.ldate >= :date_from';
-            $where[] = 't.ldate <= :date_to';
-            $params['date_from'] = $fromDate;
-            $params['date_to'] = $toDate;
-        }
-
-        $trimmedCustomerId = trim((string) $customerId);
-        if ($trimmedCustomerId !== '' && strtolower($trimmedCustomerId) !== 'all') {
-            $where[] = 't.lcustomerid = :customer_id';
-            $params['customer_id'] = $trimmedCustomerId;
-        }
-
-        $sql = sprintf(
-            <<<SQL
-SELECT
-    COALESCE(t.lrefno, '') AS id,
-    COALESCE(t.ldate, '') AS `date`,
-    TRIM(COALESCE(t.lcompany, '')) AS customer,
-    COALESCE(t.lcustomerid, '') AS customer_id,
-    COALESCE(t.lterms, '') AS terms,
-    COALESCE(t.lsaleno, '') AS ref_no,
-    COALESCE(t.lsaleno, '') AS so_no,
-    COALESCE(t.lsales_person, '') AS salesperson,
-    t.lid AS sort_id
-FROM tbltransaction t
-WHERE %s
-ORDER BY t.ldate DESC, t.lid DESC
-LIMIT :limit
-SQL,
-            implode(' AND ', $where)
-        );
-
-        $stmt = $this->db->pdo()->prepare($sql);
-        foreach ($params as $key => $value) {
-            if ($key === 'main_id') {
-                $stmt->bindValue($key, (int) $value, PDO::PARAM_INT);
-            } else {
-                $stmt->bindValue($key, (string) $value, PDO::PARAM_STR);
-            }
-        }
-        $stmt->bindValue('limit', max(1, min(5000, $limit)), PDO::PARAM_INT);
-        $stmt->execute();
-        $docs = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        if ($docs === []) {
-            return [];
-        }
-
-        $refnos = array_values(array_unique(array_filter(array_map(static fn(array $r): string => (string) ($r['id'] ?? ''), $docs))));
-        $soAgg = $this->fetchSoAgg($refnos);
-
-        $rows = [];
-        foreach ($docs as $doc) {
-            $id = (string) ($doc['id'] ?? '');
-            $so = $soAgg[$id] ?? ['so_no' => (string) ($doc['so_no'] ?? ''), 'so_amount' => 0.0, 'category' => 'Uncategorized'];
-
-            $rows[] = [
-                'id' => $id,
-                'date' => (string) ($doc['date'] ?? ''),
-                'customer' => (string) ($doc['customer'] ?? ''),
-                'customer_id' => (string) ($doc['customer_id'] ?? ''),
-                'terms' => (string) ($doc['terms'] ?? ''),
-                'ref_no' => (string) ($doc['ref_no'] ?? ''),
-                'so_no' => (string) ($so['so_no'] ?? $doc['so_no'] ?? ''),
-                'so_amount' => (float) ($so['so_amount'] ?? 0),
-                'dr_amount' => 0.0,
-                'invoice_amount' => 0.0,
-                'salesperson' => (string) ($doc['salesperson'] ?? ''),
-                'category' => (string) ($so['category'] ?? 'Uncategorized'),
-                'vat_type' => null,
-                'type' => 'so',
-                '_sort_id' => (int) ($doc['sort_id'] ?? 0),
-            ];
-        }
-
-        return $rows;
-    }
-
     private function fetchInvoiceRows(
         int $mainId,
         ?string $fromDate,
@@ -282,7 +189,8 @@ SQL,
     ): array {
         $where = [
             'l.lmain_id = :main_id',
-            'COALESCE(l.lcancel, \'\') = \'\'',
+            "COALESCE(l.lcancel_invoice, 0) = 0",
+            "LOWER(COALESCE(l.lstatus, '')) <> 'cancelled'",
         ];
 
         $params = ['main_id' => $mainId];
@@ -316,10 +224,10 @@ SELECT
 FROM tblinvoice_list l
 WHERE %s
 ORDER BY DATE(l.ldatetime) DESC, l.lid DESC
-LIMIT :limit
 SQL,
             implode(' AND ', $where)
         );
+        $sql .= ' LIMIT :limit';
 
         $stmt = $this->db->pdo()->prepare($sql);
         foreach ($params as $key => $value) {
@@ -391,7 +299,8 @@ SQL,
     ): array {
         $where = [
             'l.lmain_id = :main_id',
-            'COALESCE(l.lcancel, \'\') = \'\'',
+            'COALESCE(l.lcancel, 0) = 0',
+            "LOWER(COALESCE(l.lstatus, '')) <> 'cancelled'",
         ];
 
         $params = ['main_id' => $mainId];
@@ -425,10 +334,10 @@ SELECT
 FROM tbldelivery_receipt l
 WHERE %s
 ORDER BY l.ldate DESC, l.lid DESC
-LIMIT :limit
 SQL,
             implode(' AND ', $where)
         );
+        $sql .= ' LIMIT :limit';
 
         $stmt = $this->db->pdo()->prepare($sql);
         foreach ($params as $key => $value) {
@@ -499,7 +408,7 @@ SQL,
 SELECT
     x.%s AS refno,
     SUM(COALESCE(x.lqty, 0) * COALESCE(x.lprice, 0)) AS amount,
-    GROUP_CONCAT(DISTINCT NULLIF(TRIM(x.lcategory), '') SEPARATOR '|') AS categories
+    GROUP_CONCAT(DISTINCT NULLIF(TRIM(x.lcategory), '')) AS categories
 FROM %s x
 WHERE x.%s IN (%s)
 GROUP BY x.%s
@@ -528,7 +437,7 @@ SQL,
             $categories = (string) ($row['categories'] ?? '');
             $category = 'Uncategorized';
             if ($categories !== '') {
-                $category = str_contains($categories, '|') ? 'Mixed' : $categories;
+                $category = str_contains($categories, '|') || str_contains($categories, ',') ? 'Mixed' : $categories;
             }
 
             $mapped[$ref] = [
@@ -553,7 +462,7 @@ SELECT
     t.lrefno,
     MAX(COALESCE(t.lsaleno, '')) AS so_no,
     SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)) AS so_amount,
-    GROUP_CONCAT(DISTINCT NULLIF(TRIM(COALESCE(i.ltype, '')), '') SEPARATOR '|') AS categories
+    GROUP_CONCAT(DISTINCT NULLIF(TRIM(COALESCE(i.ltype, '')), '')) AS categories
 FROM tbltransaction t
 LEFT JOIN tbltransaction_item i
   ON i.lrefno = t.lrefno
@@ -579,7 +488,7 @@ SQL;
             $categories = (string) ($row['categories'] ?? '');
             $category = 'Uncategorized';
             if ($categories !== '') {
-                $category = str_contains($categories, '|') ? 'Mixed' : $categories;
+                $category = str_contains($categories, '|') || str_contains($categories, ',') ? 'Mixed' : $categories;
             }
             $mapped[$ref] = [
                 'so_no' => (string) ($row['so_no'] ?? ''),
@@ -672,7 +581,9 @@ SQL;
 
             $total = 0.0;
             foreach ($categoriesList as $entry) {
-                $total += (float) $entry['soAmount'] + (float) $entry['drAmount'] + (float) $entry['invoiceAmount'];
+                // The legacy report's total-sales figure is the posted amount:
+                // delivery receipts plus invoices. SO is contextual only.
+                $total += (float) $entry['drAmount'] + (float) $entry['invoiceAmount'];
             }
 
             $salespersonTotals[] = [
@@ -694,7 +605,7 @@ SQL;
                 'soAmount' => $grandSo,
                 'drAmount' => $grandDr,
                 'invoiceAmount' => $grandInvoice,
-                'total' => $grandSo + $grandDr + $grandInvoice,
+                'total' => $grandDr + $grandInvoice,
             ],
         ];
     }

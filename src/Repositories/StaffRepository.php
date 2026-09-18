@@ -402,8 +402,26 @@ SQL;
             return false;
         }
 
-        // Soft delete - set status to 0
-        $sql = <<<SQL
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+
+        try {
+            // A removed agent must not retain ownership of customers. Keep the
+            // team assignment intact because it is managed independently.
+            $unassignCustomers = $pdo->prepare(
+                'UPDATE tblpatient
+                 SET lsales_person = \'\',
+                     ldate_assigned = NULL
+                 WHERE lmain_id = :main_id
+                   AND CAST(COALESCE(lsales_person, 0) AS SIGNED) = :staff_id'
+            );
+            $unassignCustomers->execute([
+                'main_id' => $mainId,
+                'staff_id' => $staffId,
+            ]);
+
+            // Soft delete - set status to 0.
+            $sql = <<<SQL
 UPDATE tblaccount
 SET lstatus = 0
 WHERE lid = :staff_id
@@ -411,13 +429,25 @@ WHERE lid = :staff_id
 LIMIT 1
 SQL;
 
-        $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute([
-            'staff_id' => $staffId,
-            'main_id' => $mainId,
-        ]);
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                'staff_id' => $staffId,
+                'main_id' => $mainId,
+            ]);
 
-        return $stmt->rowCount() > 0;
+            if ($stmt->rowCount() !== 1) {
+                $pdo->rollBack();
+                return false;
+            }
+
+            $pdo->commit();
+            return true;
+        } catch (\Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
     }
 
     private function assertExistingUserType(int $mainId, int $groupId): int
