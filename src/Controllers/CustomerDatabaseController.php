@@ -97,7 +97,7 @@ final class CustomerDatabaseController
                     'type' => 'info',
                     'category' => 'notification',
                     'main_id' => (string) $mainId,
-                    'action_url' => 'sales-transaction-daily-call-monitoring',
+                    'action_url' => 'home',
                     'metadata' => [
                         'entity_type' => 'prospect_customer_comment',
                         'entity_id' => $contactId,
@@ -108,7 +108,7 @@ final class CustomerDatabaseController
                         'actor_role' => 'Sales Agent',
                         'action' => 'review',
                         'status' => 'unread',
-                        'action_url' => 'sales-transaction-daily-call-monitoring',
+                        'action_url' => 'home',
                         'refno' => 'prospect-customer-comment:' . $contactId,
                         'idempotency_key' => 'prospect-customer-comment:' . $contactId,
                         'category' => 'notification',

@@ -37,6 +37,13 @@ $assert(
 );
 $assert(
     DailyCallAccessPolicy::canViewAll(
+        ['pages' => [DailyCallAccessPolicy::LEGACY_PAGE => ['can_view_all_records' => true]]],
+        false
+    ) === true,
+    'legacy Daily Call Monitoring page grants still widen the list'
+);
+$assert(
+    DailyCallAccessPolicy::canViewAll(
         ['pages' => ['Customer Data' => ['can_view_all_records' => true]]],
         false
     ) === false,

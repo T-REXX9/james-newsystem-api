@@ -41,7 +41,7 @@ final class CustomerWorkflowController
             ->getActionPermissionsForAccount($mainId, $userId, (int) ($account['ltype'] ?? 0));
         $seesAllRecords = ActionPermissionPolicy::allows($permissions, 'view_all_records', $isMasterUser, $page);
         $rights = $this->auth->getDerivedAccessRights($account);
-        if ($customerAccess && !$isMasterUser && !array_intersect($rights, ['*','sales-transaction-daily-call-monitoring','sales-database-customer-database','maintenance-customer-customer-data'])) throw new HttpException(403, 'Customer workflow access required');
+        if ($customerAccess && !$isMasterUser && !array_intersect($rights, ['*','home','sales-transaction-daily-call-monitoring','sales-database-customer-database','maintenance-customer-customer-data'])) throw new HttpException(403, 'Customer workflow access required');
         return [$mainId, $userId, $seesAllRecords];
     }
 

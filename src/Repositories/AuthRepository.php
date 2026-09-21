@@ -348,7 +348,6 @@ final class AuthRepository
                 'sales-transaction-sales-order',
                 'sales-transaction-order-slip',
                 'sales-transaction-invoice',
-                'sales-transaction-daily-call-monitoring',
                 'sales-transaction-product-promotions',
                 'sales-reports-inquiry-report',
                 'sales-reports-sales-report',
