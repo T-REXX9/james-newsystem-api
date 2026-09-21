@@ -178,16 +178,16 @@ final class AuthController
 
     private function requireAuthClaims(): array
     {
-        $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['Authorization'] ?? '';
-        if (!is_string($header) || trim($header) === '') {
-            throw new HttpException(401, 'Authorization header is required');
-        }
-
-        if (!preg_match('/^Bearer\s+(.+)$/i', trim($header), $matches)) {
+        $token = \App\Http\AuthorizationHeader::bearerToken();
+        if ($token === null) {
+            $header = \App\Http\AuthorizationHeader::value();
+            if ($header === '') {
+                throw new HttpException(401, 'Authorization header is required');
+            }
             throw new HttpException(401, 'Bearer token is required');
         }
 
-        $claims = $this->tokens->verify((string) $matches[1]);
+        $claims = $this->tokens->verify($token);
         if (!$this->repo->isSessionCurrent($claims)) {
             throw new HttpException(401, 'Session expired. Please sign in again.');
         }

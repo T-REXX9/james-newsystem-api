@@ -106,6 +106,7 @@ require __DIR__ . '/Config.php';
 require __DIR__ . '/Database.php';
 require __DIR__ . '/Http/Response.php';
 require __DIR__ . '/Http/Router.php';
+require __DIR__ . '/Http/AuthorizationHeader.php';
 require __DIR__ . '/Repositories/CustomerRepository.php';
 require __DIR__ . '/Repositories/CustomerDatabaseRepository.php';
 require __DIR__ . '/Repositories/CustomerGroupRepository.php';
@@ -424,16 +425,16 @@ function app_router(): Router
 
     $requireBearerAuth = static function (callable $handler) use ($tokenService, $authRepo): callable {
         return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService, $authRepo) {
-            $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['Authorization'] ?? '';
-            if (!is_string($header) || trim($header) === '') {
-                throw new HttpException(401, 'Authorization header is required');
-            }
-
-            if (!preg_match('/^Bearer\s+(.+)$/i', trim($header), $matches)) {
+            $token = \App\Http\AuthorizationHeader::bearerToken();
+            if ($token === null) {
+                $header = \App\Http\AuthorizationHeader::value();
+                if ($header === '') {
+                    throw new HttpException(401, 'Authorization header is required');
+                }
                 throw new HttpException(401, 'Bearer token is required');
             }
 
-            $claims = $tokenService->verify((string) $matches[1]);
+            $claims = $tokenService->verify($token);
             if (!$authRepo->isSessionCurrent($claims)) {
                 throw new HttpException(401, 'Session expired. Please sign in again.');
             }
@@ -443,11 +444,11 @@ function app_router(): Router
 
     $requireBearerAuthWithClaims = static function (callable $handler) use ($tokenService, $authRepo): callable {
         return static function (array $params = [], array $query = [], array $body = []) use ($handler, $tokenService, $authRepo) {
-            $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['Authorization'] ?? '';
-            if (!is_string($header) || !preg_match('/^Bearer\s+(.+)$/i', trim($header), $matches)) {
+            $token = \App\Http\AuthorizationHeader::bearerToken();
+            if ($token === null) {
                 throw new HttpException(401, 'Bearer token is required');
             }
-            $body['__auth_claims'] = $tokenService->verify((string) $matches[1]);
+            $body['__auth_claims'] = $tokenService->verify($token);
             if (!$authRepo->isSessionCurrent($body['__auth_claims'])) {
                 throw new HttpException(401, 'Session expired. Please sign in again.');
             }

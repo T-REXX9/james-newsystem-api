@@ -45,8 +45,10 @@ final class StaffRepository
         ];
 
         $trimmed = trim($search);
+        // Native PDO prepares reject reused named placeholders, so search uses
+        // distinct names bound to the same value.
         if ($trimmed !== '') {
-            $where[] = "(a.lfname LIKE :search OR a.llname LIKE :search OR a.lemail LIKE :search)";
+            $where[] = '(a.lfname LIKE :search_fname OR a.llname LIKE :search_lname OR a.lemail LIKE :search_email)';
             $params['search'] = '%' . $trimmed . '%';
         }
 
@@ -94,7 +96,9 @@ SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->bindValue('main_id', $params['main_id'], PDO::PARAM_INT);
         if (isset($params['search'])) {
-            $stmt->bindValue('search', $params['search'], PDO::PARAM_STR);
+            $stmt->bindValue('search_fname', $params['search'], PDO::PARAM_STR);
+            $stmt->bindValue('search_lname', $params['search'], PDO::PARAM_STR);
+            $stmt->bindValue('search_email', $params['search'], PDO::PARAM_STR);
         }
         $stmt->bindValue('limit', $perPage, PDO::PARAM_INT);
         $stmt->bindValue('offset', $offset, PDO::PARAM_INT);
@@ -107,7 +111,9 @@ SQL;
         $countStmt = $this->db->pdo()->prepare($countSql);
         $countStmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
         if (isset($params['search'])) {
-            $countStmt->bindValue('search', $params['search'], PDO::PARAM_STR);
+            $countStmt->bindValue('search_fname', $params['search'], PDO::PARAM_STR);
+            $countStmt->bindValue('search_lname', $params['search'], PDO::PARAM_STR);
+            $countStmt->bindValue('search_email', $params['search'], PDO::PARAM_STR);
         }
         $countStmt->execute();
         $total = (int) ($countStmt->fetchColumn() ?: 0);

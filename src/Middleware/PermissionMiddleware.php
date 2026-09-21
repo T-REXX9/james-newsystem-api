@@ -120,16 +120,16 @@ final class PermissionMiddleware
      */
     private function extractAuthClaims(): array
     {
-        $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['Authorization'] ?? '';
-        if (!is_string($header) || trim($header) === '') {
-            throw new HttpException(401, 'Authorization header is required');
-        }
-
-        if (!preg_match('/^Bearer\s+(.+)$/i', trim($header), $matches)) {
+        $token = \App\Http\AuthorizationHeader::bearerToken();
+        if ($token === null) {
+            $header = \App\Http\AuthorizationHeader::value();
+            if ($header === '') {
+                throw new HttpException(401, 'Authorization header is required');
+            }
             throw new HttpException(401, 'Bearer token is required');
         }
 
-        return $this->tokenService->verify((string) $matches[1]);
+        return $this->tokenService->verify($token);
     }
 
     /**
