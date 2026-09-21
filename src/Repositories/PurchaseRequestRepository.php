@@ -983,14 +983,25 @@ SQL;
                 }
             }
             
-            // Cancel Pending POs to prevent request locking
+            // Cancel Pending POs to prevent request locking, and clear PR item
+            // links the same way deletePurchaseOrder does so the Unposted PR is editable.
             foreach ($pendingPos as $dependency) {
                 $poRefno = trim((string) ($dependency['refno'] ?? ''));
                 if ($poRefno === '') continue;
                 $cancel = $pdo->prepare(
-                    'UPDATE tblpo_list SET ltransaction_status = "Cancelled", ldeleted = 1, ldeleted_at = NOW(), ldeleted_by = :user_id, ldelete_reason = :reason WHERE lrefno = :refno'
+                    'UPDATE tblpo_list
+                     SET ltransaction_status = "Cancelled", ldeleted = 1, ldeleted_at = NOW(),
+                         ldeleted_by = :user_id, ldelete_reason = :reason
+                     WHERE lmain_id = :main_id AND lrefno = :refno'
                 );
-                $cancel->execute(['user_id' => $userId, 'reason' => 'Cancelled during PR unpost: ' . trim($reason), 'refno' => $poRefno]);
+                $cancel->execute([
+                    'user_id' => $userId,
+                    'reason' => 'Cancelled during PR unpost: ' . trim($reason),
+                    'main_id' => $mainId,
+                    'refno' => $poRefno,
+                ]);
+                $clearPrLinks = $pdo->prepare('UPDATE tblpr_item SET lpo_refno = "", lpo_no = "" WHERE lpo_refno = :po_refno');
+                $clearPrLinks->execute(['po_refno' => $poRefno]);
                 $cancelledPurchaseOrders[] = (string) ($dependency['number'] ?? $poRefno);
                 (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Order', 'Cancel', $poRefno, 'Cancelled during PR unpost: ' . trim($reason), (string) ($dependency['status'] ?? ''), 'Cancelled');
             }

@@ -252,6 +252,16 @@ try {
     pr_cascade_assert_eq([], $result['cascade']['purchase_orders'] ?? null, 'no POs were cascaded since PO was Pending');
     pr_cascade_assert_eq([$pending['po_no']], $result['cascade']['cancelled_purchase_orders'] ?? null, 'pending PO was cancelled');
 
+    $prItemLinks = $pdo->prepare('SELECT lpo_refno, lpo_no FROM tblpr_item WHERE lrefno = :refno');
+    $prItemLinks->execute(['refno' => $pending['pr_refno']]);
+    $prItemLinkRow = $prItemLinks->fetch(PDO::FETCH_ASSOC) ?: [];
+    pr_cascade_assert_eq('', (string) ($prItemLinkRow['lpo_refno'] ?? 'x'), 'PR item PO ref link is cleared');
+    pr_cascade_assert_eq('', (string) ($prItemLinkRow['lpo_no'] ?? 'x'), 'PR item PO number link is cleared');
+
+    $edited = $repo->updatePurchaseRequest($mainId, $pending['pr_refno'], ['notes' => 'Corrected after unpost']);
+    pr_cascade_assert($edited !== null, 'unposted purchase request is editable after pending PO cancel');
+    pr_cascade_assert_eq('Unposted', $edited['request']['status'] ?? null, 'editable unposted request keeps Unposted status');
+
     // ---- 3. Whole chain rolls back when a receiving report refuses ----
     echo "\n--- rollback when a receiving report has a supplier return ---\n";
     $guarded = pr_cascade_seed($pdo, $mainId, $userId, $prefix . 'guarded', 892000, 'Completed');
