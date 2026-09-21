@@ -23,6 +23,13 @@ $checks = [
         $repository,
         "AND t.ldate <= LAST_DAY(CURDATE())"
     ),
+    'Priority current-month invoice sales use the invoice sales date' => str_contains(
+        $repository,
+        "AND l.lcancel IS NULL\n          AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')"
+    ) && !str_contains(
+        $repository,
+        "AND DATE(l.ldatetime) >= DATE_FORMAT(CURDATE(), '%Y-%m-01')"
+    ),
 ];
 
 foreach ($checks as $label => $passed) {

@@ -196,10 +196,13 @@ SQL;
         $params = ['main_id' => $mainId];
 
         if ($fromDate !== null && $toDate !== null) {
-            $where[] = 'l.ldatetime >= :date_from';
-            $where[] = 'l.ldatetime <= :date_to';
-            $params['date_from'] = $fromDate . ' 01:00:00';
-            $params['date_to'] = $toDate . ' 23:59:59';
+            // ldatetime is the row/import timestamp.  The corporate source
+            // preserves the actual invoice sales date in ldate, so reports
+            // must filter on that field after a corporate sync.
+            $where[] = 'l.ldate >= :date_from';
+            $where[] = 'l.ldate <= :date_to';
+            $params['date_from'] = $fromDate;
+            $params['date_to'] = $toDate;
         }
 
         $trimmedCustomerId = trim((string) $customerId);
@@ -212,7 +215,7 @@ SQL;
             <<<SQL
 SELECT
     COALESCE(l.lrefno, '') AS id,
-    l.ldatetime AS `date`,
+    l.ldate AS `date`,
     TRIM(COALESCE(l.lcustomer_name, '')) AS customer,
     COALESCE(l.lcustomerid, '') AS customer_id,
     COALESCE(l.lterms, '') AS terms,
@@ -223,7 +226,7 @@ SELECT
     l.lid AS sort_id
 FROM tblinvoice_list l
 WHERE %s
-ORDER BY l.ldatetime DESC, l.lid DESC
+ORDER BY l.ldate DESC, l.lid DESC
 SQL,
             implode(' AND ', $where)
         );

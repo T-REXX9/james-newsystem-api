@@ -25,7 +25,7 @@ $pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, ltype
 $pdo->exec('CREATE TABLE tblcategory (lid INTEGER PRIMARY KEY, lname TEXT, lmain_id INTEGER)');
 $pdo->exec('CREATE TABLE tbltransaction (lrefno TEXT PRIMARY KEY, lsaleno TEXT, lmain_id INTEGER, lsales_person_id TEXT, ltax_type TEXT)');
 $pdo->exec('CREATE TABLE tbltransaction_item (lid INTEGER PRIMARY KEY, lrefno TEXT, lqty REAL, lprice REAL, ltype TEXT, lcancel INTEGER, lremark TEXT, lcategory TEXT, ltransaction_date TEXT)');
-$pdo->exec('CREATE TABLE tblinvoice_list (lid INTEGER PRIMARY KEY, lrefno TEXT, lmain_id INTEGER, ldatetime TEXT, lcustomer_name TEXT, lcustomerid TEXT, lterms TEXT, linvoice_no TEXT, lsales_refno TEXT, ltax_type TEXT, lsales_person TEXT, lcancel TEXT, lcancel_invoice INTEGER, lstatus TEXT)');
+$pdo->exec('CREATE TABLE tblinvoice_list (lid INTEGER PRIMARY KEY, lrefno TEXT, lmain_id INTEGER, ldatetime TEXT, ldate TEXT, lcustomer_name TEXT, lcustomerid TEXT, lterms TEXT, linvoice_no TEXT, lsales_refno TEXT, ltax_type TEXT, lsales_person TEXT, lcancel TEXT, lcancel_invoice INTEGER, lstatus TEXT)');
 $pdo->exec('CREATE TABLE tblinvoice_itemrec (lid INTEGER PRIMARY KEY, linvoice_refno TEXT, lqty REAL, lprice REAL, lcategory TEXT)');
 $pdo->exec('CREATE TABLE tbldelivery_receipt (lid INTEGER PRIMARY KEY, lrefno TEXT, lmain_id INTEGER, ldate TEXT, lcustomer_name TEXT, lcustomerid TEXT, lterms TEXT, linvoice_no TEXT, lsales_refno TEXT, ltax_type TEXT, lsales_person TEXT, lcancel INTEGER, lstatus TEXT)');
 $pdo->exec('CREATE TABLE tbldelivery_receipt_items (lid INTEGER PRIMARY KEY, lor_refno TEXT, lqty REAL, lprice REAL, lcategory TEXT)');
@@ -49,10 +49,10 @@ $pdo->exec("INSERT INTO tbltransaction_item VALUES
     (1, 'so-1', 1, 100, 'Parts', 0, 'OnStock', 'Parts', '2026-09-10'),
     (2, 'so-unposted', 1, 999, 'Parts', 0, 'Draft', 'Parts', '2026-09-10')");
 $pdo->exec("INSERT INTO tblinvoice_list VALUES
-    (1, 'inv-1', 1, '2026-09-10 12:00:00', 'Alpha', 'cust-a', '30 DAYS', 'INV-1', 'so-1', 'Inclusive', 'Alice', NULL, 0, 'Posted'),
-    (2, 'inv-cancelled', 1, '2026-09-10 12:00:00', 'Alpha', 'cust-a', '30 DAYS', 'INV-C', 'so-1', 'Inclusive', 'Alice', '1', 0, 'Posted'),
-    (3, 'inv-exclusive', 1, '2026-09-10 13:00:00', 'Alpha', 'cust-a', '30 DAYS', 'INV-2', 'so-1', 'Exclusive', 'Alice', NULL, 1, 'Cancelled'),
-    (4, 'inv-before-legacy-cutoff', 1, '2026-09-10 00:30:00', 'Alpha', 'cust-a', '30 DAYS', 'INV-3', 'so-1', 'Inclusive', 'Alice', NULL, 0, 'Posted')");
+    (1, 'inv-1', 1, '2026-10-01 12:00:00', '2026-09-10', 'Alpha', 'cust-a', '30 DAYS', 'INV-1', 'so-1', 'Inclusive', 'Alice', NULL, 0, 'Posted'),
+    (2, 'inv-cancelled', 1, '2026-10-01 12:00:00', '2026-09-10', 'Alpha', 'cust-a', '30 DAYS', 'INV-C', 'so-1', 'Inclusive', 'Alice', '1', 0, 'Posted'),
+    (3, 'inv-exclusive', 1, '2026-10-01 13:00:00', '2026-09-10', 'Alpha', 'cust-a', '30 DAYS', 'INV-2', 'so-1', 'Exclusive', 'Alice', NULL, 1, 'Cancelled'),
+    (4, 'inv-before-legacy-cutoff', 1, '2026-10-01 00:30:00', '2026-09-09', 'Alpha', 'cust-a', '30 DAYS', 'INV-3', 'so-1', 'Inclusive', 'Alice', NULL, 0, 'Posted')");
 $pdo->exec("INSERT INTO tblinvoice_itemrec VALUES
     (1, 'inv-1', 2, 100, 'Parts'),
     (2, 'inv-cancelled', 1, 500, 'Parts'),
@@ -76,6 +76,7 @@ sales_report_expect(($report['summary']['grandTotal']['soAmount'] ?? null) === 3
 sales_report_expect(($report['summary']['grandTotal']['drAmount'] ?? null) === 150.0, 'delivery-receipt total is included');
 sales_report_expect(($report['summary']['grandTotal']['invoiceAmount'] ?? null) === 312.0, 'VAT-exclusive invoices receive the legacy 12 percent display adjustment');
 sales_report_expect(($report['summary']['grandTotal']['total'] ?? null) === 462.0, 'total sales uses legacy invoice and delivery-receipt display amounts only');
+sales_report_expect(($report['transactions'][0]['date'] ?? null) === '2026-09-10', 'invoice report date uses the true sales date, not the import timestamp');
 sales_report_expect(($report['summary']['salespersonTotals'][0]['salesperson'] ?? null) === 'Alice', 'salesperson display uses the legacy active sales-account list');
 sales_report_expect(($report['summary']['salespersonTotals'][0]['categories'][0]['category'] ?? null) === 'Parts', 'salesperson display groups legacy OnStock Sales Order items by category');
 sales_report_expect(abs((float) ($report['summary']['salespersonTotals'][0]['total'] ?? 0) - 112.0) < 0.001, 'salesperson display applies the legacy exclusive-VAT adjustment');

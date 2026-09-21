@@ -187,6 +187,9 @@ SQL);
                 ];
             }
         }
+        // Keep the headline total in lockstep with the dashboard's monthly
+        // sales series, which follows the legacy imported sales-order date.
+        $totalSalesYtd = array_sum(array_column($monthlySales, 'sales'));
 
         $kpiStmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT
@@ -195,6 +198,8 @@ SELECT
     COALESCE(SUM(COALESCE(lg.ldebit, 0) - COALESCE(lg.lcredit, 0)), 0) AS outstanding_receivables
 FROM tblledger lg
 WHERE lg.lmainid = :main_id
+  AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
+  AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
 SQL);
         $kpiStmt->execute([
             'main_id' => $mainId,
@@ -227,6 +232,8 @@ LEFT JOIN tblpatient p ON p.lsessionid = lg.lcustomerid AND p.lmain_id = lg.lmai
 WHERE lg.lmainid = :main_id
   AND lg.ldatetime >= :month_start
   AND lg.ldatetime < :next_month_start
+  AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
+  AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
 GROUP BY p.lsessionid, p.lcompany
 HAVING amount > 0
 ORDER BY amount DESC, customer_name ASC
@@ -249,6 +256,8 @@ LEFT JOIN tblaccount a ON a.lid = p.lsales_person
 WHERE lg.lmainid = :main_id
   AND lg.ldatetime >= :month_start
   AND lg.ldatetime < :next_month_start
+  AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
+  AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
 GROUP BY p.lsales_person, a.lfname, a.llname
 HAVING amount > 0
 ORDER BY amount DESC, salesperson ASC
@@ -318,7 +327,7 @@ SQL);
             'year' => $year,
             'month' => $currentMonth,
             'kpis' => [
-                'total_sales_ytd' => (float) ($kpis['total_sales_ytd'] ?? 0),
+                'total_sales_ytd' => $totalSalesYtd,
                 'total_collections_ytd' => (float) ($kpis['total_collections_ytd'] ?? 0),
                 'outstanding_receivables' => (float) ($kpis['outstanding_receivables'] ?? 0),
                 'active_customers' => $activeCustomers,
@@ -581,9 +590,9 @@ sales_report_current_month AS (
         FROM tblinvoice_list l
         INNER JOIN tblinvoice_itemrec i ON i.linvoice_refno = l.lrefno
         WHERE l.lmain_id = :sales_report_invoice_main_id
-          AND COALESCE(l.lcancel, '') = ''
-          AND DATE(l.ldatetime) >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
-          AND DATE(l.ldatetime) < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
+          AND l.lcancel IS NULL
+          AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND l.ldate < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
           AND COALESCE(l.lcustomerid, '') <> ''
         GROUP BY l.lcustomerid
 
