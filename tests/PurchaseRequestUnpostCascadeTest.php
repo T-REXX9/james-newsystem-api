@@ -242,14 +242,15 @@ try {
     $auditCount->execute(['pr' => $chain['pr_refno'], 'po' => $chain['po_refno'], 'rr' => $chain['rr_refno']]);
     pr_cascade_assert_eq(3, (int) $auditCount->fetchColumn(), 'each unposted document is written to the audit trail');
 
-    // ---- 2. A PO that is still Pending does not block PR unpost ----
-    echo "\n--- PO that is still Pending does not block PR unpost ---\n";
+    // ---- 2. A PO that is still Pending is cancelled during PR unpost ----
+    echo "\n--- PO that is still Pending is cancelled during PR unpost ---\n";
     $pending = pr_cascade_seed($pdo, $mainId, $userId, $prefix . 'pending', 891000, 'Pending', false);
 
     $result = $repo->unpostPurchaseRequest($mainId, $userId, $pending['pr_refno'], 'Unpost PR with pending PO');
     pr_cascade_assert_eq('Unposted', $result['request']['status'] ?? null, 'purchase request is unposted despite Pending PO');
-    pr_cascade_assert_eq('Pending', pr_cascade_status($pdo, 'tblpo_list', 'ltransaction_status', $pending['po_refno']), 'pending PO remains unchanged');
+    pr_cascade_assert_eq('Cancelled', pr_cascade_status($pdo, 'tblpo_list', 'ltransaction_status', $pending['po_refno']), 'pending PO is cancelled');
     pr_cascade_assert_eq([], $result['cascade']['purchase_orders'] ?? null, 'no POs were cascaded since PO was Pending');
+    pr_cascade_assert_eq([$pending['po_no']], $result['cascade']['cancelled_purchase_orders'] ?? null, 'pending PO was cancelled');
 
     // ---- 3. Whole chain rolls back when a receiving report refuses ----
     echo "\n--- rollback when a receiving report has a supplier return ---\n";

@@ -950,12 +950,16 @@ SQL;
         $this->assertReason($reason);
 
         // Dependent purchase orders are cascaded if they are Posted/Completed.
-        // Pending POs are left unchanged - the PR unpost proceeds regardless.
+        // Pending POs are cancelled/cleared to prevent locking the request.
         $poDependencies = $this->activePurchaseOrderDependencies($mainId, $prRefno);
         $cascadablePos = [];
+        $pendingPos = [];
         foreach ($poDependencies as $dependency) {
-            if (in_array(strtolower(trim((string) ($dependency['status'] ?? ''))), ['posted', 'completed'], true)) {
+            $status = strtolower(trim((string) ($dependency['status'] ?? '')));
+            if (in_array($status, ['posted', 'completed'], true)) {
                 $cascadablePos[] = $dependency;
+            } elseif (in_array($status, ['pending'], true)) {
+                $pendingPos[] = $dependency;
             }
         }
 
@@ -964,7 +968,10 @@ SQL;
         try {
             $purchaseOrders = new PurchaseOrderRepository($this->db);
             $unpostedPurchaseOrders = [];
+            $cancelledPurchaseOrders = [];
             $unpostedReceivingReports = [];
+            
+            // Cascade unpost to Posted/Completed POs
             foreach ($cascadablePos as $dependency) {
                 $poRefno = trim((string) ($dependency['refno'] ?? ''));
                 if ($poRefno === '') continue;
@@ -974,6 +981,18 @@ SQL;
                     $number = trim((string) ($receivingReport['number'] ?? ''));
                     if ($number !== '') $unpostedReceivingReports[] = $number;
                 }
+            }
+            
+            // Cancel Pending POs to prevent request locking
+            foreach ($pendingPos as $dependency) {
+                $poRefno = trim((string) ($dependency['refno'] ?? ''));
+                if ($poRefno === '') continue;
+                $cancel = $pdo->prepare(
+                    'UPDATE tblpo_list SET ltransaction_status = "Cancelled", ldeleted = 1, ldeleted_at = NOW(), ldeleted_by = :user_id, ldelete_reason = :reason WHERE lrefno = :refno'
+                );
+                $cancel->execute(['user_id' => $userId, 'reason' => 'Cancelled during PR unpost: ' . trim($reason), 'refno' => $poRefno]);
+                $cancelledPurchaseOrders[] = (string) ($dependency['number'] ?? $poRefno);
+                (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Purchase Order', 'Cancel', $poRefno, 'Cancelled during PR unpost: ' . trim($reason), (string) ($dependency['status'] ?? ''), 'Cancelled');
             }
 
             $stmt = $pdo->prepare('UPDATE tblpr_list SET lstatus = "Unposted", lapproval = "Pending", lunposted_at = NOW(), lunposted_by = :user_id, lunpost_reason = :reason WHERE lrefno = :refno');
@@ -987,6 +1006,7 @@ SQL;
         if ($updated !== null) {
             $updated['cascade'] = [
                 'purchase_orders' => $unpostedPurchaseOrders,
+                'cancelled_purchase_orders' => $cancelledPurchaseOrders,
                 'receiving_reports' => array_values(array_unique($unpostedReceivingReports)),
             ];
         }
