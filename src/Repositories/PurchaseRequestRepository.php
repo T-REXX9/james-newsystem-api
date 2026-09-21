@@ -949,20 +949,15 @@ SQL;
         if (!in_array($status, ['submitted', 'approved'], true)) throw new RuntimeException('Only a submitted or approved purchase request can be unposted');
         $this->assertReason($reason);
 
-        // Dependent purchase orders are unposted along with the request. Anything
-        // that cannot be unposted on its own (a PO still Pending, for example)
-        // has to be resolved by hand first, so say so instead of failing silently.
+        // Dependent purchase orders are cascaded if they are Posted/Completed.
+        // Pending POs are left unchanged - the PR unpost proceeds regardless.
         $poDependencies = $this->activePurchaseOrderDependencies($mainId, $prRefno);
         $cascadablePos = [];
-        $blockingPos = [];
         foreach ($poDependencies as $dependency) {
             if (in_array(strtolower(trim((string) ($dependency['status'] ?? ''))), ['posted', 'completed'], true)) {
                 $cascadablePos[] = $dependency;
-            } else {
-                $blockingPos[] = $dependency;
             }
         }
-        if ($blockingPos !== []) throw new RuntimeException('Purchase request cannot be unposted because ' . $this->formatPurchaseOrderDependencies($blockingPos) . ' depends on it');
 
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();

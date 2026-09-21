@@ -11,9 +11,9 @@ $checks = [
     'PO can only be generated from approved PR' => str_contains($pr, 'Only an approved purchase request can generate a purchase order'),
     'generated PO retains PR reference' => str_contains($pr, "'pr_refno' => \$prRefno"),
     'generated PO carries PR lines' => str_contains($pr, 'INSERT INTO tblpo_itemlist'),
-    'PR recovery names active PO dependencies' => str_contains($pr, 'activePurchaseOrderDependencies')
-        && str_contains($pr, 'formatPurchaseOrderDependencies')
-        && str_contains($pr, 'Purchase request cannot be unposted because'),
+    'PR recovery cascades only Posted/Completed POs' => str_contains($pr, 'activePurchaseOrderDependencies')
+        && str_contains($pr, 'cascadablePos')
+        && !str_contains($pr, 'blockingPos'),
     // Unpost permission belongs to System Access, enforced once at the route by
     // $requireActionAuth(..., 'unpost'). Repositories must not re-decide it from
     // hardcoded role names, which used to override whatever an admin granted.

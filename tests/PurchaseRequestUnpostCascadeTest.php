@@ -242,24 +242,14 @@ try {
     $auditCount->execute(['pr' => $chain['pr_refno'], 'po' => $chain['po_refno'], 'rr' => $chain['rr_refno']]);
     pr_cascade_assert_eq(3, (int) $auditCount->fetchColumn(), 'each unposted document is written to the audit trail');
 
-    // ---- 2. A PO that cannot be unposted on its own blocks with a clear message ----
-    echo "\n--- PO that is still Pending blocks with a clear reason ---\n";
+    // ---- 2. A PO that is still Pending does not block PR unpost ----
+    echo "\n--- PO that is still Pending does not block PR unpost ---\n";
     $pending = pr_cascade_seed($pdo, $mainId, $userId, $prefix . 'pending', 891000, 'Pending', false);
 
-    $blocked = false;
-    $blockedMessage = '';
-    try {
-        $repo->unpostPurchaseRequest($mainId, $userId, $pending['pr_refno'], 'Try to unpost with a pending PO');
-    } catch (RuntimeException $error) {
-        $blocked = true;
-        $blockedMessage = $error->getMessage();
-    }
-    pr_cascade_assert($blocked, 'purchase request with a Pending purchase order is refused');
-    pr_cascade_assert(
-        str_contains($blockedMessage, 'cannot be unposted because') && str_contains($blockedMessage, $pending['po_no']),
-        'refusal names the blocking purchase order so the user can act on it'
-    );
-    pr_cascade_assert_eq('Approved', $repo->getPurchaseRequest($mainId, $pending['pr_refno'])['request']['status'] ?? null, 'refused purchase request keeps its status');
+    $result = $repo->unpostPurchaseRequest($mainId, $userId, $pending['pr_refno'], 'Unpost PR with pending PO');
+    pr_cascade_assert_eq('Unposted', $result['request']['status'] ?? null, 'purchase request is unposted despite Pending PO');
+    pr_cascade_assert_eq('Pending', pr_cascade_status($pdo, 'tblpo_list', 'ltransaction_status', $pending['po_refno']), 'pending PO remains unchanged');
+    pr_cascade_assert_eq([], $result['cascade']['purchase_orders'] ?? null, 'no POs were cascaded since PO was Pending');
 
     // ---- 3. Whole chain rolls back when a receiving report refuses ----
     echo "\n--- rollback when a receiving report has a supplier return ---\n";
