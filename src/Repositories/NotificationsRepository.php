@@ -240,36 +240,60 @@ final class NotificationsRepository
         $includeActor = (bool) ($payload['includeActor'] ?? false);
         $recipients = $this->resolveRecipients($targetRoles, $targetUserIds, $includeActor ? $actorId : null);
 
+        $callerMetadata = is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [];
+        $entityType = trim((string) ($callerMetadata['entity_type'] ?? $payload['entityType'] ?? ''));
+        $entityId = trim((string) ($callerMetadata['entity_id'] ?? $payload['entityId'] ?? ''));
+        $action = trim((string) ($callerMetadata['action'] ?? $payload['action'] ?? ''));
+        $status = trim((string) ($callerMetadata['status'] ?? $payload['status'] ?? ''));
+        $actionUrl = $callerMetadata['action_url'] ?? $payload['actionUrl'] ?? null;
+        $severity = $callerMetadata['severity'] ?? $payload['type'] ?? 'info';
+        $category = $callerMetadata['category'] ?? $payload['metadata']['category'] ?? null;
+        $alertType = $callerMetadata['alert_type'] ?? $payload['metadata']['alert_type'] ?? null;
+        $contactId = trim((string) ($callerMetadata['contact_id'] ?? ''));
+        $conversationType = trim((string) ($callerMetadata['conversation_type'] ?? ''));
+        $targetRef = trim((string) ($callerMetadata['target_ref'] ?? $entityId));
+
         $created = [];
         foreach ($recipients as $recipientId) {
+            $defaultRefno = $entityType !== '' && $entityId !== ''
+                ? $entityType . ':' . $entityId
+                : '';
+            $refno = $callerMetadata['refno'] ?? $defaultRefno;
+            $defaultIdempotency = $refno !== ''
+                ? $refno . ':' . $recipientId
+                : implode(':', [$recipientId, $entityType, $entityId, $action, $status]);
+            $idempotencyKey = $callerMetadata['idempotency_key'] ?? $defaultIdempotency;
+
+            $mergedMetadata = array_merge(
+                [
+                    'actor_id' => $actorId,
+                    'actor_role' => $actorRole,
+                    'entity_type' => $entityType,
+                    'entity_id' => $entityId,
+                    'action' => $action,
+                    'status' => $status,
+                    'action_url' => $actionUrl,
+                    'refno' => $refno,
+                    'idempotency_key' => $idempotencyKey,
+                    'severity' => $severity,
+                    'category' => $category,
+                    'alert_type' => $alertType,
+                    'contact_id' => $contactId,
+                    'conversation_type' => $conversationType,
+                    'target_ref' => $targetRef,
+                ],
+                $callerMetadata
+            );
+
             $notification = $this->create([
                 'recipient_id' => $recipientId,
                 'title' => $payload['title'] ?? '',
                 'message' => $payload['message'] ?? '',
                 'type' => $payload['type'] ?? 'info',
-                'category' => $payload['metadata']['category'] ?? null,
+                'category' => $mergedMetadata['category'] ?? null,
                 'action_url' => $payload['actionUrl'] ?? null,
                 'main_id' => $payload['main_id'] ?? null,
-                'metadata' => [
-                    'actor_id' => $actorId,
-                    'actor_role' => $actorRole,
-                    'entity_type' => $payload['entityType'] ?? '',
-                    'entity_id' => $payload['entityId'] ?? '',
-                    'action' => $payload['action'] ?? '',
-                    'status' => $payload['status'] ?? '',
-                    'action_url' => $payload['actionUrl'] ?? null,
-                    'refno' => $payload['metadata']['refno'] ?? ($payload['entityType'] ?? '') . ':' . ($payload['entityId'] ?? ''),
-                    'idempotency_key' => $payload['metadata']['idempotency_key'] ?? implode(':', [
-                        $recipientId,
-                        $payload['entityType'] ?? '',
-                        $payload['entityId'] ?? '',
-                        $payload['action'] ?? '',
-                        $payload['status'] ?? '',
-                    ]),
-                    'severity' => $payload['type'] ?? 'info',
-                    'category' => $payload['metadata']['category'] ?? null,
-                    'alert_type' => $payload['metadata']['alert_type'] ?? null,
-                ] + (is_array($payload['metadata'] ?? null) ? $payload['metadata'] : []),
+                'metadata' => $mergedMetadata,
             ]);
 
             if ($notification !== null) {
