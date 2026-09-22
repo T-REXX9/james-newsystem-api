@@ -772,6 +772,26 @@ SQL;
         return $userType === 1;
     }
 
+    /** @return list<string> */
+    private function resolveMasterUserIds(int $mainId): array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT CAST(lid AS CHAR) AS user_id
+             FROM tblaccount
+             WHERE CAST(COALESCE(ltype, 0) AS SIGNED) = 1
+               AND COALESCE(lstatus, 0) = 1
+               AND (lid = :main_id OR lmother_id = :main_id_2)'
+        );
+        $stmt->execute(['main_id' => $mainId, 'main_id_2' => $mainId]);
+
+        $userIds = array_values(array_filter(array_map(
+            static fn (array $row): string => trim((string) ($row['user_id'] ?? '')),
+            $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []
+        )));
+
+        return $userIds !== [] ? $userIds : [(string) $mainId];
+    }
+
     /**
      * @return array{call_started_at: ?string, call_ended_at: string, duration_seconds: int}
      */
@@ -869,8 +889,8 @@ SQL;
             }
             $message .= ' Report: ' . $snippet;
 
-            $notifications->create([
-                'recipient_id' => (string) $mainId,
+            $notifications->dispatchWorkflow([
+                'targetUserIds' => $this->resolveMasterUserIds($mainId),
                 'title' => 'New sales agent call report',
                 'message' => $message,
                 'type' => 'info',
@@ -965,8 +985,8 @@ SQL;
             $messageId = (string) ($message['id'] ?? '');
             $contactId = (string) ($thread['contact_id'] ?? '');
 
-            $notifications->create([
-                'recipient_id' => (string) $mainId,
+            $notifications->dispatchWorkflow([
+                'targetUserIds' => $this->resolveMasterUserIds($mainId),
                 'title' => 'New Agent Sales Report message',
                 'message' => sprintf(
                     '%s sent a message about %s. %s',
@@ -1233,7 +1253,7 @@ SQL;
         }
 
         $stmt = $this->db->pdo()->prepare(
-            'SELECT COALESCE(NULLIF(TRIM(lcompany), \'\'), NULLIF(TRIM(lname), \'\'), \'Unnamed customer\') AS customer_name
+            'SELECT COALESCE(NULLIF(TRIM(lcompany), \'\'), \'Unnamed customer\') AS customer_name
              FROM tblpatient
              WHERE CAST(lid AS CHAR) = :contact_id
                AND (CAST(lmain_id AS CHAR) = :main_id OR lmain_id IS NULL)
