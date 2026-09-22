@@ -220,11 +220,16 @@ final class CallReportRepository
             throw new HttpException(403, 'Only the Master User can reply to sales agent reports.');
         }
 
-        if ($senderRole === 'agent' && (int) ($thread['agent_user_id'] ?? 0) !== $senderUserId) {
-            $assignedAgentId = $this->resolveAssignedAgentId($mainId, (string) ($thread['contact_id'] ?? ''));
-            if ($assignedAgentId !== $senderUserId) {
-                throw new HttpException(403, 'You can only follow up on your own call reports.');
-            }
+        if (
+            $senderRole === 'agent'
+            && !$this->agentCanContributeToContact(
+                $mainId,
+                (string) ($thread['contact_id'] ?? ''),
+                $senderUserId,
+                (int) ($thread['agent_user_id'] ?? 0)
+            )
+        ) {
+            throw new HttpException(403, 'You can only follow up on your own call reports.');
         }
 
         $trimmedBody = trim($body);
@@ -1118,6 +1123,57 @@ SQL;
         return (int) $stmt->fetchColumn();
     }
 
+    /**
+     * Agents may contribute when they own the thread, are permanently assigned,
+     * or currently hold today's in-progress call claim (Daily Call Monitoring).
+     */
+    private function agentCanContributeToContact(
+        int $mainId,
+        string $contactId,
+        int $senderUserId,
+        int $threadAgentUserId = 0
+    ): bool {
+        if ($senderUserId <= 0) {
+            return false;
+        }
+        if ($threadAgentUserId > 0 && $threadAgentUserId === $senderUserId) {
+            return true;
+        }
+        if ($this->resolveAssignedAgentId($mainId, $contactId) === $senderUserId) {
+            return true;
+        }
+
+        return $this->hasActiveCallClaim($mainId, $contactId, $senderUserId);
+    }
+
+    private function hasActiveCallClaim(int $mainId, string $contactId, int $agentUserId): bool
+    {
+        if ($mainId <= 0 || $contactId === '' || $agentUserId <= 0) {
+            return false;
+        }
+
+        try {
+            $stmt = $this->db->pdo()->prepare(
+                "SELECT 1 FROM daily_call_claims
+                 WHERE main_id = :main_id
+                   AND contact_id = :contact_id
+                   AND agent_user_id = :agent_user_id
+                   AND claim_date = CURDATE()
+                   AND status = 'in_progress'
+                   AND expires_at > NOW()
+                 LIMIT 1"
+            );
+            $stmt->execute([
+                'main_id' => $mainId,
+                'contact_id' => $contactId,
+                'agent_user_id' => $agentUserId,
+            ]);
+            return (bool) $stmt->fetchColumn();
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
     private function resolveOrCreateConversationThreadId(
         int $mainId,
         string $contactId,
@@ -1126,20 +1182,32 @@ SQL;
         string $senderRole
     ): int {
         $threads = $this->getThreadsByContact($mainId, $contactId, $senderUserId);
+        $fallbackThreadId = 0;
         foreach ($threads as $thread) {
             if (($thread['replyable'] ?? true) === false) {
                 continue;
             }
             $threadId = (int) ($thread['id'] ?? 0);
-            if ($threadId > 0) {
+            if ($threadId <= 0) {
+                continue;
+            }
+            if ((int) ($thread['agent_user_id'] ?? 0) === $senderUserId) {
                 return $threadId;
             }
+            if ($fallbackThreadId === 0) {
+                $fallbackThreadId = $threadId;
+            }
+        }
+        if ($fallbackThreadId > 0) {
+            return $fallbackThreadId;
         }
 
         $assignedAgentId = $this->resolveAssignedAgentId($mainId, $contactId);
-        $agentUserId = $assignedAgentId > 0
-            ? $assignedAgentId
-            : ($senderRole === 'agent' ? $senderUserId : $senderUserId);
+        // Agents who just claimed/called must own the new conversation shell so their
+        // first message is not blocked by a mismatched permanently-assigned agent.
+        $agentUserId = $senderRole === 'agent'
+            ? $senderUserId
+            : ($assignedAgentId > 0 ? $assignedAgentId : $senderUserId);
         $agentName = $senderRole === 'agent'
             ? ($senderName !== '' ? $senderName : ('User ' . $senderUserId))
             : 'Sales Agent';
