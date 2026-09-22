@@ -22,16 +22,24 @@ $assert(
     'Repository defines agent contribution helper'
 );
 $assert(
-    str_contains($repoSrc, 'function hasActiveCallClaim'),
-    'Repository checks active daily call claims'
+    str_contains($repoSrc, 'function hasTodaysCallClaim'),
+    'Repository checks today\'s daily call claims'
 );
 $assert(
-    str_contains($repoSrc, "status = 'in_progress'"),
-    'Claim check requires an in-progress claim'
+    str_contains($repoSrc, "status IN ('in_progress', 'completed')"),
+    'Claim check allows today\'s in-progress or completed claims'
+);
+$assert(
+    !str_contains($repoSrc, "AND expires_at > NOW()\n                 LIMIT 1"),
+    'Claim contribution check does not require active claim TTL'
 );
 $assert(
     str_contains($repoSrc, 'agentCanContributeToContact('),
     'addReply uses agent contribution helper'
+);
+$assert(
+    str_contains($repoSrc, '$claimingNonAssignee'),
+    'Thread resolver skips foreign-thread fallback for claiming non-assignees'
 );
 $assert(
     preg_match(

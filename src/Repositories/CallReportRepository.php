@@ -1106,7 +1106,8 @@ SQL;
 
     /**
      * Agents may contribute when they own the thread, are permanently assigned,
-     * or currently hold today's in-progress call claim (Daily Call Monitoring).
+     * or claimed/called this contact today (Daily Call Monitoring), even after the
+     * short claim TTL expires or the claim is marked completed.
      */
     private function agentCanContributeToContact(
         int $mainId,
@@ -1124,10 +1125,10 @@ SQL;
             return true;
         }
 
-        return $this->hasActiveCallClaim($mainId, $contactId, $senderUserId);
+        return $this->hasTodaysCallClaim($mainId, $contactId, $senderUserId);
     }
 
-    private function hasActiveCallClaim(int $mainId, string $contactId, int $agentUserId): bool
+    private function hasTodaysCallClaim(int $mainId, string $contactId, int $agentUserId): bool
     {
         if ($mainId <= 0 || $contactId === '' || $agentUserId <= 0) {
             return false;
@@ -1140,8 +1141,7 @@ SQL;
                    AND contact_id = :contact_id
                    AND agent_user_id = :agent_user_id
                    AND claim_date = CURDATE()
-                   AND status = 'in_progress'
-                   AND expires_at > NOW()
+                   AND status IN ('in_progress', 'completed')
                  LIMIT 1"
             );
             $stmt->execute([
@@ -1179,12 +1179,17 @@ SQL;
                 $fallbackThreadId = $threadId;
             }
         }
-        if ($fallbackThreadId > 0) {
+        $assignedAgentId = $this->resolveAssignedAgentId($mainId, $contactId);
+        // Claiming/calling agents who are not the permanent assignee must keep their own
+        // shell. Falling back onto another agent's thread makes later sends depend on
+        // claim state and hits 403 after the short claim TTL.
+        $claimingNonAssignee = $senderRole === 'agent'
+            && $assignedAgentId !== $senderUserId
+            && $this->hasTodaysCallClaim($mainId, $contactId, $senderUserId);
+        if ($fallbackThreadId > 0 && !$claimingNonAssignee) {
             return $fallbackThreadId;
         }
-
-        $assignedAgentId = $this->resolveAssignedAgentId($mainId, $contactId);
-        // Agents who just claimed/called must own the new conversation shell so their
+        // Agents who claimed/called must own the new conversation shell so their
         // first message is not blocked by a mismatched permanently-assigned agent.
         $agentUserId = $senderRole === 'agent'
             ? $senderUserId
