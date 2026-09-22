@@ -2,8 +2,18 @@
 -- Customer sales-agent assignment is intentionally unrelated and must never
 -- overwrite document ownership. Keep historical records correct even when the
 -- creator's account is now inactive.
-CREATE INDEX idx_transaction_inquiry_ref_main
-    ON tbltransaction (linquiry_refno, lmain_id);
+-- setup.sh reapplies SQL migrations during production updates, so create this
+-- supporting index only when it is absent.
+SET @idx_exists := (SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'tbltransaction'
+      AND INDEX_NAME = 'idx_transaction_inquiry_ref_main');
+SET @idx_sql := IF(
+    @idx_exists = 0,
+    'ALTER TABLE tbltransaction ADD INDEX idx_transaction_inquiry_ref_main (linquiry_refno, lmain_id)',
+    'SELECT 1'
+);
+PREPARE idx_stmt FROM @idx_sql; EXECUTE idx_stmt; DEALLOCATE PREPARE idx_stmt;
 
 UPDATE tblinquiry AS inquiry
 INNER JOIN tblaccount AS creator

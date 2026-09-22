@@ -16,6 +16,11 @@ $checks = [
         && str_contains($migration, 'inquiry.lsalesperson = TRIM(CONCAT'),
     'does not depend on the customer assignment' =>
         !str_contains($migration, 'tblpatient'),
+    'creates its supporting index only when absent' =>
+        str_contains($migration, 'INFORMATION_SCHEMA.STATISTICS')
+        && str_contains($migration, "INDEX_NAME = 'idx_transaction_inquiry_ref_main'")
+        && str_contains($migration, 'ALTER TABLE tbltransaction ADD INDEX idx_transaction_inquiry_ref_main')
+        && str_contains($migration, "'SELECT 1'"),
     'repairs linked Sales Orders from their inquiry creator' =>
         str_contains($migration, 'UPDATE tbltransaction AS sales_order')
         && str_contains($migration, 'idx_transaction_inquiry_ref_main')
