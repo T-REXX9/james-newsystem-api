@@ -368,6 +368,8 @@ SQL);
             'sales_report_txn_main_id' => $mainId,
             'sales_report_invoice_main_id' => $mainId,
             'sales_report_dr_main_id' => $mainId,
+            'sales_report_thread_main_id' => $mainId,
+            'sales_report_message_main_id' => $mainId,
             'verification_main_id' => $mainId,
         ];
 
@@ -611,6 +613,47 @@ sales_report_current_month AS (
         GROUP BY l.lcustomerid
     ) sales_report_rows
     GROUP BY customer_id
+),
+sales_report_activity AS (
+    SELECT
+        t.main_id,
+        t.contact_id,
+        t.report_body AS body,
+        t.created_at,
+        t.id AS activity_id,
+        0 AS activity_source_order
+    FROM call_report_threads t
+    WHERE t.main_id = :sales_report_thread_main_id
+      AND TRIM(COALESCE(t.report_body, '')) <> ''
+
+    UNION ALL
+
+    SELECT
+        t.main_id,
+        t.contact_id,
+        m.body,
+        m.created_at,
+        m.id AS activity_id,
+        1 AS activity_source_order
+    FROM call_report_messages m
+    INNER JOIN call_report_threads t ON t.id = m.thread_id
+    WHERE t.main_id = :sales_report_message_main_id
+      AND TRIM(COALESCE(m.body, '')) <> ''
+),
+latest_sales_report AS (
+    SELECT main_id, contact_id, body
+    FROM (
+        SELECT
+            main_id,
+            contact_id,
+            body,
+            ROW_NUMBER() OVER (
+                PARTITION BY main_id, contact_id
+                ORDER BY created_at DESC, activity_id DESC, activity_source_order DESC
+            ) AS activity_rank
+        FROM sales_report_activity
+    ) ranked_sales_report_activity
+    WHERE activity_rank = 1
 )
 SELECT
     p.lsessionid AS id,
@@ -645,7 +688,7 @@ SELECT
     COALESCE(NULLIF(TRIM(CONCAT(COALESCE(verifier.lfname, ''), ' ', COALESCE(verifier.llname, ''))), ''), '') AS verified_by,
     CASE WHEN verification_audit.lid IS NULL THEN 0 ELSE 1 END AS verified_in_system,
     COALESCE(p.ldatetime, '') AS created_at,
-    COALESCE(p.lnotes, '') AS prospect_comment,
+    COALESCE(latest_sales_report.body, '') AS latest_sales_report_message,
     COALESCE(p.lprice_group, '') AS price_group,
     CASE
         WHEN ledger_summary.first_purchase_date_raw IS NULL THEN txn_summary.first_purchase_date_raw
@@ -873,6 +916,9 @@ LEFT JOIN txn_summary ON txn_summary.lcustomerid = p.lsessionid
     AND txn_summary.lmainid = CAST(p.lmain_id AS CHAR)
 LEFT JOIN sales_report_current_month
     ON sales_report_current_month.customer_id = p.lsessionid
+LEFT JOIN latest_sales_report
+    ON latest_sales_report.main_id = p.lmain_id
+    AND latest_sales_report.contact_id = p.lsessionid
 LEFT JOIN (
     SELECT audit.lid, audit.lmain_id, audit.lrefno, audit.luser_id
     FROM tblaudit_trail audit
@@ -978,8 +1024,8 @@ SQL;
                 'verified_in_system' => (bool) ($row['verified_in_system'] ?? false),
                 'createdAt' => (string) ($row['created_at'] ?? ''),
                 'created_at' => (string) ($row['created_at'] ?? ''),
-                'prospectComment' => $this->cleanDisplayText($row['prospect_comment'] ?? '', ''),
-                'prospect_comment' => $this->cleanDisplayText($row['prospect_comment'] ?? '', ''),
+                'latestSalesReportMessage' => $this->cleanDisplayText($row['latest_sales_report_message'] ?? '', ''),
+                'latest_sales_report_message' => $this->cleanDisplayText($row['latest_sales_report_message'] ?? '', ''),
                 'priceGroup' => (string) ($row['price_group'] ?? ''),
                 'price_group' => (string) ($row['price_group'] ?? ''),
                 'firstPurchaseDate' => $this->formatDateText($firstPurchaseDate),
@@ -1071,31 +1117,7 @@ SQL;
             'purchases' => $this->getPurchaseRows($mainId, $contactIds, $twelveMonthsAgo),
             'team_messages' => $this->getRecentOwnerMessages($viewerUserId),
             'master_list' => $masterList['items'] ?? [],
-            'legacy_current_month_sales' => $this->getLegacyCurrentMonthSales($mainId, $viewerUserId),
         ];
-    }
-
-    /** Mirrors the old Home dashboard's Total Sales for {month} calculation. */
-    private function getLegacyCurrentMonthSales(int $mainId, int $salespersonId): float
-    {
-        $statement = $this->db->pdo()->prepare(<<<'SQL'
-SELECT COALESCE(SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
-    * CASE WHEN t.ltax_type = 'Exclusive' THEN 1.12 ELSE 1 END), 0)
-FROM tbltransaction t
-INNER JOIN tbltransaction_item i ON i.lrefno = t.lrefno
-WHERE t.lmain_id = :main_id
-  AND COALESCE(t.lcancel, 0) = 0
-  AND COALESCE(t.limported, 0) = 1
-  AND t.lsales_person_id = :salesperson_id
-  AND t.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
-  AND t.ldate <= LAST_DAY(CURDATE())
-SQL);
-        $statement->execute([
-            'main_id' => $mainId,
-            'salesperson_id' => $salespersonId,
-        ]);
-
-        return (float) ($statement->fetchColumn() ?: 0);
     }
 
     public function assertCustomerViewAccess(int $mainId, string $contactId, int $viewerUserId): void

@@ -24,6 +24,8 @@ final class NotificationsRepository
         'ar' => 24,
         'at' => 24,
         'ci' => 128,
+        'ct' => 32,
+        'tr' => 64,
     ];
 
     public function __construct(private readonly Database $db)
@@ -564,6 +566,8 @@ final class NotificationsRepository
                 'refno' => $referenceKey,
                 'alert_type' => $metadata['at'] ?? null,
                 'contact_id' => (string) ($metadata['ci'] ?? ''),
+                'conversation_type' => (string) ($metadata['ct'] ?? ''),
+                'target_ref' => (string) ($metadata['tr'] ?? ''),
             ],
             'is_read' => (int) ($row['lstatus'] ?? 0) !== 1,
             'created_at' => $this->normalizeTimestamp($row['ldatetime'] ?? null),
@@ -589,6 +593,8 @@ final class NotificationsRepository
             'ar' => trim((string) ($metadata['actor_role'] ?? 'system')),
             'at' => trim((string) ($metadata['alert_type'] ?? '')),
             'ci' => trim((string) ($metadata['contact_id'] ?? '')),
+            'ct' => trim((string) ($metadata['conversation_type'] ?? '')),
+            'tr' => trim((string) ($metadata['target_ref'] ?? $metadata['entity_id'] ?? '')),
         ];
 
         return array_filter($compact, static fn (mixed $value): bool => $value !== '');

@@ -66,18 +66,27 @@ final class AuditTrailWriter
             return;
         }
 
-        $entityType = $this->notificationEntityType($page);
-        $notificationRefno = $entityType . ':' . $refno;
+        $target = $this->resolveNotificationTarget($page, $refno);
+        // Call report events have recipient-specific, detailed notifications in
+        // CallReportRepository. Keep their audit row, but never add a generic
+        // second notification for the same event.
+        if ($target['entity_type'] === 'agent_sales_report') {
+            return;
+        }
+        $entityType = $target['entity_type'];
+        $actionKey = strtolower(trim((string) (preg_replace('/[^a-z0-9]+/i', '_', $action) ?? 'action'), '_'));
+        $notificationRefno = $entityType . ':' . $target['record_id'] . ':' . $actionKey;
         $actorName = $this->actorName($userId);
         $metadata = json_encode([
             'e' => $entityType,
-            'i' => $refno,
-            'a' => strtolower(str_replace(' ', '_', $action)),
+            'i' => $target['record_id'],
+            'a' => $actionKey,
             's' => trim($newStatus) !== '' ? $newStatus : 'created',
             't' => 'info',
             'c' => 'notification',
             'ai' => (string) $userId,
             'ar' => 'User',
+            'u' => $target['route'],
         ], JSON_UNESCAPED_SLASHES);
 
         $insert = $this->pdo->prepare(
@@ -103,19 +112,28 @@ final class AuditTrailWriter
         ]);
     }
 
-    private function notificationEntityType(string $page): string
+    /** @return array{entity_type:string,route:string,record_id:string} */
+    private function resolveNotificationTarget(string $page, string $refno): array
     {
-        return match (strtolower(trim($page))) {
-            'sales inquiry' => 'sales_inquiry',
-            'sales order' => 'sales_order',
-            'order slip' => 'order_slip',
-            'daily collection entry' => 'daily_collection',
-            'purchase request' => 'purchase_request',
-            'purchase order' => 'purchase_order',
-            'stock adjustment' => 'stock_adjustment',
-            'transfer stock' => 'transfer_stock',
-            default => strtolower(trim(preg_replace('/[^a-z0-9]+/i', '_', $page) ?? 'activity'), '_'),
+        $recordId = trim($refno);
+        [$entityType, $route] = match (strtolower(trim($page))) {
+            'sales inquiry' => ['sales_inquiry', 'sales-transaction-sales-inquiry'],
+            'sales order' => ['sales_order', 'sales-transaction-sales-order'],
+            'order slip' => ['order_slip', 'sales-transaction-order-slip'],
+            'invoice' => ['invoice', 'sales-transaction-invoice'],
+            'purchase request' => ['purchase_request', 'warehouse-purchasing-purchase-request'],
+            'purchase order' => ['purchase_order', 'warehouse-purchasing-purchase-order'],
+            'receiving report' => ['receiving_report', 'warehouse-purchasing-receiving-stock'],
+            'daily collection entry' => ['daily_collection', 'accounting-transactions-daily-collection-entry'],
+            'stock adjustment' => ['stock_adjustment', 'warehouse-inventory-stock-adjustment'],
+            'transfer stock' => ['transfer_stock', 'warehouse-inventory-stock-movement'],
+            'inventory audit' => ['inventory_audit', 'warehouse-reports-inventory-audit-report'],
+            'customer database', 'daily call monitoring dashboard' => ['prospect', 'maintenance-customer-customer-data'],
+            'agent sales report' => ['agent_sales_report', 'maintenance-customer-customer-data'],
+            default => [strtolower(trim(preg_replace('/[^a-z0-9]+/i', '_', $page) ?? 'activity'), '_'), 'home'],
         };
+
+        return ['entity_type' => $entityType, 'route' => $route, 'record_id' => $recordId];
     }
 
     private function actorName(int $userId): string

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
-use App\Support\AuditTrailWriter;
 use App\Support\Exceptions\HttpException;
 use App\Support\SalesReportAttachmentStore;
 use PDO;
@@ -113,13 +112,6 @@ final class CallReportRepository
         }
 
         if ($notifyMaster) {
-            (new AuditTrailWriter($pdo))->write(
-                $mainId,
-                $agentUserId,
-                'Agent Sales Report',
-                'Create report',
-                'call_report:' . $threadId
-            );
             $this->notifyMasterOnReport($mainId, $thread);
         }
 
@@ -141,48 +133,6 @@ final class CallReportRepository
             fn(array $row): ?array => $this->mapThreadRow($row, $viewerUserId),
             $rows
         )));
-
-        $prospectStmt = $this->db->pdo()->prepare(
-            'SELECT CONCAT(\'prospect_\', p.lid) AS synthetic_id,
-                    p.lid AS contact_id,
-                    p.lencoded_by AS agent_user_id,
-                    TRIM(CONCAT(COALESCE(a.lfname, \'\'), \' \', COALESCE(a.llname, \'\'))) AS agent_name,
-                    p.lnotes AS report_body,
-                    p.ldatetime AS created_at
-             FROM tblpatient p
-             INNER JOIN tblaccount a ON a.lid = p.lencoded_by
-             WHERE p.lmain_id = :main_id
-               AND (CAST(p.lid AS CHAR) = :contact_id_lid OR p.lsessionid = :contact_id_session)
-               AND TRIM(COALESCE(p.lnotes, \'\')) <> \'\'
-               AND (COALESCE(p.lstatus, 1) = 3 OR LOWER(COALESCE(p.lprofile_type, \'\')) LIKE \'%prospect%\')
-             LIMIT 1'
-        );
-        $prospectStmt->execute([
-            'main_id' => $mainId,
-            'contact_id_lid' => $contactId,
-            'contact_id_session' => $contactId,
-        ]);
-        $prospect = $prospectStmt->fetch(PDO::FETCH_ASSOC);
-        if (is_array($prospect)) {
-            $threads[] = [
-                'id' => (string) ($prospect['synthetic_id'] ?? ''),
-                'contact_id' => (string) ($prospect['contact_id'] ?? $contactId),
-                'call_log_entry_id' => '',
-                'call_log_refno' => '',
-                'agent_user_id' => (string) ($prospect['agent_user_id'] ?? ''),
-                'agent_name' => trim((string) ($prospect['agent_name'] ?? '')) ?: 'Sales Agent',
-                'outcome' => 'note',
-                'report_body' => (string) ($prospect['report_body'] ?? ''),
-                'created_at' => (string) ($prospect['created_at'] ?? ''),
-                'call_started_at' => '',
-                'call_ended_at' => (string) ($prospect['created_at'] ?? ''),
-                'duration_seconds' => 0,
-                'last_activity_at' => (string) ($prospect['created_at'] ?? ''),
-                'unread_count' => 0,
-                'messages' => [],
-                'replyable' => false,
-            ];
-        }
 
         usort($threads, static fn(array $left, array $right): int => strcmp(
             (string) ($right['created_at'] ?? ''),
@@ -291,22 +241,8 @@ final class CallReportRepository
         }
 
         if ($senderRole === 'master') {
-            (new AuditTrailWriter($this->db->pdo()))->write(
-                $mainId,
-                $senderUserId,
-                'Agent Sales Report',
-                'Reply',
-                'call_report_message:' . $messageId
-            );
             $this->notifyAgentOnReply($mainId, $thread, $message, $senderName);
         } else {
-            (new AuditTrailWriter($this->db->pdo()))->write(
-                $mainId,
-                $senderUserId,
-                'Agent Sales Report',
-                'Message',
-                'call_report_message:' . $messageId
-            );
             $this->notifyMasterOnAgentMessage($mainId, $thread, $message, $senderName);
         }
 
@@ -344,7 +280,7 @@ final class CallReportRepository
 
         foreach ($threads as $thread) {
             $threadId = (string) ($thread['id'] ?? '');
-            $isSynthetic = str_starts_with($threadId, 'prospect_') || (($thread['replyable'] ?? true) === false && ($thread['call_log_entry_id'] ?? '') === '');
+            $isSynthetic = (($thread['replyable'] ?? true) === false && ($thread['call_log_entry_id'] ?? '') === '');
             $reportBody = trim((string) ($thread['report_body'] ?? ''));
             if ($reportBody !== '') {
                 $agentUserId = (string) ($thread['agent_user_id'] ?? '');
@@ -352,9 +288,6 @@ final class CallReportRepository
                     'id' => 'report:' . $threadId,
                     'thread_id' => $threadId,
                     'contact_id' => $contactId,
-                    // A prospect's initial comment is already stored on the prospect
-                    // record, but it belongs in the unified conversation as a staff
-                    // comment rather than looking like a completed call report.
                     'kind' => $isSynthetic ? 'staff_comment' : 'agent_report',
                     'sender_user_id' => $agentUserId,
                     'sender_name' => (string) ($thread['agent_name'] ?? 'Sales Agent'),
@@ -948,6 +881,8 @@ SQL;
                     'entity_type' => 'call_report',
                     'entity_id' => $threadId,
                     'contact_id' => (string) ($thread['contact_id'] ?? ''),
+                    'conversation_type' => 'agent_sales_report',
+                    'target_ref' => $threadId,
                     'action' => 'report_submitted',
                     'status' => 'unread',
                     'action_url' => 'home',
@@ -1005,6 +940,8 @@ SQL;
                     'entity_id' => $messageId,
                     'contact_id' => (string) ($thread['contact_id'] ?? ''),
                     'thread_id' => $threadId,
+                    'conversation_type' => 'agent_sales_report',
+                    'target_ref' => $messageId,
                     'action' => 'reply_received',
                     'status' => 'unread',
                     'action_url' => 'home',
@@ -1046,6 +983,8 @@ SQL;
                     'entity_id' => $messageId,
                     'contact_id' => $contactId,
                     'thread_id' => (string) ($thread['id'] ?? ''),
+                    'conversation_type' => 'agent_sales_report',
+                    'target_ref' => $messageId,
                     'action' => 'agent_message',
                     'status' => 'unread',
                     'action_url' => 'home',

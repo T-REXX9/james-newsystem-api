@@ -15,7 +15,6 @@ $repo = new SalesInquiryRepository($db);
 
 $mainId = 1;
 $creatorId = 64;
-$customerSessionId = '30506727420200807132632';
 
 $creator = $pdo->prepare(
     "SELECT lid, TRIM(CONCAT(COALESCE(lfname, ''), ' ', COALESCE(llname, ''))) AS name
@@ -27,12 +26,25 @@ if (!$creatorRow) {
     throw new RuntimeException('FAIL: creator account 64 not found');
 }
 
-$customer = $pdo->prepare('SELECT lsessionid, lsales_person FROM tblpatient WHERE lsessionid = ? LIMIT 1');
-$customer->execute([$customerSessionId]);
+$customer = $pdo->prepare(
+    'SELECT lsessionid, lsales_person
+     FROM tblpatient
+     WHERE lmain_id = :main_id
+       AND COALESCE(lsales_person, \'\') <> \'\'
+       AND lsales_person <> :creator_id
+     ORDER BY lsessionid ASC
+     LIMIT 1'
+);
+$customer->execute([
+    'main_id' => (string) $mainId,
+    'creator_id' => (string) $creatorId,
+]);
 $customerRow = $customer->fetch(PDO::FETCH_ASSOC);
 if (!$customerRow) {
-    throw new RuntimeException('FAIL: customer fixture not found');
+    throw new RuntimeException('FAIL: no customer with a different default sales agent was found');
 }
+
+$customerSessionId = (string) $customerRow['lsessionid'];
 
 $customerAgentId = (string) ($customerRow['lsales_person'] ?? '');
 if ($customerAgentId === '' || $customerAgentId === (string) $creatorId) {
@@ -66,12 +78,22 @@ $ok = $salesPersonId === (string) $creatorId
     && strcasecmp($salesPerson, $creatorName) === 0
     && $salesPersonId !== $customerAgentId;
 
+// The creator is immutable. An editor may change document details but may never
+// rewrite accountability to the customer's assigned agent (or any other user).
+$updated = $repo->updateInquiry($mainId, $inquiryRefno, [
+    'sales_person' => 'APOSTOL ELLA',
+    'sales_person_id' => $customerAgentId,
+    'remarks' => 'creator attribution regression update',
+]);
+$updatePreservedCreator = (string) ($updated['sales_person_id'] ?? '') === (string) $creatorId
+    && strcasecmp(trim((string) ($updated['sales_person'] ?? '')), $creatorName) === 0;
+
 // Soft-cancel the temporary inquiry so the test does not leave active clutter.
 if ($inquiryRefno !== '') {
     $repo->cancelInquiry($mainId, $inquiryRefno);
 }
 
-if (!$ok) {
+if (!$ok || !$updatePreservedCreator) {
     throw new RuntimeException(
         'FAIL: expected salesperson=' . $creatorName . ' id=' . $creatorId
         . ' got salesperson=' . $salesPerson . ' id=' . $salesPersonId
@@ -80,3 +102,4 @@ if (!$ok) {
 }
 
 echo "PASS: sales inquiry salesperson is the creating user, not the customer agent\n";
+echo "PASS: sales inquiry creator remains unchanged after an edit\n";

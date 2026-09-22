@@ -273,7 +273,7 @@ function app_config(): Config
         filter_var(Env::get('APP_DEBUG', false), FILTER_VALIDATE_BOOL),
         (string) Env::get('APP_ALLOWED_ORIGIN', '*'),
         (string) Env::get('AUTH_SECRET', (string) Env::get('APP_KEY', 'change-me-in-env')),
-        (int) Env::get('AUTH_TOKEN_TTL_SECONDS', 28800),
+        (int) Env::get('AUTH_TOKEN_TTL_SECONDS', 315360000),
         (string) Env::get('DB_HOST', '127.0.0.1'),
         (int) Env::get('DB_PORT', 3306),
         (string) Env::get('DB_NAME', ''),

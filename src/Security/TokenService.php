@@ -10,16 +10,19 @@ final class TokenService
 {
     public function __construct(
         private readonly string $secret,
-        private readonly int $ttlSeconds = 28800
+        private readonly int $ttlSeconds = 315360000
     ) {
     }
 
     public function issue(array $claims): string
     {
         $now = time();
+        // Use a far-future expiry for clients that still read `exp`.
+        // Verification does not enforce expiry; logout is explicit only.
+        $ttl = $this->ttlSeconds > 0 ? $this->ttlSeconds : 315360000; // ~10 years
         $payload = array_merge($claims, [
             'iat' => $now,
-            'exp' => $now + max(60, $this->ttlSeconds),
+            'exp' => $now + max(60, $ttl),
         ]);
 
         $payloadB64 = $this->base64UrlEncode((string) json_encode($payload, JSON_UNESCAPED_SLASHES));
@@ -46,10 +49,8 @@ final class TokenService
             throw new HttpException(401, 'Invalid token payload');
         }
 
-        $exp = (int) ($payload['exp'] ?? 0);
-        if ($exp <= 0 || $exp < time()) {
-            throw new HttpException(401, 'Token expired');
-        }
+        // Sessions do not auto-expire. Logout is explicit only.
+        // Signature validation above remains the security gate.
 
         return $payload;
     }
