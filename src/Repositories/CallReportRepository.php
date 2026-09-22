@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\AuditTrailWriter;
 use App\Support\Exceptions\HttpException;
 use App\Support\SalesReportAttachmentStore;
 use PDO;
@@ -112,6 +113,13 @@ final class CallReportRepository
         }
 
         if ($notifyMaster) {
+            (new AuditTrailWriter($pdo))->write(
+                $mainId,
+                $agentUserId,
+                'Agent Sales Report',
+                'Create report',
+                'call_report:' . $threadId
+            );
             $this->notifyMasterOnReport($mainId, $thread);
         }
 
@@ -283,8 +291,22 @@ final class CallReportRepository
         }
 
         if ($senderRole === 'master') {
+            (new AuditTrailWriter($this->db->pdo()))->write(
+                $mainId,
+                $senderUserId,
+                'Agent Sales Report',
+                'Reply',
+                'call_report_message:' . $messageId
+            );
             $this->notifyAgentOnReply($mainId, $thread, $message, $senderName);
         } else {
+            (new AuditTrailWriter($this->db->pdo()))->write(
+                $mainId,
+                $senderUserId,
+                'Agent Sales Report',
+                'Message',
+                'call_report_message:' . $messageId
+            );
             $this->notifyMasterOnAgentMessage($mainId, $thread, $message, $senderName);
         }
 
