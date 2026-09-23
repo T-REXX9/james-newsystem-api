@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Repositories\NotificationsRepository;
 use App\Support\AuditTrailWriter;
 use App\Support\VipDocumentDiscount;
 use PDO;
@@ -796,7 +797,40 @@ SQL;
             $stmt->execute($params);
         }
 
-        return $this->getSalesOrder($mainId, $salesRefno, $viewerUserId);
+        $result = $this->getSalesOrder($mainId, $salesRefno, $viewerUserId);
+
+        if ($normalizedAction === 'approve' || $normalizedAction === 'approvesales') {
+            try {
+                $submitterUserId = trim((string) ($existing['order']['created_by_id'] ?? ''));
+                $salesNo = trim((string) ($existing['order']['order_no'] ?? $salesRefno));
+                $targetUserIds = ($submitterUserId !== '' && $submitterUserId !== '0') ? [$submitterUserId] : [];
+                $notifications = new NotificationsRepository($this->db);
+                $notifications->dispatchWorkflow([
+                    'targetUserIds' => $targetUserIds,
+                    'title' => 'Sales Order Approved',
+                    'message' => sprintf('Sales Order %s has been approved.', $salesNo),
+                    'type' => 'success',
+                    'category' => 'notification',
+                    'main_id' => (string) $mainId,
+                    'metadata' => [
+                        'entity_type' => 'sales_order',
+                        'entity_id' => $salesRefno,
+                        'action' => 'approved',
+                        'status' => 'Approved',
+                        'action_url' => 'sales-transaction-sales-order',
+                        'refno' => 'sales_order:' . $salesRefno . ':approved',
+                        'idempotency_key' => 'sales_order:' . $salesRefno . ':approved',
+                        'category' => 'notification',
+                        'actor_id' => (string) $viewerUserId,
+                        'actor_role' => 'Owner',
+                    ],
+                ]);
+            } catch (\Throwable $e) {
+                error_log('SO approval notification failed: ' . $e->getMessage());
+            }
+        }
+
+        return $result;
     }
 
     private function cleanupLinkedDocumentsForSalesOrder(string $salesRefno): void

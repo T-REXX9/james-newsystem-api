@@ -730,6 +730,7 @@ SQL;
         $normalized = strtolower(trim($action));
         if ($normalized === 'cancel' || $normalized === 'cancelled') {
             $this->cancelInvoice($mainId, $invoiceRefno, (string) ($payload['reason'] ?? ''));
+            (new AuditTrailWriter($this->db->pdo()))->write($mainId, (int) ($payload['user_id'] ?? 0), 'Invoice', 'Cancel Invoice', $invoiceRefno, (string) ($payload['reason'] ?? ''), 'Posted', 'Cancelled');
             return $this->getInvoice($mainId, $invoiceRefno);
         }
 

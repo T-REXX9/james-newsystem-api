@@ -927,6 +927,12 @@ SQL;
                 $agentUserId = $assigned > 0 ? (string) $assigned : '';
             }
             if ($agentUserId === '') {
+                error_log(sprintf(
+                    'notifyAgentOnReply: could not resolve agent for thread %s (contact %s, main %d) — notification skipped.',
+                    (string) ($thread['id'] ?? '?'),
+                    (string) ($thread['contact_id'] ?? '?'),
+                    $mainId
+                ));
                 return;
             }
 

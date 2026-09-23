@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Repositories\NotificationsRepository;
 use App\Support\AuditTrailWriter;
 use App\Support\SalesDocumentDateCascade;
 use PDO;
@@ -895,7 +896,46 @@ SQL;
             (string) ($inquiry['sales_date'] ?? ''),
             $summaryTotal
         );
-        return $salesRepo->getSalesOrder($mainId, $salesRefno) ?? $converted;
+
+        $finalConverted = $salesRepo->getSalesOrder($mainId, $salesRefno) ?? $converted;
+
+        try {
+            $salesPersonId = trim((string) ($inquiry['sales_person_id'] ?? ''));
+            $targetUserIds = [];
+            if ($salesPersonId !== '' && $salesPersonId !== '0') {
+                $targetUserIds[] = $salesPersonId;
+            }
+            $notifications = new NotificationsRepository($this->db);
+            $notifications->dispatchWorkflow([
+                'targetRoles' => ['Owner'],
+                'targetUserIds' => $targetUserIds,
+                'title' => 'Sales Inquiry Converted to Sales Order',
+                'message' => sprintf(
+                    'Sales Inquiry %s has been converted to Sales Order %s.',
+                    (string) ($inquiry['inquiry_no'] ?? $inquiryRefno),
+                    (string) ($finalConverted['order']['order_no'] ?? $salesRefno)
+                ),
+                'type' => 'info',
+                'category' => 'notification',
+                'main_id' => (string) $mainId,
+                'metadata' => [
+                    'entity_type' => 'sales_order',
+                    'entity_id' => $salesRefno,
+                    'action' => 'converted_from_inquiry',
+                    'status' => 'Submitted',
+                    'action_url' => 'sales-transaction-sales-order',
+                    'refno' => 'sales_order:' . $salesRefno . ':converted_from_inquiry',
+                    'idempotency_key' => 'sales_order:' . $salesRefno . ':converted_from_inquiry',
+                    'category' => 'notification',
+                    'actor_id' => (string) $userId,
+                    'actor_role' => 'Sales Agent',
+                ],
+            ]);
+        } catch (\Throwable $e) {
+            error_log('SI→SO conversion notification failed: ' . $e->getMessage());
+        }
+
+        return $finalConverted;
     }
 
     private function findLinkedSalesRefno(int $mainId, string $inquiryRefno): string
