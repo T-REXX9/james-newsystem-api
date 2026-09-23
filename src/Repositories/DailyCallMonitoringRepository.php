@@ -105,6 +105,8 @@ final class DailyCallMonitoringRepository
                 'courier' => $customer['courier'] ?: '—',
                 'status' => $statusLabel,
                 'statusDate' => $this->formatDateText($customer['status_date']),
+                'debtType' => (string) ($customer['debt_type'] ?? 'Good'),
+                'customerStatus' => (int) ($customer['customer_status'] ?? 1),
                 'lastPurchaseDate' => $this->formatDateText($metricsRow['last_purchase_date'] ?? null),
                 'outstandingBalance' => (float) ($metricsRow['outstanding_balance'] ?? 0),
                 'averageMonthlyOrder' => (float) ($metricsRow['average_monthly_purchase'] ?? 0),
@@ -2048,6 +2050,8 @@ SELECT
     p.llast_transaction AS last_transaction_date,
     p.ldatetime AS status_date,
     COALESCE(p.lverification, '') AS verification,
+    COALESCE(p.ldebt_type, 'Good') AS debt_type,
+    COALESCE(p.lstatus, 1) AS customer_status,
     CASE
         WHEN (LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' OR COALESCE(p.lstatus, 1) = 3) AND COALESCE(p.lverification, '') = 'Verified' THEN 'verified_prospect'
         WHEN LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' OR COALESCE(p.lstatus, 1) = 3 THEN 'prospective'
