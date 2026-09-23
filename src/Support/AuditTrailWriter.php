@@ -66,7 +66,7 @@ final class AuditTrailWriter
             return;
         }
 
-        $target = $this->resolveNotificationTarget($page, $refno);
+        $target = $this->resolveNotificationTarget($mainId, $page, $refno);
         // Call report events have recipient-specific, detailed notifications in
         // CallReportRepository. Keep their audit row, but never add a generic
         // second notification for the same event.
@@ -100,9 +100,22 @@ final class AuditTrailWriter
                    AND (lstatus IS NULL OR lstatus != -1)
              )'
         );
+        $customerName = $target['customer_name'];
+        $title = $page . ' ' . $action;
+        $message = ($actorName !== '' ? $actorName : 'A user') . ' ' . strtolower($action) . ' ' . $page . '.';
+        if ($target['entity_type'] === 'prospect' && $customerName !== '') {
+            $title .= ' - ' . $customerName;
+            $message = sprintf(
+                '%s %s customer %s.',
+                $actorName !== '' ? $actorName : 'A user',
+                strtolower($action),
+                $customerName
+            );
+        }
+
         $insert->execute([
-            'title' => $page . ' ' . $action,
-            'message' => ($actorName !== '' ? $actorName : 'A user') . ' ' . strtolower($action) . ' ' . $page . '.',
+            'title' => $title,
+            'message' => $message,
             'main_id' => (string) $mainId,
             'metadata' => is_string($metadata) ? $metadata : null,
             'recipient_id' => (string) $mainId,
@@ -112,8 +125,8 @@ final class AuditTrailWriter
         ]);
     }
 
-    /** @return array{entity_type:string,route:string,record_id:string} */
-    private function resolveNotificationTarget(string $page, string $refno): array
+    /** @return array{entity_type:string,route:string,record_id:string,customer_name:string} */
+    private function resolveNotificationTarget(int $mainId, string $page, string $refno): array
     {
         $recordId = trim($refno);
         [$entityType, $route] = match (strtolower(trim($page))) {
@@ -133,7 +146,25 @@ final class AuditTrailWriter
             default => [strtolower(trim(preg_replace('/[^a-z0-9]+/i', '_', $page) ?? 'activity'), '_'), 'home'],
         };
 
-        return ['entity_type' => $entityType, 'route' => $route, 'record_id' => $recordId];
+        return [
+            'entity_type' => $entityType,
+            'route' => $route,
+            'record_id' => $recordId,
+            'customer_name' => $entityType === 'prospect' ? $this->customerName($mainId, $recordId) : '',
+        ];
+    }
+
+    private function customerName(int $mainId, string $recordId): string
+    {
+        $stmt = $this->pdo->prepare(
+            'SELECT TRIM(COALESCE(lcompany, \'\'))
+             FROM tblpatient
+             WHERE lmain_id = :main_id AND lsessionid = :record_id
+             LIMIT 1'
+        );
+        $stmt->execute(['main_id' => $mainId, 'record_id' => $recordId]);
+
+        return trim((string) ($stmt->fetchColumn() ?: ''));
     }
 
     private function actorName(int $userId): string

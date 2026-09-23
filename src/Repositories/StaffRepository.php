@@ -419,7 +419,7 @@ SQL;
                  SET lsales_person = \'\',
                      ldate_assigned = NULL
                  WHERE lmain_id = :main_id
-                   AND CAST(COALESCE(lsales_person, 0) AS SIGNED) = :staff_id'
+                   AND CAST(NULLIF(TRIM(COALESCE(lsales_person, \'\')), \'\') AS SIGNED) = :staff_id'
             );
             $unassignCustomers->execute([
                 'main_id' => $mainId,

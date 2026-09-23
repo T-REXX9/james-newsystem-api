@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * Prospect-comment notification attribution contract.
+ * Prospect-verification notification attribution contract.
  *
  * Run: php tests/CustomerProspectNotificationAttributionTest.php
  */
@@ -16,9 +16,13 @@ $assertions = [
         $controller,
         '$actorName = $this->repo->getAccountDisplayName($userId);'
     ),
-    'uses the submitting account and actual prospect name in the notification message' => str_contains(
+    'uses the submitting account and actual prospect name in the verification notification message' => str_contains(
         $controller,
-        "'%s submitted prospect %s for management review: %s'"
+        "'%s submitted prospective customer %s for verification.'"
+    ),
+    'includes the actual prospect name in the notification title' => str_contains(
+        $controller,
+        "'title' => sprintf('Prospective Customer for Verification - %s', \$prospectName)"
     ),
     'stores the prospect name in notification metadata' => str_contains(
         $controller,

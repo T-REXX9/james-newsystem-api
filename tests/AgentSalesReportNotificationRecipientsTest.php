@@ -16,5 +16,6 @@ $assert(str_contains($repository, 'private function resolveMasterUserIds(int $ma
 $assert(str_contains($repository, 'AND (lid = :main_id OR lmother_id = :main_id_2)'), 'Master User recipients are scoped to the company');
 $assert(str_contains($repository, 'AND COALESCE(lstatus, 0) = 1'), 'only active Master User accounts are notified');
 $assert(!str_contains($repository, 'NULLIF(TRIM(lname)'), 'notification customer lookup does not use the missing tblpatient.lname column');
+$assert(str_contains($repository, 'CAST(lsessionid AS CHAR) = :contact_session_id'), 'notification customer lookup supports the customer session ID stored by sales reports');
 
 echo "Agent Sales Report notification recipient contract passed.\n";

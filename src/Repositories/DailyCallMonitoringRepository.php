@@ -376,18 +376,6 @@ SQL);
         if ($viewerAssignmentId !== null) {
             $where[] = '(
                 CAST(COALESCE(p.lsales_person, 0) AS SIGNED) = :master_viewer_user_id
-                OR EXISTS (
-                    SELECT 1
-                    FROM tblaccount team_member
-                    WHERE team_member.lid = p.lsales_person
-                      AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) > 0
-                      AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) = (
-                          SELECT CAST(COALESCE(lteam, 0) AS SIGNED)
-                          FROM tblaccount
-                          WHERE lid = :master_viewer_teammate_user_id
-                          LIMIT 1
-                      )
-                )
                 OR (
                     CAST(COALESCE(p.lsales_team, 0) AS SIGNED) > 0
                     AND CAST(COALESCE(p.lsales_team, 0) AS SIGNED) = (
@@ -399,7 +387,6 @@ SQL);
                 )
             )';
             $params['master_viewer_user_id'] = $viewerAssignmentId;
-            $params['master_viewer_teammate_user_id'] = $viewerAssignmentId;
             $params['master_viewer_team_user_id'] = $viewerAssignmentId;
         }
 
@@ -1011,6 +998,8 @@ SQL;
                 'assigned_team_id' => trim((string) ($row['assigned_team_id'] ?? '')) === '0' ? '' : trim((string) ($row['assigned_team_id'] ?? '')),
                 'assignedTeam' => $this->cleanDisplayText($row['assigned_team'] ?? '', ''),
                 'assigned_team' => $this->cleanDisplayText($row['assigned_team'] ?? '', ''),
+                'assignedAgentTeam' => $this->cleanDisplayText($row['assigned_agent_team'] ?? '', ''),
+                'assigned_agent_team' => $this->cleanDisplayText($row['assigned_agent_team'] ?? '', ''),
                 'profileType' => (string) ($row['profile_type'] ?? ''),
                 'profile_type' => (string) ($row['profile_type'] ?? ''),
                 'verification' => (string) ($row['verification'] ?? ''),
@@ -1098,10 +1087,10 @@ SQL;
 
     public function getAgentSnapshot(int $mainId, int $viewerUserId): array
     {
-        // Team membership is a shared workload: agents receive customers and
-        // prospects assigned to any teammate, as well as records assigned to
-        // their team. Never hydrate a company-wide list and rely on the browser
-        // search to hide records; the snapshot is the access gate.
+        // Agents receive only their directly assigned customers and records
+        // explicitly assigned to their team. Never hydrate a company-wide list
+        // and rely on the browser search to hide records; the snapshot is the
+        // access gate.
         $customers = $this->getCustomerBaseRows($mainId, 'all', '', $viewerUserId);
         $masterList = $this->getPurchaseMasterList($mainId, '2025-10-01', '', $viewerUserId);
         $contactIds = array_values(array_filter(array_map(
@@ -1134,18 +1123,6 @@ SQL;
                AND COALESCE(ldeleted, 0) = 0
                AND (
                     CAST(COALESCE(lsales_person, 0) AS SIGNED) = :viewer_user_id
-                    OR EXISTS (
-                        SELECT 1
-                        FROM tblaccount team_member
-                        WHERE team_member.lid = tblpatient.lsales_person
-                          AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) > 0
-                          AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) = (
-                              SELECT CAST(COALESCE(lteam, 0) AS SIGNED)
-                              FROM tblaccount
-                              WHERE lid = :viewer_teammate_user_id
-                              LIMIT 1
-                          )
-                    )
                     OR (
                         CAST(COALESCE(lsales_team, 0) AS SIGNED) > 0
                         AND CAST(COALESCE(lsales_team, 0) AS SIGNED) = (
@@ -1162,7 +1139,6 @@ SQL;
             'main_id' => $mainId,
             'contact_id' => $contactId,
             'viewer_user_id' => $assignmentId,
-            'viewer_teammate_user_id' => $assignmentId,
             'viewer_team_user_id' => $assignmentId,
         ]);
         if (!$statement->fetchColumn()) {
@@ -2064,6 +2040,7 @@ SELECT
     COALESCE(a.lfname, '') AS assigned_to_fname,
     COALESCE(a.llname, '') AS assigned_to_lname,
     CAST(COALESCE(a.lteam, 0) AS SIGNED) AS assigned_agent_team_id,
+    COALESCE(agent_team.lteamname, '') AS assigned_agent_team,
     p.ldate_assigned AS assigned_date,
     CAST(COALESCE(p.lsales_team, 0) AS CHAR) AS assigned_team_id,
     COALESCE(team.lteamname, '') AS assigned_team,
@@ -2079,6 +2056,7 @@ SELECT
     END AS status_label
 FROM tblpatient p
 LEFT JOIN tblaccount a ON a.lid = p.lsales_person
+LEFT JOIN tblteamstaff agent_team ON agent_team.lid = a.lteam AND agent_team.lmain_id = p.lmain_id
 LEFT JOIN tblteamstaff team ON team.lid = p.lsales_team AND team.lmain_id = p.lmain_id
 LEFT JOIN (
     SELECT cp.lrefno, cp.lfname, cp.lmname, cp.llname, cp.lc_mobile, cp.lc_phone
@@ -2095,18 +2073,6 @@ SQL;
         if ($viewerAssignmentId !== null) {
             $sql .= ' AND (
                 CAST(COALESCE(p.lsales_person, 0) AS SIGNED) = :viewer_user_id
-                OR EXISTS (
-                    SELECT 1
-                    FROM tblaccount team_member
-                    WHERE team_member.lid = p.lsales_person
-                      AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) > 0
-                      AND CAST(COALESCE(team_member.lteam, 0) AS SIGNED) = (
-                          SELECT CAST(COALESCE(lteam, 0) AS SIGNED)
-                          FROM tblaccount
-                          WHERE lid = :viewer_teammate_user_id
-                          LIMIT 1
-                      )
-                )
                 OR (
                     CAST(COALESCE(p.lsales_team, 0) AS SIGNED) > 0
                     AND CAST(COALESCE(p.lsales_team, 0) AS SIGNED) = (
@@ -2115,7 +2081,6 @@ SQL;
                 )
             )';
             $params['viewer_user_id'] = $viewerAssignmentId;
-            $params['viewer_teammate_user_id'] = $viewerAssignmentId;
             $params['viewer_team_user_id'] = $viewerAssignmentId;
         }
 
@@ -2277,7 +2242,7 @@ SQL;
             if ($id <= 0) {
                 continue;
             }
-            if ($teamAId === null && ($name === 'a' || str_starts_with($name, 'a') || str_contains($name, 'alpha') || str_contains($name, 'aplha'))) {
+            if ($teamAId === null && ($name === 'a' || str_starts_with($name, 'a') || str_contains($name, 'alpha') || str_contains($name, 'alpha'))) {
                 $teamAId = $id;
             }
             if ($teamBId === null && ($name === 'b' || str_starts_with($name, 'b') || str_contains($name, 'bravo'))) {

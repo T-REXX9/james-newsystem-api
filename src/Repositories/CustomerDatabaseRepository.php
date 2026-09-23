@@ -730,12 +730,19 @@ SQL;
             $existing
         );
 
-        $this->assertUniqueCustomerIdentity(
-            $mainId,
-            (string) ($payload['company'] ?? $existing['company'] ?? ''),
-            (string) ($payload['tin'] ?? $existing['tin'] ?? ''),
-            $sessionId
-        );
+        // Reassignment does not alter the customer's identity. Legacy imports contain
+        // some duplicate company names/TINs, so validating an unchanged identity here
+        // would prevent otherwise valid Daily Call agent assignments. Keep the guard
+        // for an actual company or TIN change.
+        $currentCompany = (string) ($existing['company'] ?? '');
+        $currentTin = (string) ($existing['tin'] ?? '');
+        $nextCompany = (string) ($payload['company'] ?? $currentCompany);
+        $nextTin = (string) ($payload['tin'] ?? $currentTin);
+        $identityChanged = strtolower(trim($nextCompany)) !== strtolower(trim($currentCompany))
+            || $this->normalizeCustomerTin($nextTin) !== $this->normalizeCustomerTin($currentTin);
+        if ($identityChanged) {
+            $this->assertUniqueCustomerIdentity($mainId, $nextCompany, $nextTin, $sessionId);
+        }
 
         if (array_key_exists('sales_person_id', $payload)) {
             $payload['sales_person_id'] = $this->normalizeSalesPersonIdForAssignment($mainId, $payload['sales_person_id']);
@@ -744,7 +751,13 @@ SQL;
         $currentSalesPerson = (string) ($existing['sales_person_id'] ?? '');
         $salesPersonChanged = array_key_exists('sales_person_id', $payload)
             && $nextSalesPerson !== $currentSalesPerson;
-        $assignmentDateClause = $salesPersonChanged ? ",\n    ldate_assigned = CURDATE()" : '';
+        $hasAssignedSalesPerson = trim($nextSalesPerson) !== '';
+        $assignmentDateMissing = empty($existing['assigned_date']);
+        $assignmentDateClause = $salesPersonChanged
+            ? ",\n    ldate_assigned = " . ($hasAssignedSalesPerson ? 'CURDATE()' : 'NULL')
+            : (array_key_exists('sales_person_id', $payload) && $hasAssignedSalesPerson && $assignmentDateMissing
+                ? ",\n    ldate_assigned = CURDATE()"
+                : '');
 
         $discountCodeAssignment = $this->hasCustomerDiscountCodeColumn() ? ",\n    ldiscount_code = :discount_code" : '';
         $deliveryAddresses = array_key_exists('delivery_addresses', $payload)
@@ -975,7 +988,11 @@ SQL;
         }
 
         if (array_key_exists('sales_person_id', $payload)) {
-            $assignments[] = 'ldate_assigned = CURDATE()';
+            $params['assignment_date_sales_person_id'] = $params['set_sales_person_id'];
+            $assignments[] = "ldate_assigned = CASE
+                WHEN NULLIF(TRIM(:assignment_date_sales_person_id), '') IS NULL THEN NULL
+                ELSE CURDATE()
+            END";
         }
 
         if ($assignments === []) {

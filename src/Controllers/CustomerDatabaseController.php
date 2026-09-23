@@ -81,19 +81,24 @@ final class CustomerDatabaseController
             $comment = trim((string) ($body['notes'] ?? ''));
             $isProspect = (int) ($body['status'] ?? 1) === 3
                 || str_contains(strtolower((string) ($body['profile_type'] ?? '')), 'prospect');
-            if ($isProspect && $comment !== '' && $userId !== $mainId) {
+            $isUnverifiedProspect = $isProspect
+                && strtolower(trim((string) ($customer['verification'] ?? $body['verification'] ?? ''))) !== 'verified';
+            if ($isUnverifiedProspect && $userId !== $mainId) {
                 $contactId = (string) ($customer['session_id'] ?? $customer['lsessionid'] ?? '');
                 $actorName = $this->repo->getAccountDisplayName($userId);
                 $prospectName = trim((string) ($customer['company'] ?? '')) ?: 'an unnamed prospect';
+                $message = sprintf(
+                    '%s submitted prospective customer %s for verification.',
+                    $actorName !== '' ? $actorName : 'A sales agent',
+                    $prospectName
+                );
+                if ($comment !== '') {
+                    $message .= ' Note: ' . $comment;
+                }
                 (new NotificationsRepository($this->db))->create([
                     'recipient_id' => (string) $mainId,
-                    'title' => 'New prospective customer comment',
-                    'message' => sprintf(
-                        '%s submitted prospect %s for management review: %s',
-                        $actorName !== '' ? $actorName : 'A sales agent',
-                        $prospectName,
-                        $comment
-                    ),
+                    'title' => sprintf('Prospective Customer for Verification - %s', $prospectName),
+                    'message' => $message,
                     'type' => 'info',
                     'category' => 'notification',
                     'main_id' => (string) $mainId,
@@ -106,7 +111,7 @@ final class CustomerDatabaseController
                         'actor_id' => (string) $userId,
                         'actor_name' => $actorName,
                         'actor_role' => 'Sales Agent',
-                        'action' => 'review',
+                        'action' => 'verification_submitted',
                         'status' => 'unread',
                         'action_url' => 'home',
                         'refno' => 'prospect-customer-comment:' . $contactId,

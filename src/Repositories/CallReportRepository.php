@@ -891,7 +891,7 @@ SQL;
 
             $notifications->dispatchWorkflow([
                 'targetUserIds' => $this->resolveMasterUserIds($mainId),
-                'title' => 'New sales agent call report',
+                'title' => sprintf('Agent Sales Report - %s', $customerName),
                 'message' => $message,
                 'type' => 'info',
                 'category' => 'notification',
@@ -949,7 +949,7 @@ SQL;
 
             $notifications->create([
                 'recipient_id' => $agentUserId,
-                'title' => 'Master User replied to your call report',
+                'title' => sprintf('Agent Sales Report Reply - %s', $customerName),
                 'message' => $notificationMessage,
                 'type' => 'info',
                 'category' => 'notification',
@@ -987,7 +987,7 @@ SQL;
 
             $notifications->dispatchWorkflow([
                 'targetUserIds' => $this->resolveMasterUserIds($mainId),
-                'title' => 'New Agent Sales Report message',
+                'title' => sprintf('Agent Sales Report - %s', $customerName),
                 'message' => sprintf(
                     '%s sent a message about %s. %s',
                     $senderName !== '' ? $senderName : 'A sales agent',
@@ -1260,11 +1260,15 @@ SQL;
         $stmt = $this->db->pdo()->prepare(
             'SELECT COALESCE(NULLIF(TRIM(lcompany), \'\'), \'Unnamed customer\') AS customer_name
              FROM tblpatient
-             WHERE CAST(lid AS CHAR) = :contact_id
+             WHERE (CAST(lid AS CHAR) = :contact_id OR CAST(lsessionid AS CHAR) = :contact_session_id)
                AND (CAST(lmain_id AS CHAR) = :main_id OR lmain_id IS NULL)
              LIMIT 1'
         );
-        $stmt->execute(['contact_id' => $contactId, 'main_id' => (string) $mainId]);
+        $stmt->execute([
+            'contact_id' => $contactId,
+            'contact_session_id' => $contactId,
+            'main_id' => (string) $mainId,
+        ]);
         $name = trim((string) $stmt->fetchColumn());
 
         return $name !== '' ? $name : 'a customer';

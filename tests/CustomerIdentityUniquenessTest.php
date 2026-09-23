@@ -53,6 +53,7 @@ $create = static function (string $sessionId, string $company, string $tin = '',
         'debt_type' => 'Good',
         'status' => 3,
         'profile_type' => 'prospect',
+        'refer_by' => 'QBP',
         'phone' => $phone !== '' ? $phone : '09171234567',
         'mobile' => $phone !== '' ? $phone : '09171234567',
     ]);
@@ -93,6 +94,20 @@ try {
 
     $create($sessionC, $companyB, '', '09171234568');
     $assertEq(1, $countLive($companyB), 'different company name with blank TIN is allowed');
+
+    // Simulate a legacy import that predates the identity guard. Reassigning this
+    // customer must remain possible because the company and TIN are not changing.
+    $pdo->prepare('UPDATE tblpatient SET lcompany = :company WHERE lmain_id = :main_id AND lsessionid = :session_id')
+        ->execute(['company' => $companyA, 'main_id' => $mainId, 'session_id' => $sessionC]);
+    $reassignedLegacyDuplicate = $customers->updateCustomer($mainId, $sessionC, [
+        'sales_person_id' => (string) $userId,
+        'user_id' => $userId,
+    ]);
+    $assert($reassignedLegacyDuplicate !== null, 'agent assignment works for a legacy duplicate customer identity');
+    $afterReassignment = $customers->getCustomer($mainId, $sessionC);
+    $assertEq((string) $userId, (string) ($afterReassignment['sales_person_id'] ?? ''), 'agent assignment is stored for the legacy duplicate customer');
+    $pdo->prepare('UPDATE tblpatient SET lcompany = :company WHERE lmain_id = :main_id AND lsessionid = :session_id')
+        ->execute(['company' => $companyB, 'main_id' => $mainId, 'session_id' => $sessionC]);
 
     $tinDuplicateMessage = '';
     try {

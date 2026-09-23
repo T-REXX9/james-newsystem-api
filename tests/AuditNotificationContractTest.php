@@ -12,6 +12,8 @@ $pdo->exec('CREATE TABLE tblaudit_trail (lmain_id INTEGER, luser_id INTEGER, lpa
 $pdo->exec('CREATE TABLE tblnotifications (lid INTEGER PRIMARY KEY AUTOINCREMENT, ltitle TEXT, lmessage TEXT, ldatetime TEXT, lstatus INTEGER, lmain_id TEXT, linv_session TEXT, lout_status TEXT, ltype TEXT, luserid TEXT, lrefno TEXT)');
 $pdo->exec("CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT)");
 $pdo->exec("INSERT INTO tblaccount VALUES (7, 'Test', 'User')");
+$pdo->exec('CREATE TABLE tblpatient (lmain_id INTEGER, lsessionid TEXT, lcompany TEXT)');
+$pdo->exec("INSERT INTO tblpatient VALUES (1, 'customer-1', 'Acme Corp')");
 
 $writer = new AuditTrailWriter($pdo);
 $writer->write(1, 7, 'Sales Order', 'Create', 'order-1');
@@ -34,6 +36,11 @@ $checks = [
 
 $writer->write(1, 7, 'Agent Sales Report', 'Reply', 'call_report_message:4');
 $checks['call report audit does not create a generic duplicate notification'] = (int) $pdo->query('SELECT COUNT(*) FROM tblnotifications')->fetchColumn() === 3;
+
+$writer->write(1, 7, 'Customer Database', 'Update', 'customer-1');
+$customerNotification = $pdo->query("SELECT ltitle, lmessage FROM tblnotifications WHERE lrefno = 'prospect:customer-1:update'")->fetch(PDO::FETCH_ASSOC) ?: [];
+$checks['customer notification identifies the affected customer'] = ($customerNotification['ltitle'] ?? '') === 'Customer Database Update - Acme Corp'
+    && ($customerNotification['lmessage'] ?? '') === 'Test User update customer Acme Corp.';
 
 $failed = 0;
 foreach ($checks as $name => $passed) {

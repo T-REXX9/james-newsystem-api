@@ -9,9 +9,6 @@ final class DailyCallAccessPolicy
     /** The System Access page that owns the Daily Call viewing scope. */
     public const PAGE = 'Daily Call Monitoring Dashboard';
 
-    /** Pre-consolidation page label kept so existing System Access grants still apply. */
-    public const LEGACY_PAGE = 'Daily Call Monitoring';
-
     /**
      * Whether the viewer sees every customer instead of only their assigned ones.
      *
@@ -23,11 +20,7 @@ final class DailyCallAccessPolicy
      */
     public static function canViewAll(?array $permissions, bool $isMasterUser): bool
     {
-        if (ActionPermissionPolicy::allows($permissions, 'view_all_records', $isMasterUser, self::PAGE)) {
-            return true;
-        }
-
-        return ActionPermissionPolicy::allows($permissions, 'view_all_records', $isMasterUser, self::LEGACY_PAGE);
+        return ActionPermissionPolicy::allows($permissions, 'view_all_records', $isMasterUser, self::PAGE);
     }
 
     public static function isCustomerAssignedToViewer(string $assignedUserId, string $viewerUserId): bool

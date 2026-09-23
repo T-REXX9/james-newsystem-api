@@ -42,6 +42,7 @@ $insert('tblaccount', ['lid' => $staffId, 'lmother_id' => $mainId, 'ltype' => $s
 $insert('tblaccount', ['lid' => $otherStaffId, 'lmother_id' => $mainId, 'ltype' => $salesAgentGroupId, 'lstatus' => 1, 'lfname' => 'Active', 'llname' => 'Agent']);
 $insert('tblpatient', ['lmain_id' => $mainId, 'lsessionid' => 'delete-assigned', 'lcompany' => 'Direct Assignment', 'lsales_person' => (string) $staffId, 'lsales_team' => 5, 'ldate_assigned' => '2026-09-18']);
 $insert('tblpatient', ['lmain_id' => $mainId, 'lsessionid' => 'keep-assigned', 'lcompany' => 'Other Assignment', 'lsales_person' => (string) $otherStaffId, 'lsales_team' => 5, 'ldate_assigned' => '2026-09-18']);
+$insert('tblpatient', ['lmain_id' => $mainId, 'lsessionid' => 'already-unassigned', 'lcompany' => 'Unassigned Customer', 'lsales_person' => '', 'lsales_team' => 0]);
 
 $repo = new StaffRepository($db);
 if (!$repo->deleteStaff($mainId, $staffId)) {
@@ -73,6 +74,10 @@ if ((string) ($removedAssignment['lsales_person'] ?? '') !== ''
 
 if ((string) ($bySession['keep-assigned']['lsales_person'] ?? '') !== (string) $otherStaffId) {
     throw new RuntimeException('FAIL: another agent customer assignment was changed');
+}
+
+if ((string) ($bySession['already-unassigned']['lsales_person'] ?? '') !== '') {
+    throw new RuntimeException('FAIL: an already-unassigned customer was changed');
 }
 
 echo "PASS: deactivating an agent unassigns only that agent's customers\n";
