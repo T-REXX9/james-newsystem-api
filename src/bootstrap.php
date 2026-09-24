@@ -839,6 +839,7 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/call-report-threads', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'callReportThreads']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-conversation', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'salesReportConversation']));
     $router->post('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-messages', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createSalesReportMessage']));
+    $router->delete('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-messages/{messageId}', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'deleteSalesReportMessage']));
     $router->patch('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-conversation/read', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'markSalesReportConversationRead']));
     $router->post('/api/v1/daily-call-monitoring/sales-report-attachments/upload', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'uploadSalesReportAttachment']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-attachments/{filename}', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'downloadSalesReportAttachment']));

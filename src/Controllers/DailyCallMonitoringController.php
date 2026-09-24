@@ -592,6 +592,27 @@ final class DailyCallMonitoringController
         return ['read' => $this->callReportRepo->markContactConversationRead($mainId, $contactId, $viewerUserId)];
     }
 
+    public function deleteSalesReportMessage(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $viewerUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $contactId = trim((string) ($params['contactId'] ?? ''));
+        $messageId = trim((string) ($params['messageId'] ?? ''));
+        $reason = trim((string) ($body['reason'] ?? ''));
+        if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '' || $messageId === '') {
+            throw new HttpException(422, 'main_id, contactId, messageId, and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        if ((string) ($claims['user_type'] ?? '') !== '1') {
+            throw new HttpException(403, 'Only the Master User can delete Agent Sales Report messages.');
+        }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
+        return $this->callReportRepo->deleteConversationMessage($mainId, $contactId, $messageId, $viewerUserId, $reason);
+    }
+
     public function uploadSalesReportAttachment(array $params = [], array $query = [], array $body = []): array
     {
         $claims = (array) ($body['__auth_claims'] ?? []);
