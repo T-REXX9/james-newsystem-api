@@ -7,6 +7,7 @@ namespace App\Repositories;
 use App\Database;
 use App\Support\DailyCallAccessPolicy;
 use App\Support\DailyCallClaimPolicy;
+use App\Support\PostedSalesDocumentSql;
 use App\Support\Exceptions\HttpException;
 use App\Support\SqlDateTimeNormalizer;
 use DateTimeImmutable;
@@ -367,9 +368,11 @@ SQL);
             'txn_current_month' => date('Y-m'),
             'txn_last_month' => date('Y-m', strtotime('-1 month')),
             'txn_main_id' => $mainId,
-            'sales_report_txn_main_id' => $mainId,
             'sales_report_invoice_main_id' => $mainId,
             'sales_report_dr_main_id' => $mainId,
+            'customer_universe_main_id' => $mainId,
+            'customer_universe_orphan_main_id' => $mainId,
+            'customer_universe_live_main_id' => $mainId,
             'sales_report_thread_main_id' => $mainId,
             'sales_report_message_main_id' => $mainId,
             'verification_main_id' => $mainId,
@@ -545,63 +548,38 @@ txn_summary AS (
     FROM txn_monthly
     GROUP BY lcustomerid, lmainid
 ),
-/*
- * Current-month sales must use the exact same document rules and amounts as
- * the Sales Report.  tblledger mirrors posted invoices/order slips, while
- * tbltransaction also stores the linked sales order; combining those two
- * tables inflated this dashboard total.  The three branches below mirror the
- * Sales Report's standalone SO, invoice, and delivery-receipt rows.
- */
-sales_report_current_month AS (
-    SELECT customer_id, SUM(amount) AS current_month_sales
-    FROM (
-        SELECT
-            t.lcustomerid AS customer_id,
-            SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)) AS amount
-        FROM tbltransaction t
-        INNER JOIN tbltransaction_item i
-            ON i.lrefno = t.lrefno
-            AND COALESCE(i.lcancel, 0) = 0
-        WHERE t.lmain_id = :sales_report_txn_main_id
-          AND COALESCE(t.lcancel, 0) = 0
-          AND LOWER(COALESCE(t.lsubmitstat, '')) IN ('submitted', 'approved', 'posted')
-          AND COALESCE(t.invoice_refno, '') = ''
-          AND COALESCE(t.ldr_refno, '') = ''
-          AND t.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
-          AND t.ldate < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
-          AND COALESCE(t.lcustomerid, '') <> ''
-        GROUP BY t.lcustomerid
+SQL;
+        // Current-month sales use the exact same posted-document definition as
+        // Sales Report. This intentionally excludes standalone sales orders.
+        $sql .= "\n" . PostedSalesDocumentSql::currentMonthCustomerSalesCtes() . ",\n";
+        $sql .= <<<'SQL'
+customer_universe AS (
+    SELECT
+        p.lmain_id, p.lsessionid, p.lcompany, p.lpatient_code, p.lprovince, p.lcity,
+        p.lmobile, p.lphone, p.lsales_person, p.ldate_assigned, p.lsales_team,
+        p.lprofile_type, p.lverification, p.lstatus, p.ldebt_type, p.ldatetime,
+        p.lprice_group, p.ldeleted, 0 AS posted_sales_customer_missing
+    FROM tblpatient p
+    WHERE p.lmain_id = :customer_universe_main_id
+      AND COALESCE(p.ldeleted, 0) = 0
 
-        UNION ALL
+    UNION ALL
 
-        SELECT
-            l.lcustomerid AS customer_id,
-            SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
-                * CASE WHEN LOWER(COALESCE(l.ltax_type, '')) = 'exclusive' THEN 1.12 ELSE 1 END) AS amount
-        FROM tblinvoice_list l
-        INNER JOIN tblinvoice_itemrec i ON i.linvoice_refno = l.lrefno
-        WHERE l.lmain_id = :sales_report_invoice_main_id
-          AND l.lcancel IS NULL
-          AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
-          AND l.ldate < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
-          AND COALESCE(l.lcustomerid, '') <> ''
-        GROUP BY l.lcustomerid
-
-        UNION ALL
-
-        SELECT
-            l.lcustomerid AS customer_id,
-            SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)) AS amount
-        FROM tbldelivery_receipt l
-        INNER JOIN tbldelivery_receipt_items i ON i.lor_refno = l.lrefno
-        WHERE l.lmain_id = :sales_report_dr_main_id
-          AND COALESCE(l.lcancel, '') = ''
-          AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
-          AND l.ldate < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
-          AND COALESCE(l.lcustomerid, '') <> ''
-        GROUP BY l.lcustomerid
-    ) sales_report_rows
-    GROUP BY customer_id
+    SELECT
+        :customer_universe_orphan_main_id AS lmain_id,
+        sales.customer_id AS lsessionid,
+        COALESCE(sales.customer_name, 'Unnamed posted-sales customer') AS lcompany,
+        '' AS lpatient_code, '' AS lprovince, '' AS lcity, '' AS lmobile,
+        '' AS lphone, '' AS lsales_person, NULL AS ldate_assigned,
+        0 AS lsales_team, '' AS lprofile_type, '' AS lverification, 1 AS lstatus,
+        'Good' AS ldebt_type, '' AS ldatetime, '' AS lprice_group, 0 AS ldeleted,
+        1 AS posted_sales_customer_missing
+    FROM sales_report_current_month sales
+    LEFT JOIN tblpatient live_customer
+        ON live_customer.lmain_id = :customer_universe_live_main_id
+        AND live_customer.lsessionid = sales.customer_id
+        AND COALESCE(live_customer.ldeleted, 0) = 0
+    WHERE live_customer.lsessionid IS NULL
 ),
 sales_report_activity AS (
     SELECT
@@ -677,36 +655,40 @@ SELECT
     COALESCE(p.lverification, '') AS verification,
     COALESCE(p.lstatus, 1) AS customer_status,
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
+    COALESCE(p.posted_sales_customer_missing, 0) AS posted_sales_customer_missing,
     COALESCE(NULLIF(TRIM(CONCAT(COALESCE(verifier.lfname, ''), ' ', COALESCE(verifier.llname, ''))), ''), '') AS verified_by,
     CASE WHEN verification_audit.lid IS NULL THEN 0 ELSE 1 END AS verified_in_system,
     COALESCE(p.ldatetime, '') AS created_at,
     COALESCE(latest_sales_report.body, '') AS latest_sales_report_message,
     COALESCE(p.lprice_group, '') AS price_group,
     CASE
+        WHEN ledger_summary.first_purchase_date_raw IS NULL AND txn_summary.first_purchase_date_raw IS NULL THEN sales_report_current_month.first_sale_date
         WHEN ledger_summary.first_purchase_date_raw IS NULL THEN txn_summary.first_purchase_date_raw
         WHEN txn_summary.first_purchase_date_raw IS NULL THEN ledger_summary.first_purchase_date_raw
         WHEN ledger_summary.first_purchase_date_raw <= txn_summary.first_purchase_date_raw THEN ledger_summary.first_purchase_date_raw
         ELSE txn_summary.first_purchase_date_raw
     END AS first_purchase_date_raw,
     CASE
+        WHEN ledger_summary.last_purchase_date_raw IS NULL AND txn_summary.last_purchase_date_raw IS NULL THEN sales_report_current_month.last_sale_date
         WHEN ledger_summary.last_purchase_date_raw IS NULL THEN txn_summary.last_purchase_date_raw
         WHEN txn_summary.last_purchase_date_raw IS NULL THEN ledger_summary.last_purchase_date_raw
         WHEN ledger_summary.last_purchase_date_raw >= txn_summary.last_purchase_date_raw THEN ledger_summary.last_purchase_date_raw
         ELSE txn_summary.last_purchase_date_raw
     END AS last_purchase_date_raw,
-    COALESCE(ledger_summary.purchase_count, 0) + COALESCE(txn_summary.purchase_count, 0) AS purchase_count,
-    COALESCE(ledger_summary.priority_transaction_count, 0) + COALESCE(txn_summary.priority_transaction_count, 0) AS priority_transaction_count,
-    COALESCE(ledger_summary.ledger_transaction_count, 0) + COALESCE(txn_summary.transaction_count, 0) AS ledger_transaction_count,
+    COALESCE(ledger_summary.purchase_count, 0) + COALESCE(txn_summary.purchase_count, 0) + CASE WHEN COALESCE(ledger_summary.purchase_count, 0) + COALESCE(txn_summary.purchase_count, 0) = 0 THEN COALESCE(sales_report_current_month.document_count, 0) ELSE 0 END AS purchase_count,
+    COALESCE(ledger_summary.priority_transaction_count, 0) + COALESCE(txn_summary.priority_transaction_count, 0) + CASE WHEN COALESCE(ledger_summary.priority_transaction_count, 0) + COALESCE(txn_summary.priority_transaction_count, 0) = 0 THEN COALESCE(sales_report_current_month.document_count, 0) ELSE 0 END AS priority_transaction_count,
+    COALESCE(ledger_summary.ledger_transaction_count, 0) + COALESCE(txn_summary.transaction_count, 0) + CASE WHEN COALESCE(ledger_summary.ledger_transaction_count, 0) + COALESCE(txn_summary.transaction_count, 0) = 0 THEN COALESCE(sales_report_current_month.document_count, 0) ELSE 0 END AS ledger_transaction_count,
     COALESCE(ledger_summary.historical_transaction_count, 0) + COALESCE(txn_summary.historical_transaction_count, 0) AS historical_transaction_count,
     GREATEST(
         COALESCE(ledger_summary.active_purchase_month_count, 0),
         COALESCE(txn_summary.active_purchase_month_count, 0)
     ) AS active_purchase_month_count,
-    COALESCE(ledger_summary.total_sales, 0) + COALESCE(txn_summary.total_sales, 0) AS total_sales,
-    COALESCE(ledger_summary.priority_trailing_12_month_sales, 0) + COALESCE(txn_summary.priority_trailing_12_month_sales, 0) AS priority_trailing_12_month_sales,
+    COALESCE(ledger_summary.total_sales, 0) + COALESCE(txn_summary.total_sales, 0) + CASE WHEN COALESCE(ledger_summary.total_sales, 0) + COALESCE(txn_summary.total_sales, 0) = 0 THEN COALESCE(sales_report_current_month.current_month_sales, 0) ELSE 0 END AS total_sales,
+    COALESCE(ledger_summary.priority_trailing_12_month_sales, 0) + COALESCE(txn_summary.priority_trailing_12_month_sales, 0) + CASE WHEN COALESCE(ledger_summary.priority_trailing_12_month_sales, 0) + COALESCE(txn_summary.priority_trailing_12_month_sales, 0) = 0 THEN COALESCE(sales_report_current_month.current_month_sales, 0) ELSE 0 END AS priority_trailing_12_month_sales,
     GREATEST(
         COALESCE(ledger_summary.priority_trailing_12_month_month_count, 0),
-        COALESCE(txn_summary.priority_trailing_12_month_month_count, 0)
+        COALESCE(txn_summary.priority_trailing_12_month_month_count, 0),
+        CASE WHEN COALESCE(sales_report_current_month.current_month_sales, 0) > 0 THEN 1 ELSE 0 END
     ) AS priority_trailing_12_month_month_count,
     CASE
         WHEN COALESCE(ledger_summary.recovery_trailing_12_month_sales, 0) > 0 THEN ledger_summary.recovery_trailing_12_month_sales
@@ -724,6 +706,7 @@ SELECT
     DATEDIFF(
         CURDATE(),
         CASE
+            WHEN ledger_summary.last_purchase_date_raw IS NULL AND txn_summary.last_purchase_date_raw IS NULL THEN sales_report_current_month.last_sale_date
             WHEN ledger_summary.last_purchase_date_raw IS NULL THEN txn_summary.last_purchase_date_raw
             WHEN txn_summary.last_purchase_date_raw IS NULL THEN ledger_summary.last_purchase_date_raw
             WHEN ledger_summary.last_purchase_date_raw >= txn_summary.last_purchase_date_raw THEN ledger_summary.last_purchase_date_raw
@@ -733,6 +716,7 @@ SELECT
     TIMESTAMPDIFF(
         MONTH,
         CASE
+            WHEN ledger_summary.last_purchase_date_raw IS NULL AND txn_summary.last_purchase_date_raw IS NULL THEN sales_report_current_month.last_sale_date
             WHEN ledger_summary.last_purchase_date_raw IS NULL THEN txn_summary.last_purchase_date_raw
             WHEN txn_summary.last_purchase_date_raw IS NULL THEN ledger_summary.last_purchase_date_raw
             WHEN ledger_summary.last_purchase_date_raw >= txn_summary.last_purchase_date_raw THEN ledger_summary.last_purchase_date_raw
@@ -740,7 +724,7 @@ SELECT
         END,
         CURDATE()
     ) AS months_since_last_purchase
-FROM tblpatient p
+FROM customer_universe p
 LEFT JOIN tblaccount a
     ON a.lid = p.lsales_person
 LEFT JOIN tblteamstaff team
@@ -932,10 +916,11 @@ LEFT JOIN tblaccount verifier ON verifier.lid = verification_audit.luser_id
 WHERE {$whereSql}
 ORDER BY
     CASE
-        WHEN ledger_summary.last_purchase_date_raw IS NULL AND txn_summary.last_purchase_date_raw IS NULL THEN 1
+        WHEN ledger_summary.last_purchase_date_raw IS NULL AND txn_summary.last_purchase_date_raw IS NULL AND sales_report_current_month.last_sale_date IS NULL THEN 1
         ELSE 0
     END ASC,
     CASE
+        WHEN ledger_summary.last_purchase_date_raw IS NULL AND txn_summary.last_purchase_date_raw IS NULL THEN sales_report_current_month.last_sale_date
         WHEN ledger_summary.last_purchase_date_raw IS NULL THEN txn_summary.last_purchase_date_raw
         WHEN txn_summary.last_purchase_date_raw IS NULL THEN ledger_summary.last_purchase_date_raw
         WHEN ledger_summary.last_purchase_date_raw >= txn_summary.last_purchase_date_raw THEN ledger_summary.last_purchase_date_raw
@@ -1012,6 +997,14 @@ SQL;
                 'customer_status' => (int) ($row['customer_status'] ?? 1),
                 'debtType' => (string) ($row['debt_type'] ?? 'Good'),
                 'debt_type' => (string) ($row['debt_type'] ?? 'Good'),
+                'dataIntegrityException' => (bool) ($row['posted_sales_customer_missing'] ?? false),
+                'data_integrity_exception' => (bool) ($row['posted_sales_customer_missing'] ?? false),
+                'dataIntegrityMessage' => (bool) ($row['posted_sales_customer_missing'] ?? false)
+                    ? 'Missing active customer record'
+                    : '',
+                'data_integrity_message' => (bool) ($row['posted_sales_customer_missing'] ?? false)
+                    ? 'Missing active customer record'
+                    : '',
                 'verifiedBy' => $this->cleanDisplayText($row['verified_by'] ?? '', ''),
                 'verified_by' => $this->cleanDisplayText($row['verified_by'] ?? '', ''),
                 'verifiedInSystem' => (bool) ($row['verified_in_system'] ?? false),
