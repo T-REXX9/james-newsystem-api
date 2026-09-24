@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\PostedSalesDocumentSql;
 use DateTimeImmutable;
 use PDO;
 
@@ -190,7 +191,7 @@ SQL;
     ): array {
         $where = [
             'l.lmain_id = :main_id',
-            'l.lcancel IS NULL',
+            PostedSalesDocumentSql::invoiceIsPosted('l'),
         ];
 
         $params = ['main_id' => $mainId];
@@ -302,7 +303,7 @@ SQL,
     ): array {
         $where = [
             'l.lmain_id = :main_id',
-            'l.lcancel IS NULL',
+            PostedSalesDocumentSql::deliveryReceiptIsPosted('l'),
         ];
 
         $params = ['main_id' => $mainId];
