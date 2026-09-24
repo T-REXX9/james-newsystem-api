@@ -552,7 +552,7 @@ SQL;
         // Current-month sales use the exact same posted-document definition as
         // Sales Report. This intentionally excludes standalone sales orders.
         $sql .= "\n" . PostedSalesDocumentSql::currentMonthCustomerSalesCtes() . ",\n";
-        $sql .= <<<'SQL'
+        $sql .= <<<SQL
 customer_universe AS (
     SELECT
         p.lmain_id, p.lsessionid, p.lcompany, p.lpatient_code, p.lprovince, p.lcity,
