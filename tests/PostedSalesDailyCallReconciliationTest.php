@@ -40,21 +40,24 @@ $property = $reflection->getProperty('pdo');
 $property->setValue($db, $pdo);
 
 $today = date('Y-m-d');
+$tomorrow = date('Y-m-d', strtotime('+1 day'));
 $pdo->exec("INSERT INTO tblpatient VALUES (1, 'active-customer', 'Active Customer', 0), (1, 'orphan-crisjeff', 'Old CRISJEFF', 1)");
 $pdo->exec("INSERT INTO tblinvoice_list VALUES (1, 'INV-ACTIVE', 1, '{$today} 08:00:00', '{$today}', 'Active Customer', 'active-customer', '', '', '', 'Inclusive', '', NULL, 0, 'Posted')");
 $pdo->exec("INSERT INTO tblinvoice_itemrec VALUES (1, 'INV-ACTIVE', 1, 100, 'Parts')");
 $pdo->exec("INSERT INTO tbldelivery_receipt VALUES (1, 'N-D38803', 1, '{$today}', 'CRISJEFF CALIBRATION SERVICES', 'orphan-crisjeff', '', '', '', 'Inclusive', '', NULL, 'Posted')");
 $pdo->exec("INSERT INTO tbldelivery_receipt_items VALUES (1, 'N-D38803', 1, 10200, 'Parts')");
+$pdo->exec("INSERT INTO tbldelivery_receipt VALUES (2, 'N-FUTURE', 1, '{$tomorrow}', 'Future Customer', 'future-customer', '', '', '', 'Inclusive', '', NULL, 'Posted')");
+$pdo->exec("INSERT INTO tbldelivery_receipt_items VALUES (2, 'N-FUTURE', 1, 800, 'Parts')");
 
-$salesReport = (new SalesReportRepository($db))->getSalesReport(1, 'month', null, null, 'All');
+$salesReport = (new SalesReportRepository($db))->getSalesReport(1, 'custom', $today, $today, 'All');
 $salesReportTotal = (float) ($salesReport['summary']['grandTotal']['total'] ?? 0);
 reconciliation_expect($salesReportTotal === 10300.0, 'Sales Report includes the active invoice and orphaned posted receipt');
 
 // SQLite does not implement MySQL date helpers. Substitute only those helpers
 // so this test executes the same canonical document CTE and aggregation rules.
 $postedSalesCtes = str_replace(
-    ["DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)", "DATE_FORMAT(CURDATE(), '%Y-%m-01')"],
-    ["date('now', 'start of month', '+1 month')", "date('now', 'start of month')"],
+    ["DATE_ADD(CURDATE(), INTERVAL 1 DAY)", "DATE_FORMAT(CURDATE(), '%Y-%m-01')"],
+    ["date('now', '+1 day')", "date('now', 'start of month')"],
     PostedSalesDocumentSql::currentMonthCustomerSalesCtes()
 );
 
@@ -95,5 +98,6 @@ reconciliation_expect($orphan !== null, 'soft-deleted customer remains in the Da
 reconciliation_expect((int) $orphan['data_integrity_exception'] === 1, 'orphaned posted sale is identified as a data-integrity exception');
 reconciliation_expect($orphan['customer_name'] === 'CRISJEFF CALIBRATION SERVICES', 'orphan uses the document customer name without inventing customer data');
 reconciliation_expect((float) $orphan['current_month_sales'] === 10200.0, 'orphan retains delivery receipt N-D38803 amount');
+reconciliation_expect(!in_array('future-customer', array_column($dailyCallRows, 'customer_id'), true), 'future-dated posted documents are excluded through today');
 
 echo "Posted sales / Daily Call reconciliation regression passed.\n";

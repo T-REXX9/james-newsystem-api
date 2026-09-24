@@ -12,6 +12,7 @@ $checks = [
     ),
     'Priority current-month sales use the shared posted-document rule and invoice sales date' => str_contains($repository, 'PostedSalesDocumentSql::currentMonthCustomerSalesCtes()')
         && str_contains($postedSales, "AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')")
+        && substr_count($postedSales, 'AND l.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)') === 2
         && !str_contains($postedSales, "DATE(l.ldatetime) >= DATE_FORMAT(CURDATE(), '%Y-%m-01')"),
 ];
 

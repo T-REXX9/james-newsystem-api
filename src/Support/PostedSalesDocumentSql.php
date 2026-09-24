@@ -48,7 +48,7 @@ posted_sales_current_month_documents AS (
     WHERE l.lmain_id = :sales_report_invoice_main_id
       AND {$invoicePosted}
       AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
-      AND l.ldate < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
+      AND l.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
       AND COALESCE(l.lcustomerid, '') <> ''
     GROUP BY l.lcustomerid, NULLIF(TRIM(l.lcustomer_name), ''), DATE(l.ldate)
 
@@ -65,7 +65,7 @@ posted_sales_current_month_documents AS (
     WHERE l.lmain_id = :sales_report_dr_main_id
       AND {$receiptPosted}
       AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
-      AND l.ldate < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
+      AND l.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
       AND COALESCE(l.lcustomerid, '') <> ''
     GROUP BY l.lcustomerid, NULLIF(TRIM(l.lcustomer_name), ''), DATE(l.ldate)
 ),
