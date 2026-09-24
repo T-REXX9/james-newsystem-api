@@ -438,10 +438,11 @@ final class CallReportRepository
         }
 
         $isReport = str_starts_with($conversationMessageId, 'report:');
-        $recordId = $isReport ? (int) substr($conversationMessageId, 7) : (int) $conversationMessageId;
-        if ($recordId <= 0 || (!$isReport && str_starts_with($conversationMessageId, 'legacy:'))) {
+        $rawRecordId = $isReport ? substr($conversationMessageId, 7) : $conversationMessageId;
+        if (preg_match('/^[1-9][0-9]*$/D', $rawRecordId) !== 1) {
             throw new HttpException(422, 'Only persisted Agent Sales Report messages can be deleted.');
         }
+        $recordId = (int) $rawRecordId;
 
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -473,6 +474,34 @@ final class CallReportRepository
                 'message_id' => $isReport ? null : $recordId, 'record_type' => $recordType,
                 'deleted_by_user_id' => $deletedByUserId, 'deleted_by_name' => $actorName,
                 'deleted_by_role' => 'Master User', 'delete_reason' => $reason, 'original_payload' => $payload,
+            ]);
+            $auditId = (int) $pdo->lastInsertId();
+            if ($auditId <= 0) {
+                throw new HttpException(500, 'Agent Sales Report deletion audit could not be recorded.');
+            }
+            $centralAudit = $pdo->prepare(
+                'INSERT INTO tblaudit_trail
+                 (lmain_id, luser_id, lpage, laction, lrefno, lreason, lold_status, lnew_status, ldatetime)
+                 VALUES (:main_id, :user_id, :page, :action, :refno, :reason, :old_status, :new_status, NOW())'
+            );
+            $centralAudit->execute([
+                'main_id' => $mainId,
+                'user_id' => $deletedByUserId,
+                'page' => 'Agent Sales Report',
+                'action' => 'Master Delete Message',
+                'refno' => 'call-report-deletion-audit:' . $auditId,
+                'reason' => substr(sprintf(
+                    'Master User deleted %s; contact_id=%s; thread_id=%d; message_id=%s; sales_agent_id=%s; sales_agent=%s; reason=%s',
+                    $recordType,
+                    $contactId,
+                    $threadId,
+                    $isReport ? 'report:' . $recordId : (string) $recordId,
+                    (string) ($record['agent_user_id'] ?? ''),
+                    (string) ($record['agent_name'] ?? ''),
+                    $reason
+                ), 0, 500),
+                'old_status' => 'Active',
+                'new_status' => 'Deleted',
             ]);
 
             $update = $isReport
@@ -752,6 +781,7 @@ SQL;
             'agent_name' => (string) ($row['agent_name'] ?? ''),
             'outcome' => (string) ($row['outcome'] ?? 'note'),
             'report_body' => (string) ($row['report_body'] ?? ''),
+            'report_deleted_at' => $row['report_deleted_at'] ?? null,
             'created_at' => (string) ($row['created_at'] ?? ''),
             'call_started_at' => (string) ($row['call_started_at'] ?? ''),
             'call_ended_at' => (string) ($row['call_ended_at'] ?? ''),
