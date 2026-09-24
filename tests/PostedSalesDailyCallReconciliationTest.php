@@ -53,11 +53,12 @@ $salesReport = (new SalesReportRepository($db))->getSalesReport(1, 'custom', $to
 $salesReportTotal = (float) ($salesReport['summary']['grandTotal']['total'] ?? 0);
 reconciliation_expect($salesReportTotal === 10300.0, 'Sales Report includes the active invoice and orphaned posted receipt');
 
-// SQLite does not implement MySQL date helpers. Substitute only those helpers
-// so this test executes the same canonical document CTE and aggregation rules.
+// SQLite does not implement MySQL date helpers. Anchor its replacements to the
+// PHP test date instead of SQLite's UTC clock so the fixture remains stable in
+// Asia/Manila around midnight.
 $postedSalesCtes = str_replace(
     ["DATE_ADD(CURDATE(), INTERVAL 1 DAY)", "DATE_FORMAT(CURDATE(), '%Y-%m-01')"],
-    ["date('now', '+1 day')", "date('now', 'start of month')"],
+    ["date('{$today}', '+1 day')", "date('{$today}', 'start of month')"],
     PostedSalesDocumentSql::currentMonthCustomerSalesCtes()
 );
 
