@@ -61,6 +61,13 @@ final class CustomerRequestRepository
         $baseline = [];
         if ($kind === 'customer_update') {
             if (!$payload || array_diff(array_keys($payload), self::FIELDS)) throw new HttpException(422, 'Invalid or empty customer changes');
+            $isBlacklistRequest = strtolower(trim((string) ($payload['debt_type'] ?? ''))) === 'bad';
+            if ($isBlacklistRequest) {
+                if (trim((string) ($payload['notes'] ?? '')) === '') throw new HttpException(422, 'A reason is required to request rejection or blacklisting');
+                $isProspect = strtolower(trim((string) ($customer['profile_type'] ?? ''))) === 'prospect' || (int) ($customer['status'] ?? 1) === 3;
+                if ($isProspect && strtolower(trim((string) ($customer['verification'] ?? ''))) === 'verified') throw new HttpException(422, 'Only unverified prospects or customers can be requested for rejection or blacklisting');
+                if ($isProspect) $payload['verification'] = 'Rejected';
+            }
             foreach ($payload as $key => $value) {
                 if ($key === 'contacts') {
                     $this->validateContacts($value, $customer['contacts']);
@@ -93,6 +100,16 @@ final class CustomerRequestRepository
         $stmt = $this->db->pdo()->prepare('INSERT INTO customer_requests (id, main_id, contact_id, kind, payload, baseline, submitted_by) VALUES (?, ?, ?, ?, ?, ?, ?)');
         $stmt->execute([$id, $mainId, $contactId, $kind, json_encode($payload, JSON_THROW_ON_ERROR), json_encode($baseline, JSON_THROW_ON_ERROR), $userId]);
         return ['id' => $id, 'status' => 'pending'];
+    }
+
+    /** @return array<string, mixed> */
+    public function request(int $mainId, string $contactId, string $id): array
+    {
+        $stmt = $this->db->pdo()->prepare('SELECT * FROM customer_requests WHERE main_id = ? AND contact_id = ? AND id = ? LIMIT 1');
+        $stmt->execute([$mainId, $contactId, $id]);
+        $request = $stmt->fetch();
+        if (!$request) throw new HttpException(404, 'Request not found');
+        return $this->decode($request);
     }
 
     private function validateContacts(mixed $contacts, array $existing): void

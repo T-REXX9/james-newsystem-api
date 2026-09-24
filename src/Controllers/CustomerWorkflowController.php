@@ -88,10 +88,11 @@ final class CustomerWorkflowController
             $agent = $this->auth->findUserById($userId) ?: [];
             $agentName = trim((string) ($agent['lfname'] ?? '') . ' ' . (string) ($agent['llname'] ?? '')) ?: 'A sales agent';
             $customerName = trim((string) ($customer['company'] ?? '')) ?: 'a customer';
+            $isBlacklistRequest = strtolower(trim((string) ($body['payload']['debt_type'] ?? ''))) === 'bad';
             (new NotificationsRepository($this->db))->create([
                 'recipient_id' => (string) $mainId,
-                'title' => 'Customer Detail Update Request',
-                'message' => sprintf('%s submitted a customer detail update request for %s.', $agentName, $customerName),
+                'title' => $isBlacklistRequest ? 'Reject / Blacklist Request' : 'Customer Detail Update Request',
+                'message' => $isBlacklistRequest ? sprintf('%s requested rejection or blacklisting for %s.', $agentName, $customerName) : sprintf('%s submitted a customer detail update request for %s.', $agentName, $customerName),
                 'type' => 'info',
                 'category' => 'notification',
                 'main_id' => (string) $mainId,
@@ -115,7 +116,27 @@ final class CustomerWorkflowController
     public function reviewRequest(array $params, array $query, array $body): array
     {
         [$mainId, $userId] = $this->context($query, $body);
-        return (new CustomerRequestRepository($this->db))->review($mainId, rawurldecode($params['contactId']), $params['requestId'], $userId, (string) ($body['decision'] ?? ''), trim((string) ($body['note'] ?? '')));
+        $contactId = rawurldecode($params['contactId']);
+        $requestId = (string) $params['requestId'];
+        $requests = new CustomerRequestRepository($this->db);
+        $request = $requests->request($mainId, $contactId, $requestId);
+        $decision = (string) ($body['decision'] ?? '');
+        $result = $requests->review($mainId, $contactId, $requestId, $userId, $decision, trim((string) ($body['note'] ?? '')));
+        if ($request['kind'] === 'customer_update' && (int) ($request['submitted_by'] ?? 0) > 0) {
+            $customer = $requests->customer($mainId, $contactId);
+            $customerName = trim((string) ($customer['company'] ?? '')) ?: 'a customer';
+            $isBlacklistRequest = strtolower(trim((string) (($request['payload'] ?? [])['debt_type'] ?? ''))) === 'bad';
+            (new NotificationsRepository($this->db))->create([
+                'recipient_id' => (string) $request['submitted_by'],
+                'title' => $isBlacklistRequest ? 'Reject / Blacklist Request ' . ucfirst($decision) : 'Customer Request ' . ucfirst($decision),
+                'message' => sprintf('Your request for %s was %s.', $customerName, $decision),
+                'type' => $decision === 'approved' ? 'success' : 'info',
+                'category' => 'notification',
+                'main_id' => (string) $mainId,
+                'metadata' => ['entity_type' => 'customer_request_decision', 'entity_id' => $requestId, 'contact_id' => $contactId, 'action_url' => 'sales-transaction-daily-call-monitoring', 'refno' => 'customer-request-decision:' . $requestId . ':' . $decision, 'idempotency_key' => 'customer-request-decision:' . $requestId . ':' . $decision . ':' . $request['submitted_by'], 'category' => 'notification'],
+            ]);
+        }
+        return $result;
     }
     public function recycleBin(array $params, array $query, array $body): array
     {
