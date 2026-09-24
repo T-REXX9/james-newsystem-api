@@ -172,6 +172,27 @@ final class AuthRepository
         return $mother > 0 ? $mother : $userId;
     }
 
+    public function getTeamName(int $mainUserId, int $teamId): string
+    {
+        if ($mainUserId <= 0 || $teamId <= 0) {
+            return '';
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT COALESCE(lteamname, '')
+             FROM tblteamstaff
+             WHERE lid = :team_id
+               AND lmain_id = :main_userid
+             LIMIT 1"
+        );
+        $stmt->execute([
+            'team_id' => $teamId,
+            'main_userid' => $mainUserId,
+        ]);
+
+        return trim((string) ($stmt->fetchColumn() ?: ''));
+    }
+
     /**
      * @return array<int, string>
      */

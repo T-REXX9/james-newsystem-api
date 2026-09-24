@@ -116,6 +116,7 @@ final class AuthController
         $accessRights = $this->repo->getDerivedAccessRights($user);
         $roleId = (int) ($user['ltype'] ?? 0);
         $roleName = $this->repo->getRoleName($roleId);
+        $teamName = $this->repo->getTeamName($mainUserId, (int) ($user['lteam'] ?? 0));
 
         $webPermissions = $this->repo->getWebPermissions($mainUserId, $userType);
         $packagePermissions = $servicePackage === '' ? [] : $this->repo->getPackagePermissions($mainUserId, $servicePackage);
@@ -152,6 +153,7 @@ final class AuthController
                 'sales_quota' => (float) ($user['lsales_quota'] ?? 0),
                 'access_rights' => $accessRights,
                 'group_id' => $roleId > 0 ? (string) $roleId : null,
+                'team' => $teamName,
                 'role_name' => $roleName,
                 'action_permissions' => $actionPermissions,
             ],
