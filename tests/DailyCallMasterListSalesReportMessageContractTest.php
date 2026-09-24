@@ -14,6 +14,8 @@ $assert = static function (bool $condition, string $message): void {
 $assert(str_contains($repository, 'sales_report_activity AS ('), 'master list builds a unified sales-report activity source');
 $assert(str_contains($repository, 'FROM call_report_threads t'), 'master list includes report bodies');
 $assert(str_contains($repository, 'FROM call_report_messages m'), 'master list includes conversation replies');
+$assert(substr_count($repository, 'report_deleted_at IS NULL') >= 2, 'master list excludes deleted reports and replies attached to deleted reports');
+$assert(str_contains($repository, 'm.deleted_at IS NULL'), 'master list excludes deleted replies');
 $assert(str_contains($repository, 'latest_sales_report AS ('), 'master list selects the latest sales-report activity');
 $assert(str_contains($repository, 'latest_sales_report_message'), 'master list exposes the latest sales-report message');
 $assert(!str_contains($repository, "COALESCE(p.lnotes, '') AS prospect_comment"), 'master list no longer exposes prospect notes as staff comments');

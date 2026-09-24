@@ -44,4 +44,18 @@ final class ActivityLogController
             'items' => $this->repo->users($mainId),
         ];
     }
+
+    public function deletionDetail(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        $auditId = (int) ($params['auditId'] ?? 0);
+        if ($mainId <= 0 || $auditId <= 0) {
+            throw new HttpException(422, 'main_id and audit ID are required');
+        }
+        $detail = $this->repo->deletionDetail($mainId, $auditId);
+        if ($detail === null) {
+            throw new HttpException(404, 'Deletion audit was not found');
+        }
+        return $detail;
+    }
 }

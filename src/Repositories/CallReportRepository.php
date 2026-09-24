@@ -169,6 +169,9 @@ final class CallReportRepository
         if ($thread === null) {
             throw new HttpException(404, 'Report thread was not found.');
         }
+        if (!empty($thread['report_deleted_at'])) {
+            throw new HttpException(409, 'A deleted Agent Sales Report cannot receive new replies.');
+        }
 
         if ($senderRole !== 'master' && $senderRole !== 'agent') {
             throw new HttpException(422, 'sender_role must be agent or master');
@@ -461,9 +464,11 @@ final class CallReportRepository
 
             $threadId = $isReport ? (int) $record['id'] : (int) $record['thread_id'];
             $actorName = $this->resolveAccountDisplayName($deletedByUserId) ?: ('User ' . $deletedByUserId);
+            $customerName = $this->getCustomerName($mainId, $contactId);
             $payload = json_encode([
                 'record_type' => $recordType,
                 'contact_id' => $contactId,
+                'customer_name' => $customerName,
                 'thread_id' => $threadId,
                 'message_id' => $isReport ? null : $recordId,
                 'original' => $record,
@@ -491,8 +496,9 @@ final class CallReportRepository
                 'action' => 'Master Delete Message',
                 'refno' => 'call-report-deletion-audit:' . $auditId,
                 'reason' => substr(sprintf(
-                    'Master User deleted %s; contact_id=%s; thread_id=%d; message_id=%s; sales_agent_id=%s; sales_agent=%s; reason=%s',
+                    'Master User deleted %s; customer=%s; contact_id=%s; thread_id=%d; message_id=%s; sales_agent_id=%s; sales_agent=%s; reason=%s',
                     $recordType,
+                    $customerName,
                     $contactId,
                     $threadId,
                     $isReport ? 'report:' . $recordId : (string) $recordId,
@@ -535,8 +541,8 @@ final class CallReportRepository
                 $notification->execute([
                     'title' => 'Agent Sales Report Deleted',
                     'message' => substr(sprintf(
-                        'A Master User deleted your Agent Sales Report for customer %s. Reason: %s',
-                        $contactId,
+                        'A Master User deleted your Agent Sales Report for %s. Reason: %s',
+                        $customerName,
                         $reason
                     ), 0, 500),
                     'main_id' => (string) $mainId,
@@ -635,6 +641,8 @@ LEFT JOIN call_report_contact_read_states r
   ON r.main_id = t.main_id AND r.contact_id = t.contact_id AND r.user_id = ?
 WHERE t.main_id = ?
   AND t.contact_id IN ($placeholders)
+  AND t.report_deleted_at IS NULL
+  AND m.deleted_at IS NULL
   AND m.sender_user_id <> ?
   AND (r.last_read_at IS NULL OR m.created_at > r.last_read_at)
 GROUP BY t.contact_id";
@@ -656,6 +664,7 @@ LEFT JOIN call_report_contact_read_states r
   ON r.main_id = t.main_id AND r.contact_id = t.contact_id AND r.user_id = ?
 WHERE t.main_id = ?
   AND t.contact_id IN ($placeholders)
+  AND t.report_deleted_at IS NULL
   AND TRIM(COALESCE(t.report_body, '')) <> ''
   AND t.agent_user_id <> ?
   AND (r.last_read_at IS NULL OR t.created_at > r.last_read_at)
@@ -696,7 +705,7 @@ GROUP BY t.contact_id";
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
         $reported = [];
         $queries = [
-            "SELECT DISTINCT contact_id FROM call_report_threads WHERE main_id = ? AND contact_id IN ($placeholders)",
+            "SELECT DISTINCT contact_id FROM call_report_threads WHERE main_id = ? AND contact_id IN ($placeholders) AND report_deleted_at IS NULL",
             "SELECT DISTINCT CAST(lcustomer_id AS CHAR) AS contact_id
              FROM tblcustomer_logs
              WHERE lmain_id = ? AND CAST(lcustomer_id AS CHAR) IN ($placeholders)

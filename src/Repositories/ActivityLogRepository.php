@@ -37,13 +37,18 @@ final class ActivityLogRepository
 
         $trimmedSearch = trim($search);
         if ($trimmedSearch !== '') {
-            $params['search'] = '%' . $trimmedSearch . '%';
+            $searchValue = '%' . $trimmedSearch . '%';
+            $params['search_page'] = $searchValue;
+            $params['search_action'] = $searchValue;
+            $params['search_refno'] = $searchValue;
+            $params['search_first_name'] = $searchValue;
+            $params['search_last_name'] = $searchValue;
             $where[] = '(
-                COALESCE(log.lpage, "") LIKE :search OR
-                COALESCE(log.laction, "") LIKE :search OR
-                COALESCE(log.lrefno, "") LIKE :search OR
-                COALESCE(acc.lfname, "") LIKE :search OR
-                COALESCE(acc.llname, "") LIKE :search
+                COALESCE(log.lpage, "") LIKE :search_page OR
+                COALESCE(log.laction, "") LIKE :search_action OR
+                COALESCE(log.lrefno, "") LIKE :search_refno OR
+                COALESCE(acc.lfname, "") LIKE :search_first_name OR
+                COALESCE(acc.llname, "") LIKE :search_last_name
             )';
         }
 
@@ -178,6 +183,43 @@ SQL;
         $stmt->execute();
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function deletionDetail(int $mainId, int $auditId): ?array
+    {
+        if ($auditId <= 0) return null;
+
+        $stmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT
+    deletion_audit.id AS deletion_audit_id,
+    deletion_audit.contact_id AS deletion_contact_id,
+    COALESCE((
+        SELECT NULLIF(TRIM(customer.lcompany), '')
+        FROM tblpatient customer
+        WHERE customer.lmain_id = deletion_audit.main_id
+          AND (
+              BINARY customer.lsessionid = BINARY deletion_audit.contact_id
+              OR BINARY CAST(customer.lid AS CHAR) = BINARY deletion_audit.contact_id
+          )
+        ORDER BY customer.lid DESC
+        LIMIT 1
+    ), '') AS deletion_customer_name,
+    deletion_audit.thread_id AS deletion_thread_id,
+    deletion_audit.message_id AS deletion_message_id,
+    deletion_audit.record_type AS deletion_record_type,
+    deletion_audit.deleted_by_user_id AS deletion_actor_user_id,
+    deletion_audit.deleted_by_name AS deletion_actor_name,
+    deletion_audit.deleted_by_role AS deletion_actor_role,
+    deletion_audit.delete_reason AS deletion_reason,
+    deletion_audit.original_payload AS deletion_original_payload,
+    deletion_audit.deleted_at AS deletion_deleted_at
+FROM call_report_deletion_audits deletion_audit
+WHERE deletion_audit.main_id = :main_id AND deletion_audit.id = :audit_id
+LIMIT 1
+SQL);
+        $stmt->execute(['main_id' => $mainId, 'audit_id' => $auditId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return is_array($row) ? $row : null;
     }
 
     private function normalizeDate(string $value): string

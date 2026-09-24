@@ -463,6 +463,7 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
                ON CAST(p.lid AS CHAR) = CAST(crt.contact_id AS CHAR)
                OR p.lsessionid = crt.contact_id
              WHERE crt.main_id = :report_main_id
+               AND crt.report_deleted_at IS NULL
                AND crt.created_at BETWEEN :report_from AND :report_to
              UNION ALL
              SELECT CAST(cle.lcustomer_id AS CHAR) AS contact_id,

@@ -6,6 +6,7 @@ require __DIR__ . '/../src/bootstrap.php';
 
 use App\Database;
 use App\Repositories\CallReportRepository;
+use App\Support\Exceptions\HttpException;
 
 $db = new Database(app_config());
 $pdo = $db->pdo();
@@ -45,10 +46,29 @@ try {
         throw new RuntimeException('FAIL: deleted report reappears after conversation reload');
     }
 
+    try {
+        $repo->addReply($mainId, $threadId, $masterId, 'Master Fixture', 'master', 'This must not be added.');
+        throw new RuntimeException('FAIL: deleted report accepts a new reply');
+    } catch (HttpException $error) {
+        if ($error->statusCode() !== 409) {
+            throw $error;
+        }
+    }
+
+    $reportedContactIds = $repo->getReportedContactIds($mainId, [$contactId]);
+    if (in_array($contactId, $reportedContactIds, true)) {
+        throw new RuntimeException('FAIL: deleted report remains in the reported-customer indicator');
+    }
+
+    $unreadCounts = $repo->getUnreadCountsForContacts($mainId, [$contactId], $masterId);
+    if ((int) ($unreadCounts[$contactId] ?? 0) !== 0) {
+        throw new RuntimeException('FAIL: deleted report remains in the unread counter');
+    }
+
     $audit = $pdo->prepare('SELECT id, original_payload, delete_reason FROM call_report_deletion_audits WHERE main_id = :main_id AND thread_id = :thread_id AND record_type = "agent_report" LIMIT 1');
     $audit->execute(['main_id' => $mainId, 'thread_id' => $threadId]);
     $auditRow = $audit->fetch(PDO::FETCH_ASSOC);
-    if (!is_array($auditRow) || !str_contains((string) $auditRow['original_payload'], 'Incorrect customer report')) {
+    if (!is_array($auditRow) || !str_contains((string) $auditRow['original_payload'], 'Incorrect customer report') || !str_contains((string) $auditRow['original_payload'], 'customer_name')) {
         throw new RuntimeException('FAIL: immutable original report audit is missing');
     }
 
@@ -68,7 +88,7 @@ try {
         throw new RuntimeException('FAIL: affected sales agent deletion notification is missing');
     }
 
-    echo "PASS: master deletion remains hidden after reload and writes both audit records plus an agent notification\n";
+    echo "PASS: master deletion is excluded from chat, unread, and reported-customer reads and writes both audit records plus an agent notification\n";
 } finally {
     if ($notificationRefno !== null) {
         $pdo->prepare('DELETE FROM tblnotifications WHERE lrefno = :refno')->execute(['refno' => $notificationRefno]);

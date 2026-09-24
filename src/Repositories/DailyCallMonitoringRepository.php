@@ -613,6 +613,7 @@ sales_report_activity AS (
         0 AS activity_source_order
     FROM call_report_threads t
     WHERE t.main_id = :sales_report_thread_main_id
+      AND t.report_deleted_at IS NULL
       AND TRIM(COALESCE(t.report_body, '')) <> ''
 
     UNION ALL
@@ -627,6 +628,8 @@ sales_report_activity AS (
     FROM call_report_messages m
     INNER JOIN call_report_threads t ON t.id = m.thread_id
     WHERE t.main_id = :sales_report_message_main_id
+      AND t.report_deleted_at IS NULL
+      AND m.deleted_at IS NULL
       AND TRIM(COALESCE(m.body, '')) <> ''
 ),
 latest_sales_report AS (

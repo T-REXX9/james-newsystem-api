@@ -718,6 +718,7 @@ function app_router(): Router
     $router->post('/api/v1/adjustment-entries/{refno}/actions/{action}', $requireApproverAction([$adjustmentEntryController, 'action'], ['Adjustment Entry', 'Adjustment']));
     $router->get('/api/v1/activity-logs', [$activityLogController, 'list']);
     $router->get('/api/v1/activity-logs/users', [$activityLogController, 'users']);
+    $router->get('/api/v1/activity-logs/deletions/{auditId}', [$activityLogController, 'deletionDetail']);
     $router->get('/api/v1/customer-database', $requireViewAuth([$customerDatabaseController, 'list'], 'Customer Database'));
     $router->get('/api/v1/customer-database/name-check', $requireViewAuth([$customerDatabaseController, 'nameCheck'], 'Customer Database'));
     $router->get('/api/v1/customer-database/province-summary', $requireViewAuth([$customerDatabaseController, 'provinceSummary'], 'Customer Database'));
