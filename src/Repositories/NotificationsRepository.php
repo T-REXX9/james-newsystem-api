@@ -238,7 +238,15 @@ final class NotificationsRepository
         $targetRoles = is_array($payload['targetRoles'] ?? null) ? $payload['targetRoles'] : [];
         $targetUserIds = is_array($payload['targetUserIds'] ?? null) ? $payload['targetUserIds'] : [];
         $includeActor = (bool) ($payload['includeActor'] ?? false);
-        $recipients = $this->resolveRecipients($targetRoles, $targetUserIds, $includeActor ? $actorId : null);
+        // A workflow belongs to one company.  Do not resolve a role against every
+        // active account, otherwise a notification can cross tenant boundaries.
+        $mainId = (int) ($payload['main_id'] ?? 0);
+        $recipients = $this->resolveRecipients(
+            $targetRoles,
+            $targetUserIds,
+            $includeActor ? $actorId : null,
+            $mainId > 0 ? $mainId : null
+        );
 
         $callerMetadata = is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [];
         $entityType = trim((string) ($callerMetadata['entity_type'] ?? $payload['entityType'] ?? ''));
@@ -320,7 +328,12 @@ final class NotificationsRepository
     private function performInventoryAlertScan(int $mainId): array
     {
         $products = $this->inventoryAlertCandidates($mainId);
-        $recipients = $this->resolveRecipients(['Warehouse Manager', 'Warehouse', 'Purchasing Manager', 'Purchasing Staff', 'Owner'], []);
+        $recipients = $this->resolveRecipients(
+            ['Warehouse Manager', 'Warehouse', 'Purchasing Manager', 'Purchasing Staff', 'Owner'],
+            [],
+            null,
+            $mainId > 0 ? $mainId : null
+        );
         if ($products === [] || $recipients === []) {
             return [];
         }
@@ -736,34 +749,68 @@ final class NotificationsRepository
         return $timestamp === false ? date(DATE_ATOM) : date(DATE_ATOM, $timestamp);
     }
 
-    private function resolveRecipients(array $targetRoles, array $targetUserIds, ?string $actorId = null): array
+    private function resolveRecipients(
+        array $targetRoles,
+        array $targetUserIds,
+        ?string $actorId = null,
+        ?int $mainId = null
+    ): array
     {
         $recipients = [];
 
-        foreach ($targetUserIds as $userId) {
-            $normalized = trim((string) $userId);
-            if ($normalized !== '') {
-                $recipients[$normalized] = true;
+        $requestedUserIds = array_values(array_filter(array_map(
+            static fn (mixed $userId): string => trim((string) $userId),
+            $targetUserIds
+        ), static fn (string $userId): bool => $userId !== ''));
+        if ($actorId !== null && trim($actorId) !== '') {
+            $requestedUserIds[] = trim($actorId);
+            $requestedUserIds = array_values(array_unique($requestedUserIds));
+        }
+
+        if ($mainId === null) {
+            // Preserve legacy direct-recipient behavior for callers that do not
+            // have a tenant context. New workflow callers should always provide it.
+            foreach ($requestedUserIds as $userId) {
+                $recipients[$userId] = true;
             }
         }
 
-        if ($targetRoles !== []) {
-            $stmt = $this->db->pdo()->query(
-                'SELECT
-                    a.lid,
-                    a.ltype,
-                    ut.ltype_name AS role_name
-                 FROM tblaccount a
-                 LEFT JOIN tblusertype ut ON ut.lid = a.ltype
-                 WHERE COALESCE(a.lstatus, 0) = 1'
-            );
+        if ($targetRoles !== [] || $mainId !== null) {
+            $sql = 'SELECT
+                        a.lid,
+                        a.ltype,
+                        ut.ltype_name AS role_name
+                    FROM tblaccount a
+                    LEFT JOIN tblusertype ut ON ut.lid = a.ltype
+                    WHERE COALESCE(a.lstatus, 0) = 1';
+            $params = [];
+            if ($mainId !== null) {
+                $sql .= ' AND (a.lid = :main_id OR a.lmother_id = :main_id_2)';
+                $params = [
+                    'main_id' => $mainId,
+                    'main_id_2' => $mainId,
+                ];
+            }
+
+            $stmt = $this->db->pdo()->prepare($sql);
+            $stmt->execute($params);
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $recipientId = trim((string) ($row['lid'] ?? ''));
+                if ($recipientId === '') {
+                    continue;
+                }
+
+                if (in_array($recipientId, $requestedUserIds, true)) {
+                    $recipients[$recipientId] = true;
+                    continue;
+                }
+
                 $candidateRoles = $this->accountRoleCandidates($row);
                 foreach ($targetRoles as $targetRole) {
                     $normalizedTargetRole = $this->normalizeRole((string) $targetRole);
                     foreach ($candidateRoles as $candidateRole) {
                         if ($this->roleMatches($candidateRole, $normalizedTargetRole)) {
-                            $recipients[(string) ($row['lid'] ?? '')] = true;
+                            $recipients[$recipientId] = true;
                             break 2;
                         }
                     }
@@ -772,7 +819,10 @@ final class NotificationsRepository
         }
 
         if ($actorId !== null && trim($actorId) !== '') {
-            $recipients[trim($actorId)] = true;
+            $normalizedActorId = trim($actorId);
+            if ($mainId === null || isset($recipients[$normalizedActorId])) {
+                $recipients[$normalizedActorId] = true;
+            }
         }
 
         return array_values(array_filter(array_keys($recipients), static fn (string $value): bool => $value !== ''));

@@ -11,12 +11,13 @@ use App\Repositories\CustomerRequestRepository;
 use App\Repositories\CustomerDatabaseRepository;
 use App\Repositories\LocalRecycleBinRepository;
 use App\Repositories\ProductRepository;
+use App\Repositories\NotificationsRepository;
 use App\Controllers\CustomerWorkflowController;
 use App\Support\Exceptions\HttpException;
 
 $db = new Database(app_config());
 $pdo = $db->pdo();
-foreach (['customer_requests','tblpatient','tblcontact_person','tblpatient_terms','tblpatient_image','tblaccount','tblusertype','tblaudit_trail','tblinventory_item','tblinquiry','tblinquiry_item','tblcredit_memo','tblcredit_return_item','tblpr_list','tblpo_list','tblpurchase_order'] as $table) {
+foreach (['customer_requests','tblpatient','tblcontact_person','tblpatient_terms','tblpatient_image','tblaccount','tblusertype','tblaudit_trail','tblnotifications','tblinventory_item','tblinquiry','tblinquiry_item','tblcredit_memo','tblcredit_return_item','tblpr_list','tblpo_list','tblpurchase_order'] as $table) {
     $ddl = $pdo->query("SHOW CREATE TABLE {$table}")->fetch(PDO::FETCH_NUM)[1];
     $pdo->exec(preg_replace('/^CREATE TABLE/', 'CREATE TEMPORARY TABLE', $ddl));
 }
@@ -66,7 +67,21 @@ $reject(fn() => $controller->requests($params, [], $claims($outsider, $outsider)
 $reject(fn() => $controller->requests($params, $query, []), 401, 'missing authentication rejected');
 $controller->reviewRequest($params + ['requestId'=>$created['id']], $query, $ownerClaims + ['decision'=>'approved']);
 $assert($repo->customer($main, $customer)['company'] === 'After', 'approval updates the local customer record');
+$decisionNotifications = (new NotificationsRepository($db))->listByUser((string) $agent);
+$decisionMetadata = $decisionNotifications[0]['metadata'] ?? [];
+$assert(($decisionMetadata['conversation_type'] ?? '') === 'agent_sales_report', 'approval decision notification opens the agent sales report conversation');
 $reject(fn() => $controller->reviewRequest($params + ['requestId'=>$created['id']], $query, $ownerClaims + ['decision'=>'approved']), 409, 'duplicate review is rejected');
+
+// A notification outage must not make a persisted request or decision look like a failure.
+$pdo->exec('DROP TEMPORARY TABLE tblnotifications');
+$notificationOutage = $controller->createRequest($params, $query, $agentClaims + ['kind'=>'customer_update','payload'=>['company'=>'After notification outage']]);
+$assert(($notificationOutage['status'] ?? '') === 'pending', 'request submission succeeds when notifications are unavailable');
+$notificationOutageDecision = $controller->reviewRequest($params + ['requestId'=>$notificationOutage['id']], $query, $ownerClaims + ['decision'=>'approved']);
+$assert(($notificationOutageDecision['status'] ?? '') === 'approved' && $repo->customer($main, $customer)['company'] === 'After notification outage', 'approval succeeds when requester notification is unavailable');
+
+// Profile types have legacy variants; every verified prospect must be protected.
+$pdo->prepare('UPDATE tblpatient SET lprofile_type = ?, lverification = ? WHERE lmain_id = ? AND lsessionid = ?')->execute(['Prospective Client', 'Verified', $main, $customer]);
+$reject(fn() => $repo->create($main, $customer, $agent, 'customer_update', ['debt_type'=>'Bad','notes'=>'Verified prospect cannot be blacklisted']), 422, 'verified prospective-client variants cannot be blacklisted');
 $conflict = $repo->create($main, $customer, $agent, 'customer_update', ['company'=>'Stale']);
 $pdo->prepare('UPDATE tblpatient SET lcompany=? WHERE lsessionid=?')->execute(['Newer', $customer]);
 $reject(fn() => $repo->review($main, $customer, $conflict['id'], $main, 'approved', ''), 409, 'stale request cannot overwrite a newer edit');

@@ -15,6 +15,7 @@ $masterId = 1;
 $contactId = 'UT-sales-report-delete-' . bin2hex(random_bytes(6));
 $threadId = 0;
 $auditRefno = null;
+$notificationRefno = null;
 
 try {
     $insert = $pdo->prepare(
@@ -59,8 +60,19 @@ try {
         throw new RuntimeException('FAIL: reviewable central deletion audit is missing traceability');
     }
 
-    echo "PASS: master deletion remains hidden after reload and writes both audit records\n";
+    $notificationRefno = 'call-report-deletion-notification:' . (int) $auditRow['id'];
+    $notification = $pdo->prepare('SELECT luserid, lmessage FROM tblnotifications WHERE lrefno = :refno LIMIT 1');
+    $notification->execute(['refno' => $notificationRefno]);
+    $notificationRow = $notification->fetch(PDO::FETCH_ASSOC);
+    if (!is_array($notificationRow) || (int) $notificationRow['luserid'] !== 11 || !str_contains((string) $notificationRow['lmessage'], 'Sent for the wrong customer')) {
+        throw new RuntimeException('FAIL: affected sales agent deletion notification is missing');
+    }
+
+    echo "PASS: master deletion remains hidden after reload and writes both audit records plus an agent notification\n";
 } finally {
+    if ($notificationRefno !== null) {
+        $pdo->prepare('DELETE FROM tblnotifications WHERE lrefno = :refno')->execute(['refno' => $notificationRefno]);
+    }
     if ($auditRefno !== null) {
         $pdo->prepare('DELETE FROM tblaudit_trail WHERE lrefno = :refno')->execute(['refno' => $auditRefno]);
     }

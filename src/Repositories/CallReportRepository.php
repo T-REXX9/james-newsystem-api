@@ -504,6 +504,50 @@ final class CallReportRepository
                 'new_status' => 'Deleted',
             ]);
 
+            $salesAgentId = (int) ($record['agent_user_id'] ?? 0);
+            if ($salesAgentId > 0) {
+                $notificationRefno = 'call-report-deletion-notification:' . $auditId;
+                $notificationMetadata = json_encode([
+                    'e' => 'agent_sales_report_deletion',
+                    'i' => (string) $auditId,
+                    'a' => 'deleted',
+                    's' => 'deleted',
+                    'u' => 'sales-transaction-daily-call-monitoring',
+                    't' => 'warning',
+                    'c' => 'notification',
+                    'ai' => (string) $deletedByUserId,
+                    'ar' => 'Master User',
+                    'ci' => $contactId,
+                    'ct' => 'agent_sales_report',
+                    'tr' => 'report:' . $threadId,
+                ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+                $notification = $pdo->prepare(
+                    'INSERT INTO tblnotifications
+                     (ltitle, lmessage, ldatetime, lstatus, lmain_id, linv_session, lout_status, ltype, luserid, lrefno)
+                     SELECT :title, :message, NOW(), 1, :main_id, :metadata, \'0\', \'Notification\', :recipient_id, :refno
+                     WHERE NOT EXISTS (
+                         SELECT 1 FROM tblnotifications
+                         WHERE luserid = :existing_recipient_id
+                           AND lrefno = :existing_refno
+                           AND (lstatus IS NULL OR lstatus != -1)
+                     )'
+                );
+                $notification->execute([
+                    'title' => 'Agent Sales Report Deleted',
+                    'message' => substr(sprintf(
+                        'A Master User deleted your Agent Sales Report for customer %s. Reason: %s',
+                        $contactId,
+                        $reason
+                    ), 0, 500),
+                    'main_id' => (string) $mainId,
+                    'metadata' => $notificationMetadata,
+                    'recipient_id' => (string) $salesAgentId,
+                    'refno' => $notificationRefno,
+                    'existing_recipient_id' => (string) $salesAgentId,
+                    'existing_refno' => $notificationRefno,
+                ]);
+            }
+
             $update = $isReport
                 ? $pdo->prepare('UPDATE call_report_threads SET report_deleted_at = NOW(), report_deleted_by = :user_id, report_delete_reason = :reason WHERE id = :id')
                 : $pdo->prepare('UPDATE call_report_messages SET deleted_at = NOW(), deleted_by = :user_id, delete_reason = :reason WHERE id = :id');

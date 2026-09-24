@@ -18,6 +18,21 @@ final class CustomerWorkflowController
     public function __construct(private readonly Database $db, private readonly AuthRepository $auth) {}
 
     /**
+     * Notifications are a secondary effect of a customer workflow.  The request
+     * itself has already been durably saved before this is called, so a failure
+     * to persist a notification must not make the caller believe it failed.
+     */
+    private function notifyBestEffort(array $notification): void
+    {
+        try {
+            (new NotificationsRepository($this->db))->create($notification);
+        } catch (\Throwable) {
+            // Notification creation is idempotent, but must never undo or mask
+            // a completed customer-request submission or decision.
+        }
+    }
+
+    /**
      * @return array{0: int, 1: int, 2: bool} main id, user id, and whether the
      *         viewer reaches every record instead of only their own
      */
@@ -89,7 +104,7 @@ final class CustomerWorkflowController
             $agentName = trim((string) ($agent['lfname'] ?? '') . ' ' . (string) ($agent['llname'] ?? '')) ?: 'A sales agent';
             $customerName = trim((string) ($customer['company'] ?? '')) ?: 'a customer';
             $isBlacklistRequest = strtolower(trim((string) ($body['payload']['debt_type'] ?? ''))) === 'bad';
-            (new NotificationsRepository($this->db))->create([
+            $this->notifyBestEffort([
                 'recipient_id' => (string) $mainId,
                 'title' => $isBlacklistRequest ? 'Reject / Blacklist Request' : 'Customer Detail Update Request',
                 'message' => $isBlacklistRequest ? sprintf('%s requested rejection or blacklisting for %s.', $agentName, $customerName) : sprintf('%s submitted a customer detail update request for %s.', $agentName, $customerName),
@@ -120,20 +135,23 @@ final class CustomerWorkflowController
         $requestId = (string) $params['requestId'];
         $requests = new CustomerRequestRepository($this->db);
         $request = $requests->request($mainId, $contactId, $requestId);
+        if ((int) ($request['submitted_by'] ?? 0) === $userId) {
+            throw new HttpException(403, 'You cannot review your own customer request');
+        }
         $decision = (string) ($body['decision'] ?? '');
         $result = $requests->review($mainId, $contactId, $requestId, $userId, $decision, trim((string) ($body['note'] ?? '')));
         if ($request['kind'] === 'customer_update' && (int) ($request['submitted_by'] ?? 0) > 0) {
             $customer = $requests->customer($mainId, $contactId);
             $customerName = trim((string) ($customer['company'] ?? '')) ?: 'a customer';
             $isBlacklistRequest = strtolower(trim((string) (($request['payload'] ?? [])['debt_type'] ?? ''))) === 'bad';
-            (new NotificationsRepository($this->db))->create([
+            $this->notifyBestEffort([
                 'recipient_id' => (string) $request['submitted_by'],
                 'title' => $isBlacklistRequest ? 'Reject / Blacklist Request ' . ucfirst($decision) : 'Customer Request ' . ucfirst($decision),
                 'message' => sprintf('Your request for %s was %s.', $customerName, $decision),
                 'type' => $decision === 'approved' ? 'success' : 'info',
                 'category' => 'notification',
                 'main_id' => (string) $mainId,
-                'metadata' => ['entity_type' => 'customer_request_decision', 'entity_id' => $requestId, 'contact_id' => $contactId, 'action_url' => 'sales-transaction-daily-call-monitoring', 'refno' => 'customer-request-decision:' . $requestId . ':' . $decision, 'idempotency_key' => 'customer-request-decision:' . $requestId . ':' . $decision . ':' . $request['submitted_by'], 'category' => 'notification'],
+                'metadata' => ['entity_type' => 'customer_request_decision', 'entity_id' => $requestId, 'contact_id' => $contactId, 'conversation_type' => 'agent_sales_report', 'action_url' => 'sales-transaction-daily-call-monitoring', 'refno' => 'customer-request-decision:' . $requestId . ':' . $decision, 'idempotency_key' => 'customer-request-decision:' . $requestId . ':' . $decision . ':' . $request['submitted_by'], 'category' => 'notification'],
             ]);
         }
         return $result;

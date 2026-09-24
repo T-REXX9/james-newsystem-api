@@ -123,6 +123,14 @@ final class NotificationsController
             }
         }
 
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $authenticatedMainId = (int) ($claims['main_userid'] ?? 0);
+        if ($authenticatedMainId > 0) {
+            // The authenticated tenant is authoritative; client input must not
+            // choose a different company for role-based notifications.
+            $body['main_id'] = (string) $authenticatedMainId;
+        }
+
         return [
             'data' => $this->repo->dispatchWorkflow($body),
         ];

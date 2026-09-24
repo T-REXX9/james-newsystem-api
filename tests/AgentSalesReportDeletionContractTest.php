@@ -17,6 +17,7 @@ $checks = [
     'repository rejects non-canonical message identifiers' => str_contains($repository, "preg_match('/^[1-9][0-9]*$/D', \$rawRecordId) !== 1"),
     'repository records original message payload' => str_contains($repository, "'original' => \$record") && str_contains($repository, 'deleted_by_role'),
     'repository writes a reviewable central Activity Log audit in the deletion transaction' => str_contains($repository, 'INSERT INTO tblaudit_trail') && str_contains($repository, 'call-report-deletion-audit:'),
+    'repository notifies the affected sales agent in the deletion transaction' => str_contains($repository, 'call-report-deletion-notification:') && str_contains($repository, "'agent_sales_report_deletion'") && str_contains($repository, 'Agent Sales Report Deleted'),
     'repository excludes deleted replies from the chat' => str_contains($repository, 'call_report_messages WHERE thread_id = :thread_id AND deleted_at IS NULL'),
     'repository excludes deleted reports from the chat' => str_contains($repository, "empty(\$thread['report_deleted_at'])"),
     'thread mapping retains the report deletion state across reloads' => str_contains($repository, "'report_deleted_at' => \$row['report_deleted_at'] ?? null"),

@@ -64,7 +64,7 @@ final class CustomerRequestRepository
             $isBlacklistRequest = strtolower(trim((string) ($payload['debt_type'] ?? ''))) === 'bad';
             if ($isBlacklistRequest) {
                 if (trim((string) ($payload['notes'] ?? '')) === '') throw new HttpException(422, 'A reason is required to request rejection or blacklisting');
-                $isProspect = strtolower(trim((string) ($customer['profile_type'] ?? ''))) === 'prospect' || (int) ($customer['status'] ?? 1) === 3;
+                $isProspect = str_contains(strtolower(trim((string) ($customer['profile_type'] ?? ''))), 'prospect') || (int) ($customer['status'] ?? 1) === 3;
                 if ($isProspect && strtolower(trim((string) ($customer['verification'] ?? ''))) === 'verified') throw new HttpException(422, 'Only unverified prospects or customers can be requested for rejection or blacklisting');
                 if ($isProspect) $payload['verification'] = 'Rejected';
             }

@@ -811,7 +811,7 @@ function app_router(): Router
     $router->post('/api/v1/notifications/mark-all-read', $requireBearerAuth([$notificationsController, 'markAllAsRead']));
     $router->post('/api/v1/notifications/mark-by-entity-read', $requireBearerAuth([$notificationsController, 'markByEntityRead']));
     $router->delete('/api/v1/notifications/{id}', $requireBearerAuth([$notificationsController, 'delete']));
-    $router->post('/api/v1/notifications/workflow-dispatch', $requireBearerAuth([$notificationsController, 'workflowDispatch']));
+    $router->post('/api/v1/notifications/workflow-dispatch', $requireBearerAuthWithClaims([$notificationsController, 'workflowDispatch']));
     $router->post('/api/v1/notifications/inventory-alerts/scan', $requireBearerAuth([$notificationsController, 'scanInventoryAlerts']));
     $router->get('/api/v1/profiles', [$profilesController, 'list']);
     $router->get('/api/v1/profiles/sales-agents', [$profilesController, 'salesAgents']);
