@@ -281,7 +281,7 @@ final class CallReportRepository
         foreach ($threads as $thread) {
             $threadId = (string) ($thread['id'] ?? '');
             $isSynthetic = (($thread['replyable'] ?? true) === false && ($thread['call_log_entry_id'] ?? '') === '');
-            $reportBody = trim((string) ($thread['report_body'] ?? ''));
+            $reportBody = empty($thread['report_deleted_at']) ? trim((string) ($thread['report_body'] ?? '')) : '';
             if ($reportBody !== '') {
                 $agentUserId = (string) ($thread['agent_user_id'] ?? '');
                 $messages[] = [
@@ -424,6 +424,71 @@ final class CallReportRepository
         }
 
         return true;
+    }
+
+    /** @return array{deleted: bool, record_type: string, id: string} */
+    public function deleteConversationMessage(int $mainId, string $contactId, string $conversationMessageId, int $deletedByUserId, string $reason): array
+    {
+        if (!$this->isMasterUser($deletedByUserId, $mainId)) {
+            throw new HttpException(403, 'Only the Master User can delete Agent Sales Report messages.');
+        }
+        $reason = trim($reason);
+        if ($reason === '' || strlen($reason) > 2000) {
+            throw new HttpException(422, 'A deletion reason of up to 2,000 characters is required.');
+        }
+
+        $isReport = str_starts_with($conversationMessageId, 'report:');
+        $recordId = $isReport ? (int) substr($conversationMessageId, 7) : (int) $conversationMessageId;
+        if ($recordId <= 0 || (!$isReport && str_starts_with($conversationMessageId, 'legacy:'))) {
+            throw new HttpException(422, 'Only persisted Agent Sales Report messages can be deleted.');
+        }
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $recordType = $isReport ? 'agent_report' : 'reply';
+            if ($isReport) {
+                $select = $pdo->prepare('SELECT * FROM call_report_threads WHERE id = :id AND main_id = :main_id AND contact_id = :contact_id AND report_deleted_at IS NULL FOR UPDATE');
+            } else {
+                $select = $pdo->prepare('SELECT m.*, t.main_id, t.contact_id, t.agent_user_id, t.agent_name FROM call_report_messages m INNER JOIN call_report_threads t ON t.id = m.thread_id WHERE m.id = :id AND t.main_id = :main_id AND t.contact_id = :contact_id AND m.deleted_at IS NULL FOR UPDATE');
+            }
+            $select->execute(['id' => $recordId, 'main_id' => $mainId, 'contact_id' => $contactId]);
+            $record = $select->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($record)) {
+                throw new HttpException(404, 'Agent Sales Report message was not found or was already deleted.');
+            }
+
+            $threadId = $isReport ? (int) $record['id'] : (int) $record['thread_id'];
+            $actorName = $this->resolveAccountDisplayName($deletedByUserId) ?: ('User ' . $deletedByUserId);
+            $payload = json_encode([
+                'record_type' => $recordType,
+                'contact_id' => $contactId,
+                'thread_id' => $threadId,
+                'message_id' => $isReport ? null : $recordId,
+                'original' => $record,
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            $audit = $pdo->prepare('INSERT INTO call_report_deletion_audits (main_id, contact_id, thread_id, message_id, record_type, deleted_by_user_id, deleted_by_name, deleted_by_role, delete_reason, original_payload) VALUES (:main_id, :contact_id, :thread_id, :message_id, :record_type, :deleted_by_user_id, :deleted_by_name, :deleted_by_role, :delete_reason, :original_payload)');
+            $audit->execute([
+                'main_id' => $mainId, 'contact_id' => $contactId, 'thread_id' => $threadId,
+                'message_id' => $isReport ? null : $recordId, 'record_type' => $recordType,
+                'deleted_by_user_id' => $deletedByUserId, 'deleted_by_name' => $actorName,
+                'deleted_by_role' => 'Master User', 'delete_reason' => $reason, 'original_payload' => $payload,
+            ]);
+
+            $update = $isReport
+                ? $pdo->prepare('UPDATE call_report_threads SET report_deleted_at = NOW(), report_deleted_by = :user_id, report_delete_reason = :reason WHERE id = :id')
+                : $pdo->prepare('UPDATE call_report_messages SET deleted_at = NOW(), deleted_by = :user_id, delete_reason = :reason WHERE id = :id');
+            $update->execute(['user_id' => $deletedByUserId, 'reason' => $reason, 'id' => $recordId]);
+            if ($update->rowCount() !== 1) {
+                throw new HttpException(409, 'Agent Sales Report message could not be deleted.');
+            }
+            $pdo->commit();
+        } catch (\Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+
+        return ['deleted' => true, 'record_type' => $recordType, 'id' => $conversationMessageId];
     }
 
     /**
@@ -700,7 +765,7 @@ SQL;
     private function getMessagesForThread(int $threadId, int $viewerUserId): array
     {
         $stmt = $this->db->pdo()->prepare(
-            'SELECT * FROM call_report_messages WHERE thread_id = :thread_id ORDER BY created_at ASC, id ASC'
+            'SELECT * FROM call_report_messages WHERE thread_id = :thread_id AND deleted_at IS NULL ORDER BY created_at ASC, id ASC'
         );
         $stmt->execute(['thread_id' => $threadId]);
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
