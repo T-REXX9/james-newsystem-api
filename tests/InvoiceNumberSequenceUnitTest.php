@@ -48,6 +48,35 @@ $run('formats legacy T- style without padding', static function (): void {
     }
 });
 
+$run('skips every occupied invoice number until it finds an available number', static function (): void {
+    $checked = [];
+    $next = InvoiceNumberSequence::nextAvailable(
+        ['prefix' => 'T-', 'pad_width' => 0, 'next_number' => 12929],
+        static function (string $invoiceNo) use (&$checked): bool {
+            $checked[] = $invoiceNo;
+            return in_array($invoiceNo, ['T-12929', 'T-12930'], true);
+        }
+    );
+
+    if ($next['next_invoice_no'] !== 'T-12931' || $next['next_number'] !== 12931) {
+        throw new RuntimeException('expected the next available invoice to be T-12931');
+    }
+    if ($checked !== ['T-12929', 'T-12930', 'T-12931']) {
+        throw new RuntimeException('expected every candidate through T-12931 to be checked');
+    }
+});
+
+$run('preserves booklet padding while skipping occupied numbers', static function (): void {
+    $next = InvoiceNumberSequence::nextAvailable(
+        ['prefix' => 'TT-', 'pad_width' => 5, 'next_number' => 1500],
+        static fn (string $invoiceNo): bool => $invoiceNo === 'TT-01500'
+    );
+
+    if ($next['next_invoice_no'] !== 'TT-01501') {
+        throw new RuntimeException('expected TT-01501');
+    }
+});
+
 $run('rejects empty start values', static function (): void {
     try {
         InvoiceNumberSequence::parse('   ');

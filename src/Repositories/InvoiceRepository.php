@@ -818,9 +818,7 @@ SQL;
             throw new RuntimeException($e->getMessage());
         }
 
-        if ($this->invoiceNumberExists($mainId, $settings['next_invoice_no'])) {
-            throw new RuntimeException('Invoice number already exists: ' . $settings['next_invoice_no']);
-        }
+        $settings = $this->nextAvailableInvoiceNumber($mainId, $settings);
 
         $saved = $this->sequenceStore()->saveForMain($mainId, $settings);
         $generatorNext = $this->nextNumber('Invoice');
@@ -1217,11 +1215,8 @@ SQL;
      */
     private function allocateNextInvoiceNumber(int $mainId): array
     {
-        $sequence = $this->resolveNumberSequence($mainId);
+        $sequence = $this->nextAvailableInvoiceNumber($mainId, $this->resolveNumberSequence($mainId));
         $invoiceNo = $sequence['next_invoice_no'];
-        if ($this->invoiceNumberExists($mainId, $invoiceNo)) {
-            throw new RuntimeException('Invoice number already exists: ' . $invoiceNo);
-        }
 
         $this->insertNumberGenerator('Invoice', $sequence['next_number']);
         $this->sequenceStore()->saveForMain($mainId, [
@@ -1251,6 +1246,18 @@ SQL;
             'pad_width' => 0,
             'next_number' => $this->nextNumber('Invoice'),
         ]);
+    }
+
+    /**
+     * @param array{prefix: string, pad_width: int, next_number: int, next_invoice_no: string} $sequence
+     * @return array{prefix: string, pad_width: int, next_number: int, next_invoice_no: string}
+     */
+    private function nextAvailableInvoiceNumber(int $mainId, array $sequence): array
+    {
+        return InvoiceNumberSequence::nextAvailable(
+            $sequence,
+            fn (string $invoiceNo): bool => $this->invoiceNumberExists($mainId, $invoiceNo)
+        );
     }
 
     private function invoiceNumberExists(int $mainId, string $invoiceNo, ?string $exceptRefno = null): bool

@@ -83,6 +83,31 @@ final class InvoiceNumberSequence
     }
 
     /**
+     * Finds the first invoice number at or after the requested sequence that is not in use.
+     *
+     * @param array<string, mixed> $settings
+     * @param callable(string): bool $exists
+     * @return array{prefix: string, pad_width: int, next_number: int, next_invoice_no: string}
+     */
+    public static function nextAvailable(array $settings, callable $exists): array
+    {
+        $sequence = self::normalize($settings);
+        while ($exists($sequence['next_invoice_no'])) {
+            if ($sequence['next_number'] === PHP_INT_MAX) {
+                throw new InvalidArgumentException('No higher invoice number is available');
+            }
+
+            $sequence = self::normalize([
+                'prefix' => $sequence['prefix'],
+                'pad_width' => $sequence['pad_width'],
+                'next_number' => $sequence['next_number'] + 1,
+            ]);
+        }
+
+        return $sequence;
+    }
+
+    /**
      * @return array{prefix: string, pad_width: int, next_number: int, next_invoice_no: string}
      */
     public static function fromStartValue(string $startValue): array
