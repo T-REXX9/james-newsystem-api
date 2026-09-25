@@ -314,7 +314,8 @@ function app_router(): Router
     $permissionMiddleware = new PermissionMiddleware($tokenService, $rolePermissionRepo);
     $accessGroupController = new AccessGroupController(new App\Repositories\AccessGroupRepository($db), $rolePermissionRepo);
     $accountsReceivableController = new AccountsReceivableController(new App\Repositories\AccountsReceivableRepository($db));
-    $collectionController = new CollectionController(new App\Repositories\CollectionRepository($db));
+    $collectionRepository = new App\Repositories\CollectionRepository($db);
+    $collectionController = new CollectionController($collectionRepository);
     $contactsController = new ContactsController(new App\Repositories\ContactsRepository($db));
     $courierController = new CourierController(new App\Repositories\CourierRepository($db));
     $messagesController = new MessagesController(new App\Repositories\MessagesRepository($db));
@@ -776,7 +777,38 @@ function app_router(): Router
         return $collectionController->addPayment($params, $query, $body);
     }));
     $router->post('/api/v1/collections/{collectionRefno}/actions/{action}', $requireApproverAction([$collectionController, 'action'], ['Daily Collection Entry', 'Collection']));
-    $router->patch('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'updateItem'], 'Daily Collection Entry', 'edit'));
+    $router->patch('/api/v1/collection-items/{itemId}', $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($collectionController, $collectionRepository, $permissionMiddleware): array {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $mainId = (int) ($claims['main_userid'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+
+        $itemId = (int) ($params['itemId'] ?? 0);
+        if ($itemId <= 0) {
+            throw new HttpException(422, 'itemId is required');
+        }
+
+        $body['main_id'] = $mainId;
+        $query['main_id'] = (string) $mainId;
+        $body['user_id'] = (int) ($claims['sub'] ?? 0);
+        $permissionMiddleware->assertActionPermission($claims, 'edit', 'Daily Collection Entry');
+
+        $existing = $collectionRepository->findCollectionItemForMain($itemId, $mainId);
+        if ($existing === null) {
+            throw new HttpException(404, 'Collection item not found');
+        }
+        if (isset($body['check_date']) && $body['check_date'] !== '') {
+            $previousCheckDate = trim((string) ($existing['lchk_date'] ?? ''));
+            $permissionMiddleware->assertDocumentDateWrite(
+                $claims,
+                (string) $body['check_date'],
+                $previousCheckDate !== '' ? $previousCheckDate : null
+            );
+        }
+
+        return $collectionController->updateItem($params, $query, $body);
+    }));
     $router->delete('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'deleteItem'], 'Daily Collection Entry', 'delete'));
     $router->get('/api/v1/contacts', [$contactsController, 'list']);
     $router->get('/api/v1/contacts/{id}', [$contactsController, 'show']);

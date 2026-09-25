@@ -131,6 +131,23 @@ SQL;
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    public function findCollectionItemForMain(int $itemId, int $mainId): ?array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT ci.*, col.lstatus AS collection_header_status
+             FROM tblcollection_item ci
+             INNER JOIN tblcollection col ON col.lrefno = ci.lrefno
+             WHERE ci.lid = :item_id AND col.lmain_id = :main_id
+             LIMIT 1'
+        );
+        $stmt->execute([
+            'item_id' => $itemId,
+            'main_id' => $mainId,
+        ]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    }
+
     public function getUnpaidInvoicesAndOrderSlips(int $mainId, string $customerId): array
     {
         $invoiceSql = <<<SQL
@@ -850,6 +867,17 @@ SQL;
         $item = $this->getCollectionItem($itemId);
         if ($item === null) {
             throw new RuntimeException('Collection item not found');
+        }
+
+        $collection = $this->getCollection((string) $item['lrefno']);
+        if ($collection === null) {
+            throw new RuntimeException('Collection record not found');
+        }
+        if ((int) ($item['lpost'] ?? 0) === 1 || (string) ($item['lcollection_status'] ?? '') === 'Posted') {
+            throw new RuntimeException('Posted collection items cannot be edited');
+        }
+        if ((string) ($collection['lstatus'] ?? '') !== 'Pending') {
+            throw new RuntimeException('Only payment lines in a pending collection can be edited');
         }
 
         $status = (string) ($payload['status'] ?? $item['lstatus']);

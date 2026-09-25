@@ -17,9 +17,9 @@ $expected = [
     '/api/v1/collections' => '$requireActionAuth',
     '/api/v1/collections/{collectionRefno}' => '$requireActionAuth',
     '/api/v1/collections/{collectionRefno}/items/post' => '$requireActionAuth',
-    '/api/v1/collections/{collectionRefno}/payments' => '$requireActionAuth',
+    '/api/v1/collections/{collectionRefno}/payments' => '$requireBearerAuthWithClaims',
     '/api/v1/collections/{collectionRefno}/actions/{action}' => '$requireApproverAction',
-    '/api/v1/collection-items/{itemId}' => '$requireActionAuth',
+    '/api/v1/collection-items/{itemId}' => '$requireBearerAuthWithClaims',
     '/api/v1/freight-charges' => '$requireActionAuth',
     '/api/v1/freight-charges/{refno}' => '$requireActionAuth',
     '/api/v1/freight-charges/{refno}/actions/{action}' => '$requireApproverAction',
@@ -68,6 +68,17 @@ foreach ($expected as $route => $wrapper) {
 
     if ($line === null || !str_contains($line, $wrapper)) {
         throw new RuntimeException("FAIL: {$route} is not protected by {$wrapper}");
+    }
+}
+
+foreach ([
+    "assertActionPermission(\$claims, 'add', 'Daily Collection Entry')",
+    "assertActionPermission(\$claims, 'edit', 'Daily Collection Entry')",
+    'findCollectionItemForMain($itemId, $mainId)',
+    'assertDocumentDateWrite(',
+] as $requiredCollectionItemGuard) {
+    if (!str_contains($source, $requiredCollectionItemGuard)) {
+        throw new RuntimeException("FAIL: collection item update is missing {$requiredCollectionItemGuard}");
     }
 }
 
