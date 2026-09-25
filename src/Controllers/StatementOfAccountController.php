@@ -20,11 +20,13 @@ final class StatementOfAccountController
             throw new HttpException(422, 'main_id is required');
         }
 
-        $limit = (int) ($query['limit'] ?? 100);
-        if ($limit <= 0) {
+        $limit = array_key_exists('limit', $query) ? (int) $query['limit'] : 100;
+        if ($limit < 0) {
             $limit = 100;
         }
-        $limit = min($limit, 500);
+        if ($limit > 0) {
+            $limit = min($limit, 500);
+        }
 
         return [
             'items' => $this->repo->listCustomers(
