@@ -12,9 +12,11 @@ $checks = [
     'repairs inquiry salesperson fields from the assigned customer agent' =>
         str_contains($migration, 'UPDATE tblinquiry AS inquiry')
         && str_contains($migration, 'INNER JOIN tblpatient AS customer')
-        && str_contains($migration, 'agent.lid = CAST(customer.lsales_person AS UNSIGNED)')
+        && str_contains($migration, "CAST(agent.lid AS CHAR) = TRIM(COALESCE(customer.lsales_person, ''))")
         && str_contains($migration, 'inquiry.lsales_person_id = CAST(customer.lsales_person AS CHAR)')
         && str_contains($migration, 'inquiry.lsalesperson = TRIM(CONCAT'),
+    'does not coerce blank or legacy agent values to integers' =>
+        !str_contains($migration, 'CAST(customer.lsales_person AS UNSIGNED)'),
     'preserves the recorded inquiry creator for Prepared By' =>
         !str_contains($migration, 'inquiry.luser ='),
     'repairs linked Sales Orders from the same customer agent' =>
