@@ -97,6 +97,8 @@ SELECT
     COALESCE(iq.lcompany, '') AS customer_company,
     COALESCE(iq.lsalesperson, '') AS sales_person,
     COALESCE(iq.lsales_person_id, '') AS sales_person_id,
+    COALESCE(iq.luser, '') AS created_by,
+    TRIM(CONCAT(COALESCE(creator.lfname, ''), ' ', COALESCE(creator.llname, ''))) AS created_by_name,
     COALESCE(iq.lsales_address, '') AS delivery_address,
     COALESCE(iq.linqno, '') AS reference_no,
     COALESCE(iq.lyour_refno, '') AS customer_reference,
@@ -128,6 +130,7 @@ SELECT
         ELSE 1
     END AS is_editable
 FROM tblinquiry iq
+LEFT JOIN tblaccount creator ON creator.lid = CAST(iq.luser AS UNSIGNED)
 WHERE {$whereSql}
 ORDER BY iq.lid DESC
 LIMIT :limit OFFSET :offset
@@ -235,6 +238,8 @@ SELECT
     COALESCE(iq.lcompany, '') AS customer_company,
     COALESCE(iq.lsalesperson, '') AS sales_person,
     COALESCE(iq.lsales_person_id, '') AS sales_person_id,
+    COALESCE(iq.luser, '') AS created_by,
+    TRIM(CONCAT(COALESCE(creator.lfname, ''), ' ', COALESCE(creator.llname, ''))) AS created_by_name,
     COALESCE(iq.lsales_address, '') AS delivery_address,
     COALESCE(iq.linqno, '') AS reference_no,
     COALESCE(iq.lyour_refno, '') AS customer_reference,
@@ -269,6 +274,7 @@ SELECT
         ELSE 1
     END AS is_editable
 FROM tblinquiry iq
+LEFT JOIN tblaccount creator ON creator.lid = CAST(iq.luser AS UNSIGNED)
 WHERE iq.lmain_id = :main_id
   AND iq.lrefno = :inquiry_refno
 LIMIT 1
@@ -328,7 +334,7 @@ SQL;
 
             $salesDate = $this->normalizeDate((string) ($payload['sales_date'] ?? date('Y-m-d')));
             $salesTime = $this->normalizeTime((string) ($payload['sales_time'] ?? date('H:i:s')));
-            $salesAttribution = $this->resolveCreatingUserSalesAttribution($userId, $payload);
+            $salesAttribution = $this->resolveCustomerSalesAttribution($customer);
 
             $insert = $pdo->prepare(
                 'INSERT INTO tblinquiry
@@ -403,6 +409,7 @@ SQL;
         }
         $itemsForLimit = is_array($payload['items'] ?? null) ? $payload['items'] : (array) ($existing['items'] ?? []);
         $this->assertInvoiceItemLimit($customer, $itemsForLimit);
+        $salesAttribution = $this->resolveCustomerSalesAttribution($customer);
 
         $salesDate = $this->normalizeDate((string) ($payload['sales_date'] ?? (string) ($existing['sales_date'] ?? date('Y-m-d'))));
         $status = $this->normalizeStatus((string) ($payload['status'] ?? (string) ($existing['status'] ?? 'Pending')));
@@ -416,6 +423,8 @@ SQL;
                     ltime = :ltime,
                     lcustomerid = :lcustomerid,
                     lcompany = :lcompany,
+                    lsalesperson = :lsalesperson,
+                    lsales_person_id = :lsales_person_id,
                     lsales_address = :lsales_address,
                     lterms = :lterms,
                     lterms_condition = :lterms_condition,
@@ -438,6 +447,8 @@ SQL;
                 'ltime' => $this->normalizeTime((string) ($payload['sales_time'] ?? (string) ($existing['sales_time'] ?? date('H:i:s')))),
                 'lcustomerid' => (string) ($payload['contact_id'] ?? $existing['contact_id'] ?? ''),
                 'lcompany' => (string) ($payload['customer_company'] ?? $existing['customer_company'] ?? ''),
+                'lsalesperson' => $salesAttribution['name'],
+                'lsales_person_id' => $salesAttribution['id'],
                 'lsales_address' => (string) ($payload['delivery_address'] ?? $existing['delivery_address'] ?? ''),
                 'lterms' => (string) ($payload['terms'] ?? $existing['terms'] ?? ''),
                 'lterms_condition' => (string) ($payload['terms'] ?? $existing['terms'] ?? ''),
@@ -1538,41 +1549,18 @@ SQL;
     }
 
     /**
-     * New documents belong to the creating account, not the customer's default agent.
+     * Sales Person belongs to the selected customer's assigned agent. The inquiry
+     * creator is stored separately in luser and exposed as Prepared By.
      *
-     * @param array<string, mixed> $payload
+     * @param array<string, mixed> $customer
      * @return array{id: string, name: string}
      */
-    private function resolveCreatingUserSalesAttribution(int $userId, array $payload): array
+    private function resolveCustomerSalesAttribution(array $customer): array
     {
-        $creatorId = $userId > 0 ? (string) $userId : '';
-        $creatorName = $creatorId !== '' ? $this->getAccountDisplayName((int) $creatorId) : '';
-        $explicitName = trim((string) ($payload['sales_person'] ?? ''));
-
         return [
-            'id' => $creatorId,
-            // Prefer the account's stored name; fall back to an explicit matching payload name only
-            // when the account row has no usable display name.
-            'name' => $creatorName !== '' ? $creatorName : $explicitName,
+            'id' => trim((string) ($customer['lsales_person'] ?? '')),
+            'name' => trim((string) ($customer['sales_person_name'] ?? '')),
         ];
-    }
-
-    private function getAccountDisplayName(int $accountId): string
-    {
-        if ($accountId <= 0) {
-            return '';
-        }
-
-        $stmt = $this->db->pdo()->prepare(
-            "SELECT TRIM(CONCAT(COALESCE(lfname, ''), ' ', COALESCE(llname, ''))) AS full_name
-             FROM tblaccount
-             WHERE lid = :id
-             LIMIT 1"
-        );
-        $stmt->bindValue('id', $accountId, \PDO::PARAM_INT);
-        $stmt->execute();
-
-        return trim((string) ($stmt->fetchColumn() ?: ''));
     }
 
     /**
