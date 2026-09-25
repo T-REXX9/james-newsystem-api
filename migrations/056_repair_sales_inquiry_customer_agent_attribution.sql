@@ -5,7 +5,9 @@ INNER JOIN tblpatient AS customer
     ON customer.lmain_id = inquiry.lmain_id
    AND customer.lsessionid = inquiry.lcustomerid
 LEFT JOIN tblaccount AS agent
-    ON agent.lid = CAST(customer.lsales_person AS UNSIGNED)
+    -- lSales_person is legacy text and can be blank or a stale display name.
+    -- Compare as text so strict MySQL mode never tries to coerce those values.
+    ON CAST(agent.lid AS CHAR) = TRIM(COALESCE(customer.lsales_person, ''))
 SET
     inquiry.lsales_person_id = CAST(customer.lsales_person AS CHAR),
     inquiry.lsalesperson = TRIM(CONCAT(COALESCE(agent.lfname, ''), ' ', COALESCE(agent.llname, '')))
@@ -22,7 +24,7 @@ INNER JOIN tblpatient AS customer
     ON customer.lmain_id = inquiry.lmain_id
    AND customer.lsessionid = inquiry.lcustomerid
 LEFT JOIN tblaccount AS agent
-    ON agent.lid = CAST(customer.lsales_person AS UNSIGNED)
+    ON CAST(agent.lid AS CHAR) = TRIM(COALESCE(customer.lsales_person, ''))
 SET
     sales_order.lsales_person_id = CAST(customer.lsales_person AS CHAR),
     sales_order.lsales_person = TRIM(CONCAT(COALESCE(agent.lfname, ''), ' ', COALESCE(agent.llname, '')))
