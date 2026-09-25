@@ -17,6 +17,7 @@ final class StatementOfAccountRepository
 
     public function listCustomers(int $mainId, string $search = '', int $limit = 100, ?string $userType = null): array
     {
+        $loadAllCustomers = $limit === 0 && trim($search) === '';
         $params = [];
         if (trim((string) $userType) !== '1') {
             $sql = <<<SQL
@@ -55,7 +56,10 @@ SQL;
             $params['search_session'] = $like;
         }
 
-        $sql .= ' ORDER BY p.lcompany ASC, p.lid DESC LIMIT :limit';
+        $sql .= ' ORDER BY p.lcompany ASC, p.lid DESC';
+        if (!$loadAllCustomers) {
+            $sql .= ' LIMIT :limit';
+        }
         $stmt = $this->db->pdo()->prepare($sql);
         foreach ($params as $key => $value) {
             if ($key === 'main_id') {
@@ -64,7 +68,9 @@ SQL;
             }
             $stmt->bindValue($key, (string) $value, PDO::PARAM_STR);
         }
-        $stmt->bindValue('limit', max(1, min(500, $limit)), PDO::PARAM_INT);
+        if (!$loadAllCustomers) {
+            $stmt->bindValue('limit', max(1, min(500, $limit)), PDO::PARAM_INT);
+        }
         $stmt->execute();
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);

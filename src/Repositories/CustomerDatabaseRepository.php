@@ -35,14 +35,17 @@ final class CustomerDatabaseRepository
         string $mode = 'full'
     ): array {
         $page = max(1, $page);
-        $perPage = min(500, max(1, $perPage));
-        $offset = ($page - 1) * $perPage;
+        $normalizedMode = strtolower(trim($mode));
+        $isPickerMode = $normalizedMode === 'picker' || $normalizedMode === 'minimal';
+        $loadAllPickerCustomers = $isPickerMode && $perPage === 0;
+        $perPage = $loadAllPickerCustomers ? 0 : min(500, max(1, $perPage));
+        $offset = $loadAllPickerCustomers ? 0 : ($page - 1) * $perPage;
 
-        $params = [
-            'main_id' => $mainId,
-            'limit' => $perPage,
-            'offset' => $offset,
-        ];
+        $params = ['main_id' => $mainId];
+        if (!$loadAllPickerCustomers) {
+            $params['limit'] = $perPage;
+            $params['offset'] = $offset;
+        }
         $where = ['p.lmain_id = :main_id', 'COALESCE(p.ldeleted, 0) = 0'];
 
         $normalizedStatus = strtolower(trim($status));
@@ -61,8 +64,6 @@ final class CustomerDatabaseRepository
         }
 
         $trimmedSearch = trim($search);
-        $normalizedMode = strtolower(trim($mode));
-        $isPickerMode = $normalizedMode === 'picker' || $normalizedMode === 'minimal';
         if ($trimmedSearch !== '') {
             $params['search_code'] = '%' . $trimmedSearch . '%';
             $params['search_company'] = '%' . $trimmedSearch . '%';
@@ -126,6 +127,7 @@ SQL;
             ? "COALESCE(p.ldiscount_code, '') AS discount_code,"
             : "'' AS discount_code,";
 
+        $paginationSql = $loadAllPickerCustomers ? '' : ' LIMIT :limit OFFSET :offset';
         $sql = $isPickerMode ? <<<SQL
 SELECT
     p.lid AS id,
@@ -143,7 +145,7 @@ SELECT
 FROM tblpatient p
 WHERE {$whereSql}
 ORDER BY p.lcompany ASC, p.lid ASC
-LIMIT :limit OFFSET :offset
+{$paginationSql}
 SQL
         : <<<SQL
 SELECT
@@ -211,7 +213,7 @@ LEFT JOIN tblaccount acc
     ON acc.lid = p.lsales_person
 WHERE {$whereSql}
 ORDER BY p.lcompany ASC, p.lid ASC
-LIMIT :limit OFFSET :offset
+{$paginationSql}
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $this->bindParams($stmt, $params, true);
@@ -233,16 +235,16 @@ SQL;
         }
 
         if ($isPickerMode) {
-            $total = $offset + count($items);
+            $total = $loadAllPickerCustomers ? count($items) : $offset + count($items);
         }
 
         return [
             'items' => $items,
             'meta' => [
                 'page' => $page,
-                'per_page' => $perPage,
+                'per_page' => $loadAllPickerCustomers ? count($items) : $perPage,
                 'total' => $total,
-                'total_pages' => $isPickerMode ? $page : (int) ceil($total / max(1, $perPage)),
+                'total_pages' => $loadAllPickerCustomers ? 1 : ($isPickerMode ? $page : (int) ceil($total / max(1, $perPage))),
                 'filters' => [
                     'search' => $trimmedSearch,
                     'status' => $normalizedStatus === '' ? 'all' : $normalizedStatus,
