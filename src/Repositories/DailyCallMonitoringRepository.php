@@ -2226,33 +2226,24 @@ SQL;
         $permissions = (new RolePermissionRepository($this->db))
             ->getActionPermissionsForAccount($mainId, $viewerUserId, (int) $userType);
         if (DailyCallAccessPolicy::canViewAll($permissions, $userType === '1')) {
+            // Unfiltered ("see everyone") access is granted only to a master
+            // user or to a permitted viewer who actually belongs to a team.
+            //
+            // Previously a non-master with the "See all records" permission was
+            // also unfiltered whenever they had at least one assigned customer.
+            // That leaked the whole company book to a plain, team-less agent: customers assigned to another
+            // agent and on no team surfaced on their account. A team-less agent
+            // must always be scoped to their own assignments, so that branch is
+            // gone -- team membership is now the only widening path besides the
+            // master role.
             if ($userType === '1'
                 || (int) ($viewer['team_id'] ?? 0) > 0
-                || $this->viewerHasIndividualAssignments($mainId, $viewerUserId)
             ) {
                 return null;
             }
         }
 
         return $viewerUserId;
-    }
-
-    private function viewerHasIndividualAssignments(int $mainId, int $viewerUserId): bool
-    {
-        $stmt = $this->db->pdo()->prepare(
-            'SELECT 1
-             FROM tblpatient
-             WHERE lmain_id = :main_id
-               AND COALESCE(ldeleted, 0) = 0
-               AND CAST(COALESCE(lsales_person, 0) AS SIGNED) = :viewer_id
-             LIMIT 1'
-        );
-        $stmt->execute([
-            'main_id' => $mainId,
-            'viewer_id' => $viewerUserId,
-        ]);
-
-        return (bool) $stmt->fetchColumn();
     }
 
     private function resolveViewerTeamContext(?int $viewerUserId): ?array
