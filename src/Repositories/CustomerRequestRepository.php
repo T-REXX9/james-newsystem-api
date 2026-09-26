@@ -11,6 +11,7 @@ use Throwable;
 final class CustomerRequestRepository
 {
     private const FIELDS = ['company','email','phone','mobile','sales_person_id','refer_by','address','delivery_address','area','city','province','tin','price_group','business_line','terms','transaction_type','vat_type','vat_percent','dealer_since','dealer_quota','credit_limit','status','notes','debt_type','preferred_brand','profile_type','verification','contacts'];
+    private const DUPLICATE_PROSPECT_FIELDS = ['company','email','phone','mobile','sales_person_id','refer_by','address','delivery_address','delivery_addresses','area','city','province','tin','price_group','discount_code','business_line','terms','transaction_type','vat_type','vat_percent','since','dealer_since','dealer_quota','credit_limit','status','notes','duplicate_override_reason','duplicate_override_confirmed','debt_type','preferred_brand','profile_type','verification','record_image','record_image_position','contacts'];
     public function __construct(private readonly Database $db) {}
 
     private function customers(): CustomerDatabaseRepository { return new CustomerDatabaseRepository($this->db); }
@@ -102,6 +103,66 @@ final class CustomerRequestRepository
         return ['id' => $id, 'status' => 'pending'];
     }
 
+    /**
+     * Store a prospective customer that matches an existing record without
+     * creating it yet. The Master User's approval will create the record.
+     *
+     * @return array{id: string, status: string, contact_id: string}
+     */
+    public function createDuplicateProspect(int $mainId, int $userId, array $payload): array
+    {
+        if (array_diff(array_keys($payload), self::DUPLICATE_PROSPECT_FIELDS)) {
+            throw new HttpException(422, 'Invalid duplicate prospect request');
+        }
+
+        $company = trim((string) ($payload['company'] ?? ''));
+        $reason = trim((string) ($payload['duplicate_override_reason'] ?? ''));
+        $isProspect = (int) ($payload['status'] ?? 1) === 3
+            || str_contains(strtolower((string) ($payload['profile_type'] ?? '')), 'prospect');
+        if ($company === '' || !$isProspect) {
+            throw new HttpException(422, 'A prospective customer is required');
+        }
+        if ($reason === '') {
+            throw new HttpException(422, 'A reason is required before submitting a duplicate prospect for approval');
+        }
+
+        foreach ($payload as $key => $value) {
+            if (in_array($key, ['contacts', 'delivery_addresses'], true)) {
+                if (!is_array($value)) {
+                    throw new HttpException(422, "Invalid {$key}");
+                }
+                continue;
+            }
+            if (!is_scalar($value) && $value !== null) {
+                throw new HttpException(422, "Invalid {$key}");
+            }
+            if (strlen((string) $value) > 2000) {
+                throw new HttpException(422, "{$key} is too long");
+            }
+        }
+
+        // The approval path must preserve the submitted reason and explicitly
+        // enable the duplicate override only after the Master User approves it.
+        $payload['duplicate_override_reason'] = $reason;
+        $payload['duplicate_override_confirmed'] = true;
+        $id = bin2hex(random_bytes(16));
+        $contactId = 'pending-prospect-' . $id;
+        $stmt = $this->db->pdo()->prepare(
+            'INSERT INTO customer_requests (id, main_id, contact_id, kind, payload, baseline, submitted_by) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            $id,
+            $mainId,
+            $contactId,
+            'duplicate_prospect',
+            json_encode($payload, JSON_THROW_ON_ERROR),
+            json_encode([], JSON_THROW_ON_ERROR),
+            $userId,
+        ]);
+
+        return ['id' => $id, 'status' => 'pending', 'contact_id' => $contactId];
+    }
+
     /** @return array<string, mixed> */
     public function request(int $mainId, string $contactId, string $id): array
     {
@@ -138,6 +199,7 @@ final class CustomerRequestRepository
             $request = $stmt->fetch();
             if (!$request) throw new HttpException(404, 'Request not found');
             if ($request['status'] !== 'pending') throw new HttpException(409, 'This request has already been reviewed');
+            $createdContactId = null;
             if ($decision === 'approved' && $request['kind'] === 'customer_update') {
                 $lock = $pdo->prepare('SELECT lid FROM tblpatient WHERE lmain_id = ? AND lsessionid = ? FOR UPDATE');
                 $lock->execute([$mainId, $contactId]);
@@ -161,13 +223,20 @@ final class CustomerRequestRepository
                     }
                     foreach ($customer['contacts'] as $person) if (!in_array((int) $person['id'], $kept, true)) $this->customers()->deleteContact($mainId, (int) $person['id']);
                 }
+            } elseif ($decision === 'approved' && $request['kind'] === 'duplicate_prospect') {
+                $payload = json_decode($request['payload'], true, 512, JSON_THROW_ON_ERROR);
+                if (!is_array($payload)) {
+                    throw new HttpException(422, 'Invalid duplicate prospect request');
+                }
+                $created = $this->customers()->createCustomer($mainId, (int) $request['submitted_by'], $payload);
+                $createdContactId = (string) ($created['session_id'] ?? '');
             }
             $stmt = $pdo->prepare('UPDATE customer_requests SET status = ?, reviewed_by = ?, reviewed_at = NOW(), review_note = ? WHERE id = ? AND main_id = ?');
             $stmt->execute([$decision, $reviewer, $note, $id, $mainId]);
             $audit = $pdo->prepare('INSERT INTO tblaudit_trail (lmain_id,luser_id,lpage,laction,lrefno,ldatetime) VALUES (?,?,?,?,?,NOW())');
             $audit->execute([$mainId, $reviewer, 'Customer Requests', ucfirst($decision) . ' ' . $request['kind'], $id]);
             $pdo->commit();
-            return ['id' => $id, 'status' => $decision];
+            return ['id' => $id, 'status' => $decision, 'contact_id' => $createdContactId ?? $contactId];
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
             throw $e;

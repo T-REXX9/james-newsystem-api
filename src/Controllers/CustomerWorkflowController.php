@@ -131,6 +131,10 @@ final class CustomerWorkflowController
     public function reviewRequest(array $params, array $query, array $body): array
     {
         [$mainId, $userId] = $this->context($query, $body);
+        $reviewer = $this->auth->findUserById($userId);
+        if (!$reviewer || (string) ($reviewer['ltype'] ?? '') !== '1') {
+            throw new HttpException(403, 'Only a Master User can review customer requests');
+        }
         $contactId = rawurldecode($params['contactId']);
         $requestId = (string) $params['requestId'];
         $requests = new CustomerRequestRepository($this->db);
@@ -140,13 +144,17 @@ final class CustomerWorkflowController
         }
         $decision = (string) ($body['decision'] ?? '');
         $result = $requests->review($mainId, $contactId, $requestId, $userId, $decision, trim((string) ($body['note'] ?? '')));
-        if ($request['kind'] === 'customer_update' && (int) ($request['submitted_by'] ?? 0) > 0) {
-            $customer = $requests->customer($mainId, $contactId);
-            $customerName = trim((string) ($customer['company'] ?? '')) ?: 'a customer';
+        if (in_array($request['kind'], ['customer_update', 'duplicate_prospect'], true) && (int) ($request['submitted_by'] ?? 0) > 0) {
+            $customerName = $request['kind'] === 'duplicate_prospect'
+                ? trim((string) (($request['payload'] ?? [])['company'] ?? ''))
+                : trim((string) ($requests->customer($mainId, $contactId)['company'] ?? ''));
+            $customerName = $customerName ?: 'a customer';
             $isBlacklistRequest = strtolower(trim((string) (($request['payload'] ?? [])['debt_type'] ?? ''))) === 'bad';
             $this->notifyBestEffort([
                 'recipient_id' => (string) $request['submitted_by'],
-                'title' => $isBlacklistRequest ? 'Reject / Blacklist Request ' . ucfirst($decision) : 'Customer Request ' . ucfirst($decision),
+                'title' => $request['kind'] === 'duplicate_prospect'
+                    ? 'Duplicate Prospect Request ' . ucfirst($decision)
+                    : ($isBlacklistRequest ? 'Reject / Blacklist Request ' . ucfirst($decision) : 'Customer Request ' . ucfirst($decision)),
                 'message' => sprintf('Your request for %s was %s.', $customerName, $decision),
                 'type' => $decision === 'approved' ? 'success' : 'info',
                 'category' => 'notification',
