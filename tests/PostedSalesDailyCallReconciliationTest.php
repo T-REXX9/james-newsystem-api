@@ -41,17 +41,21 @@ $property->setValue($db, $pdo);
 
 $today = date('Y-m-d');
 $tomorrow = date('Y-m-d', strtotime('+1 day'));
-$pdo->exec("INSERT INTO tblpatient VALUES (1, 'active-customer', 'Active Customer', 0), (1, 'orphan-crisjeff', 'Old CRISJEFF', 1)");
+$pdo->exec("INSERT INTO tblpatient VALUES (1, 'active-customer', 'Active Customer', 0), (1, 'orphan-crisjeff', 'Old CRISJEFF', 1), (1, 'greg-lcancel-zero', 'GREG CALIBRATION CENTER', 0)");
 $pdo->exec("INSERT INTO tblinvoice_list VALUES (1, 'INV-ACTIVE', 1, '{$today} 08:00:00', '{$today}', 'Active Customer', 'active-customer', '', '', '', 'Inclusive', '', NULL, 0, 'Posted')");
 $pdo->exec("INSERT INTO tblinvoice_itemrec VALUES (1, 'INV-ACTIVE', 1, 100, 'Parts')");
 $pdo->exec("INSERT INTO tbldelivery_receipt VALUES (1, 'N-D38803', 1, '{$today}', 'CRISJEFF CALIBRATION SERVICES', 'orphan-crisjeff', '', '', '', 'Inclusive', '', NULL, 'Posted')");
 $pdo->exec("INSERT INTO tbldelivery_receipt_items VALUES (1, 'N-D38803', 1, 10200, 'Parts')");
 $pdo->exec("INSERT INTO tbldelivery_receipt VALUES (2, 'N-FUTURE', 1, '{$tomorrow}', 'Future Customer', 'future-customer', '', '', '', 'Inclusive', '', NULL, 'Posted')");
 $pdo->exec("INSERT INTO tbldelivery_receipt_items VALUES (2, 'N-FUTURE', 1, 800, 'Parts')");
+// Posted delivery receipt whose lcancel is the integer 0 (NOT NULL / '') --
+// the real production shape (e.g. GREG's N-D39172). Must count as a sale.
+$pdo->exec("INSERT INTO tbldelivery_receipt VALUES (3, 'N-D39172', 1, '{$today}', 'GREG CALIBRATION CENTER', 'greg-lcancel-zero', '', '', '', 'Inclusive', '', '0', 'Posted')");
+$pdo->exec("INSERT INTO tbldelivery_receipt_items VALUES (3, 'N-D39172', 1, 12000, 'Parts')");
 
 $salesReport = (new SalesReportRepository($db))->getSalesReport(1, 'custom', $today, $today, 'All');
 $salesReportTotal = (float) ($salesReport['summary']['grandTotal']['total'] ?? 0);
-reconciliation_expect($salesReportTotal === 10300.0, 'Sales Report includes the active invoice and orphaned posted receipt');
+reconciliation_expect($salesReportTotal === 22300.0, 'Sales Report includes the active invoice, orphaned receipt, and lcancel=0 posted receipt');
 
 // SQLite does not implement MySQL date helpers. Anchor its replacements to the
 // PHP test date instead of SQLite's UTC clock so the fixture remains stable in
@@ -99,6 +103,9 @@ reconciliation_expect($orphan !== null, 'soft-deleted customer remains in the Da
 reconciliation_expect((int) $orphan['data_integrity_exception'] === 1, 'orphaned posted sale is identified as a data-integrity exception');
 reconciliation_expect($orphan['customer_name'] === 'CRISJEFF CALIBRATION SERVICES', 'orphan uses the document customer name without inventing customer data');
 reconciliation_expect((float) $orphan['current_month_sales'] === 10200.0, 'orphan retains delivery receipt N-D38803 amount');
+$gregRow = array_values(array_filter($dailyCallRows, static fn(array $row): bool => $row['customer_id'] === 'greg-lcancel-zero'))[0] ?? null;
+reconciliation_expect($gregRow !== null, 'lcancel=0 posted-receipt customer appears in the Daily Call universe');
+reconciliation_expect((float) $gregRow['current_month_sales'] === 12000.0, 'lcancel=0 posted delivery receipt N-D39172 counts as current-month sales');
 reconciliation_expect(!in_array('future-customer', array_column($dailyCallRows, 'customer_id'), true), 'future-dated posted documents are excluded through today');
 
 echo "Posted sales / Daily Call reconciliation regression passed.\n";
