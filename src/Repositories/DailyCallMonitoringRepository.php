@@ -658,7 +658,10 @@ SELECT
     COALESCE(p.lcity, '') AS city,
     CASE
         WHEN TRIM(COALESCE(p.lrefer_by, '')) <> '' THEN p.lrefer_by
-        WHEN YEAR(COALESCE(NULLIF(p.ldatereg, ''), NULLIF(p.ldatetime, ''))) >= 2025 THEN 'TND'
+        WHEN YEAR(COALESCE(
+            STR_TO_DATE(NULLIF(NULLIF(TRIM(COALESCE(p.ldatereg, '')), ''), '0000-00-00'), '%Y-%m-%d'),
+            STR_TO_DATE(NULLIF(NULLIF(TRIM(SUBSTRING(COALESCE(p.ldatetime, ''), 1, 10)), ''), '0000-00-00'), '%Y-%m-%d')
+        )) >= 2025 THEN 'TND'
         ELSE 'QBP'
     END AS prospect_source,
     NULLIF(TRIM(CONCAT(COALESCE(encoder.lfname, ''), ' ', COALESCE(encoder.llname, ''))), '') AS prospect_created_by,
