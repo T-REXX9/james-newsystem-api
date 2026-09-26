@@ -864,7 +864,13 @@ SQL;
         $oldVerification = strtolower(trim((string) ($existing['verification'] ?? '')));
         $newVerification = strtolower(trim((string) ($payload['verification'] ?? $existing['verification'] ?? '')));
         $newStatus = isset($payload['status']) ? (int) $payload['status'] : (int) ($existing['status'] ?? 1);
-        if ($newVerification === 'verified' && $oldVerification !== 'verified') {
+        // Write the verification audit whenever the record ends up Verified but has no
+        // 'Verify Prospect' audit yet. Keying on a text transition alone (old != verified)
+        // left legacy/imported rows already labelled 'Verified' — but with no audit —
+        // stuck: verified_in_system stays 0, so the Daily Call list keeps them Unverified
+        // and the Verify button appears to do nothing (row flickers out then returns).
+        if ($newVerification === 'verified'
+            && ($oldVerification !== 'verified' || !$this->hasVerifyProspectAudit($mainId, $sessionId))) {
             $auditPage = 'Daily Call Monitoring Dashboard';
             $auditAction = 'Verify Prospect';
         } elseif ($newStatus === 4 || $newVerification === 'rejected') {
@@ -883,6 +889,27 @@ SQL;
         }
 
         return $this->getCustomer($mainId, $sessionId);
+    }
+
+    /**
+     * True when a 'Verify Prospect' audit row already exists for this customer.
+     * This is the same signal the Daily Call master list reads as verified_in_system,
+     * so if it is missing we must (re)write the audit even when lverification is
+     * already 'Verified' (legacy/imported rows), otherwise the row never leaves the
+     * Unverified bucket.
+     */
+    private function hasVerifyProspectAudit(int $mainId, string $sessionId): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT 1 FROM tblaudit_trail
+             WHERE lmain_id = :main_id
+               AND lrefno = :refno
+               AND lpage = 'Daily Call Monitoring Dashboard'
+               AND laction = 'Verify Prospect'
+             LIMIT 1"
+        );
+        $stmt->execute(['main_id' => $mainId, 'refno' => $sessionId]);
+        return (bool) $stmt->fetchColumn();
     }
 
     /**
