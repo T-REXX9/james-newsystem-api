@@ -86,6 +86,8 @@ final class DailyCallMonitoringRepository
                 'id' => $cid,
                 'source' => $customer['source'] ?: 'Manual',
                 'assignedTo' => $customer['assigned_to'] ?: 'Unassigned',
+                'assignedTeamId' => trim((string) ($customer['assigned_team_id'] ?? '')) === '0' ? '' : trim((string) ($customer['assigned_team_id'] ?? '')),
+                'assignedTeam' => (string) ($customer['assigned_team'] ?? ''),
                 'assignedDate' => $this->formatDateText($customer['assigned_date']),
                 'clientSince' => $this->formatDateText($metricsRow['first_purchase_date'] ?? null),
                 'province' => $customer['province'] ?: '—',
