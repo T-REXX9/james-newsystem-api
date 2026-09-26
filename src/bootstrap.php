@@ -702,7 +702,7 @@ function app_router(): Router
     $router->get('/api/v1/customer-workflows/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'allRequests']));
     $router->get('/api/v1/customer-workflows/{contactId}/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'requests']));
     $router->post('/api/v1/customer-workflows/{contactId}/requests', $requireActionAuth([$customerWorkflowController, 'createRequest'], 'Customer', 'add'));
-    $router->post('/api/v1/customer-workflows/{contactId}/requests/{requestId}/review', $requireApproverAction([$customerWorkflowController, 'reviewRequest'], ['Customer Request', 'Customer', 'CR']));
+    $router->post('/api/v1/customer-workflows/{contactId}/requests/{requestId}/review', $requireMasterUser([$customerWorkflowController, 'reviewRequest']));
     $router->get('/api/v1/customers/{sessionId}', $requireViewAuth([$customerController, 'show'], 'Customer Database'));
     $router->get('/api/v1/customers/{sessionId}/purchase-history', $requireViewAuth([$customerController, 'purchaseHistory'], 'Customer Database'));
     $router->get('/api/v1/customers/{sessionId}/purchased-items', $requireViewAuth([$customerController, 'purchasedItems'], 'Customer Database'));
