@@ -676,7 +676,13 @@ SELECT
         ELSE txn_summary.last_purchase_date_raw
     END AS last_purchase_date_raw,
     COALESCE(ledger_summary.purchase_count, 0) + COALESCE(txn_summary.purchase_count, 0) + CASE WHEN COALESCE(ledger_summary.purchase_count, 0) + COALESCE(txn_summary.purchase_count, 0) = 0 THEN COALESCE(sales_report_current_month.document_count, 0) ELSE 0 END AS purchase_count,
-    COALESCE(ledger_summary.priority_transaction_count, 0) + COALESCE(txn_summary.priority_transaction_count, 0) + CASE WHEN COALESCE(ledger_summary.priority_transaction_count, 0) + COALESCE(txn_summary.priority_transaction_count, 0) = 0 THEN COALESCE(sales_report_current_month.document_count, 0) ELSE 0 END AS priority_transaction_count,
+    CASE
+        WHEN COALESCE(sales_report_current_month.document_count, 0) > 0 THEN GREATEST(
+            1,
+            COALESCE(ledger_summary.priority_transaction_count, 0) + COALESCE(txn_summary.priority_transaction_count, 0)
+        )
+        ELSE COALESCE(ledger_summary.priority_transaction_count, 0) + COALESCE(txn_summary.priority_transaction_count, 0)
+    END AS priority_transaction_count,
     COALESCE(ledger_summary.ledger_transaction_count, 0) + COALESCE(txn_summary.transaction_count, 0) + CASE WHEN COALESCE(ledger_summary.ledger_transaction_count, 0) + COALESCE(txn_summary.transaction_count, 0) = 0 THEN COALESCE(sales_report_current_month.document_count, 0) ELSE 0 END AS ledger_transaction_count,
     COALESCE(ledger_summary.historical_transaction_count, 0) + COALESCE(txn_summary.historical_transaction_count, 0) AS historical_transaction_count,
     GREATEST(
