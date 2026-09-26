@@ -14,7 +14,7 @@ $mainId = 1;
 $agentId = 68;
 $today = date('Y-m-d');
 $stamp = date('YmdHis') . '-' . random_int(1000, 9999);
-$sessionIds = ["ASSIGN-DIRECT-{$stamp}", "ASSIGN-BULK-{$stamp}", "ASSIGN-TEAM-{$stamp}"];
+$sessionIds = ["ASSIGN-DIRECT-{$stamp}", "ASSIGN-BULK-{$stamp}", "ASSIGN-TEAM-{$stamp}", "ASSIGN-CREATE-{$stamp}", "ASSIGN-CREATE-NONE-{$stamp}"];
 
 $assert = static function (bool $condition, string $label): void {
     if (!$condition) {
@@ -34,6 +34,11 @@ $assignmentDate = static function (string $sessionId) use ($pdo, $mainId): ?stri
 
 try {
     foreach ($sessionIds as $index => $sessionId) {
+        // The two ASSIGN-CREATE sessions are created explicitly below to exercise
+        // the create path with and without an agent already assigned.
+        if ($sessionId === $sessionIds[3] || $sessionId === $sessionIds[4]) {
+            continue;
+        }
         $customers->createCustomer($mainId, 1, [
             'session_id' => $sessionId,
             'company' => "Agent assignment date test {$stamp}-{$index}",
@@ -74,6 +79,35 @@ try {
 
     $customers->bulkUpdateCustomers($mainId, [$sessionIds[2]], ['sales_team_id' => 3]);
     $assert($assignmentDate($sessionIds[2]) === null, 'team-only assignment does not create an agent assignment date');
+
+    // Create path: a prospect created with an agent already assigned (e.g. an
+    // unverified prospect auto-assigned to its staff's agent) must record the
+    // assignment date at insert time, not leave it blank.
+    $customers->createCustomer($mainId, 1, [
+        'session_id' => $sessionIds[3],
+        'company' => "Agent assignment date create test {$stamp}",
+        'phone' => '09171234567',
+        'mobile' => '09171234567',
+        'status' => 3,
+        'profile_type' => 'Prospect',
+        'debt_type' => 'Good',
+        'refer_by' => 'QBP',
+        'sales_person_id' => (string) $agentId,
+    ]);
+    $assert($assignmentDate($sessionIds[3]) === $today, 'creating a prospect with an agent assigned stores today as assignment date');
+
+    // Create path without an agent: the assignment date stays NULL.
+    $customers->createCustomer($mainId, 1, [
+        'session_id' => $sessionIds[4],
+        'company' => "Agent assignment date create none test {$stamp}",
+        'phone' => '09171234567',
+        'mobile' => '09171234567',
+        'status' => 3,
+        'profile_type' => 'Prospect',
+        'debt_type' => 'Good',
+        'refer_by' => 'QBP',
+    ]);
+    $assert($assignmentDate($sessionIds[4]) === null, 'creating a prospect with no agent leaves the assignment date empty');
 } finally {
     foreach ($sessionIds as $sessionId) {
         $pdo->prepare('DELETE FROM tblcontact_person WHERE lrefno = :session_id')->execute(['session_id' => $sessionId]);
