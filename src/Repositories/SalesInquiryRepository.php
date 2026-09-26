@@ -102,6 +102,7 @@ SELECT
     COALESCE(iq.lsales_address, '') AS delivery_address,
     COALESCE(iq.linqno, '') AS reference_no,
     COALESCE(iq.lyour_refno, '') AS customer_reference,
+    COALESCE(iq.lshipped, '') AS send_by,
     COALESCE(iq.lprice_group, '') AS price_group,
     COALESCE(iq.lcredit_limit, 0) AS credit_limit,
     COALESCE(iq.lterms, '') AS terms,
@@ -243,6 +244,7 @@ SELECT
     COALESCE(iq.lsales_address, '') AS delivery_address,
     COALESCE(iq.linqno, '') AS reference_no,
     COALESCE(iq.lyour_refno, '') AS customer_reference,
+    COALESCE(iq.lshipped, '') AS send_by,
     COALESCE(iq.lprice_group, '') AS price_group,
     COALESCE(iq.lcredit_limit, 0) AS credit_limit,
     COALESCE(iq.lterms, '') AS terms,
@@ -338,9 +340,9 @@ SQL;
 
             $insert = $pdo->prepare(
                 'INSERT INTO tblinquiry
-                (linqno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lcompany, lsalesperson, lsales_person_id, lsales_address, lterms, lterms_condition, lmy_refno, lyour_refno, lprice_group, lcredit_limit, lpromissory_note, lpo_no, lnote, lsource, lsubmitstat, IsCancel, ltransaction_status, lurgency, lurgency_date, lvat_type, lvat_percent, lcity)
+                (linqno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lcompany, lsalesperson, lsales_person_id, lsales_address, lterms, lterms_condition, lmy_refno, lyour_refno, lprice_group, lcredit_limit, lpromissory_note, lpo_no, lnote, lsource, lsubmitstat, IsCancel, ltransaction_status, lurgency, lurgency_date, lvat_type, lvat_percent, lcity, lshipped)
                 VALUES
-                (:linqno, :ldate, :ltime, :lcustomerid, :lmain_id, :luser, :lrefno, :lcompany, :lsalesperson, :lsales_person_id, :lsales_address, :lterms, :lterms_condition, :lmy_refno, :lyour_refno, :lprice_group, :lcredit_limit, :lpromissory_note, :lpo_no, :lnote, :lsource, :lsubmitstat, 0, "Unposted", :lurgency, :lurgency_date, :lvat_type, :lvat_percent, :lcity)'
+                (:linqno, :ldate, :ltime, :lcustomerid, :lmain_id, :luser, :lrefno, :lcompany, :lsalesperson, :lsales_person_id, :lsales_address, :lterms, :lterms_condition, :lmy_refno, :lyour_refno, :lprice_group, :lcredit_limit, :lpromissory_note, :lpo_no, :lnote, :lsource, :lsubmitstat, 0, "Unposted", :lurgency, :lurgency_date, :lvat_type, :lvat_percent, :lcity, :lshipped)'
             );
             $insert->execute([
                 'linqno' => $inquiryNo,
@@ -370,6 +372,7 @@ SQL;
                 'lvat_type' => (string) ($payload['vat_type'] ?? ($customer['lvat_type'] ?? '')),
                 'lvat_percent' => isset($payload['vat_percent']) ? (float) $payload['vat_percent'] : (float) ($customer['lvat_percent'] ?? 0),
                 'lcity' => (string) ($customer['lcity'] ?? ''),
+                'lshipped' => (string) ($payload['send_by'] ?? ''),
             ]);
 
             foreach ($items as $item) {
@@ -438,7 +441,8 @@ SQL;
                     lsource = :lsource,
                     lsubmitstat = :lsubmitstat,
                     lurgency = :lurgency,
-                    lurgency_date = :lurgency_date
+                    lurgency_date = :lurgency_date,
+                    lshipped = :lshipped
                  WHERE lmain_id = :lmain_id
                    AND lrefno = :lrefno'
             );
@@ -463,6 +467,7 @@ SQL;
                 'lsubmitstat' => $status,
                 'lurgency' => (string) ($payload['urgency'] ?? $existing['urgency'] ?? ''),
                 'lurgency_date' => $this->normalizeNullableDate((string) ($payload['urgency_date'] ?? $existing['urgency_date'] ?? '')),
+                'lshipped' => (string) ($payload['send_by'] ?? $existing['send_by'] ?? ''),
                 'lmain_id' => (string) $mainId,
                 'lrefno' => $inquiryRefno,
             ]);
