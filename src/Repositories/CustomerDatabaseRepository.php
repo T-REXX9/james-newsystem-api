@@ -397,9 +397,9 @@ SQL;
             $discountCodeInsertValue = $this->hasCustomerDiscountCodeColumn() ? ', :discount_code' : '';
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, ldate_assigned, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :date_assigned, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
             );
             $insertParams = [
                 'main_id' => $mainId,
@@ -411,6 +411,7 @@ SQL;
                 'phone' => (string) ($payload['phone'] ?? ''),
                 'mobile' => (string) ($payload['mobile'] ?? ''),
                 'sales_person' => (string) ($payload['sales_person_id'] ?? ''),
+                'date_assigned' => trim((string) ($payload['sales_person_id'] ?? '')) !== '' ? date('Y-m-d') : null,
                 'refer_by' => (string) ($payload['refer_by'] ?? ''),
                 'address' => (string) ($payload['address'] ?? ''),
                 'delivery_address' => $deliveryAddresses[0] ?? (string) ($payload['address'] ?? ''),
