@@ -369,4 +369,26 @@ final class CustomerDatabaseController
             'data' => $this->repo->getCustomerCountsByProvince($mainId),
         ];
     }
+
+    /**
+     * GET /api/v1/customer-database/{sessionId}/assignment-history
+     * Returns the customer's agent-assignment history, newest first.
+     */
+    public function assignmentHistory(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        $sessionId = trim((string) ($params['sessionId'] ?? ''));
+        if ($sessionId === '') {
+            throw new HttpException(422, 'sessionId is required');
+        }
+
+        return [
+            'data' => [
+                'items' => $this->repo->getAssignmentHistory($mainId, $sessionId),
+            ],
+        ];
+    }
 }
