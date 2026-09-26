@@ -735,14 +735,13 @@ SELECT
         ELSE COALESCE(txn_summary.recovery_trailing_12_month_month_count, 0)
     END AS recovery_trailing_12_month_month_count,
     COALESCE(ledger_summary.last_active_year, txn_summary.last_active_year) AS last_active_year,
-    -- Current-month sales follow the ledger invoice/order-slip debits (which
-    -- include delivery receipts, recorded as 'Order Slip'), so the column
-    -- matches the customer's ledger and the Sales Report total. Falls back to
-    -- the posted-invoice/DR figure only when the customer has no ledger rows.
-    CASE
-        WHEN ledger_summary.current_month_sales IS NOT NULL THEN ledger_summary.current_month_sales
-        ELSE COALESCE(sales_report_current_month.current_month_sales, 0)
-    END AS current_month_sales,
+    -- Current-month sales come SOLELY from the Sales Report definition
+    -- (posted invoices + delivery receipts via PostedSalesDocumentSql), the
+    -- same source as the dashboard "Current Month Sales (Sales Report)"
+    -- headline. This keeps every current-month sales figure reconciled with
+    -- the Sales Report and excludes unconverted sales orders that only exist
+    -- as ledger "Order Slip" debits.
+    COALESCE(sales_report_current_month.current_month_sales, 0) AS current_month_sales,
     COALESCE(ledger_summary.last_month_sales, 0) + COALESCE(txn_summary.last_month_sales, 0) AS last_month_sales,
     COALESCE(ledger_summary.recent_three_month_sales, 0) + COALESCE(txn_summary.recent_three_month_sales, 0) AS recent_three_month_sales,
     COALESCE(ledger_summary.previous_three_month_sales, 0) + COALESCE(txn_summary.previous_three_month_sales, 0) AS previous_three_month_sales,
