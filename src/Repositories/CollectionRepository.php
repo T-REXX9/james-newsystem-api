@@ -940,14 +940,14 @@ SQL;
                 $txNos = [];
 
                 foreach ($transactions as $tx) {
-                    $txType = (string) ($tx['transaction_type'] ?? '');
+                    $txType = (string) ($tx['transaction_type'] ?? $tx['ltransaction_type'] ?? '');
                     if ($txType !== 'Invoice' && $txType !== 'OrderSlip') {
                         continue;
                     }
 
-                    $txRefno = (string) ($tx['transaction_refno'] ?? '');
-                    $txNo = (string) ($tx['transaction_no'] ?? '');
-                    $txAmt = (float) ($tx['transaction_amount'] ?? 0);
+                    $txRefno = (string) ($tx['transaction_refno'] ?? $tx['ltransaction_refno'] ?? '');
+                    $txNo = (string) ($tx['transaction_no'] ?? $tx['ltransaction_no'] ?? '');
+                    $txAmt = (float) ($tx['transaction_amount'] ?? $tx['ltransaction_amount'] ?? 0);
                     if ($txRefno === '' || $txNo === '' || $txAmt <= 0) {
                         continue;
                     }
@@ -996,6 +996,7 @@ SQL;
             'collection_refno' => $item['lrefno'],
             'status' => $status,
             'ltransaction_no' => $colTrans,
+            'item' => $this->getCollectionItem($itemId),
         ];
     }
 
