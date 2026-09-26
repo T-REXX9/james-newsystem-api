@@ -707,11 +707,19 @@ SQL;
             foreach ($entries as $entry) {
                 if (!is_array($entry)) continue;
                 $itemSession = trim((string) ($entry['item_session'] ?? ''));
-                $warehouse = strtoupper(trim((string) ($entry['warehouse'] ?? '')));
                 if ($itemSession === '') {
                     throw new RuntimeException('Each count requires item_session');
                 }
-                $warehouse = 'CENTRALIZED';
+                // Store the adjustment against the item's REAL warehouse (the one its
+                // stock actually lives in) so it lines up with every other movement for
+                // the item and appears in Stock Movement. 'CENTRALIZED' is only a UI
+                // display label meaning "all warehouses combined" -- it must never be
+                // written as a stored warehouse value. An explicit warehouse on the
+                // entry wins; otherwise resolve from the item's existing logs (default WH1).
+                $requestedWarehouse = strtoupper(trim((string) ($entry['warehouse'] ?? '')));
+                $warehouse = ($requestedWarehouse !== '' && $requestedWarehouse !== 'CENTRALIZED')
+                    ? $requestedWarehouse
+                    : $this->resolveItemWarehouse($pdo, $itemSession);
                 $product = $this->findItem($mainId, $itemSession);
                 if ($product === null) {
                     throw new RuntimeException('Inventory item not found: ' . $itemSession);
@@ -927,6 +935,31 @@ SQL;
         );
         if ($rows !== []) return $rows;
         return array_map(static fn (int $number): array => ['name' => 'WH' . $number], range(1, 6));
+    }
+
+    /**
+     * Resolve the warehouse an item's stock actually lives in, so a new stock
+     * adjustment is filed against the same warehouse as its other movements
+     * (Order Slip, Invoice, Receiving, ...) instead of a synthetic label.
+     *
+     * Picks the warehouse of the item's most recent inventory-log row, ignoring
+     * blank and 'CENTRALIZED' values. Falls back to 'WH1' when the item has no
+     * usable prior log, matching the default used elsewhere in the codebase.
+     */
+    private function resolveItemWarehouse(PDO $pdo, string $itemSession): string
+    {
+        $stmt = $pdo->prepare(
+            "SELECT lwarehouse
+             FROM tblinventory_logs
+             WHERE linvent_id = :item_session
+               AND TRIM(COALESCE(lwarehouse, '')) <> ''
+               AND UPPER(TRIM(lwarehouse)) <> 'CENTRALIZED'
+             ORDER BY lid DESC
+             LIMIT 1"
+        );
+        $stmt->execute(['item_session' => $itemSession]);
+        $warehouse = trim((string) ($stmt->fetchColumn() ?: ''));
+        return $warehouse !== '' ? $warehouse : 'WH1';
     }
 
     /** @return array{stock:int,location:string} */
