@@ -67,6 +67,84 @@ $run('buildMergeSql uses INSERT IGNORE when only primary keys are shared', stati
     }
 });
 
+$run('tblinventory_price upserts only the current price amount on collision', static function (): void {
+    $plan = CorporateDumpImportService::buildMergeSql(
+        'target_db',
+        'source_db',
+        'tblinventory_price',
+        ['lid', 'lrefno', 'linv_refno', 'lprice_name', 'lprice_amt', 'lprice_amt_old'],
+        ['lprice_amt']
+    );
+    if ($plan === null || $plan['mode'] !== 'upsert') {
+        throw new RuntimeException('expected upsert plan for tblinventory_price');
+    }
+    if (!str_contains($plan['sql'], 'ON DUPLICATE KEY UPDATE')) {
+        throw new RuntimeException('expected ON DUPLICATE KEY UPDATE');
+    }
+    if (!str_contains($plan['sql'], '`lprice_amt` = VALUES(`lprice_amt`)')) {
+        throw new RuntimeException('expected lprice_amt to be refreshed');
+    }
+    // Only the current amount is refreshed -- the previous-price column stays.
+    if (str_contains($plan['sql'], 'lprice_amt_old` = VALUES')) {
+        throw new RuntimeException('lprice_amt_old must NOT be overwritten');
+    }
+    if (str_contains($plan['sql'], 'INSERT IGNORE')) {
+        throw new RuntimeException('upsert must not be INSERT IGNORE');
+    }
+});
+
+$run('tblinventory upserts legacy denormalized price columns on collision', static function (): void {
+    $plan = CorporateDumpImportService::buildMergeSql(
+        'target_db',
+        'source_db',
+        'tblinventory',
+        ['lid', 'lsku', 'lprice', 'lsuppprice', 'lquantity'],
+        ['lprice', 'lsuppprice']
+    );
+    if ($plan === null || $plan['mode'] !== 'upsert') {
+        throw new RuntimeException('expected upsert plan for tblinventory');
+    }
+    if (!str_contains($plan['sql'], '`lprice` = VALUES(`lprice`)')
+        || !str_contains($plan['sql'], '`lsuppprice` = VALUES(`lsuppprice`)')) {
+        throw new RuntimeException('expected lprice + lsuppprice to be refreshed');
+    }
+    // A non-price column must never be overwritten, even on the pricing table.
+    if (str_contains($plan['sql'], 'lquantity` = VALUES')) {
+        throw new RuntimeException('lquantity must NOT be overwritten');
+    }
+});
+
+$run('pricing table falls back to INSERT IGNORE when the price column is absent', static function (): void {
+    // If the dump/target do not share the price column, nothing is updatable
+    // and the row stays strictly add-only.
+    $plan = CorporateDumpImportService::buildMergeSql(
+        'target_db',
+        'source_db',
+        'tblinventory_price',
+        ['lid', 'lrefno', 'linv_refno', 'lprice_name'],
+        ['lprice_amt']
+    );
+    if ($plan === null || $plan['mode'] !== 'insert_ignore') {
+        throw new RuntimeException('expected insert_ignore when price column not shared');
+    }
+});
+
+$run('non-pricing tables never receive updatable columns and stay add-only', static function (): void {
+    $plan = CorporateDumpImportService::buildMergeSql(
+        'target_db',
+        'source_db',
+        'tblpatient',
+        ['lid', 'lname', 'lprice_amt'],
+        [] // merge loop passes [] for every table not in PRICE_UPSERT_COLUMNS
+    );
+    if ($plan === null || $plan['mode'] !== 'insert_ignore') {
+        throw new RuntimeException('expected insert_ignore for non-pricing table');
+    }
+    if (str_contains($plan['sql'], 'ON DUPLICATE KEY UPDATE')) {
+        throw new RuntimeException('non-pricing tables must never upsert');
+    }
+});
+
 $run('staging import does not require privileged server-variable changes', static function (): void {
     $source = file_get_contents(__DIR__ . '/../src/Services/CorporateDumpImportService.php');
     if ($source === false) {

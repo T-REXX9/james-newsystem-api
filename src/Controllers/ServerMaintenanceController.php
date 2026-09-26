@@ -41,7 +41,7 @@ final class ServerMaintenanceController
                 'supported_extensions' => ['.sql', '.sql.gz'],
                 'max_bytes' => CorporateDumpUploadStore::MAX_BYTES,
                 'chunk_max_bytes' => CorporateDumpUploadStore::CHUNK_MAX_BYTES,
-                'safety' => 'Never drops, truncates, deletes, or updates live data. Only inserts new rows using shared columns; local-only tables and columns stay untouched.',
+                'safety' => 'Never drops, truncates, or deletes live data. Inserts new rows using shared columns; local-only tables and columns stay untouched. The only overwrite is the current product price (tblinventory_price / tblinventory) so updated prices from the imported system win.',
             ],
         ];
     }
