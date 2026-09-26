@@ -14,16 +14,17 @@ final class PostedSalesDocumentSql
 {
     public static function invoiceIsPosted(string $alias = 'l'): string
     {
-        // Match SalesReportRepository exactly: NULL AND empty-string lcancel
-        // both count as posted. Some posted documents store lcancel = '' rather
-        // than NULL, so an `IS NULL` check silently drops them (e.g. GREG's
-        // delivery receipt N-D39172, which the Sales Report page does count).
-        return sprintf("COALESCE(%s.lcancel, '') = ''", $alias);
+        // "Not cancelled" in this data means lcancel is NULL, '', '0' or 0.
+        // Posted delivery receipts / invoices store lcancel = 0 (e.g. GREG's
+        // N-D39172), so neither `IS NULL` nor `COALESCE(lcancel,'')=''` matches
+        // them. Normalise then compare to '0': a real cancellation carries a
+        // non-zero flag.
+        return sprintf("COALESCE(NULLIF(TRIM(%s.lcancel), ''), '0') = '0'", $alias);
     }
 
     public static function deliveryReceiptIsPosted(string $alias = 'l'): string
     {
-        return sprintf("COALESCE(%s.lcancel, '') = ''", $alias);
+        return sprintf("COALESCE(NULLIF(TRIM(%s.lcancel), ''), '0') = '0'", $alias);
     }
 
     /**

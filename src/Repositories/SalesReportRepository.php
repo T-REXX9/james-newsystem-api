@@ -115,7 +115,7 @@ FROM tblinvoice_list d
 INNER JOIN tblinvoice_itemrec i ON i.linvoice_refno = d.lrefno
 WHERE d.lmain_id = :main_id
   AND d.lrefno = :refno
-  AND COALESCE(d.lcancel, '') = ''
+  AND COALESCE(NULLIF(TRIM(d.lcancel), ''), '0') = '0'
 ORDER BY i.lid ASC
 SQL;
         } elseif ($type === 'dr') {
@@ -134,7 +134,7 @@ FROM tbldelivery_receipt d
 INNER JOIN tbldelivery_receipt_items i ON i.lor_refno = d.lrefno
 WHERE d.lmain_id = :main_id
   AND d.lrefno = :refno
-  AND COALESCE(d.lcancel, '') = ''
+  AND COALESCE(NULLIF(TRIM(d.lcancel), ''), '0') = '0'
 ORDER BY i.lid ASC
 SQL;
         } else {
