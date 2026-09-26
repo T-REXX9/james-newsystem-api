@@ -746,6 +746,7 @@ function app_router(): Router
     $router->patch('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'updateContact'], 'Customer Database', 'edit'));
     $router->delete('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'deleteContact'], 'Customer Database', 'delete'));
     $router->get('/api/v1/customer-database/{sessionId}/terms', $requireViewAuth([$customerDatabaseController, 'listTerms'], 'Customer Database'));
+    $router->get('/api/v1/customer-database/{sessionId}/assignment-history', $requireViewAuth([$customerDatabaseController, 'assignmentHistory'], 'Customer Database'));
     $router->post('/api/v1/customer-database/{sessionId}/terms', $requireActionAuth([$customerDatabaseController, 'addTerm'], 'Customer Database', 'add'));
     $router->patch('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'updateTerm'], 'Customer Database', 'edit'));
     $router->delete('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'deleteTerm'], 'Customer Database', 'delete'));

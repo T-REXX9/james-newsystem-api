@@ -24,6 +24,126 @@ final class CustomerDatabaseRepository
     }
 
     /**
+     * Lazily create the agent-assignment history table. Follows the codebase
+     * convention of CREATE TABLE IF NOT EXISTS via exec() wrapped in a swallowed
+     * catch (the table may already exist). Records every time a customer is
+     * assigned to an agent so the reassign UI can show the full history.
+     */
+    private function ensureAssignmentHistoryTable(): void
+    {
+        try {
+            $this->db->pdo()->exec(
+                'CREATE TABLE IF NOT EXISTS tblpatient_assignment_history (
+                    lid INT AUTO_INCREMENT PRIMARY KEY,
+                    lmain_id INT NOT NULL,
+                    lsessionid VARCHAR(64) NOT NULL,
+                    lsales_person INT NOT NULL,
+                    lagent_name VARCHAR(255) NOT NULL DEFAULT \'\',
+                    lassigned_by INT NOT NULL DEFAULT 0,
+                    lassigned_by_name VARCHAR(255) NOT NULL DEFAULT \'\',
+                    lassigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    KEY idx_assignment_history_customer (lmain_id, lsessionid)
+                )'
+            );
+        } catch (\Throwable $e) {
+            // Table may already exist or cannot be created here - continue.
+        }
+    }
+
+    /**
+     * Resolve a staff account id to a display name (first + last), for snapshotting
+     * into the assignment history so it survives a later rename/deletion.
+     */
+    private function resolveAccountName(PDO $pdo, int $accountId): string
+    {
+        if ($accountId <= 0) {
+            return '';
+        }
+        $stmt = $pdo->prepare(
+            "SELECT TRIM(CONCAT(COALESCE(lfname, ''), ' ', COALESCE(llname, ''))) AS name
+             FROM tblaccount WHERE lid = :id LIMIT 1"
+        );
+        $stmt->execute(['id' => $accountId]);
+        $name = $stmt->fetchColumn();
+        return $name === false ? '' : trim((string) $name);
+    }
+
+    /**
+     * Append one assignment-history row when a customer is assigned to an agent.
+     * A no-op when there is no agent (unassignment is not a history event).
+     */
+    private function recordAssignmentHistory(
+        PDO $pdo,
+        int $mainId,
+        string $sessionId,
+        string $salesPersonId,
+        int $assignedBy
+    ): void {
+        $salesPersonId = trim($salesPersonId);
+        if ($sessionId === '' || $salesPersonId === '' || !ctype_digit($salesPersonId)) {
+            return;
+        }
+        try {
+            $stmt = $pdo->prepare(
+                'INSERT INTO tblpatient_assignment_history
+                 (lmain_id, lsessionid, lsales_person, lagent_name, lassigned_by, lassigned_by_name)
+                 VALUES (:main_id, :session_id, :sales_person, :agent_name, :assigned_by, :assigned_by_name)'
+            );
+            $stmt->execute([
+                'main_id' => $mainId,
+                'session_id' => $sessionId,
+                'sales_person' => (int) $salesPersonId,
+                'agent_name' => $this->resolveAccountName($pdo, (int) $salesPersonId),
+                'assigned_by' => $assignedBy,
+                'assigned_by_name' => $this->resolveAccountName($pdo, $assignedBy),
+            ]);
+        } catch (\Throwable $e) {
+            // History is auxiliary; never fail the assignment because of it.
+        }
+    }
+
+    /**
+     * Read a customer's agent-assignment history, newest first.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function getAssignmentHistory(int $mainId, string $sessionId): array
+    {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            return [];
+        }
+        $this->ensureAssignmentHistoryTable();
+        try {
+            $stmt = $this->db->pdo()->prepare(
+                'SELECT lsales_person AS agent_id,
+                        lagent_name AS agent_name,
+                        lassigned_by AS assigned_by_id,
+                        lassigned_by_name AS assigned_by_name,
+                        lassigned_at AS assigned_at
+                 FROM tblpatient_assignment_history
+                 WHERE lmain_id = :main_id AND lsessionid = :session_id
+                 ORDER BY lassigned_at DESC, lid DESC'
+            );
+            $stmt->execute(['main_id' => $mainId, 'session_id' => $sessionId]);
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        $items = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $items[] = [
+                'agent_id' => (string) ($row['agent_id'] ?? ''),
+                'agent_name' => (string) ($row['agent_name'] ?? ''),
+                'assigned_by_id' => (string) ($row['assigned_by_id'] ?? ''),
+                'assigned_by_name' => (string) ($row['assigned_by_name'] ?? ''),
+                'assigned_at' => (string) ($row['assigned_at'] ?? ''),
+            ];
+        }
+        return $items;
+    }
+
+    /**
      * @return array{items: array<int, array<string, mixed>>, meta: array<string, mixed>}
      */
     public function listCustomers(
@@ -391,6 +511,9 @@ SQL;
             $payload['delivery_addresses'] ?? null,
             (string) ($payload['delivery_address'] ?? $payload['address'] ?? '')
         );
+        // Ensure the history table exists BEFORE opening the transaction: DDL such
+        // as CREATE TABLE causes an implicit commit inside a transaction on MySQL.
+        $this->ensureAssignmentHistoryTable();
         $pdo->beginTransaction();
         try {
             $discountCodeInsertColumn = $this->hasCustomerDiscountCodeColumn() ? ', ldiscount_code' : '';
@@ -443,6 +566,13 @@ SQL;
                 $insertParams['discount_code'] = $this->normalizeDiscountCode((string) ($payload['discount_code'] ?? ''));
             }
             $insert->execute($insertParams);
+            $this->recordAssignmentHistory(
+                $pdo,
+                $mainId,
+                $sessionId,
+                (string) ($payload['sales_person_id'] ?? ''),
+                $userId
+            );
             $this->syncDeliveryAddresses($pdo, $mainId, $sessionId, $deliveryAddresses);
 
             $initialTerms = trim((string) ($payload['terms'] ?? ''));
@@ -755,6 +885,9 @@ SQL;
         $salesPersonChanged = array_key_exists('sales_person_id', $payload)
             && $nextSalesPerson !== $currentSalesPerson;
         $hasAssignedSalesPerson = trim($nextSalesPerson) !== '';
+        if ($salesPersonChanged && $hasAssignedSalesPerson) {
+            $this->ensureAssignmentHistoryTable();
+        }
         $assignmentDateMissing = empty($existing['assigned_date']);
         $assignmentDateClause = $salesPersonChanged
             ? ",\n    ldate_assigned = " . ($hasAssignedSalesPerson ? 'CURDATE()' : 'NULL')
@@ -845,6 +978,15 @@ SQL;
                 $updateParams['discount_code'] = $this->normalizeDiscountCode((string) ($payload['discount_code'] ?? $existing['discount_code'] ?? ''));
             }
             $stmt->execute($updateParams);
+            if ($salesPersonChanged && $hasAssignedSalesPerson) {
+                $this->recordAssignmentHistory(
+                    $this->db->pdo(),
+                    $mainId,
+                    $sessionId,
+                    $nextSalesPerson,
+                    isset($payload['user_id']) ? (int) $payload['user_id'] : 0
+                );
+            }
             $this->savePreviousCustomerName(
                 $this->db->pdo(),
                 $sessionId,
@@ -1076,6 +1218,23 @@ SQL;
             $stmt->execute();
         } catch (\Throwable $e) {
             $this->rethrowAsFriendlyValidation($e);
+        }
+
+        // Record one assignment-history row per customer when the bulk update
+        // assigns a (non-empty) agent. Unassignment is not a history event.
+        $bulkSalesPersonId = trim((string) ($payload['sales_person_id'] ?? ''));
+        if ($bulkSalesPersonId !== '') {
+            $this->ensureAssignmentHistoryTable();
+            $bulkAssignedBy = (int) ($payload['user_id'] ?? 0);
+            foreach ($normalizedSessionIds as $historySessionId) {
+                $this->recordAssignmentHistory(
+                    $this->db->pdo(),
+                    $mainId,
+                    $historySessionId,
+                    $bulkSalesPersonId,
+                    $bulkAssignedBy
+                );
+            }
         }
 
         return [
