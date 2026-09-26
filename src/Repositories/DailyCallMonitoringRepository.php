@@ -463,11 +463,11 @@ ledger_monthly AS (
       AND lg.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
       AND COALESCE(lg.lcustomerid, '') <> ''
       AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
-      -- Match the Statement of Account definition of a sale: every Debit row
-      -- EXCEPT Debit Memo. The previous invoice/order-slip-only filter dropped
-      -- posted delivery-receipt debits (e.g. N-D… "LBC RUSH"), so a customer
-      -- with a current-month DR showed ₱0 sales while the ledger/SOA showed it.
-      AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) <> 'debit memo'
+      -- Sales = invoice / order slip / delivery-receipt debits (delivery
+      -- receipts are recorded as 'Order Slip' in the ledger). This matches the
+      -- Sales Report total exactly; Freight Charges / Debit Memo / Adjustment
+      -- are NOT sales and must stay excluded.
+      AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
     GROUP BY lg.lcustomerid, lg.lmainid, DATE_FORMAT(lg.ldatetime, '%Y-%m')
 ),
 ledger_summary AS (
@@ -562,7 +562,7 @@ customer_universe AS (
         p.lmain_id, p.lsessionid, p.lcompany, p.lpatient_code, p.lprovince, p.lcity,
         p.lmobile, p.lphone, p.lsales_person, p.ldate_assigned, p.lsales_team,
         p.lprofile_type, p.lverification, p.lstatus, p.ldebt_type, p.ldatetime,
-        p.lprice_group, p.ldeleted, p.lrefer_by, 0 AS posted_sales_customer_missing
+        p.lprice_group, p.ldeleted, p.lrefer_by, p.lencoded_by, 0 AS posted_sales_customer_missing
     FROM tblpatient p
     WHERE p.lmain_id = :customer_universe_main_id
       AND COALESCE(p.ldeleted, 0) = 0
@@ -577,7 +577,7 @@ customer_universe AS (
         '' AS lphone, '' AS lsales_person, NULL AS ldate_assigned,
         0 AS lsales_team, '' AS lprofile_type, '' AS lverification, 1 AS lstatus,
         'Good' AS ldebt_type, '' AS ldatetime, '' AS lprice_group, 0 AS ldeleted,
-        '' AS lrefer_by,
+        '' AS lrefer_by, 0 AS lencoded_by,
         1 AS posted_sales_customer_missing
     FROM sales_report_current_month sales
     LEFT JOIN tblpatient live_customer
@@ -657,6 +657,7 @@ SELECT
     COALESCE(p.lprovince, '') AS province,
     COALESCE(p.lcity, '') AS city,
     COALESCE(p.lrefer_by, '') AS prospect_source,
+    NULLIF(TRIM(CONCAT(COALESCE(encoder.lfname, ''), ' ', COALESCE(encoder.llname, ''))), '') AS prospect_created_by,
     COALESCE(
         NULLIF(TRIM(p.lmobile), ''),
         NULLIF(TRIM(p.lphone), ''),
@@ -727,10 +728,10 @@ SELECT
         ELSE COALESCE(txn_summary.recovery_trailing_12_month_month_count, 0)
     END AS recovery_trailing_12_month_month_count,
     COALESCE(ledger_summary.last_active_year, txn_summary.last_active_year) AS last_active_year,
-    -- Current-month sales follow the ledger (Statement of Account) definition
-    -- so the column matches what the customer's ledger actually shows. Falls
-    -- back to the posted-invoice/DR figure only when the customer has no
-    -- ledger rows at all.
+    -- Current-month sales follow the ledger invoice/order-slip debits (which
+    -- include delivery receipts, recorded as 'Order Slip'), so the column
+    -- matches the customer's ledger and the Sales Report total. Falls back to
+    -- the posted-invoice/DR figure only when the customer has no ledger rows.
     CASE
         WHEN ledger_summary.current_month_sales IS NOT NULL THEN ledger_summary.current_month_sales
         ELSE COALESCE(sales_report_current_month.current_month_sales, 0)
@@ -762,6 +763,8 @@ SELECT
 FROM customer_universe p
 LEFT JOIN tblaccount a
     ON a.lid = p.lsales_person
+LEFT JOIN tblaccount encoder
+    ON encoder.lid = p.lencoded_by
 LEFT JOIN tblteamstaff team
     ON team.lid = p.lsales_team AND team.lmain_id = p.lmain_id
 LEFT JOIN (
@@ -1044,6 +1047,8 @@ SQL;
                 'verified_by' => $this->cleanDisplayText($row['verified_by'] ?? '', ''),
                 'prospectSource' => $this->cleanDisplayText($row['prospect_source'] ?? '', ''),
                 'prospect_source' => $this->cleanDisplayText($row['prospect_source'] ?? '', ''),
+                'prospectCreatedBy' => $this->cleanDisplayText($row['prospect_created_by'] ?? '', ''),
+                'prospect_created_by' => $this->cleanDisplayText($row['prospect_created_by'] ?? '', ''),
                 'verifiedInSystem' => (bool) ($row['verified_in_system'] ?? false),
                 'verified_in_system' => (bool) ($row['verified_in_system'] ?? false),
                 'createdAt' => (string) ($row['created_at'] ?? ''),
