@@ -587,6 +587,11 @@ sales_report_activity AS (
         t.contact_id,
         t.report_body AS body,
         t.created_at,
+        NULLIF(TRIM(t.agent_name), '') AS author_name,
+        CASE
+            WHEN NULLIF(TRIM(t.outcome), '') IS NULL THEN 'Agent Sales Report'
+            ELSE CONCAT('Agent Sales Report (', TRIM(t.outcome), ')')
+        END AS source_label,
         t.id AS activity_id,
         0 AS activity_source_order
     FROM call_report_threads t
@@ -601,6 +606,11 @@ sales_report_activity AS (
         t.contact_id,
         m.body,
         m.created_at,
+        NULLIF(TRIM(m.sender_name), '') AS author_name,
+        CASE
+            WHEN m.sender_role = 'master' THEN 'Master Reply'
+            ELSE 'Agent Reply'
+        END AS source_label,
         m.id AS activity_id,
         1 AS activity_source_order
     FROM call_report_messages m
@@ -611,12 +621,15 @@ sales_report_activity AS (
       AND TRIM(COALESCE(m.body, '')) <> ''
 ),
 latest_sales_report AS (
-    SELECT main_id, contact_id, body
+    SELECT main_id, contact_id, body, created_at, author_name, source_label
     FROM (
         SELECT
             main_id,
             contact_id,
             body,
+            created_at,
+            author_name,
+            source_label,
             ROW_NUMBER() OVER (
                 PARTITION BY main_id, contact_id
                 ORDER BY created_at DESC, activity_id DESC, activity_source_order DESC
@@ -660,6 +673,9 @@ SELECT
     CASE WHEN verification_audit.lid IS NULL THEN 0 ELSE 1 END AS verified_in_system,
     COALESCE(p.ldatetime, '') AS created_at,
     COALESCE(latest_sales_report.body, '') AS latest_sales_report_message,
+    COALESCE(latest_sales_report.author_name, '') AS latest_sales_report_author,
+    COALESCE(latest_sales_report.source_label, '') AS latest_sales_report_source,
+    latest_sales_report.created_at AS latest_sales_report_at,
     COALESCE(p.lprice_group, '') AS price_group,
     CASE
         WHEN ledger_summary.first_purchase_date_raw IS NULL AND txn_summary.first_purchase_date_raw IS NULL THEN sales_report_current_month.first_sale_date
@@ -1019,6 +1035,12 @@ SQL;
                 'created_at' => (string) ($row['created_at'] ?? ''),
                 'latestSalesReportMessage' => $this->cleanDisplayText($row['latest_sales_report_message'] ?? '', ''),
                 'latest_sales_report_message' => $this->cleanDisplayText($row['latest_sales_report_message'] ?? '', ''),
+                'latestSalesReportAuthor' => $this->cleanDisplayText($row['latest_sales_report_author'] ?? '', ''),
+                'latest_sales_report_author' => $this->cleanDisplayText($row['latest_sales_report_author'] ?? '', ''),
+                'latestSalesReportSource' => $this->cleanDisplayText($row['latest_sales_report_source'] ?? '', ''),
+                'latest_sales_report_source' => $this->cleanDisplayText($row['latest_sales_report_source'] ?? '', ''),
+                'latestSalesReportAt' => (string) ($row['latest_sales_report_at'] ?? ''),
+                'latest_sales_report_at' => (string) ($row['latest_sales_report_at'] ?? ''),
                 'priceGroup' => (string) ($row['price_group'] ?? ''),
                 'price_group' => (string) ($row['price_group'] ?? ''),
                 'firstPurchaseDate' => $this->formatDateText($firstPurchaseDate),
