@@ -463,7 +463,11 @@ ledger_monthly AS (
       AND lg.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
       AND COALESCE(lg.lcustomerid, '') <> ''
       AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
-      AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+      -- Match the Statement of Account definition of a sale: every Debit row
+      -- EXCEPT Debit Memo. The previous invoice/order-slip-only filter dropped
+      -- posted delivery-receipt debits (e.g. N-D… "LBC RUSH"), so a customer
+      -- with a current-month DR showed ₱0 sales while the ledger/SOA showed it.
+      AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) <> 'debit memo'
     GROUP BY lg.lcustomerid, lg.lmainid, DATE_FORMAT(lg.ldatetime, '%Y-%m')
 ),
 ledger_summary AS (
@@ -723,7 +727,14 @@ SELECT
         ELSE COALESCE(txn_summary.recovery_trailing_12_month_month_count, 0)
     END AS recovery_trailing_12_month_month_count,
     COALESCE(ledger_summary.last_active_year, txn_summary.last_active_year) AS last_active_year,
-    COALESCE(sales_report_current_month.current_month_sales, 0) AS current_month_sales,
+    -- Current-month sales follow the ledger (Statement of Account) definition
+    -- so the column matches what the customer's ledger actually shows. Falls
+    -- back to the posted-invoice/DR figure only when the customer has no
+    -- ledger rows at all.
+    CASE
+        WHEN ledger_summary.current_month_sales IS NOT NULL THEN ledger_summary.current_month_sales
+        ELSE COALESCE(sales_report_current_month.current_month_sales, 0)
+    END AS current_month_sales,
     COALESCE(ledger_summary.last_month_sales, 0) + COALESCE(txn_summary.last_month_sales, 0) AS last_month_sales,
     COALESCE(ledger_summary.recent_three_month_sales, 0) + COALESCE(txn_summary.recent_three_month_sales, 0) AS recent_three_month_sales,
     COALESCE(ledger_summary.previous_three_month_sales, 0) + COALESCE(txn_summary.previous_three_month_sales, 0) AS previous_three_month_sales,
