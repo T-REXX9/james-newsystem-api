@@ -705,13 +705,20 @@ SQL;
         if ($excludeSessionId !== '') { $sql .= ' AND p.lsessionid <> :exclude_session_id'; $params['exclude_session_id'] = $excludeSessionId; }
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute($params);
+        $allRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Batch-fetch contact person names instead of N+1 queries
+        $sessionIds = array_map(static fn (array $row): string => (string) $row['lsessionid'], $allRows);
+        $contactPersonsBySessionId = $this->batchGetContactPersonNames($mainId, $sessionIds);
+        
         $matches = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        foreach ($allRows as $row) {
             $existingCompany = strtolower(trim((string) $row['company']));
             $existingTin = preg_replace('/[\s-]+/', '', strtolower((string) $row['tin'])) ?? '';
             $existingPhones = array_values(array_unique(array_merge(PhoneNumberNormalizer::candidates((string) $row['phone']), PhoneNumberNormalizer::candidates((string) $row['mobile']))));
             $existingAddress = $this->normalizeIdentityText(implode(' ', [$row['address'], $row['delivery_address'], $row['city'], $row['province']]));
-            $existingContactPerson = $this->getContactPersonName($mainId, $row['session_id']);
+            $sessionId = (string) $row['lsessionid'];
+            $existingContactPerson = $contactPersonsBySessionId[$sessionId] ?? '';
             $fields = [];
             if ($company !== '' && $existingCompany !== '' && ($existingCompany === $company || str_contains($existingCompany, $company) || str_contains($company, $existingCompany))) $fields[] = $existingCompany === $company ? 'company_exact' : 'company_similar';
             if ($tin !== '' && $existingTin !== '' && $tin === $existingTin) $fields[] = 'tin';
@@ -723,6 +730,57 @@ SQL;
         }
         usort($matches, static fn (array $a, array $b): int => count($b['matched_fields']) <=> count($a['matched_fields']));
         return array_slice($matches, 0, 10);
+    }
+
+    /**
+     * Batch-fetch contact person names for multiple session IDs.
+     * Reduces N+1 queries to 1 batch query.
+     *
+     * @param int $mainId
+     * @param array<int, string> $sessionIds
+     * @return array<string, string> Map of session_id -> full_name
+     */
+    private function batchGetContactPersonNames(int $mainId, array $sessionIds): array
+    {
+        if ($sessionIds === []) {
+            return [];
+        }
+
+        $sessionIds = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $id): string => trim((string) $id),
+            $sessionIds
+        ), static fn (string $id): bool => $id !== '')));
+
+        if ($sessionIds === []) {
+            return [];
+        }
+
+        try {
+            $placeholders = implode(',', array_fill(0, count($sessionIds), '?'));
+            $stmt = $this->db->pdo()->prepare(
+                "SELECT cp.lrefno AS session_id,
+                        TRIM(CONCAT_WS(' ', COALESCE(cp.lfname, ''), COALESCE(cp.llname, ''))) AS full_name
+                 FROM tblcontact_person cp
+                 WHERE cp.lmainid = ? AND cp.lrefno IN ($placeholders)
+                 GROUP BY cp.lrefno
+                 ORDER BY cp.lid ASC"
+            );
+            $params = [$mainId, ...$sessionIds];
+            $stmt->execute($params);
+            
+            $result = [];
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $sessionId = trim((string) ($row['session_id'] ?? ''));
+                $fullName = trim((string) ($row['full_name'] ?? ''));
+                if ($sessionId !== '' && $fullName !== '') {
+                    $result[$sessionId] = $fullName;
+                }
+            }
+            return $result;
+        } catch (\Throwable $e) {
+            // Fallback: return empty map, matching will fail for contact_person field but won't crash
+            return [];
+        }
     }
 
     /** @return array<int, string> */
