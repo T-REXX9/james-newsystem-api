@@ -912,4 +912,49 @@ SQL;
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
+
+    /**
+     * Send batched duplicate-approval notifications to a master user
+     * Groups multiple pending duplicates into a single summarized notification
+     * within a 5-minute window to prevent notification spam
+     */
+    public function sendDuplicateApprovalNotificationBatch(
+        string $masterUserId,
+        int $pendingCount,
+        ?string $actionUrl = 'duplicate-approval-dashboard'
+    ): ?array {
+        if ($masterUserId === '' || $pendingCount <= 0) {
+            return null;
+        }
+
+        $title = $pendingCount === 1
+            ? '1 Duplicate Prospect Requires Approval'
+            : sprintf('%d Duplicate Prospects Require Approval', $pendingCount);
+
+        $message = sprintf(
+            'You have %d pending duplicate prospect approval%s awaiting review. Review and approve/reject to prevent duplicate records.',
+            $pendingCount,
+            $pendingCount === 1 ? '' : 's'
+        );
+
+        return $this->create([
+            'recipient_id' => $masterUserId,
+            'title' => $title,
+            'message' => $message,
+            'type' => 'warning',
+            'category' => 'duplicate-approval',
+            'action_url' => $actionUrl,
+            'metadata' => [
+                'entity_type' => 'duplicate_approval',
+                'entity_id' => 'batch',
+                'action' => 'approve-duplicates',
+                'status' => 'pending',
+                'severity' => 'warning',
+                'category' => 'duplicate-approval',
+                'alert_type' => 'duplicate-approval-batch',
+                'batch_count' => (string) $pendingCount,
+                'idempotency_key' => sprintf('duplicate-approval:batch:%s:%s', $masterUserId, date('Y-m-d-H')),
+            ],
+        ]);
+    }
 }

@@ -11,6 +11,7 @@ use App\Controllers\NotificationsController;
 use App\Controllers\ProfilesController;
 use App\Controllers\CustomerController;
 use App\Controllers\CustomerDatabaseController;
+use App\Controllers\CustomerDuplicateRequestController;
 use App\Controllers\CustomerGroupController;
 use App\Controllers\AdjustmentEntryController;
 use App\Controllers\ActivityLogController;
@@ -396,6 +397,7 @@ function app_router(): Router
     $loyaltyDiscountController = new LoyaltyDiscountController(new App\Repositories\LoyaltyDiscountRepository($db));
     $profitProtectionController = new ProfitProtectionController(new App\Repositories\ProfitProtectionRepository($db));
     $vipTierSettingsController = new VipTierSettingsController(new App\Repositories\VipTierSettingsRepository($db));
+    $customerDuplicateRequestController = new CustomerDuplicateRequestController($db);
     $serverMaintenanceBackupDir = dirname(__DIR__) . '/storage/database-backups';
     $corporateDumpUploadDir = dirname(__DIR__) . '/storage/corporate-dumps';
     $automaticBackupStore = new AutomaticBackupSettingsStore(
@@ -1270,6 +1272,12 @@ function app_router(): Router
     $router->get('/api/v1/profit-protection/override-stats', [$profitProtectionController, 'overrideStats']);
     $router->post('/api/v1/profit-protection/admin-overrides', $requireMasterUser([$profitProtectionController, 'createAdminOverride']));
     $router->get('/api/v1/profit-protection/admin-overrides', [$profitProtectionController, 'listAdminOverrides']);
+    // Duplicate Prospect Approval Workflow (Master User)
+    $router->get('/api/v1/duplicate-requests', $requireMasterUser([$customerDuplicateRequestController, 'listPending']));
+    $router->get('/api/v1/duplicate-requests/count', $requireMasterUser([$customerDuplicateRequestController, 'getPendingCount']));
+    $router->post('/api/v1/duplicate-requests/{id}/approve', $requireMasterUser([$customerDuplicateRequestController, 'approve']));
+    $router->post('/api/v1/duplicate-requests/{id}/reject', $requireMasterUser([$customerDuplicateRequestController, 'reject']));
+    $router->post('/api/v1/duplicate-requests/{id}/snooze', $requireMasterUser([$customerDuplicateRequestController, 'snooze']));
 
     return $router;
 }

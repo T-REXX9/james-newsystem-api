@@ -686,7 +686,12 @@ SQL;
             (string) ($payload['city'] ?? ''),
             (string) ($payload['province'] ?? ''),
         ]));
-        if ($company === '' && $tin === '' && $phones === [] && $address === '') return [];
+        // Extract contact person name from either contact_person or contactPersons[0]?.name
+        $contactPerson = trim((string) ($payload['contact_person'] ?? ''));
+        if ($contactPerson === '' && isset($payload['contactPersons']) && is_array($payload['contactPersons']) && count($payload['contactPersons']) > 0) {
+            $contactPerson = trim((string) ($payload['contactPersons'][0]['name'] ?? ''));
+        }
+        if ($company === '' && $tin === '' && $phones === [] && $address === '' && $contactPerson === '') return [];
 
         $sql = "SELECT p.lsessionid AS session_id, TRIM(COALESCE(p.lcompany, '')) AS company,
                        COALESCE(p.lstatus, 1) AS status, COALESCE(p.lprofile_type, 'Old') AS profile_type,
@@ -706,16 +711,40 @@ SQL;
             $existingTin = preg_replace('/[\s-]+/', '', strtolower((string) $row['tin'])) ?? '';
             $existingPhones = array_values(array_unique(array_merge(PhoneNumberNormalizer::candidates((string) $row['phone']), PhoneNumberNormalizer::candidates((string) $row['mobile']))));
             $existingAddress = $this->normalizeIdentityText(implode(' ', [$row['address'], $row['delivery_address'], $row['city'], $row['province']]));
+            $existingContactPerson = $this->getContactPersonName($mainId, $row['session_id']);
             $fields = [];
             if ($company !== '' && $existingCompany !== '' && ($existingCompany === $company || str_contains($existingCompany, $company) || str_contains($company, $existingCompany))) $fields[] = $existingCompany === $company ? 'company_exact' : 'company_similar';
             if ($tin !== '' && $existingTin !== '' && $tin === $existingTin) $fields[] = 'tin';
             if ($phones !== [] && array_intersect($phones, $existingPhones) !== []) $fields[] = 'phone';
             if ($address !== '' && $existingAddress !== '' && $address === $existingAddress) $fields[] = 'address';
+            if ($contactPerson !== '' && $existingContactPerson !== '' && ($this->normalizeIdentityText($contactPerson) === $this->normalizeIdentityText($existingContactPerson) || str_contains($this->normalizeIdentityText($existingContactPerson), $this->normalizeIdentityText($contactPerson)) || str_contains($this->normalizeIdentityText($contactPerson), $this->normalizeIdentityText($existingContactPerson)))) $fields[] = 'contact_person';
             if ($fields === []) continue;
             $matches[] = ['session_id' => (string) $row['session_id'], 'company' => (string) $row['company'], 'status' => (string) $row['status'], 'profile_type' => (string) $row['profile_type'], 'is_blacklisted' => strtolower((string) $row['debt_type']) === 'bad', 'matched_fields' => $fields];
         }
         usort($matches, static fn (array $a, array $b): int => count($b['matched_fields']) <=> count($a['matched_fields']));
         return array_slice($matches, 0, 10);
+    }
+
+    /** @return array<int, string> */
+    private function getContactPersonName(int $mainId, string $sessionId): string
+    {
+        try {
+            $stmt = $this->db->pdo()->prepare(
+                "SELECT TRIM(COALESCE(cp.lfname, '')) AS first_name,
+                        TRIM(COALESCE(cp.llname, '')) AS last_name
+                 FROM tblcontact_person cp
+                 WHERE cp.lrefno = :session_id AND cp.lmainid = :main_id
+                 ORDER BY cp.lid ASC LIMIT 1"
+            );
+            $stmt->execute(['session_id' => $sessionId, 'main_id' => $mainId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row === false) return '';
+            $firstName = trim((string) ($row['first_name'] ?? ''));
+            $lastName = trim((string) ($row['last_name'] ?? ''));
+            return $firstName !== '' || $lastName !== '' ? $firstName . ' ' . $lastName : '';
+        } catch (\Throwable $e) {
+            return '';
+        }
     }
 
     private function normalizeIdentityText(string $value): string
