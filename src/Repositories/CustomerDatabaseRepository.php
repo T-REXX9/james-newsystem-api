@@ -708,7 +708,7 @@ SQL;
         $allRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
         
         // Batch-fetch contact person names instead of N+1 queries
-        $sessionIds = array_map(static fn (array $row): string => (string) $row['lsessionid'], $allRows);
+        $sessionIds = array_map(static fn (array $row): string => (string) $row['session_id'], $allRows);
         $contactPersonsBySessionId = $this->batchGetContactPersonNames($mainId, $sessionIds);
         
         $matches = [];
@@ -717,7 +717,7 @@ SQL;
             $existingTin = preg_replace('/[\s-]+/', '', strtolower((string) $row['tin'])) ?? '';
             $existingPhones = array_values(array_unique(array_merge(PhoneNumberNormalizer::candidates((string) $row['phone']), PhoneNumberNormalizer::candidates((string) $row['mobile']))));
             $existingAddress = $this->normalizeIdentityText(implode(' ', [$row['address'], $row['delivery_address'], $row['city'], $row['province']]));
-            $sessionId = (string) $row['lsessionid'];
+            $sessionId = (string) $row['session_id'];
             $existingContactPerson = $contactPersonsBySessionId[$sessionId] ?? '';
             $fields = [];
             if ($company !== '' && $existingCompany !== '' && ($existingCompany === $company || str_contains($existingCompany, $company) || str_contains($company, $existingCompany))) $fields[] = $existingCompany === $company ? 'company_exact' : 'company_similar';
