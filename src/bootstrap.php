@@ -11,6 +11,7 @@ use App\Controllers\NotificationsController;
 use App\Controllers\ProfilesController;
 use App\Controllers\CustomerController;
 use App\Controllers\CustomerDatabaseController;
+use App\Controllers\CustomerDuplicateRequestController;
 use App\Controllers\CustomerGroupController;
 use App\Controllers\AdjustmentEntryController;
 use App\Controllers\ActivityLogController;
@@ -396,6 +397,7 @@ function app_router(): Router
     $loyaltyDiscountController = new LoyaltyDiscountController(new App\Repositories\LoyaltyDiscountRepository($db));
     $profitProtectionController = new ProfitProtectionController(new App\Repositories\ProfitProtectionRepository($db));
     $vipTierSettingsController = new VipTierSettingsController(new App\Repositories\VipTierSettingsRepository($db));
+    $customerDuplicateRequestController = new CustomerDuplicateRequestController($db);
     $serverMaintenanceBackupDir = dirname(__DIR__) . '/storage/database-backups';
     $corporateDumpUploadDir = dirname(__DIR__) . '/storage/corporate-dumps';
     $automaticBackupStore = new AutomaticBackupSettingsStore(
@@ -702,7 +704,7 @@ function app_router(): Router
     $router->get('/api/v1/customer-workflows/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'allRequests']));
     $router->get('/api/v1/customer-workflows/{contactId}/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'requests']));
     $router->post('/api/v1/customer-workflows/{contactId}/requests', $requireActionAuth([$customerWorkflowController, 'createRequest'], 'Customer', 'add'));
-    $router->post('/api/v1/customer-workflows/{contactId}/requests/{requestId}/review', $requireApproverAction([$customerWorkflowController, 'reviewRequest'], ['Customer Request', 'Customer', 'CR']));
+    $router->post('/api/v1/customer-workflows/{contactId}/requests/{requestId}/review', $requireMasterUser([$customerWorkflowController, 'reviewRequest']));
     $router->get('/api/v1/customers/{sessionId}', $requireViewAuth([$customerController, 'show'], 'Customer Database'));
     $router->get('/api/v1/customers/{sessionId}/purchase-history', $requireViewAuth([$customerController, 'purchaseHistory'], 'Customer Database'));
     $router->get('/api/v1/customers/{sessionId}/purchased-items', $requireViewAuth([$customerController, 'purchasedItems'], 'Customer Database'));
@@ -746,6 +748,7 @@ function app_router(): Router
     $router->patch('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'updateContact'], 'Customer Database', 'edit'));
     $router->delete('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'deleteContact'], 'Customer Database', 'delete'));
     $router->get('/api/v1/customer-database/{sessionId}/terms', $requireViewAuth([$customerDatabaseController, 'listTerms'], 'Customer Database'));
+    $router->get('/api/v1/customer-database/{sessionId}/assignment-history', $requireViewAuth([$customerDatabaseController, 'assignmentHistory'], 'Customer Database'));
     $router->post('/api/v1/customer-database/{sessionId}/terms', $requireActionAuth([$customerDatabaseController, 'addTerm'], 'Customer Database', 'add'));
     $router->patch('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'updateTerm'], 'Customer Database', 'edit'));
     $router->delete('/api/v1/customer-database/terms/{termId}', $requireActionAuth([$customerDatabaseController, 'deleteTerm'], 'Customer Database', 'delete'));
@@ -1269,6 +1272,12 @@ function app_router(): Router
     $router->get('/api/v1/profit-protection/override-stats', [$profitProtectionController, 'overrideStats']);
     $router->post('/api/v1/profit-protection/admin-overrides', $requireMasterUser([$profitProtectionController, 'createAdminOverride']));
     $router->get('/api/v1/profit-protection/admin-overrides', [$profitProtectionController, 'listAdminOverrides']);
+    // Duplicate Prospect Approval Workflow (Master User)
+    $router->get('/api/v1/duplicate-requests', $requireMasterUser([$customerDuplicateRequestController, 'listPending']));
+    $router->get('/api/v1/duplicate-requests/count', $requireMasterUser([$customerDuplicateRequestController, 'getPendingCount']));
+    $router->post('/api/v1/duplicate-requests/{id}/approve', $requireMasterUser([$customerDuplicateRequestController, 'approve']));
+    $router->post('/api/v1/duplicate-requests/{id}/reject', $requireMasterUser([$customerDuplicateRequestController, 'reject']));
+    $router->post('/api/v1/duplicate-requests/{id}/snooze', $requireMasterUser([$customerDuplicateRequestController, 'snooze']));
 
     return $router;
 }

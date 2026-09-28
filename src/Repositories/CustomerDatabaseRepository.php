@@ -24,6 +24,126 @@ final class CustomerDatabaseRepository
     }
 
     /**
+     * Lazily create the agent-assignment history table. Follows the codebase
+     * convention of CREATE TABLE IF NOT EXISTS via exec() wrapped in a swallowed
+     * catch (the table may already exist). Records every time a customer is
+     * assigned to an agent so the reassign UI can show the full history.
+     */
+    private function ensureAssignmentHistoryTable(): void
+    {
+        try {
+            $this->db->pdo()->exec(
+                'CREATE TABLE IF NOT EXISTS tblpatient_assignment_history (
+                    lid INT AUTO_INCREMENT PRIMARY KEY,
+                    lmain_id INT NOT NULL,
+                    lsessionid VARCHAR(64) NOT NULL,
+                    lsales_person INT NOT NULL,
+                    lagent_name VARCHAR(255) NOT NULL DEFAULT \'\',
+                    lassigned_by INT NOT NULL DEFAULT 0,
+                    lassigned_by_name VARCHAR(255) NOT NULL DEFAULT \'\',
+                    lassigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    KEY idx_assignment_history_customer (lmain_id, lsessionid)
+                )'
+            );
+        } catch (\Throwable $e) {
+            // Table may already exist or cannot be created here - continue.
+        }
+    }
+
+    /**
+     * Resolve a staff account id to a display name (first + last), for snapshotting
+     * into the assignment history so it survives a later rename/deletion.
+     */
+    private function resolveAccountName(PDO $pdo, int $accountId): string
+    {
+        if ($accountId <= 0) {
+            return '';
+        }
+        $stmt = $pdo->prepare(
+            "SELECT TRIM(CONCAT(COALESCE(lfname, ''), ' ', COALESCE(llname, ''))) AS name
+             FROM tblaccount WHERE lid = :id LIMIT 1"
+        );
+        $stmt->execute(['id' => $accountId]);
+        $name = $stmt->fetchColumn();
+        return $name === false ? '' : trim((string) $name);
+    }
+
+    /**
+     * Append one assignment-history row when a customer is assigned to an agent.
+     * A no-op when there is no agent (unassignment is not a history event).
+     */
+    private function recordAssignmentHistory(
+        PDO $pdo,
+        int $mainId,
+        string $sessionId,
+        string $salesPersonId,
+        int $assignedBy
+    ): void {
+        $salesPersonId = trim($salesPersonId);
+        if ($sessionId === '' || $salesPersonId === '' || !ctype_digit($salesPersonId)) {
+            return;
+        }
+        try {
+            $stmt = $pdo->prepare(
+                'INSERT INTO tblpatient_assignment_history
+                 (lmain_id, lsessionid, lsales_person, lagent_name, lassigned_by, lassigned_by_name)
+                 VALUES (:main_id, :session_id, :sales_person, :agent_name, :assigned_by, :assigned_by_name)'
+            );
+            $stmt->execute([
+                'main_id' => $mainId,
+                'session_id' => $sessionId,
+                'sales_person' => (int) $salesPersonId,
+                'agent_name' => $this->resolveAccountName($pdo, (int) $salesPersonId),
+                'assigned_by' => $assignedBy,
+                'assigned_by_name' => $this->resolveAccountName($pdo, $assignedBy),
+            ]);
+        } catch (\Throwable $e) {
+            // History is auxiliary; never fail the assignment because of it.
+        }
+    }
+
+    /**
+     * Read a customer's agent-assignment history, newest first.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function getAssignmentHistory(int $mainId, string $sessionId): array
+    {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            return [];
+        }
+        $this->ensureAssignmentHistoryTable();
+        try {
+            $stmt = $this->db->pdo()->prepare(
+                'SELECT lsales_person AS agent_id,
+                        lagent_name AS agent_name,
+                        lassigned_by AS assigned_by_id,
+                        lassigned_by_name AS assigned_by_name,
+                        lassigned_at AS assigned_at
+                 FROM tblpatient_assignment_history
+                 WHERE lmain_id = :main_id AND lsessionid = :session_id
+                 ORDER BY lassigned_at DESC, lid DESC'
+            );
+            $stmt->execute(['main_id' => $mainId, 'session_id' => $sessionId]);
+        } catch (\Throwable $e) {
+            return [];
+        }
+
+        $items = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $items[] = [
+                'agent_id' => (string) ($row['agent_id'] ?? ''),
+                'agent_name' => (string) ($row['agent_name'] ?? ''),
+                'assigned_by_id' => (string) ($row['assigned_by_id'] ?? ''),
+                'assigned_by_name' => (string) ($row['assigned_by_name'] ?? ''),
+                'assigned_at' => (string) ($row['assigned_at'] ?? ''),
+            ];
+        }
+        return $items;
+    }
+
+    /**
      * @return array{items: array<int, array<string, mixed>>, meta: array<string, mixed>}
      */
     public function listCustomers(
@@ -391,15 +511,18 @@ SQL;
             $payload['delivery_addresses'] ?? null,
             (string) ($payload['delivery_address'] ?? $payload['address'] ?? '')
         );
+        // Ensure the history table exists BEFORE opening the transaction: DDL such
+        // as CREATE TABLE causes an implicit commit inside a transaction on MySQL.
+        $this->ensureAssignmentHistoryTable();
         $pdo->beginTransaction();
         try {
             $discountCodeInsertColumn = $this->hasCustomerDiscountCodeColumn() ? ', ldiscount_code' : '';
             $discountCodeInsertValue = $this->hasCustomerDiscountCodeColumn() ? ', :discount_code' : '';
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, ldate_assigned, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :date_assigned, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
             );
             $insertParams = [
                 'main_id' => $mainId,
@@ -411,6 +534,7 @@ SQL;
                 'phone' => (string) ($payload['phone'] ?? ''),
                 'mobile' => (string) ($payload['mobile'] ?? ''),
                 'sales_person' => (string) ($payload['sales_person_id'] ?? ''),
+                'date_assigned' => trim((string) ($payload['sales_person_id'] ?? '')) !== '' ? date('Y-m-d') : null,
                 'refer_by' => (string) ($payload['refer_by'] ?? ''),
                 'address' => (string) ($payload['address'] ?? ''),
                 'delivery_address' => $deliveryAddresses[0] ?? (string) ($payload['address'] ?? ''),
@@ -442,6 +566,13 @@ SQL;
                 $insertParams['discount_code'] = $this->normalizeDiscountCode((string) ($payload['discount_code'] ?? ''));
             }
             $insert->execute($insertParams);
+            $this->recordAssignmentHistory(
+                $pdo,
+                $mainId,
+                $sessionId,
+                (string) ($payload['sales_person_id'] ?? ''),
+                $userId
+            );
             $this->syncDeliveryAddresses($pdo, $mainId, $sessionId, $deliveryAddresses);
 
             $initialTerms = trim((string) ($payload['terms'] ?? ''));
@@ -555,7 +686,12 @@ SQL;
             (string) ($payload['city'] ?? ''),
             (string) ($payload['province'] ?? ''),
         ]));
-        if ($company === '' && $tin === '' && $phones === [] && $address === '') return [];
+        // Extract contact person name from either contact_person or contactPersons[0]?.name
+        $contactPerson = trim((string) ($payload['contact_person'] ?? ''));
+        if ($contactPerson === '' && isset($payload['contactPersons']) && is_array($payload['contactPersons']) && count($payload['contactPersons']) > 0) {
+            $contactPerson = trim((string) ($payload['contactPersons'][0]['name'] ?? ''));
+        }
+        if ($company === '' && $tin === '' && $phones === [] && $address === '' && $contactPerson === '') return [];
 
         $sql = "SELECT p.lsessionid AS session_id, TRIM(COALESCE(p.lcompany, '')) AS company,
                        COALESCE(p.lstatus, 1) AS status, COALESCE(p.lprofile_type, 'Old') AS profile_type,
@@ -569,22 +705,104 @@ SQL;
         if ($excludeSessionId !== '') { $sql .= ' AND p.lsessionid <> :exclude_session_id'; $params['exclude_session_id'] = $excludeSessionId; }
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute($params);
+        $allRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Batch-fetch contact person names instead of N+1 queries
+        $sessionIds = array_map(static fn (array $row): string => (string) $row['session_id'], $allRows);
+        $contactPersonsBySessionId = $this->batchGetContactPersonNames($mainId, $sessionIds);
+        
         $matches = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        foreach ($allRows as $row) {
             $existingCompany = strtolower(trim((string) $row['company']));
             $existingTin = preg_replace('/[\s-]+/', '', strtolower((string) $row['tin'])) ?? '';
             $existingPhones = array_values(array_unique(array_merge(PhoneNumberNormalizer::candidates((string) $row['phone']), PhoneNumberNormalizer::candidates((string) $row['mobile']))));
             $existingAddress = $this->normalizeIdentityText(implode(' ', [$row['address'], $row['delivery_address'], $row['city'], $row['province']]));
+            $sessionId = (string) $row['session_id'];
+            $existingContactPerson = $contactPersonsBySessionId[$sessionId] ?? '';
             $fields = [];
             if ($company !== '' && $existingCompany !== '' && ($existingCompany === $company || str_contains($existingCompany, $company) || str_contains($company, $existingCompany))) $fields[] = $existingCompany === $company ? 'company_exact' : 'company_similar';
             if ($tin !== '' && $existingTin !== '' && $tin === $existingTin) $fields[] = 'tin';
             if ($phones !== [] && array_intersect($phones, $existingPhones) !== []) $fields[] = 'phone';
             if ($address !== '' && $existingAddress !== '' && $address === $existingAddress) $fields[] = 'address';
+            if ($contactPerson !== '' && $existingContactPerson !== '' && ($this->normalizeIdentityText($contactPerson) === $this->normalizeIdentityText($existingContactPerson) || str_contains($this->normalizeIdentityText($existingContactPerson), $this->normalizeIdentityText($contactPerson)) || str_contains($this->normalizeIdentityText($contactPerson), $this->normalizeIdentityText($existingContactPerson)))) $fields[] = 'contact_person';
             if ($fields === []) continue;
             $matches[] = ['session_id' => (string) $row['session_id'], 'company' => (string) $row['company'], 'status' => (string) $row['status'], 'profile_type' => (string) $row['profile_type'], 'is_blacklisted' => strtolower((string) $row['debt_type']) === 'bad', 'matched_fields' => $fields];
         }
         usort($matches, static fn (array $a, array $b): int => count($b['matched_fields']) <=> count($a['matched_fields']));
         return array_slice($matches, 0, 10);
+    }
+
+    /**
+     * Batch-fetch contact person names for multiple session IDs.
+     * Reduces N+1 queries to 1 batch query.
+     *
+     * @param int $mainId
+     * @param array<int, string> $sessionIds
+     * @return array<string, string> Map of session_id -> full_name
+     */
+    private function batchGetContactPersonNames(int $mainId, array $sessionIds): array
+    {
+        if ($sessionIds === []) {
+            return [];
+        }
+
+        $sessionIds = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $id): string => trim((string) $id),
+            $sessionIds
+        ), static fn (string $id): bool => $id !== '')));
+
+        if ($sessionIds === []) {
+            return [];
+        }
+
+        try {
+            $placeholders = implode(',', array_fill(0, count($sessionIds), '?'));
+            $stmt = $this->db->pdo()->prepare(
+                "SELECT cp.lrefno AS session_id,
+                        TRIM(CONCAT_WS(' ', COALESCE(cp.lfname, ''), COALESCE(cp.llname, ''))) AS full_name
+                 FROM tblcontact_person cp
+                 WHERE cp.lmainid = ? AND cp.lrefno IN ($placeholders)
+                 GROUP BY cp.lrefno
+                 ORDER BY cp.lid ASC"
+            );
+            $params = [$mainId, ...$sessionIds];
+            $stmt->execute($params);
+            
+            $result = [];
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $sessionId = trim((string) ($row['session_id'] ?? ''));
+                $fullName = trim((string) ($row['full_name'] ?? ''));
+                if ($sessionId !== '' && $fullName !== '') {
+                    $result[$sessionId] = $fullName;
+                }
+            }
+            return $result;
+        } catch (\Throwable $e) {
+            // Fallback: return empty map, matching will fail for contact_person field but won't crash
+            return [];
+        }
+    }
+
+    /** @return array<int, string> */
+    private function getContactPersonName(int $mainId, string $sessionId): string
+    {
+        try {
+            $stmt = $this->db->pdo()->prepare(
+                "SELECT TRIM(COALESCE(cp.lfname, '')) AS first_name,
+                        TRIM(COALESCE(cp.llname, '')) AS last_name
+                 FROM tblcontact_person cp
+                 WHERE cp.lrefno = :session_id AND cp.lmainid = :main_id
+                 ORDER BY cp.lid ASC LIMIT 1"
+            );
+            $stmt->execute(['session_id' => $sessionId, 'main_id' => $mainId]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($row === false) return '';
+            $firstName = trim((string) ($row['first_name'] ?? ''));
+            $lastName = trim((string) ($row['last_name'] ?? ''));
+            return $firstName !== '' || $lastName !== '' ? $firstName . ' ' . $lastName : '';
+        } catch (\Throwable $e) {
+            return '';
+        }
     }
 
     private function normalizeIdentityText(string $value): string
@@ -754,6 +972,9 @@ SQL;
         $salesPersonChanged = array_key_exists('sales_person_id', $payload)
             && $nextSalesPerson !== $currentSalesPerson;
         $hasAssignedSalesPerson = trim($nextSalesPerson) !== '';
+        if ($salesPersonChanged && $hasAssignedSalesPerson) {
+            $this->ensureAssignmentHistoryTable();
+        }
         $assignmentDateMissing = empty($existing['assigned_date']);
         $assignmentDateClause = $salesPersonChanged
             ? ",\n    ldate_assigned = " . ($hasAssignedSalesPerson ? 'CURDATE()' : 'NULL')
@@ -844,6 +1065,15 @@ SQL;
                 $updateParams['discount_code'] = $this->normalizeDiscountCode((string) ($payload['discount_code'] ?? $existing['discount_code'] ?? ''));
             }
             $stmt->execute($updateParams);
+            if ($salesPersonChanged && $hasAssignedSalesPerson) {
+                $this->recordAssignmentHistory(
+                    $this->db->pdo(),
+                    $mainId,
+                    $sessionId,
+                    $nextSalesPerson,
+                    isset($payload['user_id']) ? (int) $payload['user_id'] : 0
+                );
+            }
             $this->savePreviousCustomerName(
                 $this->db->pdo(),
                 $sessionId,
@@ -863,7 +1093,13 @@ SQL;
         $oldVerification = strtolower(trim((string) ($existing['verification'] ?? '')));
         $newVerification = strtolower(trim((string) ($payload['verification'] ?? $existing['verification'] ?? '')));
         $newStatus = isset($payload['status']) ? (int) $payload['status'] : (int) ($existing['status'] ?? 1);
-        if ($newVerification === 'verified' && $oldVerification !== 'verified') {
+        // Write the verification audit whenever the record ends up Verified but has no
+        // 'Verify Prospect' audit yet. Keying on a text transition alone (old != verified)
+        // left legacy/imported rows already labelled 'Verified' — but with no audit —
+        // stuck: verified_in_system stays 0, so the Daily Call list keeps them Unverified
+        // and the Verify button appears to do nothing (row flickers out then returns).
+        if ($newVerification === 'verified'
+            && ($oldVerification !== 'verified' || !$this->hasVerifyProspectAudit($mainId, $sessionId))) {
             $auditPage = 'Daily Call Monitoring Dashboard';
             $auditAction = 'Verify Prospect';
         } elseif ($newStatus === 4 || $newVerification === 'rejected') {
@@ -882,6 +1118,27 @@ SQL;
         }
 
         return $this->getCustomer($mainId, $sessionId);
+    }
+
+    /**
+     * True when a 'Verify Prospect' audit row already exists for this customer.
+     * This is the same signal the Daily Call master list reads as verified_in_system,
+     * so if it is missing we must (re)write the audit even when lverification is
+     * already 'Verified' (legacy/imported rows), otherwise the row never leaves the
+     * Unverified bucket.
+     */
+    private function hasVerifyProspectAudit(int $mainId, string $sessionId): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT 1 FROM tblaudit_trail
+             WHERE lmain_id = :main_id
+               AND lrefno = :refno
+               AND lpage = 'Daily Call Monitoring Dashboard'
+               AND laction = 'Verify Prospect'
+             LIMIT 1"
+        );
+        $stmt->execute(['main_id' => $mainId, 'refno' => $sessionId]);
+        return (bool) $stmt->fetchColumn();
     }
 
     /**
@@ -1048,6 +1305,23 @@ SQL;
             $stmt->execute();
         } catch (\Throwable $e) {
             $this->rethrowAsFriendlyValidation($e);
+        }
+
+        // Record one assignment-history row per customer when the bulk update
+        // assigns a (non-empty) agent. Unassignment is not a history event.
+        $bulkSalesPersonId = trim((string) ($payload['sales_person_id'] ?? ''));
+        if ($bulkSalesPersonId !== '') {
+            $this->ensureAssignmentHistoryTable();
+            $bulkAssignedBy = (int) ($payload['user_id'] ?? 0);
+            foreach ($normalizedSessionIds as $historySessionId) {
+                $this->recordAssignmentHistory(
+                    $this->db->pdo(),
+                    $mainId,
+                    $historySessionId,
+                    $bulkSalesPersonId,
+                    $bulkAssignedBy
+                );
+            }
         }
 
         return [

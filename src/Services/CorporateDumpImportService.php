@@ -14,7 +14,10 @@ use RuntimeException;
  *
  * Guarantees against the live (target) database:
  * - Never DROP / TRUNCATE / DELETE tables or rows
- * - Only writes via INSERT IGNORE, so existing rows are never modified
+ * - Writes via INSERT IGNORE for every table, so existing rows are never
+ *   modified -- EXCEPT the product pricing tables (see PRICE_UPSERT_COLUMNS),
+ *   where the imported CURRENT price amount overwrites the matching row via
+ *   INSERT ... ON DUPLICATE KEY UPDATE so an updated price migrates across.
  * - Only shared columns that already exist on the target are written
  * - Tables present only in the dump are skipped (not created)
  * - Target-only tables and columns are left untouched
@@ -95,13 +98,34 @@ final class CorporateDumpImportService
     }
 
     /**
+     * Per-table columns the corporate import is allowed to OVERWRITE on an
+     * existing row (key collision). Every table not listed here stays strictly
+     * add-only (INSERT IGNORE) so live data is never modified.
+     *
+     * Scope: product pricing only -- the imported price should win. Prices live
+     * in tblinventory_price (lprice_amt is the current amount the app reads via
+     * "latest row wins"), with tblinventory carrying the legacy denormalized
+     * price columns. Only the CURRENT price amount is refreshed.
+     *
+     * @var array<string, list<string>>
+     */
+    private const PRICE_UPSERT_COLUMNS = [
+        'tblinventory_price' => ['lprice_amt'],
+        'tblinventory' => ['lprice', 'lsuppprice'],
+    ];
+
+    /**
+     * @param list<string> $updatableColumns Columns allowed to be overwritten on
+     *        key collision. Empty (the default) keeps the strict add-only
+     *        INSERT IGNORE behaviour for every non-pricing table.
      * @return array{sql: string, mode: string}|null
      */
     public static function buildMergeSql(
         string $targetDb,
         string $sourceDb,
         string $table,
-        array $sharedColumns
+        array $sharedColumns,
+        array $updatableColumns = []
     ): ?array {
         if ($sharedColumns === []) {
             return null;
@@ -115,6 +139,31 @@ final class CorporateDumpImportService
         );
 
         $columnList = implode(', ', array_map($quote, $sharedColumns));
+
+        // Only refresh columns that are both allowed AND actually present in the
+        // shared column set for this dump/target pair.
+        $sharedSet = array_fill_keys($sharedColumns, true);
+        $updates = [];
+        foreach ($updatableColumns as $column) {
+            if (isset($sharedSet[$column])) {
+                $updates[] = sprintf('%s = VALUES(%s)', $quote($column), $quote($column));
+            }
+        }
+
+        if ($updates !== []) {
+            return [
+                'mode' => 'upsert',
+                'sql' => sprintf(
+                    'INSERT INTO %s (%s) SELECT %s FROM %s ON DUPLICATE KEY UPDATE %s',
+                    $qualified($targetDb, $table),
+                    $columnList,
+                    $columnList,
+                    $qualified($sourceDb, $table),
+                    implode(', ', $updates)
+                ),
+            ];
+        }
+
         return [
             'mode' => 'insert_ignore',
             'sql' => sprintf(
@@ -333,7 +382,13 @@ final class CorporateDumpImportService
                 continue;
             }
 
-            $plan = self::buildMergeSql($targetDb, $sourceDb, $table, $shared);
+            $plan = self::buildMergeSql(
+                $targetDb,
+                $sourceDb,
+                $table,
+                $shared,
+                self::PRICE_UPSERT_COLUMNS[$table] ?? []
+            );
             if ($plan === null) {
                 $skippedNoShared[] = $table;
                 continue;

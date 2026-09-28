@@ -86,6 +86,8 @@ final class DailyCallMonitoringRepository
                 'id' => $cid,
                 'source' => $customer['source'] ?: 'Manual',
                 'assignedTo' => $customer['assigned_to'] ?: 'Unassigned',
+                'assignedTeamId' => trim((string) ($customer['assigned_team_id'] ?? '')) === '0' ? '' : trim((string) ($customer['assigned_team_id'] ?? '')),
+                'assignedTeam' => (string) ($customer['assigned_team'] ?? ''),
                 'assignedDate' => $this->formatDateText($customer['assigned_date']),
                 'clientSince' => $this->formatDateText($metricsRow['first_purchase_date'] ?? null),
                 'province' => $customer['province'] ?: '—',
@@ -463,11 +465,11 @@ ledger_monthly AS (
       AND lg.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
       AND COALESCE(lg.lcustomerid, '') <> ''
       AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
-      -- Match the Statement of Account definition of a sale: every Debit row
-      -- EXCEPT Debit Memo. The previous invoice/order-slip-only filter dropped
-      -- posted delivery-receipt debits (e.g. N-D… "LBC RUSH"), so a customer
-      -- with a current-month DR showed ₱0 sales while the ledger/SOA showed it.
-      AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) <> 'debit memo'
+      -- Sales = invoice / order slip / delivery-receipt debits (delivery
+      -- receipts are recorded as 'Order Slip' in the ledger). This matches the
+      -- Sales Report total exactly; Freight Charges / Debit Memo / Adjustment
+      -- are NOT sales and must stay excluded.
+      AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
     GROUP BY lg.lcustomerid, lg.lmainid, DATE_FORMAT(lg.ldatetime, '%Y-%m')
 ),
 ledger_summary AS (
@@ -562,7 +564,7 @@ customer_universe AS (
         p.lmain_id, p.lsessionid, p.lcompany, p.lpatient_code, p.lprovince, p.lcity,
         p.lmobile, p.lphone, p.lsales_person, p.ldate_assigned, p.lsales_team,
         p.lprofile_type, p.lverification, p.lstatus, p.ldebt_type, p.ldatetime,
-        p.lprice_group, p.ldeleted, p.lrefer_by, p.lencoded_by, 0 AS posted_sales_customer_missing
+p.lprice_group, p.ldeleted, p.lrefer_by, p.lencoded_by, p.ldatereg, 0 AS posted_sales_customer_missing
     FROM tblpatient p
     WHERE p.lmain_id = :customer_universe_main_id
       AND COALESCE(p.ldeleted, 0) = 0
@@ -577,7 +579,7 @@ customer_universe AS (
         '' AS lphone, '' AS lsales_person, NULL AS ldate_assigned,
         0 AS lsales_team, '' AS lprofile_type, '' AS lverification, 1 AS lstatus,
         'Good' AS ldebt_type, '' AS ldatetime, '' AS lprice_group, 0 AS ldeleted,
-        '' AS lrefer_by, 0 AS lencoded_by,
+'' AS lrefer_by, 0 AS lencoded_by, NULL AS ldatereg,
         1 AS posted_sales_customer_missing
     FROM sales_report_current_month sales
     LEFT JOIN tblpatient live_customer
@@ -656,7 +658,14 @@ SELECT
     ), '') AS past_name,
     COALESCE(p.lprovince, '') AS province,
     COALESCE(p.lcity, '') AS city,
-    COALESCE(p.lrefer_by, '') AS prospect_source,
+CASE
+        WHEN TRIM(COALESCE(p.lrefer_by, '')) <> '' THEN p.lrefer_by
+        WHEN YEAR(COALESCE(
+            STR_TO_DATE(NULLIF(NULLIF(TRIM(COALESCE(p.ldatereg, '')), ''), '0000-00-00'), '%Y-%m-%d'),
+            STR_TO_DATE(NULLIF(NULLIF(TRIM(SUBSTRING(COALESCE(p.ldatetime, ''), 1, 10)), ''), '0000-00-00'), '%Y-%m-%d')
+        )) >= 2025 THEN 'TND'
+        ELSE 'QBP'
+    END AS prospect_source,
     NULLIF(TRIM(CONCAT(COALESCE(encoder.lfname, ''), ' ', COALESCE(encoder.llname, ''))), '') AS prospect_created_by,
     COALESCE(
         NULLIF(TRIM(p.lmobile), ''),
@@ -728,14 +737,13 @@ SELECT
         ELSE COALESCE(txn_summary.recovery_trailing_12_month_month_count, 0)
     END AS recovery_trailing_12_month_month_count,
     COALESCE(ledger_summary.last_active_year, txn_summary.last_active_year) AS last_active_year,
-    -- Current-month sales follow the ledger (Statement of Account) definition
-    -- so the column matches what the customer's ledger actually shows. Falls
-    -- back to the posted-invoice/DR figure only when the customer has no
-    -- ledger rows at all.
-    CASE
-        WHEN ledger_summary.current_month_sales IS NOT NULL THEN ledger_summary.current_month_sales
-        ELSE COALESCE(sales_report_current_month.current_month_sales, 0)
-    END AS current_month_sales,
+    -- Current-month sales come SOLELY from the Sales Report definition
+    -- (posted invoices + delivery receipts via PostedSalesDocumentSql), the
+    -- same source as the dashboard "Current Month Sales (Sales Report)"
+    -- headline. This keeps every current-month sales figure reconciled with
+    -- the Sales Report and excludes unconverted sales orders that only exist
+    -- as ledger "Order Slip" debits.
+    COALESCE(sales_report_current_month.current_month_sales, 0) AS current_month_sales,
     COALESCE(ledger_summary.last_month_sales, 0) + COALESCE(txn_summary.last_month_sales, 0) AS last_month_sales,
     COALESCE(ledger_summary.recent_three_month_sales, 0) + COALESCE(txn_summary.recent_three_month_sales, 0) AS recent_three_month_sales,
     COALESCE(ledger_summary.previous_three_month_sales, 0) + COALESCE(txn_summary.previous_three_month_sales, 0) AS previous_three_month_sales,
@@ -2219,33 +2227,24 @@ SQL;
         $permissions = (new RolePermissionRepository($this->db))
             ->getActionPermissionsForAccount($mainId, $viewerUserId, (int) $userType);
         if (DailyCallAccessPolicy::canViewAll($permissions, $userType === '1')) {
+            // Unfiltered ("see everyone") access is granted only to a master
+            // user or to a permitted viewer who actually belongs to a team.
+            //
+            // Previously a non-master with the "See all records" permission was
+            // also unfiltered whenever they had at least one assigned customer.
+            // That leaked the whole company book to a plain, team-less agent: customers assigned to another
+            // agent and on no team surfaced on their account. A team-less agent
+            // must always be scoped to their own assignments, so that branch is
+            // gone -- team membership is now the only widening path besides the
+            // master role.
             if ($userType === '1'
                 || (int) ($viewer['team_id'] ?? 0) > 0
-                || $this->viewerHasIndividualAssignments($mainId, $viewerUserId)
             ) {
                 return null;
             }
         }
 
         return $viewerUserId;
-    }
-
-    private function viewerHasIndividualAssignments(int $mainId, int $viewerUserId): bool
-    {
-        $stmt = $this->db->pdo()->prepare(
-            'SELECT 1
-             FROM tblpatient
-             WHERE lmain_id = :main_id
-               AND COALESCE(ldeleted, 0) = 0
-               AND CAST(COALESCE(lsales_person, 0) AS SIGNED) = :viewer_id
-             LIMIT 1'
-        );
-        $stmt->execute([
-            'main_id' => $mainId,
-            'viewer_id' => $viewerUserId,
-        ]);
-
-        return (bool) $stmt->fetchColumn();
     }
 
     private function resolveViewerTeamContext(?int $viewerUserId): ?array

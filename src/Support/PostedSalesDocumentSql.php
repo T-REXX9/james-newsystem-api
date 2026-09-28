@@ -14,12 +14,17 @@ final class PostedSalesDocumentSql
 {
     public static function invoiceIsPosted(string $alias = 'l'): string
     {
-        return sprintf('%s.lcancel IS NULL', $alias);
+        // "Not cancelled" in this data means lcancel is NULL, '', '0' or 0.
+        // Posted delivery receipts / invoices store lcancel = 0 (e.g. GREG's
+        // N-D39172), so neither `IS NULL` nor `COALESCE(lcancel,'')=''` matches
+        // them. Normalise then compare to '0': a real cancellation carries a
+        // non-zero flag.
+        return sprintf("COALESCE(NULLIF(TRIM(%s.lcancel), ''), '0') = '0'", $alias);
     }
 
     public static function deliveryReceiptIsPosted(string $alias = 'l'): string
     {
-        return sprintf('%s.lcancel IS NULL', $alias);
+        return sprintf("COALESCE(NULLIF(TRIM(%s.lcancel), ''), '0') = '0'", $alias);
     }
 
     /**
