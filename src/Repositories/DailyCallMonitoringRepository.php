@@ -1190,10 +1190,10 @@ SQL;
                 $orClauses[] = "LOWER(TRIM(COALESCE(p.lcompany, ''))) LIKE :{$key}";
                 $cParams[$key] = '%' . $company . '%';
             }
-            $conflictSql = 'SELECT p.lsessionid AS session_id, TRIM(COALESCE(p.lcompany, '')) AS company,'
-                . ' COALESCE(p.lmobile, '') AS mobile, COALESCE(p.lphone, '') AS phone,'
-                . ' COALESCE(p.laddress, '') AS address, COALESCE(p.lverification, '') AS verification,'
-                . ' COALESCE(p.lprofile_type, '') AS profile_type'
+            $conflictSql = "SELECT p.lsessionid AS session_id, TRIM(COALESCE(p.lcompany, '')) AS company,"
+                . " COALESCE(p.lmobile, '') AS mobile, COALESCE(p.lphone, '') AS phone,"
+                . " COALESCE(p.laddress, '') AS address, COALESCE(p.lverification, '') AS verification,"
+                . " COALESCE(p.lprofile_type, '') AS profile_type"
                 . ' FROM tblpatient p'
                 . ' WHERE p.lmain_id = :main_id AND COALESCE(p.ldeleted, 0) = 0'
                 . ' AND (' . implode(' OR ', $orClauses) . ')'
