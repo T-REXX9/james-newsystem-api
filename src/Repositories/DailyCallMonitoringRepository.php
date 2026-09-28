@@ -688,7 +688,7 @@ CASE
     COALESCE(NULLIF(TRIM(CONCAT(COALESCE(verifier.lfname, ''), ' ', COALESCE(verifier.llname, ''))), ''), '') AS verified_by,
     CASE WHEN verification_audit.lid IS NULL THEN 0 ELSE 1 END AS verified_in_system,
     COALESCE(p.ldatetime, '') AS created_at,
-    COALESCE(duplicate_req.existing_prospect_id, 0) AS duplicate_existing_prospect_id,
+    COALESCE(duplicate_req.lexisting_prospect_id, 0) AS duplicate_existing_prospect_id,
     COALESCE(duplicate_req.existing_company, '') AS duplicate_existing_company,
     COALESCE(duplicate_req.existing_contact_person, '') AS duplicate_existing_contact_person,
     COALESCE(duplicate_req.existing_phone, '') AS duplicate_existing_phone,
