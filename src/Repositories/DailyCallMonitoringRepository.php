@@ -688,6 +688,12 @@ CASE
     COALESCE(NULLIF(TRIM(CONCAT(COALESCE(verifier.lfname, ''), ' ', COALESCE(verifier.llname, ''))), ''), '') AS verified_by,
     CASE WHEN verification_audit.lid IS NULL THEN 0 ELSE 1 END AS verified_in_system,
     COALESCE(p.ldatetime, '') AS created_at,
+    COALESCE(duplicate_req.existing_prospect_id, 0) AS duplicate_existing_prospect_id,
+    COALESCE(duplicate_req.existing_company, '') AS duplicate_existing_company,
+    COALESCE(duplicate_req.existing_contact_person, '') AS duplicate_existing_contact_person,
+    COALESCE(duplicate_req.existing_phone, '') AS duplicate_existing_phone,
+    COALESCE(duplicate_req.lmatching_fields, '[]') AS duplicate_matching_fields,
+    COALESCE(duplicate_req.duplicate_status, '') AS duplicate_status,
     COALESCE(latest_sales_report.body, '') AS latest_sales_report_message,
     COALESCE(latest_sales_report.author_name, '') AS latest_sales_report_author,
     COALESCE(latest_sales_report.source_label, '') AS latest_sales_report_source,
@@ -782,6 +788,18 @@ LEFT JOIN (
         SELECT lrefno, MIN(lid) AS min_lid FROM tblcontact_person GROUP BY lrefno
     ) cp_min ON cp_min.lrefno = cp.lrefno AND cp_min.min_lid = cp.lid
 ) cp_first ON cp_first.lrefno = p.lsessionid
+LEFT JOIN (
+    SELECT 
+        lnew_prospect_id,
+        lexisting_prospect_id,
+        lcompany_name AS existing_company,
+        lcontact_person AS existing_contact_person,
+        lphone AS existing_phone,
+        lmatching_fields,
+        lstatus AS duplicate_status
+    FROM tblpatient_duplicate_request
+    WHERE lstatus = 'pending'
+) duplicate_req ON duplicate_req.lnew_prospect_id = p.lsessionid
 /* Replaced by the set-based ledger_summary CTE above.
 LEFT JOIN (
     SELECT
@@ -2121,6 +2139,18 @@ LEFT JOIN (
         SELECT lrefno, MIN(lid) AS min_lid FROM tblcontact_person GROUP BY lrefno
     ) cp_min ON cp_min.lrefno = cp.lrefno AND cp_min.min_lid = cp.lid
 ) cp_first ON cp_first.lrefno = p.lsessionid
+LEFT JOIN (
+    SELECT 
+        lnew_prospect_id,
+        lexisting_prospect_id,
+        lcompany_name AS existing_company,
+        lcontact_person AS existing_contact_person,
+        lphone AS existing_phone,
+        lmatching_fields,
+        lstatus AS duplicate_status
+    FROM tblpatient_duplicate_request
+    WHERE lstatus = 'pending'
+) duplicate_req ON duplicate_req.lnew_prospect_id = p.lsessionid
 WHERE p.lmain_id = :main_id
   AND COALESCE(p.ldeleted, 0) = 0
 SQL;
