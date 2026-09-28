@@ -1175,56 +1175,68 @@ SQL;
         $stmt->execute(['main_id' => $mainId]);
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
-        // For each pending request, find existing customers with a matching company name
-        $conflictSql = <<<'SQL'
-            SELECT
-                p.lsessionid AS session_id,
-                TRIM(COALESCE(p.lcompany, '')) AS company,
-                COALESCE(p.lmobile, '') AS mobile,
-                COALESCE(p.lphone, '') AS phone,
-                COALESCE(p.laddress, '') AS address,
-                COALESCE(p.lverification, '') AS verification,
-                COALESCE(p.lprofile_type, '') AS profile_type
-            FROM tblpatient p
-            WHERE p.lmain_id = :main_id
-              AND COALESCE(p.ldeleted, 0) = 0
-              AND LOWER(TRIM(COALESCE(p.lcompany, ''))) LIKE :company_pattern
-            ORDER BY p.ldatetime DESC
-            LIMIT 5
-SQL;
+        // Batch-fetch conflicting customers for all pending requests in one query.
+        // Build a LIKE condition per company name and union them with OR, avoiding N+1.
+        $companies = array_values(array_unique(array_filter(
+            array_map(static fn (array $r): string => strtolower(trim((string) ($r['company'] ?? ''))), $rows)
+        )));
 
-        return array_map(function (array $row) use ($mainId, $conflictSql): array {
-            $company = strtolower(trim((string) ($row['company'] ?? '')));
-            $conflictingCustomers = [];
-            if ($company !== '') {
-                $cstmt = $this->db->pdo()->prepare($conflictSql);
-                $cstmt->execute(['main_id' => $mainId, 'company_pattern' => '%' . $company . '%']);
-                $conflictingCustomers = array_map(static function (array $c): array {
-                    return [
-                        'session_id' => (string) ($c['session_id'] ?? ''),
-                        'company' => (string) ($c['company'] ?? ''),
-                        'mobile' => (string) ($c['mobile'] ?? ''),
-                        'phone' => (string) ($c['phone'] ?? ''),
-                        'address' => (string) ($c['address'] ?? ''),
-                        'verification' => (string) ($c['verification'] ?? ''),
-                        'profile_type' => (string) ($c['profile_type'] ?? ''),
-                    ];
-                }, $cstmt->fetchAll(\PDO::FETCH_ASSOC));
+        $conflictsByCompany = [];
+        if ($companies !== []) {
+            $orClauses = [];
+            $cParams = ['main_id' => $mainId];
+            foreach ($companies as $i => $company) {
+                $key = 'c' . $i;
+                $orClauses[] = "LOWER(TRIM(COALESCE(p.lcompany, ''))) LIKE :{$key}";
+                $cParams[$key] = '%' . $company . '%';
             }
+            $conflictSql = 'SELECT p.lsessionid AS session_id, TRIM(COALESCE(p.lcompany, '')) AS company,'
+                . ' COALESCE(p.lmobile, '') AS mobile, COALESCE(p.lphone, '') AS phone,'
+                . ' COALESCE(p.laddress, '') AS address, COALESCE(p.lverification, '') AS verification,'
+                . ' COALESCE(p.lprofile_type, '') AS profile_type'
+                . ' FROM tblpatient p'
+                . ' WHERE p.lmain_id = :main_id AND COALESCE(p.ldeleted, 0) = 0'
+                . ' AND (' . implode(' OR ', $orClauses) . ')'
+                . ' ORDER BY p.ldatetime DESC';
+            $cstmt = $this->db->pdo()->prepare($conflictSql);
+            $cstmt->execute($cParams);
+            foreach ($cstmt->fetchAll(\PDO::FETCH_ASSOC) as $c) {
+                $existingCompany = strtolower(trim((string) ($c['company'] ?? '')));
+                $mapped = [
+                    'session_id'   => (string) ($c['session_id'] ?? ''),
+                    'company'      => (string) ($c['company'] ?? ''),
+                    'mobile'       => (string) ($c['mobile'] ?? ''),
+                    'phone'        => (string) ($c['phone'] ?? ''),
+                    'address'      => (string) ($c['address'] ?? ''),
+                    'verification' => (string) ($c['verification'] ?? ''),
+                    'profile_type' => (string) ($c['profile_type'] ?? ''),
+                ];
+                // Associate this result with every pending company that matches it
+                foreach ($companies as $company) {
+                    if (str_contains($existingCompany, $company) || str_contains($company, $existingCompany)) {
+                        $conflictsByCompany[$company][] = $mapped;
+                    }
+                }
+            }
+        }
+
+        return array_map(static function (array $row) use ($conflictsByCompany): array {
+            $company = strtolower(trim((string) ($row['company'] ?? '')));
+            $conflicts = array_slice($conflictsByCompany[$company] ?? [], 0, 5);
             return [
-                'request_id' => (string) ($row['request_id'] ?? ''),
-                'contact_id' => (string) ($row['contact_id'] ?? ''),
-                'submitted_at' => (string) ($row['submitted_at'] ?? ''),
-                'submitted_by' => (int) ($row['submitted_by'] ?? 0),
-                'submitted_by_name' => trim((string) ($row['submitted_by_name'] ?? '')),
-                'company' => (string) ($row['company'] ?? ''),
-                'mobile' => (string) ($row['mobile'] ?? ''),
-                'phone' => (string) ($row['phone'] ?? ''),
-                'address' => (string) ($row['address'] ?? ''),
-                'refer_by' => (string) ($row['refer_by'] ?? ''),
-                'sales_person_id' => (string) ($row['sales_person_id'] ?? ''),
-                'duplicate_override_reason' => (string) ($row['duplicate_override_reason'] ?? ''),
-                'conflicting_customers' => $conflictingCustomers,
+                'request_id'               => (string) ($row['request_id'] ?? ''),
+                'contact_id'               => (string) ($row['contact_id'] ?? ''),
+                'submitted_at'             => (string) ($row['submitted_at'] ?? ''),
+                'submitted_by'             => (int) ($row['submitted_by'] ?? 0),
+                'submitted_by_name'        => trim((string) ($row['submitted_by_name'] ?? '')),
+                'company'                  => (string) ($row['company'] ?? ''),
+                'mobile'                   => (string) ($row['mobile'] ?? ''),
+                'phone'                    => (string) ($row['phone'] ?? ''),
+                'address'                  => (string) ($row['address'] ?? ''),
+                'refer_by'                 => (string) ($row['refer_by'] ?? ''),
+                'sales_person_id'          => (string) ($row['sales_person_id'] ?? ''),
+                'duplicate_override_reason'=> (string) ($row['duplicate_override_reason'] ?? ''),
+                'conflicting_customers'    => $conflicts,
             ];
         }, $rows);
     }
