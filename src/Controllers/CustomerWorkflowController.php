@@ -159,7 +159,7 @@ final class CustomerWorkflowController
                 'type' => $decision === 'approved' ? 'success' : 'info',
                 'category' => 'notification',
                 'main_id' => (string) $mainId,
-                'metadata' => ['entity_type' => 'customer_request_decision', 'entity_id' => $requestId, 'contact_id' => $contactId, 'conversation_type' => 'agent_sales_report', 'action_url' => 'sales-transaction-daily-call-monitoring', 'refno' => 'customer-request-decision:' . $requestId . ':' . $decision, 'idempotency_key' => 'customer-request-decision:' . $requestId . ':' . $decision . ':' . $request['submitted_by'], 'category' => 'notification'],
+                'metadata' => ['entity_type' => 'customer_request_decision', 'entity_id' => $requestId, 'contact_id' => $result['contact_id'], 'conversation_type' => 'agent_sales_report', 'action_url' => 'sales-transaction-daily-call-monitoring', 'refno' => 'customer-request-decision:' . $requestId . ':' . $decision, 'idempotency_key' => 'customer-request-decision:' . $requestId . ':' . $decision . ':' . $request['submitted_by'], 'category' => 'notification'],
             ]);
         }
         return $result;
