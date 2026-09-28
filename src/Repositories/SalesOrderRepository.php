@@ -132,6 +132,7 @@ SELECT
     COALESCE(so.lsales_address, '') AS delivery_address,
     COALESCE(so.lmy_refno, '') AS reference_no,
     COALESCE(so.lyour_refno, '') AS customer_reference,
+    COALESCE(so.lshipped, '') AS send_by,
     COALESCE(so.lprice_group, '') AS price_group,
     COALESCE(so.lcredit_limit, 0) AS credit_limit,
     COALESCE(so.lterms, '') AS terms,
@@ -298,6 +299,7 @@ SELECT
     COALESCE(so.lsales_address, '') AS delivery_address,
     COALESCE(so.lmy_refno, '') AS reference_no,
     COALESCE(so.lyour_refno, '') AS customer_reference,
+    COALESCE(so.lshipped, '') AS send_by,
     COALESCE(so.lprice_group, '') AS price_group,
     COALESCE(so.lcredit_limit, 0) AS credit_limit,
     COALESCE(so.lterms, '') AS terms,
@@ -417,9 +419,9 @@ SQL;
 
             $insert = $pdo->prepare(
                 'INSERT INTO tbltransaction
-                (lsaleno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lbranch, lt_lfname, lt_llname, lcompany, lsales_address, lmy_refno, lyour_refno, lprice_group, lcredit_limit, lpromissory_note, lpo_no, lnote, lterms, lterm_condition, lsales_person, lsales_person_id, lsubmitstat, ltransaction_status, lcancel, linquiry_refno, linquiry_no, IsInquiry, lurgency, lurgency_date)
+                (lsaleno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lbranch, lt_lfname, lt_llname, lcompany, lsales_address, lmy_refno, lyour_refno, lshipped, lprice_group, lcredit_limit, lpromissory_note, lpo_no, lnote, lterms, lterm_condition, lsales_person, lsales_person_id, lsubmitstat, ltransaction_status, lcancel, linquiry_refno, linquiry_no, IsInquiry, lurgency, lurgency_date)
                 VALUES
-                (:lsaleno, :ldate, :ltime, :lcustomerid, :lmain_id, :luser, :lrefno, :lbranch, :lt_lfname, :lt_llname, :lcompany, :lsales_address, :lmy_refno, :lyour_refno, :lprice_group, :lcredit_limit, :lpromissory_note, :lpo_no, :lnote, :lterms, :lterm_condition, :lsales_person, :lsales_person_id, :lsubmitstat, :ltransaction_status, :lcancel, :linquiry_refno, :linquiry_no, 0, :lurgency, :lurgency_date)'
+                (:lsaleno, :ldate, :ltime, :lcustomerid, :lmain_id, :luser, :lrefno, :lbranch, :lt_lfname, :lt_llname, :lcompany, :lsales_address, :lmy_refno, :lyour_refno, :lshipped, :lprice_group, :lcredit_limit, :lpromissory_note, :lpo_no, :lnote, :lterms, :lterm_condition, :lsales_person, :lsales_person_id, :lsubmitstat, :ltransaction_status, :lcancel, :linquiry_refno, :linquiry_no, 0, :lurgency, :lurgency_date)'
             );
             $insert->execute([
                 'lsaleno' => $salesNo,
@@ -436,6 +438,7 @@ SQL;
                 'lsales_address' => $this->stringOrFallback($payload['delivery_address'] ?? null, (string) ($customer['ldelivery_address'] ?? '')),
                 'lmy_refno' => (string) ($payload['reference_no'] ?? $salesNo),
                 'lyour_refno' => (string) ($payload['customer_reference'] ?? ''),
+                'lshipped' => (string) ($payload['send_by'] ?? ''),
                 'lprice_group' => (string) ($payload['price_group'] ?? ($customer['lprice_group'] ?? '')),
                 'lcredit_limit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($customer['lcredit'] ?? 0),
                 'lpromissory_note' => (string) ($payload['promise_to_pay'] ?? ''),
@@ -541,6 +544,7 @@ SET
     lsales_address = :lsales_address,
     lmy_refno = :lmy_refno,
     lyour_refno = :lyour_refno,
+    lshipped = :lshipped,
     lprice_group = :lprice_group,
     lcredit_limit = :lcredit_limit,
     lpromissory_note = :lpromissory_note,
@@ -569,6 +573,7 @@ SQL;
             'lsales_address' => (string) ($payload['delivery_address'] ?? $order['delivery_address'] ?? ''),
             'lmy_refno' => (string) ($payload['reference_no'] ?? $order['reference_no'] ?? ''),
             'lyour_refno' => (string) ($payload['customer_reference'] ?? $order['customer_reference'] ?? ''),
+            'lshipped' => (string) ($payload['send_by'] ?? $order['send_by'] ?? ''),
             'lprice_group' => (string) ($payload['price_group'] ?? $order['price_group'] ?? ''),
             'lcredit_limit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($order['credit_limit'] ?? 0),
             'lpromissory_note' => (string) ($payload['promise_to_pay'] ?? $order['promise_to_pay'] ?? ''),
