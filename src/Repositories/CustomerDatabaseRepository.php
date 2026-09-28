@@ -31,6 +31,11 @@ final class CustomerDatabaseRepository
      */
     private function ensureAssignmentHistoryTable(): void
     {
+        // Even CREATE TABLE IF NOT EXISTS commits an active MySQL transaction.
+        // Customer-request reviews own the transaction and must remain atomic.
+        if ($this->db->pdo()->inTransaction()) {
+            return;
+        }
         try {
             $this->db->pdo()->exec(
                 'CREATE TABLE IF NOT EXISTS tblpatient_assignment_history (
@@ -511,10 +516,11 @@ SQL;
             $payload['delivery_addresses'] ?? null,
             (string) ($payload['delivery_address'] ?? $payload['address'] ?? '')
         );
-        // Ensure the history table exists BEFORE opening the transaction: DDL such
-        // as CREATE TABLE causes an implicit commit inside a transaction on MySQL.
-        $this->ensureAssignmentHistoryTable();
-        $pdo->beginTransaction();
+        $ownsTransaction = !$pdo->inTransaction();
+        if ($ownsTransaction) {
+            $this->ensureAssignmentHistoryTable();
+            $pdo->beginTransaction();
+        }
         try {
             $discountCodeInsertColumn = $this->hasCustomerDiscountCodeColumn() ? ', ldiscount_code' : '';
             $discountCodeInsertValue = $this->hasCustomerDiscountCodeColumn() ? ', :discount_code' : '';
@@ -605,10 +611,15 @@ SQL;
                 $sessionId,
                 $matches !== [] ? $overrideReason : ''
             );
-            $pdo->commit();
-            return $this->getCustomer($mainId, $sessionId) ?? [];
+            $customer = $this->getCustomer($mainId, $sessionId) ?? [];
+            if ($ownsTransaction) {
+                $pdo->commit();
+            }
+            return $customer;
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($ownsTransaction && $pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             $this->rethrowAsFriendlyValidation($e);
         }
     }

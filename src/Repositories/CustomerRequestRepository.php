@@ -166,8 +166,8 @@ final class CustomerRequestRepository
     /** @return array<string, mixed> */
     public function request(int $mainId, string $contactId, string $id): array
     {
-        $stmt = $this->db->pdo()->prepare('SELECT * FROM customer_requests WHERE main_id = ? AND contact_id = ? AND id = ? LIMIT 1');
-        $stmt->execute([$mainId, $contactId, $id]);
+        $stmt = $this->db->pdo()->prepare("SELECT * FROM customer_requests WHERE main_id = ? AND id = ? AND (contact_id = ? OR (kind = 'duplicate_prospect' AND CONCAT('pending-prospect-', id) = ?)) LIMIT 1");
+        $stmt->execute([$mainId, $id, $contactId, $contactId]);
         $request = $stmt->fetch();
         if (!$request) throw new HttpException(404, 'Request not found');
         return $this->decode($request);
@@ -194,8 +194,8 @@ final class CustomerRequestRepository
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
-            $stmt = $pdo->prepare('SELECT * FROM customer_requests WHERE main_id = ? AND contact_id = ? AND id = ? FOR UPDATE');
-            $stmt->execute([$mainId, $contactId, $id]);
+            $stmt = $pdo->prepare("SELECT * FROM customer_requests WHERE main_id = ? AND id = ? AND (contact_id = ? OR (kind = 'duplicate_prospect' AND CONCAT('pending-prospect-', id) = ?)) FOR UPDATE");
+            $stmt->execute([$mainId, $id, $contactId, $contactId]);
             $request = $stmt->fetch();
             if (!$request) throw new HttpException(404, 'Request not found');
             if ($request['status'] !== 'pending') throw new HttpException(409, 'This request has already been reviewed');
@@ -231,8 +231,8 @@ final class CustomerRequestRepository
                 $created = $this->customers()->createCustomer($mainId, (int) $request['submitted_by'], $payload);
                 $createdContactId = (string) ($created['session_id'] ?? '');
             }
-            $stmt = $pdo->prepare('UPDATE customer_requests SET status = ?, reviewed_by = ?, reviewed_at = NOW(), review_note = ? WHERE id = ? AND main_id = ?');
-            $stmt->execute([$decision, $reviewer, $note, $id, $mainId]);
+            $stmt = $pdo->prepare('UPDATE customer_requests SET status = ?, reviewed_by = ?, reviewed_at = NOW(), review_note = ?, contact_id = ? WHERE id = ? AND main_id = ?');
+            $stmt->execute([$decision, $reviewer, $note, $createdContactId ?? $contactId, $id, $mainId]);
             $audit = $pdo->prepare('INSERT INTO tblaudit_trail (lmain_id,luser_id,lpage,laction,lrefno,ldatetime) VALUES (?,?,?,?,?,NOW())');
             $audit->execute([$mainId, $reviewer, 'Customer Requests', ucfirst($decision) . ' ' . $request['kind'], $id]);
             $pdo->commit();
