@@ -564,7 +564,7 @@ customer_universe AS (
         p.lmain_id, p.lsessionid, p.lcompany, p.lpatient_code, p.lprovince, p.lcity,
         p.lmobile, p.lphone, p.lsales_person, p.ldate_assigned, p.lsales_team,
         p.lprofile_type, p.lverification, p.lstatus, p.ldebt_type, p.ldatetime,
-        p.lprice_group, p.ldeleted, p.lrefer_by, p.lencoded_by, p.ldatereg, 0 AS posted_sales_customer_missing
+p.lprice_group, p.ldeleted, p.lrefer_by, p.lencoded_by, p.ldatereg, 0 AS posted_sales_customer_missing
     FROM tblpatient p
     WHERE p.lmain_id = :customer_universe_main_id
       AND COALESCE(p.ldeleted, 0) = 0
@@ -579,7 +579,7 @@ customer_universe AS (
         '' AS lphone, '' AS lsales_person, NULL AS ldate_assigned,
         0 AS lsales_team, '' AS lprofile_type, '' AS lverification, 1 AS lstatus,
         'Good' AS ldebt_type, '' AS ldatetime, '' AS lprice_group, 0 AS ldeleted,
-        '' AS lrefer_by, 0 AS lencoded_by, NULL AS ldatereg,
+'' AS lrefer_by, 0 AS lencoded_by, NULL AS ldatereg,
         1 AS posted_sales_customer_missing
     FROM sales_report_current_month sales
     LEFT JOIN tblpatient live_customer
@@ -658,7 +658,7 @@ SELECT
     ), '') AS past_name,
     COALESCE(p.lprovince, '') AS province,
     COALESCE(p.lcity, '') AS city,
-    CASE
+CASE
         WHEN TRIM(COALESCE(p.lrefer_by, '')) <> '' THEN p.lrefer_by
         WHEN YEAR(COALESCE(
             STR_TO_DATE(NULLIF(NULLIF(TRIM(COALESCE(p.ldatereg, '')), ''), '0000-00-00'), '%Y-%m-%d'),
