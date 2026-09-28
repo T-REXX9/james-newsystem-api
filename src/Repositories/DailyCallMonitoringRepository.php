@@ -1134,14 +1134,62 @@ SQL;
             ];
         }, $stmt->fetchAll(PDO::FETCH_ASSOC));
 
+        $pendingDuplicates = $this->getPendingDuplicateProspectRequests($mainId);
+
         return [
             'items' => $items,
+            'pending_duplicate_prospects' => $pendingDuplicates,
             'meta' => [
                 'from_date' => $this->normalizeDateOrDefault($fromDate, '2025-10-01'),
                 'to_date' => date('Y-m-d'),
                 'count' => count($items),
             ],
         ];
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function getPendingDuplicateProspectRequests(int $mainId): array
+    {
+        $sql = <<<'SQL'
+            SELECT
+                cr.id AS request_id,
+                cr.contact_id,
+                cr.submitted_at,
+                cr.submitted_by,
+                TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))) AS submitted_by_name,
+                JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.company')) AS company,
+                JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.mobile')) AS mobile,
+                JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.phone')) AS phone,
+                JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.address')) AS address,
+                JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.refer_by')) AS refer_by,
+                JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.sales_person_id')) AS sales_person_id,
+                JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.duplicate_override_reason')) AS duplicate_override_reason
+            FROM customer_requests cr
+            LEFT JOIN tblaccount a ON a.lid = cr.submitted_by
+            WHERE cr.main_id = :main_id
+              AND cr.kind = 'duplicate_prospect'
+              AND cr.status = 'pending'
+            ORDER BY cr.submitted_at DESC
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute(['main_id' => $mainId]);
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        return array_map(static function (array $row): array {
+            return [
+                'request_id' => (string) ($row['request_id'] ?? ''),
+                'contact_id' => (string) ($row['contact_id'] ?? ''),
+                'submitted_at' => (string) ($row['submitted_at'] ?? ''),
+                'submitted_by' => (int) ($row['submitted_by'] ?? 0),
+                'submitted_by_name' => trim((string) ($row['submitted_by_name'] ?? '')),
+                'company' => (string) ($row['company'] ?? ''),
+                'mobile' => (string) ($row['mobile'] ?? ''),
+                'phone' => (string) ($row['phone'] ?? ''),
+                'address' => (string) ($row['address'] ?? ''),
+                'refer_by' => (string) ($row['refer_by'] ?? ''),
+                'sales_person_id' => (string) ($row['sales_person_id'] ?? ''),
+                'duplicate_override_reason' => (string) ($row['duplicate_override_reason'] ?? ''),
+            ];
+        }, $rows);
     }
 
     private function purchaseAgeGroup(int $daysSinceLastPurchase): string
