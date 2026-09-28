@@ -1174,7 +1174,43 @@ SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute(['main_id' => $mainId]);
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
-        return array_map(static function (array $row): array {
+
+        // For each pending request, find existing customers with a matching company name
+        $conflictSql = <<<'SQL'
+            SELECT
+                p.lsessionid AS session_id,
+                TRIM(COALESCE(p.lcompany, '')) AS company,
+                COALESCE(p.lmobile, '') AS mobile,
+                COALESCE(p.lphone, '') AS phone,
+                COALESCE(p.laddress, '') AS address,
+                COALESCE(p.lverification, '') AS verification,
+                COALESCE(p.lprofile_type, '') AS profile_type
+            FROM tblpatient p
+            WHERE p.lmain_id = :main_id
+              AND COALESCE(p.ldeleted, 0) = 0
+              AND LOWER(TRIM(COALESCE(p.lcompany, ''))) LIKE :company_pattern
+            ORDER BY p.ldatetime DESC
+            LIMIT 5
+SQL;
+
+        return array_map(function (array $row) use ($mainId, $conflictSql): array {
+            $company = strtolower(trim((string) ($row['company'] ?? '')));
+            $conflictingCustomers = [];
+            if ($company !== '') {
+                $cstmt = $this->db->pdo()->prepare($conflictSql);
+                $cstmt->execute(['main_id' => $mainId, 'company_pattern' => '%' . $company . '%']);
+                $conflictingCustomers = array_map(static function (array $c): array {
+                    return [
+                        'session_id' => (string) ($c['session_id'] ?? ''),
+                        'company' => (string) ($c['company'] ?? ''),
+                        'mobile' => (string) ($c['mobile'] ?? ''),
+                        'phone' => (string) ($c['phone'] ?? ''),
+                        'address' => (string) ($c['address'] ?? ''),
+                        'verification' => (string) ($c['verification'] ?? ''),
+                        'profile_type' => (string) ($c['profile_type'] ?? ''),
+                    ];
+                }, $cstmt->fetchAll(\PDO::FETCH_ASSOC));
+            }
             return [
                 'request_id' => (string) ($row['request_id'] ?? ''),
                 'contact_id' => (string) ($row['contact_id'] ?? ''),
@@ -1188,6 +1224,7 @@ SQL;
                 'refer_by' => (string) ($row['refer_by'] ?? ''),
                 'sales_person_id' => (string) ($row['sales_person_id'] ?? ''),
                 'duplicate_override_reason' => (string) ($row['duplicate_override_reason'] ?? ''),
+                'conflicting_customers' => $conflictingCustomers,
             ];
         }, $rows);
     }
