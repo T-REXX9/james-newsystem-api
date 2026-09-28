@@ -13,6 +13,7 @@ use App\Repositories\LocalRecycleBinRepository;
 use App\Repositories\ProductRepository;
 use App\Repositories\NotificationsRepository;
 use App\Controllers\CustomerWorkflowController;
+use App\Controllers\CustomerDatabaseController;
 use App\Support\Exceptions\HttpException;
 
 $db = new Database(app_config());
@@ -21,6 +22,7 @@ foreach (['customer_requests','tblpatient','tblcontact_person','tblpatient_terms
     $ddl = $pdo->query("SHOW CREATE TABLE {$table}")->fetch(PDO::FETCH_NUM)[1];
     $pdo->exec(preg_replace('/^CREATE TABLE/', 'CREATE TEMPORARY TABLE', $ddl));
 }
+$pdo->exec("ALTER TABLE customer_requests MODIFY kind ENUM('customer_update','discount','duplicate_prospect') NOT NULL");
 $insert = static function (string $table, array $values) use ($pdo): void {
     foreach ($pdo->query("SHOW COLUMNS FROM {$table}")->fetchAll() as $column) {
         $name = $column['Field'];
@@ -54,6 +56,7 @@ $claims = static fn(int $user, int $tenant) => ['__auth_claims'=>['sub'=>$user,'
 $ownerClaims = $claims($main, $main); $agentClaims = $claims($agent, $main);
 $repo = new CustomerRequestRepository($db);
 $controller = new CustomerWorkflowController($db, new AuthRepository($db));
+$customerController = new CustomerDatabaseController(new CustomerDatabaseRepository($db), $db);
 $params = ['contactId'=>$customer]; $query = ['main_id'=>$main];
 
 $created = $controller->createRequest($params, $query, $agentClaims + ['kind'=>'customer_update','payload'=>['company'=>'After']]);
@@ -71,6 +74,30 @@ $decisionNotifications = (new NotificationsRepository($db))->listByUser((string)
 $decisionMetadata = $decisionNotifications[0]['metadata'] ?? [];
 $assert(($decisionMetadata['conversation_type'] ?? '') === 'agent_sales_report', 'approval decision notification opens the agent sales report conversation');
 $reject(fn() => $controller->reviewRequest($params + ['requestId'=>$created['id']], $query, $ownerClaims + ['decision'=>'approved']), 409, 'duplicate review is rejected');
+
+// A staff member's duplicate prospect remains absent until the Master User approves it.
+$existingProspect = 'EXISTING-DUPLICATE-PROSPECT';
+$insert('tblpatient', ['lid'=>910010,'lmain_id'=>$main,'lsessionid'=>$existingProspect,'lcompany'=>'Duplicate Prospect Co','lstatus'=>3,'lprofile_type'=>'Prospect','lverification'=>'Unverified']);
+$duplicatePayload = $agentClaims + [
+    'main_id' => $main,
+    'user_id' => $agent,
+    'company' => 'Duplicate Prospect Co',
+    'status' => 3,
+    'profile_type' => 'Prospect',
+    'refer_by' => 'Google Search',
+    'duplicate_override_reason' => 'Separate branch with a different contact number',
+    'duplicate_override_confirmed' => true,
+];
+$duplicateRequest = $customerController->create([], [], $duplicatePayload);
+$assert(($duplicateRequest['pending_approval'] ?? false) === true, 'staff duplicate prospect is submitted for approval instead of created');
+$assert((int) $pdo->query("SELECT COUNT(*) FROM tblpatient WHERE lmain_id = {$main} AND lcompany = 'Duplicate Prospect Co'")->fetchColumn() === 1, 'pending duplicate prospect does not create a customer record');
+$reject(fn() => $customerController->create([], [], array_diff_key($duplicatePayload, ['duplicate_override_reason'=>true,'duplicate_override_confirmed'=>true])), 422, 'duplicate prospect requires a reason');
+$duplicateParams = ['contactId'=>$duplicateRequest['contact_id'], 'requestId'=>$duplicateRequest['request_id']];
+$reject(fn() => $controller->reviewRequest($duplicateParams, $query, $agentClaims + ['decision'=>'approved']), 403, 'staff cannot approve a duplicate prospect');
+$approvedDuplicate = $controller->reviewRequest($duplicateParams, $query, $ownerClaims + ['decision'=>'approved']);
+$assert(($approvedDuplicate['status'] ?? '') === 'approved', 'Master User can approve a duplicate prospect');
+$assert((int) $pdo->query("SELECT COUNT(*) FROM tblpatient WHERE lmain_id = {$main} AND lcompany = 'Duplicate Prospect Co'")->fetchColumn() === 2, 'approved duplicate prospect is created');
+$assert((string) $pdo->query("SELECT lduplicate_override_reason FROM tblpatient WHERE lmain_id = {$main} AND lsessionid = '" . $approvedDuplicate['contact_id'] . "'")->fetchColumn() === 'Separate branch with a different contact number', 'approved duplicate prospect retains the submitted reason');
 
 // A notification outage must not make a persisted request or decision look like a failure.
 $pdo->exec('DROP TEMPORARY TABLE tblnotifications');

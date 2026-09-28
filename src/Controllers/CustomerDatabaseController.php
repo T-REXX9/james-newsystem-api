@@ -6,6 +6,7 @@ namespace App\Controllers;
 
 use App\Database;
 use App\Repositories\CustomerDatabaseRepository;
+use App\Repositories\CustomerRequestRepository;
 use App\Repositories\NotificationsRepository;
 use App\Support\Exceptions\HttpException;
 use RuntimeException;
@@ -79,6 +80,53 @@ final class CustomerDatabaseController
             throw new HttpException(422, 'main_id and user_id are required');
         }
 
+        $isProspect = (int) ($body['status'] ?? 1) === 3
+            || str_contains(strtolower((string) ($body['profile_type'] ?? '')), 'prospect');
+        $matches = $this->repo->findSimilarCustomers($mainId, $body);
+        $duplicateReason = trim((string) ($body['duplicate_override_reason'] ?? ''));
+        if ($matches !== [] && $duplicateReason === '') {
+            throw new HttpException(422, 'A reason is required before adding a duplicate customer or prospect');
+        }
+
+        $account = $this->authAccount($userId);
+        $isMasterUser = (string) ($account['ltype'] ?? '') === '1';
+        if ($matches !== [] && $isProspect && !$isMasterUser) {
+            $requestPayload = $body;
+            unset($requestPayload['main_id'], $requestPayload['user_id'], $requestPayload['__auth_claims']);
+            $request = (new CustomerRequestRepository($this->db))->createDuplicateProspect($mainId, $userId, $requestPayload);
+            $prospectName = trim((string) ($body['company'] ?? '')) ?: 'an unnamed prospect';
+            $actorName = $this->repo->getAccountDisplayName($userId) ?: 'A sales agent';
+            try {
+                (new NotificationsRepository($this->db))->create([
+                    'recipient_id' => (string) $mainId,
+                    'title' => 'Duplicate Prospect Approval Required',
+                    'message' => sprintf('%s submitted duplicate prospect %s for approval.', $actorName, $prospectName),
+                    'type' => 'info',
+                    'category' => 'notification',
+                    'main_id' => (string) $mainId,
+                    'action_url' => 'sales-database-customer-database',
+                    'metadata' => [
+                        'entity_type' => 'duplicate_prospect_request',
+                        'entity_id' => (string) $request['id'],
+                        'contact_id' => (string) $request['contact_id'],
+                        'action' => 'review',
+                        'status' => 'pending',
+                        'action_url' => 'sales-database-customer-database',
+                        'refno' => 'duplicate-prospect-request:' . (string) $request['id'],
+                        'idempotency_key' => 'duplicate-prospect-request:' . (string) $request['id'],
+                        'category' => 'notification',
+                    ],
+                ]);
+            } catch (\Throwable) {
+                // A notification outage must not discard a persisted approval request.
+            }
+            return [
+                'pending_approval' => true,
+                'request_id' => $request['id'],
+                'contact_id' => $request['contact_id'],
+            ];
+        }
+
         try {
             $customer = $this->repo->createCustomer($mainId, $userId, $body);
             $comment = trim((string) ($body['notes'] ?? ''));
@@ -127,6 +175,14 @@ final class CustomerDatabaseController
         } catch (RuntimeException|InvalidArgumentException $e) {
             throw new HttpException(422, $e->getMessage());
         }
+    }
+
+    /** @return array<string, mixed> */
+    private function authAccount(int $userId): array
+    {
+        $stmt = $this->db->pdo()->prepare('SELECT lid, ltype FROM tblaccount WHERE lid = :id LIMIT 1');
+        $stmt->execute(['id' => $userId]);
+        return $stmt->fetch(\PDO::FETCH_ASSOC) ?: [];
     }
 
     public function update(array $params = [], array $query = [], array $body = []): array
