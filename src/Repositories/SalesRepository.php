@@ -26,7 +26,7 @@ SELECT
     ldate,
     ltime
 FROM tblinquiry
-WHERE lrefno = :refno
+WHERE lrefno = :refno OR linqno = :refno
 LIMIT 1
 SQL;
         $stmt = $this->db->pdo()->prepare($inqSql);
