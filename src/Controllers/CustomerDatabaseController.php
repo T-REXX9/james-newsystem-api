@@ -90,6 +90,14 @@ final class CustomerDatabaseController
 
         $account = $this->authAccount($userId);
         $isMasterUser = (string) ($account['ltype'] ?? '') === '1';
+        $isUnverifiedProspect = $isProspect
+            && strtolower(trim((string) ($body['verification'] ?? ''))) !== 'verified';
+        if ($isUnverifiedProspect && !$isMasterUser && trim((string) ($body['sales_person_id'] ?? '')) === '') {
+            // Staff-created unverified prospects are implicitly assigned to their
+            // creator. Passing the assignment through the normal repository create
+            // path also records ldate_assigned at insert time.
+            $body['sales_person_id'] = (string) $userId;
+        }
         if ($matches !== [] && $isProspect && !$isMasterUser) {
             $requestPayload = $body;
             unset($requestPayload['main_id'], $requestPayload['user_id'], $requestPayload['__auth_claims']);

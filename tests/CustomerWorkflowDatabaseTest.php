@@ -75,6 +75,24 @@ $decisionMetadata = $decisionNotifications[0]['metadata'] ?? [];
 $assert(($decisionMetadata['conversation_type'] ?? '') === 'agent_sales_report', 'approval decision notification opens the agent sales report conversation');
 $reject(fn() => $controller->reviewRequest($params + ['requestId'=>$created['id']], $query, $ownerClaims + ['decision'=>'approved']), 409, 'duplicate review is rejected');
 
+// A staff-created unverified prospect is implicitly assigned to its creator,
+// and that assignment must be date-stamped for the Master User's Daily Call list.
+$createdProspect = $customerController->create([], [], $agentClaims + [
+    'main_id' => $main,
+    'user_id' => $agent,
+    'company' => 'LOCAL-STAFF-PROSPECT-' . $agent,
+    'status' => 3,
+    'profile_type' => 'Prospect',
+    'verification' => 'Unverified',
+    'refer_by' => 'Google Search',
+]);
+$createdProspectRow = $pdo->query(
+    "SELECT lsales_person, ldate_assigned FROM tblpatient WHERE lmain_id = {$main} AND lsessionid = '"
+    . addslashes((string) ($createdProspect['session_id'] ?? '')) . "' LIMIT 1"
+)->fetch(PDO::FETCH_ASSOC) ?: [];
+$assert((string) ($createdProspectRow['lsales_person'] ?? '') === (string) $agent, 'staff-created prospect is assigned to its creator');
+$assert(substr((string) ($createdProspectRow['ldate_assigned'] ?? ''), 0, 10) === date('Y-m-d'), 'staff-created prospect records today as assignment date');
+
 // A staff member's duplicate prospect remains absent until the Master User approves it.
 $existingProspect = 'EXISTING-DUPLICATE-PROSPECT';
 $insert('tblpatient', ['lid'=>910010,'lmain_id'=>$main,'lsessionid'=>$existingProspect,'lcompany'=>'Duplicate Prospect Co','lstatus'=>3,'lprofile_type'=>'Prospect','lverification'=>'Unverified']);
