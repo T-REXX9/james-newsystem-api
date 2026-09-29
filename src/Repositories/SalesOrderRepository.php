@@ -324,13 +324,14 @@ FROM tbltransaction so
 LEFT JOIN tblaccount acc
     ON acc.lid = so.luser
 WHERE so.lmain_id = :main_id
-  AND (so.lrefno = :sales_refno OR so.lid = CAST(:sales_refno AS UNSIGNED))
+  AND (so.lrefno = :sales_refno_by_ref OR so.lid = CAST(:sales_refno_by_id AS UNSIGNED))
 LIMIT 1
 SQL;
         $orderStmt = $this->db->pdo()->prepare($orderSql);
         $orderStmt->execute([
             'main_id' => (string) $mainId,
-            'sales_refno' => $salesRefno,
+            'sales_refno_by_ref' => $salesRefno,
+            'sales_refno_by_id' => $salesRefno,
         ]);
         $order = $orderStmt->fetch(PDO::FETCH_ASSOC);
         if ($order === false) {
@@ -560,7 +561,7 @@ SET
     lurgency = :lurgency,
     lurgency_date = :lurgency_date
 WHERE lmain_id = :lmain_id
-  AND (lrefno = :lrefno OR lid = CAST(:lrefno AS UNSIGNED))
+  AND (lrefno = :lrefno_by_ref OR lid = CAST(:lrefno_by_id AS UNSIGNED))
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute([
@@ -589,7 +590,8 @@ SQL;
             'lurgency' => (string) ($payload['urgency'] ?? $order['urgency'] ?? ''),
             'lurgency_date' => $this->normalizeNullableDate((string) ($payload['urgency_date'] ?? $order['urgency_date'] ?? '')),
             'lmain_id' => (string) $mainId,
-            'lrefno' => $salesRefno,
+            'lrefno_by_ref' => $salesRefno,
+            'lrefno_by_id' => $salesRefno,
         ]);
 
         if (is_array($payload['items'] ?? null)) {

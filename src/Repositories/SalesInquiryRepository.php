@@ -123,9 +123,14 @@ SELECT
             SELECT 1
             FROM tbltransaction t
             WHERE t.lmain_id = iq.lmain_id
-              AND t.linquiry_refno = iq.lrefno
+              AND (t.linquiry_refno = iq.lrefno OR t.lrefno = iq.lso_refno)
               AND COALESCE(t.lcancel, 0) = 0
-              AND (COALESCE(t.invoice_refno, '') <> '' OR COALESCE(t.ldr_refno, '') <> '')
+              AND (
+                  COALESCE(t.invoice_refno, '') <> ''
+                  OR COALESCE(t.invoice_no, '') <> ''
+                  OR COALESCE(t.ldr_refno, '') <> ''
+                  OR COALESCE(t.ldr_no, '') <> ''
+              )
             LIMIT 1
         ) THEN 0
         ELSE 1
@@ -268,9 +273,14 @@ SELECT
             SELECT 1
             FROM tbltransaction t
             WHERE t.lmain_id = iq.lmain_id
-              AND t.linquiry_refno = iq.lrefno
+              AND (t.linquiry_refno = iq.lrefno OR t.lrefno = iq.lso_refno)
               AND COALESCE(t.lcancel, 0) = 0
-              AND (COALESCE(t.invoice_refno, '') <> '' OR COALESCE(t.ldr_refno, '') <> '')
+              AND (
+                  COALESCE(t.invoice_refno, '') <> ''
+                  OR COALESCE(t.invoice_no, '') <> ''
+                  OR COALESCE(t.ldr_refno, '') <> ''
+                  OR COALESCE(t.ldr_no, '') <> ''
+              )
             LIMIT 1
         ) THEN 0
         ELSE 1
@@ -982,17 +992,30 @@ SQL;
                 lrefno,
                 luser,
                 COALESCE(invoice_refno, "") AS invoice_refno,
+                COALESCE(invoice_no, "") AS invoice_no,
                 COALESCE(ldr_refno, "") AS ldr_refno,
+                COALESCE(ldr_no, "") AS ldr_no,
                 COALESCE(lcancel, 0) AS lcancel
              FROM tbltransaction
              WHERE lmain_id = :main_id
-               AND linquiry_refno = :inquiry_refno
+               AND (
+                   linquiry_refno = :linked_inquiry_refno
+                   OR lrefno = (
+                       SELECT lso_refno
+                       FROM tblinquiry
+                       WHERE lmain_id = :inquiry_main_id
+                         AND lrefno = :inquiry_refno_for_link
+                       LIMIT 1
+                   )
+               )
              ORDER BY lid DESC
              LIMIT 1'
         );
         $stmt->execute([
             'main_id' => (string) $mainId,
-            'inquiry_refno' => $inquiryRefno,
+            'linked_inquiry_refno' => $inquiryRefno,
+            'inquiry_main_id' => (string) $mainId,
+            'inquiry_refno_for_link' => $inquiryRefno,
         ]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row === false ? null : $row;
@@ -1016,6 +1039,7 @@ SQL;
                 COALESCE(lsales_address, "") AS delivery_address,
                 COALESCE(linqno, "") AS reference_no,
                 COALESCE(lyour_refno, "") AS customer_reference,
+                COALESCE(lshipped, "") AS send_by,
                 COALESCE(lprice_group, "") AS price_group,
                 COALESCE(lcredit_limit, 0) AS credit_limit,
                 COALESCE(lterms, "") AS terms,
@@ -1044,11 +1068,15 @@ SQL;
             return false;
         }
 
-        if (trim((string) ($salesOrder['invoice_refno'] ?? '')) !== '') {
+        if (
+            trim((string) ($salesOrder['invoice_refno'] ?? '')) !== ''
+            || trim((string) ($salesOrder['invoice_no'] ?? '')) !== ''
+        ) {
             return false;
         }
 
-        return trim((string) ($salesOrder['ldr_refno'] ?? '')) === '';
+        return trim((string) ($salesOrder['ldr_refno'] ?? '')) === ''
+            && trim((string) ($salesOrder['ldr_no'] ?? '')) === '';
     }
 
     private function isInquiryEditable(int $mainId, string $inquiryRefno): bool
