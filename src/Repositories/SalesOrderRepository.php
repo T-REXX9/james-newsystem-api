@@ -324,7 +324,7 @@ FROM tbltransaction so
 LEFT JOIN tblaccount acc
     ON acc.lid = so.luser
 WHERE so.lmain_id = :main_id
-  AND so.lrefno = :sales_refno
+  AND (so.lrefno = :sales_refno OR so.lid = CAST(:sales_refno AS UNSIGNED))
 LIMIT 1
 SQL;
         $orderStmt = $this->db->pdo()->prepare($orderSql);
@@ -557,7 +557,7 @@ SET
     lurgency = :lurgency,
     lurgency_date = :lurgency_date
 WHERE lmain_id = :lmain_id
-  AND lrefno = :lrefno
+  AND (lrefno = :lrefno OR lid = CAST(:lrefno AS UNSIGNED))
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute([
@@ -591,7 +591,7 @@ SQL;
 
         if (is_array($payload['items'] ?? null)) {
             $deleteStmt = $this->db->pdo()->prepare('DELETE FROM tbltransaction_item WHERE lrefno = :lrefno');
-            $deleteStmt->execute(['lrefno' => $salesRefno]);
+            $deleteStmt->execute(['lrefno' => $order['sales_refno']]);
 
             $items = $payload['items'];
             foreach ($items as $item) {
