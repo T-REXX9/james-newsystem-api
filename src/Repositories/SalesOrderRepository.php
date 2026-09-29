@@ -515,9 +515,6 @@ SQL;
         }
 
         $order = $existing['order'];
-        if (trim((string) ($order['inquiry_refno'] ?? '')) !== '') {
-            throw new RuntimeException('Edit this Sales Order from its linked Sales Inquiry');
-        }
         if (trim((string) ($order['order_slip_refno'] ?? '')) !== '' || trim((string) ($order['invoice_refno'] ?? '')) !== '') {
             throw new RuntimeException('Unpost the linked Order Slip or Invoice before editing this Sales Order');
         }
@@ -1314,9 +1311,6 @@ SQL;
     private function assertDirectSalesOrderItemEditingAllowed(array $salesOrder): void
     {
         $order = is_array($salesOrder['order'] ?? null) ? $salesOrder['order'] : [];
-        if (trim((string) ($order['inquiry_refno'] ?? '')) !== '') {
-            throw new RuntimeException('Edit this Sales Order from its linked Sales Inquiry');
-        }
         if (trim((string) ($order['order_slip_refno'] ?? '')) !== '' || trim((string) ($order['invoice_refno'] ?? '')) !== '') {
             throw new RuntimeException('Unpost the linked Order Slip or Invoice before editing this Sales Order');
         }
