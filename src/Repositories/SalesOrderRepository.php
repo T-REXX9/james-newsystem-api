@@ -1061,6 +1061,7 @@ SQL;
             'delivery_address' => (string) ($order['delivery_address'] ?? ''),
             'reference_no' => (string) ($order['reference_no'] ?? ''),
             'customer_reference' => (string) ($order['customer_reference'] ?? ''),
+            'send_by' => (string) ($order['send_by'] ?? ''),
             'price_group' => (string) ($order['price_group'] ?? ''),
             'credit_limit' => (float) ($order['credit_limit'] ?? 0),
             'terms' => (string) ($order['terms'] ?? ''),
