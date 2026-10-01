@@ -52,6 +52,8 @@ final class StockMovementRepository
         $baseParams = [
             'main_id' => $mainId,
             'item_id' => $itemId,
+            'audit_main_id' => $mainId,
+            'audit_item_id' => $itemId,
         ];
         $where = [
             'itm.lmain_id = :main_id',
@@ -81,9 +83,55 @@ final class StockMovementRepository
 
         $whereSql = implode(' AND ', $where);
 
+        // The legacy Inventory Audit report reads tblstock_adjustment_item
+        // directly. Older audit rows may not have a corresponding inventory
+        // log, so surface those rows as movements while suppressing adjustments
+        // already represented in tblinventory_logs.
+        $auditMovementSql = <<<SQL
+SELECT
+    CONCAT('audit-', sai.lid) AS lid,
+    sai.litemsession AS linvent_id,
+    GREATEST(COALESCE(sai.ladjust_qty, 0) - COALESCE(sai.lold_qty, 0), 0) AS lin,
+    GREATEST(COALESCE(sai.lold_qty, 0) - COALESCE(sai.ladjust_qty, 0), 0) AS lout,
+    ABS(COALESCE(sai.ladjust_qty, 0) - COALESCE(sai.lold_qty, 0)) AS ltotal,
+    sai.ldatetime AS ldateadded,
+    COALESCE(NULLIF(sai.ladjustment_refno, ''), 'Inventory Audit') AS lprocess_by,
+    CASE WHEN sai.ladjust_qty > sai.lold_qty THEN '+' ELSE '-' END AS lstatus_logs,
+    COALESCE(NULLIF(sai.lremarks, ''), CONCAT('Physical count: ', sai.ladjust_qty)) AS lnote,
+    CAST(audit_item.lid AS CHAR) AS linventory_id,
+    NULL AS ltransaction_item_id,
+    NULL AS lpurchase_item_id,
+    CAST(COALESCE(sai.linv_value, 0) / NULLIF(ABS(COALESCE(sai.ladjust_qty, 0) - COALESCE(sai.lold_qty, 0)), 0) AS DECIMAL(15,2)) AS lprice,
+    COALESCE(sai.ladjustment_refno, '') AS lrefno,
+    COALESCE(sai.llocation, '') AS llocation,
+    NULL AS lcustomer_id,
+    NULL AS lsupplier_id,
+    NULL AS lupdated,
+    COALESCE(NULLIF(sai.lwarehouse, ''), 'CENTRALIZED') AS lwarehouse,
+    sai.ladjust_qty AS lphysical_count,
+    'Stock Adjustment' AS ltransaction_type,
+    COALESCE(audit_item.litemcode, '') AS litemcode,
+    COALESCE(audit_item.lpartno, '') AS lpartno
+FROM tblstock_adjustment_item sai
+INNER JOIN tblinventory_item audit_item ON audit_item.lsession = sai.litemsession
+WHERE audit_item.lmain_id = :audit_main_id
+  AND sai.litemsession = :audit_item_id
+  AND COALESCE(sai.ladjust_qty, 0) <> COALESCE(sai.lold_qty, 0)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM tblinventory_logs existing_log
+      WHERE existing_log.linvent_id = sai.litemsession
+        AND existing_log.lrefno = sai.ladjustment_refno
+        AND existing_log.ltransaction_type = 'Stock Adjustment'
+        AND UPPER(COALESCE(existing_log.lwarehouse, '')) = UPPER(COALESCE(sai.lwarehouse, ''))
+  )
+SQL;
+        $movementLogColumns = 'lid, linvent_id, lin, lout, ltotal, ldateadded, lprocess_by, lstatus_logs, lnote, linventory_id, ltransaction_item_id, lpurchase_item_id, lprice, lrefno, llocation, lcustomer_id, lsupplier_id, lupdated, lwarehouse, lphysical_count, ltransaction_type, litemcode, lpartno';
+        $movementSourceSql = '(SELECT ' . $movementLogColumns . ' FROM tblinventory_logs UNION ALL ' . $auditMovementSql . ')';
+
         $countSql = <<<SQL
 SELECT COUNT(*) AS total
-FROM tblinventory_logs inv
+FROM {$movementSourceSql} inv
 INNER JOIN tblinventory_item itm ON itm.lsession = inv.linvent_id
 LEFT JOIN tblpatient p ON p.lsessionid = inv.lcustomer_id
 LEFT JOIN tblsupplier s ON s.lrefno = inv.lsupplier_id
@@ -111,6 +159,7 @@ SELECT
                 WHEN inv.ltransaction_type = 'Invoice' THEN il.lcustomer_name
                 WHEN inv.ltransaction_type = 'Order Slip' THEN dr.lcustomer_name
                 WHEN inv.ltransaction_type = 'Credit Memo' THEN cm.clname
+                WHEN inv.ltransaction_type = 'Stock Adjustment' THEN sa.ladjustment_number
                 ELSE ''
             END,
             ''
@@ -140,7 +189,7 @@ SELECT
     COALESCE(il.linvoice_no, '') AS inv_no,
     COALESCE(cm.lcredit_no, '') AS cm_no,
     COALESCE(sa.ladjustment_number, '') AS adj_no
-FROM tblinventory_logs inv
+FROM {$movementSourceSql} inv
 INNER JOIN tblinventory_item itm ON itm.lsession = inv.linvent_id
 LEFT JOIN tblpatient p ON p.lsessionid = inv.lcustomer_id
 LEFT JOIN tblsupplier s ON s.lrefno = inv.lsupplier_id
@@ -412,4 +461,3 @@ SQL;
         return $value;
     }
 }
-
