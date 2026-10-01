@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\FreightChargesRepository;
+use App\Support\CustomerMergeRedirectResolver;
 use App\Support\Exceptions\HttpException;
 use RuntimeException;
 
 final class FreightChargesController
 {
-    public function __construct(private readonly FreightChargesRepository $repo)
+    public function __construct(
+        private readonly FreightChargesRepository $repo,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
+    )
     {
     }
 
@@ -25,7 +29,7 @@ final class FreightChargesController
             $mainId,
             trim((string) ($query['search'] ?? '')),
             trim((string) ($query['status'] ?? '')),
-            trim((string) ($query['customer_id'] ?? '')),
+            $this->redirects?->resolve($mainId, trim((string) ($query['customer_id'] ?? '')))['session_id'] ?? trim((string) ($query['customer_id'] ?? '')),
             trim((string) ($query['month'] ?? '')),
             trim((string) ($query['year'] ?? '')),
             max(1, (int) ($query['page'] ?? 1)),

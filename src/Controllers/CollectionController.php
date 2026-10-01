@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\CollectionRepository;
+use App\Support\CustomerMergeRedirectResolver;
 use App\Support\Exceptions\HttpException;
 use DateTimeImmutable;
 
 final class CollectionController
 {
-    public function __construct(private readonly CollectionRepository $repo)
+    public function __construct(
+        private readonly CollectionRepository $repo,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
+    )
     {
     }
 
@@ -55,7 +59,7 @@ final class CollectionController
             $dateTo,
             (string) ($query['bank'] ?? ''),
             (string) ($query['check_status'] ?? ''),
-            (string) ($query['customer_id'] ?? ''),
+            $this->redirects?->resolve($mainId, (string) ($query['customer_id'] ?? ''))['session_id'] ?? (string) ($query['customer_id'] ?? ''),
             (string) ($query['collection_type'] ?? ''),
             $limit
         );
@@ -108,6 +112,7 @@ final class CollectionController
             throw new HttpException(422, 'main_id and customer_id are required');
         }
 
+        $customerId = $this->redirects?->resolve($mainId, $customerId)['session_id'] ?? $customerId;
         return $this->repo->getUnpaidInvoicesAndOrderSlips($mainId, $customerId);
     }
 
@@ -133,6 +138,7 @@ final class CollectionController
             $normalizedCheckNo = '';
         }
 
+        $body['customer_id'] = $this->redirects?->resolve((int) $body['main_id'], (string) $body['customer_id'])['session_id'] ?? (string) $body['customer_id'];
         $itemId = $this->repo->addCollectionPayment($refno, [
             'main_id' => (int) $body['main_id'],
             'user_id' => (int) $body['user_id'],

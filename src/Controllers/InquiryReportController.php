@@ -5,11 +5,15 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\InquiryReportRepository;
+use App\Support\CustomerMergeRedirectResolver;
 use App\Support\Exceptions\HttpException;
 
 final class InquiryReportController
 {
-    public function __construct(private readonly InquiryReportRepository $repo)
+    public function __construct(
+        private readonly InquiryReportRepository $repo,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
+    )
     {
     }
 
@@ -47,6 +51,9 @@ final class InquiryReportController
         $dateFrom = isset($query['date_from']) ? (string) $query['date_from'] : null;
         $dateTo = isset($query['date_to']) ? (string) $query['date_to'] : null;
         $customerId = isset($query['customer_id']) ? trim((string) $query['customer_id']) : null;
+        if ($customerId !== null) {
+            $customerId = $this->redirects?->resolve($mainId, $customerId)['session_id'] ?? $customerId;
+        }
         $limit = (int) ($query['limit'] ?? 500);
         if ($limit <= 0) {
             $limit = 500;

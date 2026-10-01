@@ -42,8 +42,14 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
     `migrations/023_add_customer_product_soft_delete_columns.sql` to your configured
     database before deploying the customer/procurement workflow changes. Deleted
     records are tracked with soft-delete metadata on their source tables.
+   - Apply `migrations/062_customer_merge_workflow.sql` before enabling the
+     Duplicate Customers page. It creates the transactional merge request,
+     transfer-log, redirect, and customer-retirement fields used by Phase 2.
    - Run `php tests/CustomerWorkflowDatabaseTest.php` for the temporary-table
      customer request/history/recovery regression checks (no persistent business writes).
+   - Run `php tests/CustomerMergeIntegrationTest.php` against a staging database
+     to verify a real merge, financial reconciliation, redirects, audit logging,
+     and idempotent retry. The test uses unique temporary records and cleans them up.
 4. Run local server:
    - `PHP_CLI_SERVER_WORKERS=4 php -S 127.0.0.1:8081 -t public`
 

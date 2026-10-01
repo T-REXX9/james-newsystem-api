@@ -5,11 +5,15 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\AccountsReceivableRepository;
+use App\Support\CustomerMergeRedirectResolver;
 use App\Support\Exceptions\HttpException;
 
 final class AccountsReceivableController
 {
-    public function __construct(private readonly AccountsReceivableRepository $repo)
+    public function __construct(
+        private readonly AccountsReceivableRepository $repo,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
+    )
     {
     }
 
@@ -27,7 +31,7 @@ final class AccountsReceivableController
 
         return $this->repo->getReport(
             $mainId,
-            trim((string) ($query['customer_id'] ?? '')),
+            $this->redirects?->resolve($mainId, trim((string) ($query['customer_id'] ?? '')))['session_id'] ?? trim((string) ($query['customer_id'] ?? '')),
             $debtType,
             (string) ($query['date_type'] ?? 'all'),
             isset($query['date_from']) ? (string) $query['date_from'] : null,

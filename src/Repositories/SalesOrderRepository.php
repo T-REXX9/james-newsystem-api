@@ -766,7 +766,10 @@ SQL;
             $set[] = "lsubmitstat = 'Approved'";
             $set[] = 'lcancel = 0';
         } elseif ($normalizedAction === 'unpost') {
-            $lastLinkedDocumentNo = trim((string) ($existing['order']['order_slip_no'] ?? ''));
+            $lastLinkedDocumentNo = trim((string) ($payload['last_document_no'] ?? ''));
+            if ($lastLinkedDocumentNo === '') {
+                $lastLinkedDocumentNo = trim((string) ($existing['order']['order_slip_no'] ?? ''));
+            }
             if ($lastLinkedDocumentNo === '') {
                 $lastLinkedDocumentNo = trim((string) ($existing['order']['invoice_no'] ?? ''));
             }
@@ -895,6 +898,17 @@ SQL;
         }
 
         $order = $sales['order'] ?? [];
+        $lastDocumentStmt = $this->db->pdo()->prepare(
+            'SELECT COALESCE(llast_refno, "")
+             FROM tbltransaction
+             WHERE lmain_id = :main_id AND lrefno = :sales_refno
+             LIMIT 1'
+        );
+        $lastDocumentStmt->execute([
+            'main_id' => (string) $mainId,
+            'sales_refno' => $salesRefno,
+        ]);
+        $order['last_document_no'] = trim((string) ($lastDocumentStmt->fetchColumn() ?: ''));
         $items = is_array($sales['items'] ?? null) ? $sales['items'] : [];
         $status = strtolower(trim((string) ($order['status'] ?? '')));
         if (!in_array($status, ['pending', 'submitted', 'approved', 'posted'], true)) {
@@ -952,6 +966,7 @@ SQL;
             'delivery_address' => (string) ($order['delivery_address'] ?? ''),
             'reference_no' => (string) ($order['reference_no'] ?? ''),
             'customer_reference' => (string) ($order['customer_reference'] ?? ''),
+            'send_by' => (string) ($order['send_by'] ?? ''),
             'price_group' => (string) ($order['price_group'] ?? ''),
             'credit_limit' => (float) ($order['credit_limit'] ?? 0),
             'terms' => (string) ($order['terms'] ?? ''),
@@ -959,6 +974,7 @@ SQL;
             'po_number' => (string) ($order['po_number'] ?? ''),
             'remarks' => (string) ($order['remarks'] ?? ''),
             'status' => 'Posted',
+            'slip_no' => trim((string) ($order['last_document_no'] ?? '')),
             'items' => array_map(
                 static fn(array $item): array => [
                     'item_id' => (string) ($item['item_refno'] ?? $item['item_id'] ?? ''),
@@ -1003,6 +1019,7 @@ SQL;
             'UPDATE tbltransaction
              SET ldr_refno = :doc_ref,
                  ldr_no = :doc_no,
+                 llast_refno = NULL,
                  lsubmitstat = "Posted",
                  ltransaction_status = "Posted",
                  limported = 1
@@ -1069,6 +1086,7 @@ SQL;
             'po_number' => (string) ($order['po_number'] ?? ''),
             'remarks' => (string) ($order['remarks'] ?? ''),
             'status' => 'Posted',
+            'invoice_no' => trim((string) ($order['last_document_no'] ?? '')),
             'tax_type' => (string) ($payload['tax_type'] ?? ''),
             'items' => array_map(
                 static fn(array $item): array => [
@@ -1115,6 +1133,7 @@ SQL;
             'UPDATE tbltransaction
              SET invoice_refno = :doc_ref,
                  invoice_no = :doc_no,
+                 llast_refno = NULL,
                  lsubmitstat = "Posted",
                  ltransaction_status = "Posted",
                  limported = 1

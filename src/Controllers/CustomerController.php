@@ -5,22 +5,26 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\CustomerRepository;
+use App\Support\CustomerMergeRedirectResolver;
 use App\Support\Exceptions\HttpException;
 
 final class CustomerController
 {
-    public function __construct(private readonly CustomerRepository $repo)
+    public function __construct(
+        private readonly CustomerRepository $repo,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
+    )
     {
     }
 
     public function show(array $params, array $query = [], array $body = []): array
     {
-        $sessionId = $params['sessionId'] ?? '';
+        [$sessionId, $redirect] = $this->resolveSession($params, $query, $body);
         if ($sessionId === '') {
             throw new HttpException(422, 'sessionId is required');
         }
 
-        $customer = $this->repo->findCustomerBySession($sessionId);
+        $customer = $this->repo->findCustomerBySession($sessionId, $this->mainId($query, $body));
         if ($customer === null) {
             throw new HttpException(404, 'Customer not found');
         }
@@ -36,12 +40,17 @@ final class CustomerController
             (string) $customerSince
         );
 
+        if ($redirect['redirected']) {
+            $customer['requested_session_id'] = (string) ($params['sessionId'] ?? '');
+            $customer['customer_session_redirected'] = true;
+            $customer['merge_redirect'] = $redirect['redirect'];
+        }
         return $customer;
     }
 
     public function purchaseHistory(array $params, array $query = [], array $body = []): array
     {
-        $sessionId = $params['sessionId'] ?? '';
+        [$sessionId, $redirect] = $this->resolveSession($params, $query, $body);
         if ($sessionId === '') {
             throw new HttpException(422, 'sessionId is required');
         }
@@ -51,7 +60,7 @@ final class CustomerController
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, min(50, (int) ($query['per_page'] ?? 50)));
 
-        $customer = $this->repo->findCustomerBySession($sessionId);
+        $customer = $this->repo->findCustomerBySession($sessionId, $this->mainId($query, $body));
         if ($customer === null) {
             throw new HttpException(404, 'Customer not found');
         }
@@ -90,6 +99,9 @@ final class CustomerController
 
         return [
             'customer_session' => $sessionId,
+            'requested_customer_session' => (string) ($params['sessionId'] ?? ''),
+            'customer_session_redirected' => $redirect['redirected'],
+            'merge_redirect' => $redirect['redirect'],
             'date_from' => $dateFrom,
             'date_to' => $dateTo,
             'generated_at' => date('Y-m-d H:i:s'),
@@ -121,18 +133,21 @@ final class CustomerController
 
     public function purchasedItems(array $params, array $query = [], array $body = []): array
     {
-        $sessionId = $params['sessionId'] ?? '';
+        [$sessionId, $redirect] = $this->resolveSession($params, $query, $body);
         if ($sessionId === '') {
             throw new HttpException(422, 'sessionId is required');
         }
 
-        $customer = $this->repo->findCustomerBySession($sessionId);
+        $customer = $this->repo->findCustomerBySession($sessionId, $this->mainId($query, $body));
         if ($customer === null) {
             throw new HttpException(404, 'Customer not found');
         }
 
         return [
             'customer_session' => $sessionId,
+            'requested_customer_session' => (string) ($params['sessionId'] ?? ''),
+            'customer_session_redirected' => $redirect['redirected'],
+            'merge_redirect' => $redirect['redirect'],
             'items' => $this->repo->searchPurchasedItems(
                 $sessionId,
                 trim((string) ($query['search'] ?? '')),
@@ -143,7 +158,7 @@ final class CustomerController
 
     public function inquiryHistory(array $params, array $query = [], array $body = []): array
     {
-        $sessionId = $params['sessionId'] ?? '';
+        [$sessionId, $redirect] = $this->resolveSession($params, $query, $body);
         if ($sessionId === '') {
             throw new HttpException(422, 'sessionId is required');
         }
@@ -153,6 +168,9 @@ final class CustomerController
 
         return [
             'customer_session' => $sessionId,
+            'requested_customer_session' => (string) ($params['sessionId'] ?? ''),
+            'customer_session_redirected' => $redirect['redirected'],
+            'merge_redirect' => $redirect['redirect'],
             'date_from' => $dateFrom,
             'date_to' => $dateTo,
             'items' => $this->repo->getInquiryHistory($sessionId, $dateFrom, $dateTo),
@@ -161,7 +179,7 @@ final class CustomerController
 
     public function ledger(array $params, array $query = [], array $body = []): array
     {
-        $sessionId = $params['sessionId'] ?? '';
+        [$sessionId, $redirect] = $this->resolveSession($params, $query, $body);
         if ($sessionId === '') {
             throw new HttpException(422, 'sessionId is required');
         }
@@ -171,6 +189,32 @@ final class CustomerController
         $dateFrom = isset($query['date_from']) ? (string) $query['date_from'] : null;
         $dateTo = isset($query['date_to']) ? (string) $query['date_to'] : null;
 
-        return $this->repo->getCustomerLedger($sessionId, $reportType, $dateType, $dateFrom, $dateTo);
+        $result = $this->repo->getCustomerLedger($sessionId, $reportType, $dateType, $dateFrom, $dateTo);
+        $result['customer_session'] = $sessionId;
+        $result['requested_customer_session'] = (string) ($params['sessionId'] ?? '');
+        $result['customer_session_redirected'] = $redirect['redirected'];
+        $result['merge_redirect'] = $redirect['redirect'];
+        return $result;
+    }
+
+    /** @return array{0: string, 1: array{session_id: string, redirected: bool, redirect: array<string, mixed>|null}} */
+    private function resolveSession(array $params, array $query, array $body): array
+    {
+        $requested = trim((string) ($params['sessionId'] ?? ''));
+        if ($requested === '') {
+            throw new HttpException(422, 'sessionId is required');
+        }
+        $mainId = $this->mainId($query, $body);
+        $redirect = $this->redirects?->resolve($mainId, $requested) ?? [
+            'session_id' => $requested,
+            'redirected' => false,
+            'redirect' => null,
+        ];
+        return [$redirect['session_id'], $redirect];
+    }
+
+    private function mainId(array $query, array $body): int
+    {
+        return (int) ($body['main_id'] ?? $query['main_id'] ?? 0);
     }
 }

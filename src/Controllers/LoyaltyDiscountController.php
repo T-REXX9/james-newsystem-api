@@ -5,11 +5,15 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\LoyaltyDiscountRepository;
+use App\Support\CustomerMergeRedirectResolver;
 use App\Support\Exceptions\HttpException;
 
 final class LoyaltyDiscountController
 {
-    public function __construct(private readonly LoyaltyDiscountRepository $repo)
+    public function __construct(
+        private readonly LoyaltyDiscountRepository $repo,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
+    )
     {
     }
 
@@ -282,6 +286,7 @@ final class LoyaltyDiscountController
             throw new HttpException(422, 'customerId is required');
         }
 
+        $customerId = $this->redirects?->resolve($mainId, $customerId)['session_id'] ?? $customerId;
         return $this->repo->getCustomerActiveDiscount($mainId, $customerId);
     }
 }

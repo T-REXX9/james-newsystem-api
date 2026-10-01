@@ -12,6 +12,7 @@ use App\Controllers\ProfilesController;
 use App\Controllers\CustomerController;
 use App\Controllers\CustomerDatabaseController;
 use App\Controllers\CustomerDuplicateRequestController;
+use App\Controllers\CustomerMergeController;
 use App\Controllers\CustomerGroupController;
 use App\Controllers\AdjustmentEntryController;
 use App\Controllers\ActivityLogController;
@@ -85,6 +86,7 @@ use App\Support\SalesInquiryUnitPriceGate;
 
 require __DIR__ . '/Support/Env.php';
 require __DIR__ . '/Support/CustomerLedgerCalculator.php';
+require __DIR__ . '/Support/CustomerMergeRedirectResolver.php';
 require __DIR__ . '/Support/Exceptions/HttpException.php';
 require __DIR__ . '/Support/InternalChatReactionStore.php';
 require __DIR__ . '/Support/InternalChatReplyStore.php';
@@ -172,7 +174,9 @@ require __DIR__ . '/Repositories/ProfitProtectionRepository.php';
 require __DIR__ . '/Repositories/VipTierSettingsRepository.php';
 require __DIR__ . '/Repositories/VipDocumentDiscountRepository.php';
 require __DIR__ . '/Repositories/RolePermissionRepository.php';
+require __DIR__ . '/Repositories/CustomerDuplicateRequestRepository.php';
 require __DIR__ . '/Services/InternalChatRealtimeNotifier.php';
+require __DIR__ . '/Services/CustomerMergeService.php';
 require __DIR__ . '/Security/TokenService.php';
 require __DIR__ . '/Middleware/PermissionMiddleware.php';
 require __DIR__ . '/Controllers/HealthController.php';
@@ -236,6 +240,8 @@ require __DIR__ . '/Controllers/ProfitProtectionController.php';
 require __DIR__ . '/Controllers/VipTierSettingsController.php';
 require __DIR__ . '/Controllers/ServerMaintenanceController.php';
 require __DIR__ . '/Controllers/RolePermissionController.php';
+require __DIR__ . '/Controllers/CustomerDuplicateRequestController.php';
+require __DIR__ . '/Controllers/CustomerMergeController.php';
 require __DIR__ . '/Services/DatabaseBackupService.php';
 require __DIR__ . '/Services/AutomaticBackupSettings.php';
 require __DIR__ . '/Services/CorporateDumpImportService.php';
@@ -296,10 +302,11 @@ function app_router(): Router
     $db = new App\Database($config);
 
     $healthController = new HealthController();
-    $customerController = new CustomerController(new App\Repositories\CustomerRepository($db));
-    $customerDatabaseController = new CustomerDatabaseController(new App\Repositories\CustomerDatabaseRepository($db), $db);
+    $mergeRedirects = new App\Support\CustomerMergeRedirectResolver($db->pdo());
+    $customerController = new CustomerController(new App\Repositories\CustomerRepository($db), $mergeRedirects);
+    $customerDatabaseController = new CustomerDatabaseController(new App\Repositories\CustomerDatabaseRepository($db), $db, $mergeRedirects);
     $customerGroupController = new CustomerGroupController(new App\Repositories\CustomerGroupRepository($db));
-    $adjustmentEntryController = new AdjustmentEntryController(new App\Repositories\AdjustmentEntryRepository($db));
+    $adjustmentEntryController = new AdjustmentEntryController(new App\Repositories\AdjustmentEntryRepository($db), $mergeRedirects);
     $approverController = new ApproverController(new App\Repositories\ApproverRepository($db));
     $activityLogController = new ActivityLogController(new App\Repositories\ActivityLogRepository($db));
     $tokenService = new TokenService($config->authSecret, $config->authTokenTtlSeconds);
@@ -314,9 +321,9 @@ function app_router(): Router
     $authRepo = new App\Repositories\AuthRepository($db);
     $permissionMiddleware = new PermissionMiddleware($tokenService, $rolePermissionRepo);
     $accessGroupController = new AccessGroupController(new App\Repositories\AccessGroupRepository($db), $rolePermissionRepo);
-    $accountsReceivableController = new AccountsReceivableController(new App\Repositories\AccountsReceivableRepository($db));
+    $accountsReceivableController = new AccountsReceivableController(new App\Repositories\AccountsReceivableRepository($db), $mergeRedirects);
     $collectionRepository = new App\Repositories\CollectionRepository($db);
-    $collectionController = new CollectionController($collectionRepository);
+    $collectionController = new CollectionController($collectionRepository, $mergeRedirects);
     $contactsController = new ContactsController(new App\Repositories\ContactsRepository($db));
     $courierController = new CourierController(new App\Repositories\CourierRepository($db));
     $messagesController = new MessagesController(new App\Repositories\MessagesRepository($db));
@@ -333,14 +340,15 @@ function app_router(): Router
         new App\Repositories\DailyCallMonitoringRepository($db),
         new App\Repositories\CallReportRepository($db),
         new App\Repositories\CustomerDatabaseRepository($db),
-        new App\Repositories\CustomerRepository($db)
+        new App\Repositories\CustomerRepository($db),
+        $mergeRedirects
     );
     $callSystemController = new CallSystemController(
         new App\Repositories\CallSystemRepository($db),
         $internalChatRealtimeNotifier
     );
     $fastSlowInventoryReportController = new FastSlowInventoryReportController(new App\Repositories\FastSlowInventoryReportRepository($db));
-    $freightChargesController = new FreightChargesController(new App\Repositories\FreightChargesRepository($db));
+    $freightChargesController = new FreightChargesController(new App\Repositories\FreightChargesRepository($db), $mergeRedirects);
     $authController = new AuthController(
         $authRepo,
         $tokenService,
@@ -359,13 +367,13 @@ function app_router(): Router
     $inactiveActiveCustomersReportController = new InactiveActiveCustomersReportController(new App\Repositories\InactiveActiveCustomersReportRepository($db));
     $incidentItemsReportController = new IncidentItemsReportController(new App\Repositories\IncidentItemsReportRepository($db));
     $oldNewCustomersReportController = new OldNewCustomersReportController(new App\Repositories\OldNewCustomersReportRepository($db));
-    $inquiryReportController = new InquiryReportController(new App\Repositories\InquiryReportRepository($db));
+    $inquiryReportController = new InquiryReportController(new App\Repositories\InquiryReportRepository($db), $mergeRedirects);
     $inventoryAuditController = new InventoryAuditController(new App\Repositories\InventoryAuditRepository($db));
     $inventoryReportController = new InventoryReportController(new App\Repositories\InventoryReportRepository($db));
     $salesController = new SalesController(new App\Repositories\SalesRepository($db));
     $salesDevelopmentReportController = new SalesDevelopmentReportController(new App\Repositories\SalesDevelopmentReportRepository($db));
     $salesReturnController = new SalesReturnController(new App\Repositories\SalesReturnRepository($db));
-    $salesReportController = new SalesReportController(new App\Repositories\SalesReportRepository($db));
+    $salesReportController = new SalesReportController(new App\Repositories\SalesReportRepository($db), $mergeRedirects);
     $salesReturnReportController = new SalesReturnReportController(new App\Repositories\SalesReturnReportRepository($db));
     $salesInquiryRepository = new App\Repositories\SalesInquiryRepository($db);
     $salesInquiryController = new SalesInquiryController($salesInquiryRepository);
@@ -373,14 +381,15 @@ function app_router(): Router
     $salesOrderController = new SalesOrderController(new App\Repositories\SalesOrderRepository($db));
     $stockMovementController = new StockMovementController(new App\Repositories\StockMovementRepository($db));
     $stockAdjustmentController = new StockAdjustmentController(new App\Repositories\StockAdjustmentRepository($db));
-    $statementOfAccountController = new StatementOfAccountController(new App\Repositories\StatementOfAccountRepository($db));
-    $suggestedStockReportController = new SuggestedStockReportController(new App\Repositories\SuggestedStockReportRepository($db));
+    $statementOfAccountController = new StatementOfAccountController(new App\Repositories\StatementOfAccountRepository($db), $mergeRedirects);
+    $suggestedStockReportController = new SuggestedStockReportController(new App\Repositories\SuggestedStockReportRepository($db), $mergeRedirects);
     $staffController = new StaffController(new App\Repositories\StaffRepository($db), $authRepo, $rolePermissionRepo);
     $rolePermissionController = new RolePermissionController($rolePermissionRepo, $permissionMiddleware);
     $teamController = new TeamController(new App\Repositories\TeamRepository($db));
     $specialPriceController = new SpecialPriceController(
         new App\Repositories\SpecialPriceRepository($db),
-        $tokenService
+        $tokenService,
+        $mergeRedirects
     );
     $transferStockController = new TransferStockController(new App\Repositories\TransferStockRepository($db));
     $campaignController = new CampaignController(
@@ -394,10 +403,12 @@ function app_router(): Router
         new App\Repositories\PromotionProductRepository($db),
         new App\Repositories\PromotionPostingRepository($db)
     );
-    $loyaltyDiscountController = new LoyaltyDiscountController(new App\Repositories\LoyaltyDiscountRepository($db));
+    $loyaltyDiscountController = new LoyaltyDiscountController(new App\Repositories\LoyaltyDiscountRepository($db), $mergeRedirects);
     $profitProtectionController = new ProfitProtectionController(new App\Repositories\ProfitProtectionRepository($db));
     $vipTierSettingsController = new VipTierSettingsController(new App\Repositories\VipTierSettingsRepository($db));
-    $customerDuplicateRequestController = new CustomerDuplicateRequestController($db);
+    $customerMergeService = new App\Services\CustomerMergeService($db);
+    $customerDuplicateRequestController = new CustomerDuplicateRequestController($db, $customerMergeService);
+    $customerMergeController = new CustomerMergeController($customerMergeService);
     $serverMaintenanceBackupDir = dirname(__DIR__) . '/storage/database-backups';
     $corporateDumpUploadDir = dirname(__DIR__) . '/storage/corporate-dumps';
     $automaticBackupStore = new AutomaticBackupSettingsStore(
@@ -693,7 +704,7 @@ function app_router(): Router
         };
     };
 
-    $customerWorkflowController = new App\Controllers\CustomerWorkflowController($db, $authRepo);
+    $customerWorkflowController = new App\Controllers\CustomerWorkflowController($db, $authRepo, $mergeRedirects);
     $router = new Router();
     $router->get('/api/v1/health', [$healthController, 'index']);
     $router->get('/api/v1/recycle-bin', $requireBearerAuthWithClaims([$customerWorkflowController, 'recycleBin']));
@@ -1278,6 +1289,8 @@ function app_router(): Router
     $router->post('/api/v1/duplicate-requests/{id}/approve', $requireMasterUser([$customerDuplicateRequestController, 'approve']));
     $router->post('/api/v1/duplicate-requests/{id}/reject', $requireMasterUser([$customerDuplicateRequestController, 'reject']));
     $router->post('/api/v1/duplicate-requests/{id}/snooze', $requireMasterUser([$customerDuplicateRequestController, 'snooze']));
+    $router->post('/api/v1/customer-merges/preview', $requireMasterUser([$customerMergeController, 'preview']));
+    $router->post('/api/v1/customer-merges/execute', $requireMasterUser([$customerMergeController, 'execute']));
 
     return $router;
 }

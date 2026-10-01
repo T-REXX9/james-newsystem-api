@@ -61,17 +61,21 @@ final class CustomerDuplicateRequestRepository
     /**
      * Get pending duplicate requests for a master user
      */
-    public function getPendingDuplicates(int $masterUserId, int $limit = 50): array
+    public function getPendingDuplicates(int $masterUserId, int $limit = 50, ?int $mainId = null): array
     {
+        $scope = $mainId === null ? '' : ' AND lmain_id = :main_id';
         $stmt = $this->db->pdo()->prepare(
-            'SELECT * FROM tblpatient_duplicate_request
-             WHERE lstatus = :status
+            "SELECT * FROM tblpatient_duplicate_request
+             WHERE lstatus = :status{$scope}
              AND (lsnoozed_until IS NULL OR lsnoozed_until < NOW())
              ORDER BY lcreated_at ASC
-             LIMIT :limit'
+             LIMIT :limit"
         );
 
         $stmt->bindValue(':status', 'pending', PDO::PARAM_STR);
+        if ($mainId !== null) {
+            $stmt->bindValue(':main_id', $mainId, PDO::PARAM_INT);
+        }
         $stmt->bindValue(':limit', min(500, max(1, $limit)), PDO::PARAM_INT);
         $stmt->execute();
 
@@ -81,15 +85,20 @@ final class CustomerDuplicateRequestRepository
     /**
      * Get count of pending duplicates (considering snoozed items)
      */
-    public function getPendingCount(): int
+    public function getPendingCount(?int $mainId = null): int
     {
+        $scope = $mainId === null ? '' : ' AND lmain_id = :main_id';
         $stmt = $this->db->pdo()->prepare(
-            'SELECT COUNT(*) FROM tblpatient_duplicate_request
-             WHERE lstatus = :status
-             AND (lsnoozed_until IS NULL OR lsnoozed_until < NOW())'
+            "SELECT COUNT(*) FROM tblpatient_duplicate_request
+             WHERE lstatus = :status{$scope}
+             AND (lsnoozed_until IS NULL OR lsnoozed_until < NOW())"
         );
 
-        $stmt->execute(['status' => 'pending']);
+        $params = ['status' => 'pending'];
+        if ($mainId !== null) {
+            $params['main_id'] = $mainId;
+        }
+        $stmt->execute($params);
         return (int) ($stmt->fetchColumn() ?: 0);
     }
 
@@ -119,22 +128,27 @@ final class CustomerDuplicateRequestRepository
     /**
      * Reject a duplicate request (mark as rejected)
      */
-    public function reject(int $requestId, int $rejectedBy, string $rejectedByName): bool
+    public function reject(int $requestId, int $rejectedBy, string $rejectedByName, ?int $mainId = null): bool
     {
+        $scope = $mainId === null ? '' : ' AND lmain_id = :main_id';
         $stmt = $this->db->pdo()->prepare(
-            'UPDATE tblpatient_duplicate_request
+            "UPDATE tblpatient_duplicate_request
              SET lstatus = :status, lapproved_by = :rejected_by, lapproved_by_name = :rejected_by_name,
                  lapproved_at = NOW()
-             WHERE lid = :id AND lstatus = :current_status'
+             WHERE lid = :id AND lstatus = :current_status{$scope}"
         );
 
-        $stmt->execute([
+        $params = [
             'status' => 'rejected',
             'rejected_by' => $rejectedBy,
             'rejected_by_name' => $rejectedByName,
             'id' => $requestId,
             'current_status' => 'pending',
-        ]);
+        ];
+        if ($mainId !== null) {
+            $params['main_id'] = $mainId;
+        }
+        $stmt->execute($params);
 
         return $stmt->rowCount() > 0;
     }
@@ -142,21 +156,26 @@ final class CustomerDuplicateRequestRepository
     /**
      * Snooze a duplicate request (defer notification)
      */
-    public function snooze(int $requestId, int $hours = 24): bool
+    public function snooze(int $requestId, int $hours = 24, ?int $mainId = null): bool
     {
         $snoozeUntil = (new DateTime())->add(new DateInterval('PT' . $hours . 'H'))->format('Y-m-d H:i:s');
 
+        $scope = $mainId === null ? '' : ' AND lmain_id = :main_id';
         $stmt = $this->db->pdo()->prepare(
-            'UPDATE tblpatient_duplicate_request
+            "UPDATE tblpatient_duplicate_request
              SET lsnoozed_until = :snooze_until
-             WHERE lid = :id AND lstatus = :status'
+             WHERE lid = :id AND lstatus = :status{$scope}"
         );
 
-        $stmt->execute([
+        $params = [
             'snooze_until' => $snoozeUntil,
             'id' => $requestId,
             'status' => 'pending',
-        ]);
+        ];
+        if ($mainId !== null) {
+            $params['main_id'] = $mainId;
+        }
+        $stmt->execute($params);
 
         return $stmt->rowCount() > 0;
     }
@@ -164,16 +183,40 @@ final class CustomerDuplicateRequestRepository
     /**
      * Get a single duplicate request by ID
      */
-    public function getById(int $requestId): ?array
+    public function getById(int $requestId, ?int $mainId = null): ?array
     {
+        $scope = $mainId === null ? '' : ' AND lmain_id = :main_id';
         $stmt = $this->db->pdo()->prepare(
-            'SELECT * FROM tblpatient_duplicate_request WHERE lid = :id LIMIT 1'
+            "SELECT * FROM tblpatient_duplicate_request WHERE lid = :id{$scope} LIMIT 1"
         );
 
-        $stmt->execute(['id' => $requestId]);
+        $params = ['id' => $requestId];
+        if ($mainId !== null) {
+            $params['main_id'] = $mainId;
+        }
+        $stmt->execute($params);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         return $row ? $this->normalizeDuplicateRequest($row) : null;
+    }
+
+    public function markMerged(int $requestId, int $mainId, int $approvedBy, string $approvedByName, int $mergeId): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            "UPDATE tblpatient_duplicate_request
+             SET lstatus = 'merged', lapproved_by = :approved_by, lapproved_by_name = :approved_by_name,
+                 lapproved_at = NOW(), lmerge_id = :merge_id
+             WHERE lid = :id AND lmain_id = :main_id AND lstatus = 'pending'"
+        );
+        $stmt->execute([
+            'approved_by' => $approvedBy,
+            'approved_by_name' => $approvedByName,
+            'merge_id' => $mergeId,
+            'id' => $requestId,
+            'main_id' => $mainId,
+        ]);
+
+        return $stmt->rowCount() === 1;
     }
 
     /**
@@ -280,6 +323,7 @@ final class CustomerDuplicateRequestRepository
             'snoozedUntil' => $row['lsnoozed_until'],
             'createdAt' => (string) $row['lcreated_at'],
             'updatedAt' => (string) $row['lupdated_at'],
+            'mergeId' => isset($row['lmerge_id']) && $row['lmerge_id'] !== null ? (int) $row['lmerge_id'] : null,
         ];
     }
 }

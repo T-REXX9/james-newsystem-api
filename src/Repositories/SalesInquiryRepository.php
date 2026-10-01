@@ -399,7 +399,9 @@ SQL;
             $this->persistVipFromPayload($mainId, $inquiryRefno, $payload, $created);
             return $this->getInquiry($mainId, $inquiryRefno) ?? $created;
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $e;
         }
     }
@@ -821,9 +823,9 @@ SQL;
 
             $insert = $pdo->prepare(
                 'INSERT INTO tbltransaction
-                (lsaleno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lcompany, lsales_address, lmy_refno, lyour_refno, lprice_group, lcredit_limit, lterms, lterm_condition, lpromissory_note, lpo_no, lnote, lsales_person, lsales_person_id, lsubmitstat, ltransaction_status, lcancel, linquiry_refno, linquiry_no, IsInquiry, lurgency, lurgency_date, lcity)
+                (lsaleno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lcompany, lsales_address, lmy_refno, lyour_refno, lshipped, lprice_group, lcredit_limit, lterms, lterm_condition, lpromissory_note, lpo_no, lnote, lsales_person, lsales_person_id, lsubmitstat, ltransaction_status, lcancel, linquiry_refno, linquiry_no, IsInquiry, lurgency, lurgency_date, lcity)
                 VALUES
-                (:lsaleno, :ldate, :ltime, :lcustomerid, :lmain_id, :luser, :lrefno, :lcompany, :lsales_address, :lmy_refno, :lyour_refno, :lprice_group, :lcredit_limit, :lterms, :lterm_condition, :lpromissory_note, :lpo_no, :lnote, :lsales_person, :lsales_person_id, :lsubmitstat, :ltransaction_status, 0, :linquiry_refno, :linquiry_no, 0, :lurgency, :lurgency_date, :lcity)'
+                (:lsaleno, :ldate, :ltime, :lcustomerid, :lmain_id, :luser, :lrefno, :lcompany, :lsales_address, :lmy_refno, :lyour_refno, :lshipped, :lprice_group, :lcredit_limit, :lterms, :lterm_condition, :lpromissory_note, :lpo_no, :lnote, :lsales_person, :lsales_person_id, :lsubmitstat, :ltransaction_status, 0, :linquiry_refno, :linquiry_no, 0, :lurgency, :lurgency_date, :lcity)'
             );
             $insert->execute([
                 'lsaleno' => $salesNo,
@@ -837,6 +839,7 @@ SQL;
                 'lsales_address' => (string) ($inquiry['delivery_address'] ?? ''),
                 'lmy_refno' => (string) ($inquiry['inquiry_no'] ?? ''),
                 'lyour_refno' => (string) ($inquiry['customer_reference'] ?? ''),
+                'lshipped' => (string) ($inquiry['send_by'] ?? ''),
                 'lprice_group' => (string) ($inquiry['price_group'] ?? ''),
                 'lcredit_limit' => (float) ($inquiry['credit_limit'] ?? 0),
                 'lterms' => (string) ($inquiry['terms'] ?? ''),

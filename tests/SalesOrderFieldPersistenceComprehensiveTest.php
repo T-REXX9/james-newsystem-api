@@ -44,7 +44,7 @@ $pdo->exec('CREATE TABLE tbltransaction (
     lsubmitstat TEXT, ltransaction_status TEXT, lcancel INTEGER, lcancel_reason TEXT,
     linquiry_refno TEXT, linquiry_no TEXT, ldr_refno TEXT, ldr_no TEXT,
     invoice_refno TEXT, invoice_no TEXT, lurgency TEXT, lurgency_date TEXT, IsInquiry INTEGER,
-    lcity TEXT
+    lcity TEXT, lso_no TEXT, lso_refno TEXT
 )');
 $pdo->exec('CREATE TABLE tbltransaction_item (lid INTEGER PRIMARY KEY AUTOINCREMENT, lrefno TEXT, litemid TEXT, linv_refno TEXT, lpartno TEXT, litemcode TEXT, ldesc TEXT, llocation TEXT, lqty REAL, lprice REAL, lremark TEXT, lbrand TEXT, lcancel INTEGER, ltype TEXT, lname TEXT, litem_refno TEXT, ltransaction_date TEXT, luser INTEGER)');
 $pdo->exec('CREATE TABLE tblinquiry (
@@ -55,9 +55,9 @@ $pdo->exec('CREATE TABLE tblinquiry (
     lprice_group TEXT, lcredit_limit REAL, lpromissory_note TEXT, lpo_no TEXT,
     lnote TEXT, lsubmitstat TEXT, ltransaction_status TEXT, IsCancel INTEGER,
     lsource TEXT, luser INTEGER, lvat_type TEXT, lvat_percent REAL,
-    lcity TEXT, lshipped TEXT, lurgency TEXT, lurgency_date TEXT
+    lcity TEXT, lshipped TEXT, lurgency TEXT, lurgency_date TEXT, lso_no TEXT, lso_refno TEXT
 )');
-$pdo->exec('CREATE TABLE tblinquiry_item (lid INTEGER PRIMARY KEY AUTOINCREMENT, lrefno TEXT, litem_id TEXT, ldesc TEXT, lqty REAL, lprice REAL, lremark TEXT, lpartno TEXT, litemcode TEXT, lbrand TEXT, llocation TEXT, lapproved INTEGER)');
+$pdo->exec('CREATE TABLE tblinquiry_item (lid INTEGER PRIMARY KEY AUTOINCREMENT, linq_no TEXT, linq_refno TEXT, litem_id TEXT, litem_refno TEXT, lqty REAL, lprice REAL, litem_code TEXT, lpartno TEXT, lbrand TEXT, ldesc TEXT, llocation TEXT, lremark TEXT, linquiry_date TEXT, lapproved INTEGER)');
 $pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT)');
 $pdo->exec('CREATE TABLE tblpatient (lid INTEGER PRIMARY KEY, lmain_id INTEGER, lsessionid TEXT, lfname TEXT, llname TEXT, lcompany TEXT, ldelivery_address TEXT, lprice_group TEXT, lcredit TEXT, lterms TEXT, lsales_person TEXT, lcity TEXT, ltransaction_type TEXT, lvat_type TEXT, lvat_percent REAL)');
 $pdo->exec('CREATE TABLE tblnumber_generator (lid INTEGER PRIMARY KEY AUTOINCREMENT, ltransaction_type TEXT, lmax_no INTEGER)');
@@ -144,17 +144,27 @@ echo "\nTest 5: Inquiry-to-SO sync must sync lshipped and other fields\n";
 $inquiryCreated = $siRepo->createInquiry(1, 12, [
     'contact_id' => 'cust-1',
     'sales_date' => '2026-09-28',
+    'status' => 'Submitted',
     'send_by' => 'Fedex Express',
     'po_number' => 'PO-SI-001',
     'remarks' => 'Inquiry remark',
-    'items' => [],
+    'items' => [[
+        'item_id' => 'item-1',
+        'item_refno' => 'item-ref-1',
+        'part_no' => 'PART-1',
+        'item_code' => 'CODE-1',
+        'description' => 'Test item',
+        'qty' => 1,
+        'unit_price' => 100,
+        'approved' => 1,
+    ]],
 ]);
-$inquiryRefno = (string) ($inquiryCreated['inquiry']['inquiry_refno'] ?? '');
+$inquiryRefno = (string) ($inquiryCreated['inquiry_refno'] ?? '');
 test_expect($inquiryRefno !== '', 'Inquiry created');
 
 // Create an SO from this inquiry
 $soFromInquiry = $siRepo->convertToSalesOrder(1, 12, $inquiryRefno);
-$soRefno2 = (string) ($soFromInquiry['sales_refno'] ?? '');
+$soRefno2 = (string) ($soFromInquiry['order']['sales_refno'] ?? '');
 test_expect($soRefno2 !== '', 'SO created from inquiry');
 
 // Verify SO got fields from inquiry
@@ -169,7 +179,7 @@ $inquiryUpdated = $siRepo->updateInquiry(1, $inquiryRefno, [
     'send_by' => 'Fedex Premium',
     'remarks' => 'Updated inquiry remark',
 ]);
-test_expect(($inquiryUpdated['inquiry']['send_by'] ?? null) === 'Fedex Premium', 'Inquiry send_by updated');
+test_expect(($inquiryUpdated['send_by'] ?? null) === 'Fedex Premium', 'Inquiry send_by updated');
 
 // SO should still have old values (sync only happens on specific operations, not just update)
 // But read the inquiry's linked SO to confirm sync path exists

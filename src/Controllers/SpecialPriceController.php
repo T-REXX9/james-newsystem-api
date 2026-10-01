@@ -7,13 +7,15 @@ namespace App\Controllers;
 use App\Repositories\SpecialPriceRepository;
 use App\Security\TokenService;
 use App\Support\Exceptions\HttpException;
+use App\Support\CustomerMergeRedirectResolver;
 use RuntimeException;
 
 final class SpecialPriceController
 {
     public function __construct(
         private readonly SpecialPriceRepository $repo,
-        private readonly TokenService $tokens
+        private readonly TokenService $tokens,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
     )
     {
     }
@@ -187,6 +189,7 @@ final class SpecialPriceController
             throw new HttpException(422, 'refno and patientRefno are required');
         }
 
+        $patientRefno = $this->redirects?->resolve($mainId, $patientRefno)['session_id'] ?? $patientRefno;
         $deleted = $this->repo->removeCustomer($mainId, $refno, $patientRefno);
         if (!$deleted) {
             throw new HttpException(404, 'Customer special price not found');

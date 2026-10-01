@@ -6,184 +6,128 @@ namespace App\Controllers;
 
 use App\Database;
 use App\Repositories\CustomerDuplicateRequestRepository;
-use Psr\Http\Message\ResponseInterface as Response;
-use Psr\Http\Message\ServerRequestInterface as Request;
+use App\Services\CustomerMergeService;
+use App\Support\Exceptions\HttpException;
 
+/** Legacy endpoints that can only approve through the controlled merge flow. */
 final class CustomerDuplicateRequestController
 {
-    public function __construct(private readonly Database $db)
-    {
+    private CustomerDuplicateRequestRepository $repository;
+
+    public function __construct(
+        private readonly Database $db,
+        private readonly CustomerMergeService $mergeService
+    ) {
+        $this->repository = new CustomerDuplicateRequestRepository($db);
     }
 
-    /**
-     * GET /duplicate-requests - Get pending duplicate approval requests
-     */
-    public function listPending(Request $request, Response $response): Response
+    public function listPending(array $params = [], array $query = [], array $body = []): array
     {
-        // Role check: master user only
-        if (!$this->isMasterUserAccount()) {
-            return $response->withStatus(403)->withHeader('Content-Type', 'application/json')
-                ->write(json_encode(['error' => 'Unauthorized: Master user access required']));
-        }
+        $mainId = $this->mainId($body, $query);
+        $limit = min(500, max(1, (int) ($query['limit'] ?? 50)));
+        $items = $this->repository->getPendingDuplicates($this->userId($body), $limit, $mainId);
 
-        $repo = new CustomerDuplicateRequestRepository($this->db);
-        $limit = (int) ($request->getQueryParams()['limit'] ?? 50);
-        $masterUserId = $this->getCurrentUserId();
-
-        $duplicates = $repo->getPendingDuplicates($masterUserId, $limit);
-
-        return $response->withHeader('Content-Type', 'application/json')
-            ->write(json_encode([
-                'success' => true,
-                'data' => $duplicates,
-                'count' => count($duplicates),
-            ]));
+        return ['items' => $items, 'count' => count($items), 'main_id' => $mainId];
     }
 
-    /**
-     * GET /duplicate-requests/count - Get pending count for dashboard badge
-     */
-    public function getPendingCount(Request $request, Response $response): Response
+    public function getPendingCount(array $params = [], array $query = [], array $body = []): array
     {
-        if (!$this->isMasterUserAccount()) {
-            return $response->withStatus(403)->withHeader('Content-Type', 'application/json')
-                ->write(json_encode(['error' => 'Unauthorized: Master user access required']));
-        }
-
-        $repo = new CustomerDuplicateRequestRepository($this->db);
-        $count = $repo->getPendingCount();
-
-        return $response->withHeader('Content-Type', 'application/json')
-            ->write(json_encode([
-                'success' => true,
-                'pendingCount' => $count,
-            ]));
+        $mainId = $this->mainId($body, $query);
+        return ['pendingCount' => $this->repository->getPendingCount($mainId), 'main_id' => $mainId];
     }
 
-    /**
-     * POST /duplicate-requests/{id}/approve - Approve a duplicate request
-     */
-    public function approve(Request $request, Response $response, array $args): Response
+    public function approve(array $params = [], array $query = [], array $body = []): array
     {
-        if (!$this->isMasterUserAccount()) {
-            return $response->withStatus(403)->withHeader('Content-Type', 'application/json')
-                ->write(json_encode(['error' => 'Unauthorized: Master user access required']));
+        $mainId = $this->mainId($body, $query);
+        $userId = $this->userId($body);
+        $requestId = (int) ($params['id'] ?? 0);
+        $request = $this->repository->getById($requestId, $mainId);
+        if ($request === null || $request['status'] !== 'pending') {
+            throw new HttpException(404, 'Pending duplicate request not found in this account.');
         }
 
-        $requestId = (int) $args['id'];
-        $userId = $this->getCurrentUserId();
-        $userName = $this->getCurrentUserName();
+        $this->requireMergePayload($body);
+        $result = $this->mergeService->execute(
+            $mainId,
+            (string) $body['survivor_session_id'],
+            (string) $body['duplicate_session_id'],
+            (string) $body['final_company_name'],
+            (string) $body['merge_reason'],
+            (string) $body['confirmation'],
+            (string) $body['idempotency_key'],
+            $userId,
+            $this->fieldDecisions($body),
+            $requestId
+        );
 
-        $repo = new CustomerDuplicateRequestRepository($this->db);
-
-        if (!$repo->approve($requestId, $userId, $userName)) {
-            return $response->withStatus(400)->withHeader('Content-Type', 'application/json')
-                ->write(json_encode(['error' => 'Failed to approve request or request not pending']));
-        }
-
-        return $response->withHeader('Content-Type', 'application/json')
-            ->write(json_encode(['success' => true, 'message' => 'Duplicate request approved']));
+        return ['success' => true, 'message' => 'Duplicate request merged', 'merge' => $result];
     }
 
-    /**
-     * POST /duplicate-requests/{id}/reject - Reject a duplicate request
-     */
-    public function reject(Request $request, Response $response, array $args): Response
+    public function reject(array $params = [], array $query = [], array $body = []): array
     {
-        if (!$this->isMasterUserAccount()) {
-            return $response->withStatus(403)->withHeader('Content-Type', 'application/json')
-                ->write(json_encode(['error' => 'Unauthorized: Master user access required']));
+        $mainId = $this->mainId($body, $query);
+        if (!$this->repository->reject((int) ($params['id'] ?? 0), $this->userId($body), 'Master User', $mainId)) {
+            throw new HttpException(409, 'Request is no longer pending or does not belong to this account.');
         }
-
-        $requestId = (int) $args['id'];
-        $userId = $this->getCurrentUserId();
-        $userName = $this->getCurrentUserName();
-
-        $repo = new CustomerDuplicateRequestRepository($this->db);
-
-        if (!$repo->reject($requestId, $userId, $userName)) {
-            return $response->withStatus(400)->withHeader('Content-Type', 'application/json')
-                ->write(json_encode(['error' => 'Failed to reject request or request not pending']));
-        }
-
-        return $response->withHeader('Content-Type', 'application/json')
-            ->write(json_encode(['success' => true, 'message' => 'Duplicate request rejected']));
+        return ['success' => true, 'message' => 'Duplicate request rejected'];
     }
 
-    /**
-     * POST /duplicate-requests/{id}/snooze - Snooze a duplicate request
-     */
-    public function snooze(Request $request, Response $response, array $args): Response
+    public function snooze(array $params = [], array $query = [], array $body = []): array
     {
-        if (!$this->isMasterUserAccount()) {
-            return $response->withStatus(403)->withHeader('Content-Type', 'application/json')
-                ->write(json_encode(['error' => 'Unauthorized: Master user access required']));
-        }
-
-        $requestId = (int) $args['id'];
-        $body = json_decode((string) $request->getBody(), true) ?? [];
         $hours = (int) ($body['hours'] ?? 24);
-
-        // Validate hours (1-168 = 1 week max)
         if ($hours < 1 || $hours > 168) {
-            return $response->withStatus(400)->withHeader('Content-Type', 'application/json')
-                ->write(json_encode(['error' => 'Invalid snooze duration (1-168 hours allowed)']));
+            throw new HttpException(422, 'Invalid snooze duration (1-168 hours allowed).');
         }
-
-        $repo = new CustomerDuplicateRequestRepository($this->db);
-
-        if (!$repo->snooze($requestId, $hours)) {
-            return $response->withStatus(400)->withHeader('Content-Type', 'application/json')
-                ->write(json_encode(['error' => 'Failed to snooze request or request not found']));
+        if (!$this->repository->snooze((int) ($params['id'] ?? 0), $hours, $this->mainId($body, $query))) {
+            throw new HttpException(409, 'Request is no longer pending.');
         }
-
-        return $response->withHeader('Content-Type', 'application/json')
-            ->write(json_encode(['success' => true, 'message' => "Duplicate request snoozed for {$hours} hours"]));
+        return ['success' => true, 'message' => "Duplicate request snoozed for {$hours} hours"];
     }
 
-    /**
-     * Check if current user is a master account (staff with appropriate permissions)
-     */
-    private function isMasterUserAccount(): bool
+    private function mainId(array $body, array $query): int
     {
-        // Implement based on your authentication/authorization system
-        // This is a placeholder - replace with actual role check
-        $userId = $this->getCurrentUserId();
+        $mainId = (int) ($body['main_id'] ?? $query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(403, 'Invalid account scope.');
+        }
+        return $mainId;
+    }
+
+    private function userId(array $body): int
+    {
+        $userId = (int) ($body['__auth_claims']['sub'] ?? 0);
         if ($userId <= 0) {
-            return false;
+            throw new HttpException(403, 'An authenticated master account is required.');
         }
-
-        // Query to check if user has master/admin permissions
-        $stmt = $this->db->pdo()->prepare(
-            'SELECT COUNT(*) FROM tblaccount 
-             WHERE lid = :id 
-             AND (lstatus = 1 OR lrole IN ("master", "admin", "owner"))'
-        );
-        $stmt->execute(['id' => $userId]);
-        return (bool) $stmt->fetchColumn();
+        return $userId;
     }
 
-    /**
-     * Get current user ID from session/auth context
-     */
-    private function getCurrentUserId(): int
+    private function requireMergePayload(array $body): void
     {
-        // Implement based on your authentication system
-        return $_SESSION['userid'] ?? 0;
+        foreach (['survivor_session_id', 'duplicate_session_id', 'final_company_name', 'merge_reason', 'confirmation', 'idempotency_key'] as $field) {
+            if (trim((string) ($body[$field] ?? '')) === '') {
+                throw new HttpException(409, 'Approval requires a completed merge preview and explicit confirmation.');
+            }
+        }
     }
 
-    /**
-     * Get current user name from session/auth context
-     */
-    private function getCurrentUserName(): string
+    /** @return array<string, string> */
+    private function fieldDecisions(array $body): array
     {
-        // Implement based on your authentication system
-        $stmt = $this->db->pdo()->prepare(
-            "SELECT TRIM(CONCAT(COALESCE(lfname, ''), ' ', COALESCE(llname, ''))) AS name
-             FROM tblaccount WHERE lid = :id LIMIT 1"
-        );
-        $stmt->execute(['id' => $this->getCurrentUserId()]);
-        $name = $stmt->fetchColumn();
-        return $name === false ? 'System' : trim((string) $name);
+        $decisions = $body['field_decisions'] ?? [];
+        if (!is_array($decisions)) {
+            throw new HttpException(422, 'field_decisions must be an object.');
+        }
+        foreach ($decisions as $field => $source) {
+            if (!is_string($field) || !in_array($field, ['vat_type', 'terms', 'price_group', 'sales_person'], true)) {
+                throw new HttpException(422, 'An unsupported merge field was supplied.');
+            }
+            if (!is_string($source) || !in_array($source, ['survivor', 'duplicate'], true)) {
+                throw new HttpException(422, 'Each field decision must select survivor or duplicate.');
+            }
+        }
+        $normalized = array_map('strval', $decisions);
+        ksort($normalized);
+        return $normalized;
     }
 }

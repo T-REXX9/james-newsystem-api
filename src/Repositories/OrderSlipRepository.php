@@ -799,7 +799,10 @@ SQL;
                 $mainId,
                 $salesRefno,
                 'unpost',
-                ['user_id' => (int) ($payload['user_id'] ?? 0)]
+                [
+                    'user_id' => (int) ($payload['user_id'] ?? 0),
+                    'last_document_no' => (string) ($record['order_slip']['slip_no'] ?? ''),
+                ]
             );
             if ($result === null) {
                 throw new RuntimeException('Linked sales order not found');

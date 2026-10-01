@@ -80,12 +80,13 @@ final class CustomerRepository
         return !$diff->invert && $months >= self::PLATINUM_MIN_MONTHS;
     }
 
-    public function findCustomerBySession(string $sessionId): ?array
+    public function findCustomerBySession(string $sessionId, ?int $mainId = null): ?array
     {
         $discountCodeSelect = $this->hasCustomerDiscountCodeColumn()
             ? 'p.ldiscount_code AS discount_code,'
             : "'' AS discount_code,";
 
+        $mainFilter = $mainId === null ? '' : ' AND p.lmain_id = :main_id';
         $sql = <<<SQL
 SELECT
     p.lsessionid,
@@ -139,12 +140,17 @@ SELECT
 FROM tblpatient p
 LEFT JOIN tblaccount agent ON agent.lid = p.lsales_person
 WHERE p.lsessionid = :session_id
+{$mainFilter}
   AND COALESCE(p.ldeleted, 0) = 0
 LIMIT 1
 SQL;
 
         $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute(['session_id' => $sessionId]);
+        $params = ['session_id' => $sessionId];
+        if ($mainId !== null) {
+            $params['main_id'] = $mainId;
+        }
+        $stmt->execute($params);
         $customer = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$customer) {
             return null;

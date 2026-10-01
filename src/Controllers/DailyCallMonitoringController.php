@@ -10,6 +10,7 @@ use App\Repositories\CustomerDatabaseRepository;
 use App\Repositories\CustomerRepository;
 use App\Repositories\DailyCallMonitoringRepository;
 use App\Support\Exceptions\HttpException;
+use App\Support\CustomerMergeRedirectResolver;
 use InvalidArgumentException;
 
 final class DailyCallMonitoringController
@@ -18,8 +19,18 @@ final class DailyCallMonitoringController
         private readonly DailyCallMonitoringRepository $repo,
         private readonly CallReportRepository $callReportRepo,
         private readonly CustomerDatabaseRepository $customerDatabaseRepo,
-        private readonly CustomerRepository $customerRepo
+        private readonly CustomerRepository $customerRepo,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
     ) {
+    }
+
+    private function resolveContactId(int $mainId, string $contactId): string
+    {
+        $contactId = trim($contactId);
+        if ($contactId === '') {
+            return $contactId;
+        }
+        return $this->redirects?->resolve($mainId, $contactId)['session_id'] ?? $contactId;
     }
 
     public function excelRows(array $params = [], array $query = [], array $body = []): array
@@ -103,6 +114,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->repo->getCustomerPurchaseHistory($mainId, $contactId);
@@ -119,6 +131,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         $record = $this->customerDatabaseRepo->getCustomer($mainId, $contactId);
@@ -139,6 +152,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->customerRepo->getCustomerLedger($contactId, 'detailed', 'all', null, null);
@@ -155,6 +169,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->repo->getCustomerSalesReports($mainId, $contactId);
@@ -171,6 +186,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->repo->getCustomerIncidentReports($mainId, $contactId);
@@ -198,6 +214,7 @@ final class DailyCallMonitoringController
                 throw new HttpException(422, "{$field} is required");
             }
         }
+        $body['contact_id'] = $this->resolveContactId($mainId, trim((string) $body['contact_id']));
 
         $issueType = trim((string) $body['issue_type']);
         if (!in_array($issueType, ['product_quality', 'service_quality', 'delivery', 'lbc_rto', 'other'], true)) {
@@ -280,6 +297,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         $fromDate = isset($query['from_date']) ? trim((string) $query['from_date']) : null;
@@ -299,6 +317,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->repo->getCustomerLogs($mainId, $contactId);
@@ -319,6 +338,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contactId is required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
         return $this->repo->getReturnRecords($mainId, $contactId);
@@ -343,6 +363,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contact_id is required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
 
         $notes = trim((string) ($body['notes'] ?? ''));
         if ($notes === '') {
@@ -399,6 +420,7 @@ final class DailyCallMonitoringController
         if ($userId <= 0 || $mainId <= 0 || $contactId === '') {
             throw new HttpException(422, 'main_id, contact_id, and authenticated agent are required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
@@ -415,6 +437,7 @@ final class DailyCallMonitoringController
         if ($userId <= 0 || $mainId <= 0 || $contactId === '') {
             throw new HttpException(422, 'main_id, contactId, and authenticated account are required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
@@ -433,6 +456,7 @@ final class DailyCallMonitoringController
         if ($contactId === '') {
             throw new HttpException(422, 'contact_id is required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
 
         $entryType = trim((string) ($body['entry_type'] ?? 'Note'));
         if ($entryType !== 'Note' && $entryType !== 'Status') {
@@ -479,6 +503,7 @@ final class DailyCallMonitoringController
         if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '') {
             throw new HttpException(422, 'main_id, contactId, and authenticated account are required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
@@ -534,6 +559,7 @@ final class DailyCallMonitoringController
         if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '') {
             throw new HttpException(422, 'main_id, contactId, and authenticated account are required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
@@ -551,6 +577,7 @@ final class DailyCallMonitoringController
         if ($senderUserId <= 0 || $mainId <= 0 || $contactId === '') {
             throw new HttpException(422, 'main_id, contactId, and authenticated account are required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
@@ -584,6 +611,7 @@ final class DailyCallMonitoringController
         if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '') {
             throw new HttpException(422, 'main_id, contactId, and authenticated account are required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
@@ -603,6 +631,7 @@ final class DailyCallMonitoringController
         if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '' || $messageId === '') {
             throw new HttpException(422, 'main_id, contactId, messageId, and authenticated account are required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
@@ -623,6 +652,7 @@ final class DailyCallMonitoringController
         if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '' || trim($imageData) === '') {
             throw new HttpException(422, 'main_id, contact_id, image_data, and authenticated account are required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
@@ -642,6 +672,7 @@ final class DailyCallMonitoringController
         if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '' || $filename === '') {
             throw new HttpException(422, 'main_id, contactId, filename, and authenticated account are required');
         }
+        $contactId = $this->resolveContactId($mainId, $contactId);
         if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
             throw new HttpException(403, 'Invalid account scope');
         }
@@ -702,6 +733,7 @@ final class DailyCallMonitoringController
         foreach ($rawIds as $rawId) {
             $contactId = trim((string) $rawId);
             if ($contactId === '') continue;
+            $contactId = $this->resolveContactId($mainId, $contactId);
             try {
                 $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
                 $contactIds[] = $contactId;

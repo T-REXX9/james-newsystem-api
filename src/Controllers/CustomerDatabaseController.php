@@ -9,6 +9,7 @@ use App\Repositories\CustomerDatabaseRepository;
 use App\Repositories\CustomerRequestRepository;
 use App\Repositories\NotificationsRepository;
 use App\Support\Exceptions\HttpException;
+use App\Support\CustomerMergeRedirectResolver;
 use RuntimeException;
 use InvalidArgumentException;
 
@@ -17,6 +18,7 @@ final class CustomerDatabaseController
     public function __construct(
         private readonly CustomerDatabaseRepository $repo,
         private readonly Database $db,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null,
     )
     {
     }
@@ -47,16 +49,16 @@ final class CustomerDatabaseController
             throw new HttpException(422, 'main_id is required');
         }
 
-        $sessionId = trim((string) ($params['sessionId'] ?? ''));
-        if ($sessionId === '') {
-            throw new HttpException(422, 'sessionId is required');
-        }
+        [$sessionId, $redirect] = $this->resolveSession($params, $mainId);
 
         $record = $this->repo->getCustomer($mainId, $sessionId);
         if ($record === null) {
             throw new HttpException(404, 'Customer not found');
         }
 
+        $record['requested_session_id'] = (string) ($params['sessionId'] ?? '');
+        $record['customer_session_redirected'] = $redirect['redirected'];
+        $record['merge_redirect'] = $redirect['redirect'];
         return $record;
     }
 
@@ -200,10 +202,7 @@ final class CustomerDatabaseController
             throw new HttpException(422, 'main_id is required');
         }
 
-        $sessionId = trim((string) ($params['sessionId'] ?? ''));
-        if ($sessionId === '') {
-            throw new HttpException(422, 'sessionId is required');
-        }
+        [$sessionId] = $this->resolveSession($params, $mainId);
 
         try {
             $record = $this->repo->updateCustomer($mainId, $sessionId, $body);
@@ -454,5 +453,20 @@ final class CustomerDatabaseController
                 'items' => $this->repo->getAssignmentHistory($mainId, $sessionId),
             ],
         ];
+    }
+
+    /** @return array{0: string, 1: array{session_id: string, redirected: bool, redirect: array<string, mixed>|null}} */
+    private function resolveSession(array $params, int $mainId): array
+    {
+        $requested = trim((string) ($params['sessionId'] ?? ''));
+        if ($requested === '') {
+            throw new HttpException(422, 'sessionId is required');
+        }
+        $redirect = $this->redirects?->resolve($mainId, $requested) ?? [
+            'session_id' => $requested,
+            'redirected' => false,
+            'redirect' => null,
+        ];
+        return [$redirect['session_id'], $redirect];
     }
 }

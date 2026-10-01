@@ -5,11 +5,15 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\SalesReportRepository;
+use App\Support\CustomerMergeRedirectResolver;
 use App\Support\Exceptions\HttpException;
 
 final class SalesReportController
 {
-    public function __construct(private readonly SalesReportRepository $repo)
+    public function __construct(
+        private readonly SalesReportRepository $repo,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
+    )
     {
     }
 
@@ -45,6 +49,10 @@ final class SalesReportController
         $dateFrom = isset($query['date_from']) ? (string) $query['date_from'] : null;
         $dateTo = isset($query['date_to']) ? (string) $query['date_to'] : null;
         $customerId = isset($query['customer_id']) ? (string) $query['customer_id'] : null;
+        $agentId = isset($query['agent_id']) ? trim((string) $query['agent_id']) : null;
+        if ($customerId !== null) {
+            $customerId = $this->redirects?->resolve($mainId, $customerId)['session_id'] ?? $customerId;
+        }
         $limit = (int) ($query['limit'] ?? 1200);
         if ($limit <= 0) {
             $limit = 1200;
@@ -56,7 +64,8 @@ final class SalesReportController
             $dateFrom,
             $dateTo,
             $customerId,
-            min($limit, 5000)
+            min($limit, 5000),
+            $agentId
         );
     }
 

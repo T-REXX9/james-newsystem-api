@@ -12,10 +12,21 @@ use App\Repositories\SalesInquiryRepository;
 use App\Repositories\SalesReturnRepository;
 use App\Support\ActionPermissionPolicy;
 use App\Support\Exceptions\HttpException;
+use App\Support\CustomerMergeRedirectResolver;
 
 final class CustomerWorkflowController
 {
-    public function __construct(private readonly Database $db, private readonly AuthRepository $auth) {}
+    public function __construct(
+        private readonly Database $db,
+        private readonly AuthRepository $auth,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
+    ) {}
+
+    private function resolveContactId(int $mainId, string $contactId): string
+    {
+        $contactId = trim($contactId);
+        return $contactId === '' ? $contactId : ($this->redirects?->resolve($mainId, $contactId)['session_id'] ?? $contactId);
+    }
 
     /**
      * Notifications are a secondary effect of a customer workflow.  The request
@@ -63,7 +74,7 @@ final class CustomerWorkflowController
     public function inquiries(array $params, array $query, array $body): array
     {
         [$mainId] = $this->context($query, $body);
-        $contactId = rawurldecode($params['contactId']);
+        $contactId = $this->resolveContactId($mainId, rawurldecode($params['contactId']));
         (new CustomerRequestRepository($this->db))->customer($mainId, $contactId);
         return (new SalesInquiryRepository($this->db))->listInquiries($mainId, '', 'all', max(1, (int) ($query['page'] ?? 1)), 100, $contactId);
     }
@@ -71,7 +82,7 @@ final class CustomerWorkflowController
     public function returns(array $params, array $query, array $body): array
     {
         [$mainId] = $this->context($query, $body);
-        $contactId = rawurldecode($params['contactId']);
+        $contactId = $this->resolveContactId($mainId, rawurldecode($params['contactId']));
         (new CustomerRequestRepository($this->db))->customer($mainId, $contactId);
         return (new SalesReturnRepository($this->db))->list($mainId, '', 'all', '', '', max(1, (int) ($query['page'] ?? 1)), 100, $contactId);
     }
@@ -79,7 +90,7 @@ final class CustomerWorkflowController
     public function requests(array $params, array $query, array $body): array
     {
         [$mainId, $userId, $seesAllRecords] = $this->context($query, $body);
-        return (new CustomerRequestRepository($this->db))->list($mainId, rawurldecode($params['contactId']), $seesAllRecords ? null : $userId);
+        return (new CustomerRequestRepository($this->db))->list($mainId, $this->resolveContactId($mainId, rawurldecode($params['contactId'])), $seesAllRecords ? null : $userId);
     }
 
     public function allRequests(array $params, array $query, array $body): array
@@ -93,7 +104,7 @@ final class CustomerWorkflowController
     {
         [$mainId, $userId] = $this->context($query, $body);
         if (!is_array($body['payload'] ?? null)) throw new HttpException(422, 'Request payload is required');
-        $contactId = rawurldecode($params['contactId']);
+        $contactId = $this->resolveContactId($mainId, rawurldecode($params['contactId']));
         $kind = (string) ($body['kind'] ?? '');
         $requests = new CustomerRequestRepository($this->db);
         $result = $requests->create($mainId, $contactId, $userId, $kind, $body['payload']);
@@ -135,7 +146,7 @@ final class CustomerWorkflowController
         if (!$reviewer || (string) ($reviewer['ltype'] ?? '') !== '1') {
             throw new HttpException(403, 'Only a Master User can review customer requests');
         }
-        $contactId = rawurldecode($params['contactId']);
+        $contactId = $this->resolveContactId($mainId, rawurldecode($params['contactId']));
         $requestId = (string) $params['requestId'];
         $requests = new CustomerRequestRepository($this->db);
         $request = $requests->request($mainId, $contactId, $requestId);

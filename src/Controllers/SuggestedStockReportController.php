@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\SuggestedStockReportRepository;
+use App\Support\CustomerMergeRedirectResolver;
 use App\Support\Exceptions\HttpException;
 use RuntimeException;
 
 final class SuggestedStockReportController
 {
-    public function __construct(private readonly SuggestedStockReportRepository $repo)
+    public function __construct(
+        private readonly SuggestedStockReportRepository $repo,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
+    )
     {
     }
 
@@ -39,6 +43,9 @@ final class SuggestedStockReportController
         $dateFrom = isset($query['date_from']) ? (string) $query['date_from'] : null;
         $dateTo = isset($query['date_to']) ? (string) $query['date_to'] : null;
         $customerId = isset($query['customer_id']) ? (string) $query['customer_id'] : null;
+        if ($customerId !== null) {
+            $customerId = $this->redirects?->resolve($mainId, $customerId)['session_id'] ?? $customerId;
+        }
         $partNo = trim((string) ($query['part_no'] ?? ''));
         $sortBy = trim((string) ($query['sort_by'] ?? SuggestedStockReportRepository::SORT_CUSTOMERS_DESC));
         $kivFolder = $this->toBool($query['kiv'] ?? false);
@@ -77,6 +84,9 @@ final class SuggestedStockReportController
         $dateFrom = isset($query['date_from']) ? (string) $query['date_from'] : null;
         $dateTo = isset($query['date_to']) ? (string) $query['date_to'] : null;
         $customerId = isset($query['customer_id']) ? (string) $query['customer_id'] : null;
+        if ($customerId !== null) {
+            $customerId = $this->redirects?->resolve($mainId, $customerId)['session_id'] ?? $customerId;
+        }
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, min(300, (int) ($query['per_page'] ?? 200)));
 

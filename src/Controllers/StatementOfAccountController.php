@@ -5,11 +5,15 @@ declare(strict_types=1);
 namespace App\Controllers;
 
 use App\Repositories\StatementOfAccountRepository;
+use App\Support\CustomerMergeRedirectResolver;
 use App\Support\Exceptions\HttpException;
 
 final class StatementOfAccountController
 {
-    public function __construct(private readonly StatementOfAccountRepository $repo)
+    public function __construct(
+        private readonly StatementOfAccountRepository $repo,
+        private readonly ?CustomerMergeRedirectResolver $redirects = null
+    )
     {
     }
 
@@ -50,6 +54,10 @@ final class StatementOfAccountController
         $dateFrom = isset($query['date_from']) ? (string) $query['date_from'] : null;
         $dateTo = isset($query['date_to']) ? (string) $query['date_to'] : null;
 
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId > 0) {
+            $customerId = $this->redirects?->resolve($mainId, $customerId)['session_id'] ?? $customerId;
+        }
         return $this->repo->getStatementOfAccount($customerId, $reportType, $dateType, $dateFrom, $dateTo);
     }
 }

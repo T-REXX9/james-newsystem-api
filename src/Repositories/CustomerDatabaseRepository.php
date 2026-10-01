@@ -756,7 +756,11 @@ SQL;
             $sessionId = (string) $row['session_id'];
             $existingContactPerson = $contactPersonsBySessionId[$sessionId] ?? '';
             $fields = [];
-            if ($company !== '' && $existingCompany !== '' && ($existingCompany === $company || str_contains($existingCompany, $company) || str_contains($company, $existingCompany))) $fields[] = $existingCompany === $company ? 'company_exact' : 'company_similar';
+            if ($company !== '' && $existingCompany !== '' && ($existingCompany === $company || str_contains($existingCompany, $company) || str_contains($company, $existingCompany))) {
+                $fields[] = $existingCompany === $company ? 'company_exact' : 'company_similar';
+            } elseif ($company !== '' && $existingCompany !== '' && $this->isSimilarCompanyName($company, $existingCompany)) {
+                $fields[] = 'company_similar';
+            }
             if ($tin !== '' && $existingTin !== '' && $tin === $existingTin) $fields[] = 'tin';
             if ($phones !== [] && array_intersect($phones, $existingPhones) !== []) $fields[] = 'phone';
             if ($address !== '' && $existingAddress !== '' && $address === $existingAddress) $fields[] = 'address';
@@ -844,6 +848,18 @@ SQL;
     private function normalizeIdentityText(string $value): string
     {
         return preg_replace('/[^a-z0-9]+/', '', strtolower(trim($value))) ?? '';
+    }
+
+    private function isSimilarCompanyName(string $left, string $right): bool
+    {
+        $normalizedLeft = $this->normalizeIdentityText($left);
+        $normalizedRight = $this->normalizeIdentityText($right);
+        if (strlen($normalizedLeft) < 8 || strlen($normalizedRight) < 8) {
+            return false;
+        }
+
+        similar_text($normalizedLeft, $normalizedRight, $percent);
+        return $percent >= 88.0;
     }
 
     /** @return array<int, string> */

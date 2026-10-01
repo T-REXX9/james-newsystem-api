@@ -59,15 +59,16 @@ SQL;
         ?string $dateFrom,
         ?string $dateTo,
         ?string $customerId,
-        int $limit = 1200
+        int $limit = 1200,
+        ?string $agentId = null
     ): array {
         [$normalizedDateType, $fromDate, $toDate] = $this->resolveDateRange($dateType, $dateFrom, $dateTo);
 
         // The legacy Sales Report is a posted-sales report. It intentionally
         // reads only invoices and delivery receipts; sales orders are shown as
         // references on those records and must not become sales rows of their own.
-        $invoiceRows = $this->fetchInvoiceRows($mainId, $fromDate, $toDate, $customerId, $limit);
-        $drRows = $this->fetchDrRows($mainId, $fromDate, $toDate, $customerId, $limit);
+        $invoiceRows = $this->fetchInvoiceRows($mainId, $fromDate, $toDate, $customerId, $limit, $agentId);
+        $drRows = $this->fetchDrRows($mainId, $fromDate, $toDate, $customerId, $limit, $agentId);
 
         $transactions = array_merge($invoiceRows, $drRows);
         usort(
@@ -83,7 +84,6 @@ SQL;
         }, $transactions);
 
         $summary = $this->buildSummary($transactions);
-        $summary['salespersonTotals'] = $this->fetchLegacySalespersonTotals($mainId, $fromDate, $toDate);
 
         return [
             'date_type' => $normalizedDateType,
@@ -110,7 +110,7 @@ SELECT
     COALESCE(i.ldesc, '') AS description,
     COALESCE(i.lprice, 0) AS unit_price,
     COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0) AS amount,
-    COALESCE(i.lcategory, 'Uncategorized') AS category
+    COALESCE(NULLIF(NULLIF(TRIM(i.lcategory), ''), 'Uncategorized'), 'No category recorded') AS category
 FROM tblinvoice_list d
 INNER JOIN tblinvoice_itemrec i ON i.linvoice_refno = d.lrefno
 WHERE d.lmain_id = :main_id
@@ -129,7 +129,7 @@ SELECT
     COALESCE(i.ldesc, '') AS description,
     COALESCE(i.lprice, 0) AS unit_price,
     COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0) AS amount,
-    COALESCE(i.lcategory, 'Uncategorized') AS category
+    COALESCE(NULLIF(NULLIF(TRIM(i.lcategory), ''), 'Uncategorized'), 'No category recorded') AS category
 FROM tbldelivery_receipt d
 INNER JOIN tbldelivery_receipt_items i ON i.lor_refno = d.lrefno
 WHERE d.lmain_id = :main_id
@@ -176,7 +176,7 @@ SQL;
                 'description' => (string) ($row['description'] ?? ''),
                 'unit_price' => (float) ($row['unit_price'] ?? 0),
                 'amount' => (float) ($row['amount'] ?? 0),
-                'category' => (string) ($row['category'] ?? 'Uncategorized'),
+                'category' => (string) ($row['category'] ?? 'No category recorded'),
             ],
             $rows
         );
@@ -187,7 +187,8 @@ SQL;
         ?string $fromDate,
         ?string $toDate,
         ?string $customerId,
-        int $limit
+        int $limit,
+        ?string $agentId
     ): array {
         $where = [
             'l.lmain_id = :main_id',
@@ -211,6 +212,11 @@ SQL;
             $where[] = 'l.lcustomerid = :customer_id';
             $params['customer_id'] = $trimmedCustomerId;
         }
+        $currentAgentJoin = 'LEFT JOIN tblpatient p ON p.lmain_id = l.lmain_id AND p.lsessionid = l.lcustomerid LEFT JOIN tblaccount current_agent ON current_agent.lid = p.lsales_person';
+        if ($agentId !== null && $agentId !== '') {
+            $where[] = 'p.lsales_person = :agent_id';
+            $params['agent_id'] = $agentId;
+        }
 
         $sql = sprintf(
             <<<SQL
@@ -224,8 +230,11 @@ SELECT
     COALESCE(l.lsales_refno, '') AS sales_refno,
     COALESCE(l.ltax_type, '') AS ltax_type,
     COALESCE(l.lsales_person, '') AS salesperson,
+    COALESCE(p.lsales_person, '') AS current_agent_id,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), 'Unassigned') AS current_agent,
     l.lid AS sort_id
 FROM tblinvoice_list l
+{$currentAgentJoin}
 WHERE %s
 ORDER BY l.ldate DESC, l.lid DESC
 SQL,
@@ -258,7 +267,7 @@ SQL,
         foreach ($docs as $doc) {
             $id = (string) ($doc['id'] ?? '');
             $salesRef = (string) ($doc['sales_refno'] ?? '');
-            $item = $invoiceAgg[$id] ?? ['amount' => 0.0, 'category' => 'Uncategorized'];
+            $item = $invoiceAgg[$id] ?? ['amount' => 0.0, 'category' => 'No category recorded'];
             $so = $soAgg[$salesRef] ?? ['so_no' => '', 'so_amount' => 0.0];
 
             $invoiceAmount = (float) ($item['amount'] ?? 0);
@@ -283,8 +292,9 @@ SQL,
                 'so_amount' => (float) ($so['so_amount'] ?? 0),
                 'dr_amount' => 0.0,
                 'invoice_amount' => $invoiceAmount,
-                'salesperson' => (string) ($doc['salesperson'] ?? ''),
-                'category' => (string) ($item['category'] ?? 'Uncategorized'),
+                'salesperson' => (string) ($doc['current_agent'] ?? 'Unassigned'),
+                'current_agent_id' => (string) ($doc['current_agent_id'] ?? ''),
+                'category' => (string) ($item['category'] ?? 'No category recorded'),
                 'vat_type' => $vatType,
                 'type' => 'invoice',
                 '_sort_id' => (int) ($doc['sort_id'] ?? 0),
@@ -299,7 +309,8 @@ SQL,
         ?string $fromDate,
         ?string $toDate,
         ?string $customerId,
-        int $limit
+        int $limit,
+        ?string $agentId
     ): array {
         $where = [
             'l.lmain_id = :main_id',
@@ -320,6 +331,11 @@ SQL,
             $where[] = 'l.lcustomerid = :customer_id';
             $params['customer_id'] = $trimmedCustomerId;
         }
+        $currentAgentJoin = 'LEFT JOIN tblpatient p ON p.lmain_id = l.lmain_id AND p.lsessionid = l.lcustomerid LEFT JOIN tblaccount current_agent ON current_agent.lid = p.lsales_person';
+        if ($agentId !== null && $agentId !== '') {
+            $where[] = 'p.lsales_person = :agent_id';
+            $params['agent_id'] = $agentId;
+        }
 
         $sql = sprintf(
             <<<SQL
@@ -333,8 +349,11 @@ SELECT
     COALESCE(l.lsales_refno, '') AS sales_refno,
     COALESCE(l.ltax_type, '') AS ltax_type,
     COALESCE(l.lsales_person, '') AS salesperson,
+    COALESCE(p.lsales_person, '') AS current_agent_id,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), 'Unassigned') AS current_agent,
     l.lid AS sort_id
 FROM tbldelivery_receipt l
+{$currentAgentJoin}
 WHERE %s
 ORDER BY l.ldate DESC, l.lid DESC
 SQL,
@@ -367,7 +386,7 @@ SQL,
         foreach ($docs as $doc) {
             $id = (string) ($doc['id'] ?? '');
             $salesRef = (string) ($doc['sales_refno'] ?? '');
-            $item = $drAgg[$id] ?? ['amount' => 0.0, 'category' => 'Uncategorized'];
+            $item = $drAgg[$id] ?? ['amount' => 0.0, 'category' => 'No category recorded'];
             $so = $soAgg[$salesRef] ?? ['so_no' => '', 'so_amount' => 0.0];
 
             $vatType = null;
@@ -387,8 +406,9 @@ SQL,
                 'so_amount' => (float) ($so['so_amount'] ?? 0),
                 'dr_amount' => (float) ($item['amount'] ?? 0),
                 'invoice_amount' => 0.0,
-                'salesperson' => (string) ($doc['salesperson'] ?? ''),
-                'category' => (string) ($item['category'] ?? 'Uncategorized'),
+                'salesperson' => (string) ($doc['current_agent'] ?? 'Unassigned'),
+                'current_agent_id' => (string) ($doc['current_agent_id'] ?? ''),
+                'category' => (string) ($item['category'] ?? 'No category recorded'),
                 'vat_type' => $vatType,
                 'type' => 'dr',
                 '_sort_id' => (int) ($doc['sort_id'] ?? 0),
@@ -438,7 +458,7 @@ SQL,
             }
 
             $categories = (string) ($row['categories'] ?? '');
-            $category = 'Uncategorized';
+            $category = 'No category recorded';
             if ($categories !== '') {
                 $category = str_contains($categories, '|') || str_contains($categories, ',') ? 'Mixed' : $categories;
             }
@@ -488,7 +508,7 @@ SQL;
                 continue;
             }
             $categories = (string) ($row['categories'] ?? '');
-            $category = 'Uncategorized';
+            $category = 'No category recorded';
             if ($categories !== '') {
                 $category = str_contains($categories, '|') || str_contains($categories, ',') ? 'Mixed' : $categories;
             }
@@ -600,7 +620,7 @@ SQL;
         $grandInvoice = 0.0;
 
         foreach ($transactions as $tx) {
-            $category = (string) ($tx['category'] ?? 'Uncategorized');
+            $category = (string) ($tx['category'] ?? 'No category recorded');
             $salesperson = trim((string) ($tx['salesperson'] ?? ''));
             if ($salesperson === '') {
                 $salesperson = 'Unassigned';
