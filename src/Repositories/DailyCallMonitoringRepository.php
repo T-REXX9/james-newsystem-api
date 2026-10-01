@@ -1691,6 +1691,7 @@ SQL;
         $sql = <<<SQL
 SELECT
     inq.lrefno AS id,
+    COALESCE(inq.linqno, '') AS inquiry_no,
     inq.lcustomerid AS contact_id,
     inq.ldate AS date,
     inq.ltime AS time,
