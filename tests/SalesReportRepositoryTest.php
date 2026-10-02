@@ -20,8 +20,10 @@ $db = new Database(new Config('test', true, '*', 'secret', 3600, '127.0.0.1', 33
 $pdo = new PDO('sqlite::memory:');
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
-$pdo->exec('CREATE TABLE tblpatient (lid INTEGER PRIMARY KEY, lmain_id INTEGER, lsessionid TEXT, lcompany TEXT, lpatient_code TEXT, lstatus INTEGER)');
-$pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, ltype TEXT, larchieve INTEGER, lmother_id INTEGER)');
+$pdo->exec('CREATE TABLE tblpatient (lid INTEGER PRIMARY KEY, lmain_id INTEGER, lsessionid TEXT, lcompany TEXT, lpatient_code TEXT, lstatus INTEGER, lsince TEXT, ldatereg TEXT, lsales_person TEXT)');
+$pdo->exec('CREATE TABLE tblpatient_stars (lmain_id INTEGER, lsessionid TEXT, lis_starred INTEGER)');
+$pdo->exec('CREATE TABLE tblledger (lid INTEGER PRIMARY KEY, lcustomerid TEXT, ldatetime TEXT)');
+$pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT, ltype TEXT, larchieve INTEGER, lmother_id INTEGER)');
 $pdo->exec('CREATE TABLE tblcategory (lid INTEGER PRIMARY KEY, lname TEXT, lmain_id INTEGER)');
 $pdo->exec('CREATE TABLE tbltransaction (lrefno TEXT PRIMARY KEY, lsaleno TEXT, lmain_id INTEGER, lsales_person_id TEXT, ltax_type TEXT)');
 $pdo->exec('CREATE TABLE tbltransaction_item (lid INTEGER PRIMARY KEY, lrefno TEXT, lqty REAL, lprice REAL, ltype TEXT, lcancel INTEGER, lremark TEXT, lcategory TEXT, ltransaction_date TEXT)');
@@ -35,12 +37,16 @@ $property = $reflection->getProperty('pdo');
 $property->setValue($db, $pdo);
 
 $pdo->exec("INSERT INTO tblpatient VALUES
-    (1, 1, 'cust-a', 'Alpha', 'A-1', 1),
-    (2, 1, 'cust-b', 'Beta', 'B-1', 1),
-    (3, 1, 'cust-c', 'Gamma', 'C-1', 1),
-    (4, 1, 'cust-hidden', 'Hidden', 'H-1', 0)");
+    (1, 1, 'cust-a', 'Alpha', 'A-1', 1, '2020-01-01', NULL, '12'),
+    (2, 1, 'cust-b', 'Beta', 'B-1', 1, NULL, '" . date('Y-m-d') . "', '13'),
+    (3, 1, 'cust-c', 'Gamma', 'C-1', 1, NULL, NULL, '12'),
+    (4, 1, 'cust-hidden', 'Hidden', 'H-1', 0, '2020-01-01', NULL, NULL)");
+$pdo->exec("INSERT INTO tblledger VALUES (1, 'cust-c', '" . date('Y-m-d') . " 09:00:00')");
 
-$pdo->exec("INSERT INTO tblaccount VALUES (12, 'Alice', '2', 0, 1), (13, 'Archived', '2', 1, 1)");
+$pdo->exec("INSERT INTO tblaccount VALUES
+    (12, 'Alice', 'Agent', '2', 0, 1),
+    (13, 'Archived', 'Agent', '2', 1, 1),
+    (14, 'Chris', 'Agent', '2', 0, 1)");
 $pdo->exec("INSERT INTO tblcategory VALUES (1, 'Parts', 1), (2, 'Service', 1)");
 $pdo->exec("INSERT INTO tbltransaction VALUES
     ('so-1', 'SO-1', 1, '12', 'Exclusive'),
@@ -60,10 +66,20 @@ $pdo->exec("INSERT INTO tblinvoice_itemrec VALUES
     (4, 'inv-before-legacy-cutoff', 1, 700, 'Parts')");
 $pdo->exec("INSERT INTO tbldelivery_receipt VALUES
     (1, 'dr-1', 1, '2026-09-11', 'Beta', 'cust-b', 'LBC COD', 'DR-1', 'so-1', 'Inclusive', 'Bob', NULL, 'Posted'),
-    (2, 'dr-zero-cancel-marker', 1, '2026-09-11', 'Beta', 'cust-b', 'LBC COD', 'DR-2', 'so-1', 'Inclusive', 'Bob', 0, 'Posted')");
+    (2, 'dr-zero-cancel-marker', 1, '2026-09-11', 'Beta', 'cust-b', 'LBC COD', 'DR-2', 'so-1', 'Inclusive', 'Bob', 1, 'Posted')");
 $pdo->exec("INSERT INTO tbldelivery_receipt_items VALUES
     (1, 'dr-1', 1, 150, 'Parts'),
     (2, 'dr-zero-cancel-marker', 1, 75, 'Parts')");
+$pdo->exec('ALTER TABLE tblinvoice_itemrec ADD COLUMN litemcode TEXT');
+$pdo->exec('ALTER TABLE tblinvoice_itemrec ADD COLUMN lpartno TEXT');
+$pdo->exec('ALTER TABLE tblinvoice_itemrec ADD COLUMN lbrand TEXT');
+$pdo->exec('ALTER TABLE tblinvoice_itemrec ADD COLUMN ldesc TEXT');
+$pdo->exec('ALTER TABLE tbldelivery_receipt_items ADD COLUMN litemcode TEXT');
+$pdo->exec('ALTER TABLE tbldelivery_receipt_items ADD COLUMN lpartno TEXT');
+$pdo->exec('ALTER TABLE tbldelivery_receipt_items ADD COLUMN lbrand TEXT');
+$pdo->exec('ALTER TABLE tbldelivery_receipt_items ADD COLUMN ldesc TEXT');
+$pdo->exec("UPDATE tblinvoice_itemrec SET litemcode = 'P-1', lpartno = 'PART-1', lbrand = 'Brand', ldesc = 'Engine Part'");
+$pdo->exec("UPDATE tbldelivery_receipt_items SET litemcode = 'P-1', lpartno = 'PART-1', lbrand = 'Brand', ldesc = 'Engine Part'");
 
 $repo = new SalesReportRepository($db);
 $customers = $repo->listCustomers(1);
@@ -76,10 +92,16 @@ sales_report_expect(($report['summary']['grandTotal']['soAmount'] ?? null) === 3
 sales_report_expect(($report['summary']['grandTotal']['drAmount'] ?? null) === 150.0, 'delivery-receipt total is included');
 sales_report_expect(($report['summary']['grandTotal']['invoiceAmount'] ?? null) === 312.0, 'VAT-exclusive invoices receive the legacy 12 percent display adjustment');
 sales_report_expect(($report['summary']['grandTotal']['total'] ?? null) === 462.0, 'total sales uses legacy invoice and delivery-receipt display amounts only');
+sales_report_expect(($report['summary']['productTotals'][0]['product'] ?? null) === 'Engine Part', 'product breakdown names the leading product');
+sales_report_expect(abs((float) ($report['summary']['productTotals'][0]['total'] ?? 0) - 462.0) < 0.001, 'product breakdown reconciles to posted invoice and delivery-receipt sales including exclusive VAT');
 sales_report_expect(($report['transactions'][0]['date'] ?? null) === '2026-09-10', 'invoice report date uses the true sales date, not the import timestamp');
-sales_report_expect(($report['summary']['salespersonTotals'][0]['salesperson'] ?? null) === 'Alice', 'salesperson display uses the legacy active sales-account list');
+sales_report_expect(($report['transactions'][0]['customer_type'] ?? null) === 'old', 'sales report classifies pre-2026 customers as existing');
+sales_report_expect(($report['transactions'][2]['customer_type'] ?? null) === 'new', 'sales report classifies customers since 2026 as new');
+sales_report_expect(($report['summary']['salespersonTotals'][0]['salesperson'] ?? null) === 'Alice Agent', 'salesperson display uses the legacy active sales-account list');
+sales_report_expect(($report['summary']['salespersonTotals'][2]['salesperson'] ?? null) === 'Chris Agent', 'active sales agents with no sales still appear in the period summary');
+sales_report_expect(($report['summary']['salespersonTotals'][2]['total'] ?? null) === 0.0, 'agents with no sales receive an accurate zero performance total');
 sales_report_expect(($report['summary']['salespersonTotals'][0]['categories'][0]['category'] ?? null) === 'Parts', 'salesperson display groups legacy OnStock Sales Order items by category');
-sales_report_expect(abs((float) ($report['summary']['salespersonTotals'][0]['total'] ?? 0) - 112.0) < 0.001, 'salesperson display applies the legacy exclusive-VAT adjustment');
+sales_report_expect(abs((float) ($report['summary']['salespersonTotals'][0]['total'] ?? 0) - 312.0) < 0.001, 'salesperson total reflects posted invoice value including the exclusive-VAT adjustment');
 
 $monthReport = $repo->getSalesReport(1, 'month', null, null, 'All');
 sales_report_expect(($monthReport['date_from'] ?? null) === date('Y-m-01'), 'month starts on the first day like the legacy report');

@@ -83,7 +83,20 @@ SQL;
             return $row;
         }, $transactions);
 
-        $summary = $this->buildSummary($transactions);
+        $customerTypes = $this->fetchCustomerTypes(
+            $mainId,
+            array_values(array_unique(array_filter(array_map(
+                static fn(array $row): string => trim((string) ($row['customer_id'] ?? '')),
+                $transactions
+            ))))
+        );
+        foreach ($transactions as &$transaction) {
+            $transaction['customer_type'] = $customerTypes[(string) ($transaction['customer_id'] ?? '')] ?? 'unclassified';
+        }
+        unset($transaction);
+
+        $summary = $this->buildSummary($transactions, $mainId, $agentId);
+        $summary['productTotals'] = $this->buildProductTotals($mainId, $transactions);
 
         return [
             'date_type' => $normalizedDateType,
@@ -95,6 +108,71 @@ SQL;
             'transactions' => $transactions,
             'summary' => $summary,
         ];
+    }
+
+    /**
+     * Uses the sales-report classification requested in issue #47: customers
+     * since 2026-01-01 are new; earlier customers are existing.
+     *
+     * @param array<int, string> $customerIds
+     * @return array<string, string>
+     */
+    private function fetchCustomerTypes(int $mainId, array $customerIds): array
+    {
+        if ($customerIds === []) {
+            return [];
+        }
+
+        [$inClause, $bindings] = $this->buildInClause('customer', $customerIds);
+        $effectiveSince = <<<SQL
+COALESCE(
+    CASE
+        WHEN p.lsince IS NULL
+          OR TRIM(COALESCE(p.lsince, '')) = ''
+          OR p.lsince IN ('0000-00-00', '0000-00-00 00:00:00')
+        THEN NULL
+        ELSE DATE(p.lsince)
+    END,
+    CASE
+        WHEN p.ldatereg IS NULL
+          OR TRIM(COALESCE(p.ldatereg, '')) = ''
+          OR p.ldatereg IN ('0000-00-00', '0000-00-00 00:00:00')
+        THEN NULL
+        ELSE DATE(p.ldatereg)
+    END,
+    (
+        SELECT MIN(DATE(l.ldatetime))
+        FROM tblledger l
+        WHERE l.lcustomerid = p.lsessionid
+    )
+)
+SQL;
+        $sql = <<<SQL
+SELECT p.lsessionid AS customer_id, {$effectiveSince} AS customer_since
+FROM tblpatient p
+WHERE p.lmain_id = :main_id
+  AND p.lsessionid IN ({$inClause})
+SQL;
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        foreach ($bindings as $key => $value) {
+            $stmt->bindValue($key, $value, PDO::PARAM_STR);
+        }
+        $stmt->execute();
+
+        $cutoffDate = '2026-01-01';
+        $types = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $customerId = (string) ($row['customer_id'] ?? '');
+            $customerSince = trim((string) ($row['customer_since'] ?? ''));
+            if ($customerId === '' || $customerSince === '') {
+                continue;
+            }
+            $types[$customerId] = $customerSince < $cutoffDate ? 'old' : 'new';
+        }
+
+        return $types;
     }
 
     public function getTransactionItems(int $mainId, string $transactionRefno, string $type): array
@@ -225,6 +303,7 @@ SELECT
     l.ldate AS `date`,
     TRIM(COALESCE(l.lcustomer_name, '')) AS customer,
     COALESCE(l.lcustomerid, '') AS customer_id,
+    COALESCE((SELECT s.lis_starred FROM tblpatient_stars s WHERE s.lmain_id = l.lmain_id AND s.lsessionid = l.lcustomerid), 0) AS is_starred,
     COALESCE(l.lterms, '') AS terms,
     COALESCE(l.linvoice_no, '') AS ref_no,
     COALESCE(l.lsales_refno, '') AS sales_refno,
@@ -344,6 +423,7 @@ SELECT
     l.ldate AS `date`,
     TRIM(COALESCE(l.lcustomer_name, '')) AS customer,
     COALESCE(l.lcustomerid, '') AS customer_id,
+    COALESCE((SELECT s.lis_starred FROM tblpatient_stars s WHERE s.lmain_id = l.lmain_id AND s.lsessionid = l.lcustomerid), 0) AS is_starred,
     COALESCE(l.lterms, '') AS terms,
     COALESCE(l.linvoice_no, '') AS ref_no,
     COALESCE(l.lsales_refno, '') AS sales_refno,
@@ -610,7 +690,7 @@ SQL;
         return [implode(', ', $placeholders), $bindings];
     }
 
-    private function buildSummary(array $transactions): array
+    private function buildSummary(array $transactions, int $mainId, ?string $agentId): array
     {
         $categoryTotals = [];
         $salespersonBuckets = [];
@@ -662,6 +742,12 @@ SQL;
             $salespersonBuckets[$salesperson][$category]['invoiceAmount'] += $invoice;
         }
 
+        foreach ($this->fetchActiveSalespeople($mainId, $agentId) as $salesperson) {
+            if (!isset($salespersonBuckets[$salesperson])) {
+                $salespersonBuckets[$salesperson] = [];
+            }
+        }
+
         ksort($categoryTotals);
 
         $salespersonTotals = [];
@@ -701,6 +787,140 @@ SQL;
                 'total' => $grandDr + $grandInvoice,
             ],
         ];
+    }
+
+    /** @param array<int, array<string, mixed>> $transactions
+     *  @return array<int, array{itemCode:string,partNo:string,brand:string,product:string,total:float}>
+     */
+    private function buildProductTotals(int $mainId, array $transactions): array
+    {
+        $invoiceRefs = [];
+        $exclusiveInvoiceRefs = [];
+        $drRefs = [];
+        foreach ($transactions as $transaction) {
+            $refno = trim((string) ($transaction['id'] ?? ''));
+            if ($refno === '') continue;
+            if (($transaction['type'] ?? '') === 'invoice') {
+                if (($transaction['vat_type'] ?? null) === 'exclusive') {
+                    $exclusiveInvoiceRefs[] = $refno;
+                } else {
+                    $invoiceRefs[] = $refno;
+                }
+            } elseif (($transaction['type'] ?? '') === 'dr') {
+                $drRefs[] = $refno;
+            }
+        }
+
+        $totals = [];
+        $this->addProductItemTotals($mainId, 'tblinvoice_list', 'tblinvoice_itemrec', 'linvoice_refno', $invoiceRefs, 'invoice', 1.0, $totals);
+        $this->addProductItemTotals($mainId, 'tblinvoice_list', 'tblinvoice_itemrec', 'linvoice_refno', $exclusiveInvoiceRefs, 'invoice', 1.12, $totals);
+        $this->addProductItemTotals($mainId, 'tbldelivery_receipt', 'tbldelivery_receipt_items', 'lor_refno', $drRefs, 'dr', 1.0, $totals);
+
+        $rows = array_values($totals);
+        usort($rows, static fn(array $a, array $b): int => $b['total'] <=> $a['total']);
+        return $rows;
+    }
+
+    /** @param array<int, string> $refnos
+     *  @param array<string, array{itemCode:string,partNo:string,brand:string,product:string,total:float}> $totals
+     */
+    private function addProductItemTotals(
+        int $mainId,
+        string $headerTable,
+        string $itemTable,
+        string $itemRefColumn,
+        array $refnos,
+        string $documentType,
+        float $amountFactor,
+        array &$totals
+    ): void {
+        if ($refnos === []) return;
+        $isInvoice = $documentType === 'invoice';
+        $postedCondition = $isInvoice
+            ? PostedSalesDocumentSql::invoiceIsPosted('d')
+            : PostedSalesDocumentSql::deliveryReceiptIsPosted('d');
+
+        foreach (array_chunk(array_values(array_unique($refnos)), 500) as $index => $batch) {
+            [$inClause, $bindings] = $this->buildInClause('product_ref_' . $index . '_', $batch);
+            $sql = sprintf(
+                <<<SQL
+SELECT
+    COALESCE(TRIM(x.litemcode), '') AS item_code,
+    COALESCE(TRIM(x.lpartno), '') AS part_no,
+    COALESCE(TRIM(x.lbrand), '') AS brand,
+    COALESCE(TRIM(x.ldesc), '') AS description,
+    SUM(COALESCE(x.lqty, 0) * COALESCE(x.lprice, 0)) AS amount
+FROM %s d
+INNER JOIN %s x ON x.%s = d.lrefno
+WHERE d.lmain_id = :main_id
+  AND d.lrefno IN (%s)
+  AND %s
+GROUP BY item_code, part_no, brand, description
+SQL,
+                $headerTable,
+                $itemTable,
+                $itemRefColumn,
+                $inClause,
+                $postedCondition
+            );
+            $statement = $this->db->pdo()->prepare($sql);
+            $statement->bindValue('main_id', $mainId, PDO::PARAM_INT);
+            foreach ($bindings as $key => $value) {
+                $statement->bindValue($key, $value, PDO::PARAM_STR);
+            }
+            $statement->execute();
+
+            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $itemCode = trim((string) ($row['item_code'] ?? ''));
+                $partNo = trim((string) ($row['part_no'] ?? ''));
+                $brand = trim((string) ($row['brand'] ?? ''));
+                $description = trim((string) ($row['description'] ?? ''));
+                $product = $description !== '' ? $description : ($partNo !== '' ? $partNo : ($itemCode !== '' ? $itemCode : 'Unnamed product'));
+                $key = implode('|', [strtolower($itemCode), strtolower($partNo), strtolower($description), strtolower($brand)]);
+                if (!isset($totals[$key])) {
+                    $totals[$key] = [
+                        'itemCode' => $itemCode,
+                        'partNo' => $partNo,
+                        'brand' => $brand,
+                        'product' => $product,
+                        'total' => 0.0,
+                    ];
+                }
+                $totals[$key]['total'] += (float) ($row['amount'] ?? 0) * $amountFactor;
+            }
+        }
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function fetchActiveSalespeople(int $mainId, ?string $agentId): array
+    {
+        $sql = <<<SQL
+SELECT
+    CAST(a.lid AS CHAR) AS id,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))), ''), 'Unassigned') AS salesperson
+FROM tblaccount a
+WHERE a.lmother_id = :main_id
+  AND a.ltype = '2'
+  AND COALESCE(a.larchieve, 0) = 0
+SQL;
+        if ($agentId !== null && trim($agentId) !== '') {
+            $sql .= ' AND CAST(a.lid AS CHAR) = :agent_id';
+        }
+        $sql .= ' ORDER BY salesperson ASC, a.lid ASC';
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        if ($agentId !== null && trim($agentId) !== '') {
+            $stmt->bindValue('agent_id', trim($agentId), PDO::PARAM_STR);
+        }
+        $stmt->execute();
+
+        return array_values(array_unique(array_filter(array_map(
+            static fn(array $row): string => trim((string) ($row['salesperson'] ?? '')),
+            $stmt->fetchAll(PDO::FETCH_ASSOC)
+        ))));
     }
 
     /**

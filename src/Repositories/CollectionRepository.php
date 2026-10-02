@@ -373,6 +373,7 @@ SQL;
             }
 
             $normalizedCollectionRows[] = [
+                'customer_id' => (string) ($row['lcustomer'] ?? ''),
                 'date' => $row['ldatetime'] !== '' ? date('Y-m-d', strtotime((string) $row['ldatetime'])) : (string) ($row['lcollect_date'] ?? ''),
                 'customer' => (string) ($row['lcustomer_fname'] ?? ''),
                 'dcr_no' => ltrim((string) ($row['lcollection_no'] ?? ''), 'DCR-'),
@@ -404,6 +405,7 @@ SQL;
             <<<'SQL'
 SELECT
     dm.lid,
+    COALESCE(dm.lcustomer, '') AS customer_id,
     COALESCE(dm.lrefno, '') AS lrefno,
     COALESCE(dm.ldm_no, '') AS ldm_no,
     COALESCE(dm.lcustomer_fname, '') AS lcustomer_code,

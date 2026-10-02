@@ -103,6 +103,29 @@ final class DailyCallMonitoringController
         return $this->repo->getAgentSnapshot($mainId, $viewerUserId);
     }
 
+    public function setCallBookmark(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $userId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($userId <= 0 || $mainId <= 0) {
+            throw new HttpException(422, 'main_id and authenticated agent are required');
+        }
+        if ((int) ($claims['main_userid'] ?? 0) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+
+        $contactId = trim((string) ($body['contact_id'] ?? ''));
+        if ($contactId !== '') {
+            $contactId = $this->resolveContactId($mainId, $contactId);
+            $this->repo->assertCustomerViewAccess($mainId, $contactId, $userId);
+        } else {
+            $contactId = null;
+        }
+
+        return ['contact_id' => $this->repo->setDailyCallBookmark($mainId, $userId, $contactId)];
+    }
+
     public function customerPurchaseHistory(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = $this->authenticatedMainId($body, $query);

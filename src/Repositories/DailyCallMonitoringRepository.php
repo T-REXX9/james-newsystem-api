@@ -230,6 +230,7 @@ SQL);
 
         $topCustomersStmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT
+    p.lsessionid AS customer_id,
     COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Customer') AS customer_name,
     COALESCE(SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS amount
 FROM tblledger lg
@@ -647,6 +648,7 @@ latest_sales_report AS (
 )
 SELECT
     p.lsessionid AS id,
+    COALESCE((SELECT s.lis_starred FROM tblpatient_stars s WHERE s.lmain_id = p.lmain_id AND s.lsessionid = p.lsessionid), 0) AS is_starred,
     COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Shop') AS shop_name,
     COALESCE((
         SELECT old_customer.loldname
@@ -1275,7 +1277,36 @@ SQL;
             'purchases' => $this->getPurchaseRows($mainId, $contactIds, $twelveMonthsAgo),
             'team_messages' => $this->getRecentOwnerMessages($viewerUserId),
             'master_list' => $masterList['items'] ?? [],
+            'bookmarked_contact_id' => $this->getDailyCallBookmark($mainId, $viewerUserId),
         ];
+    }
+
+    public function getDailyCallBookmark(int $mainId, int $agentUserId): ?string
+    {
+        $statement = $this->db->pdo()->prepare(
+            'SELECT contact_id FROM daily_call_bookmarks WHERE main_id = :main_id AND agent_user_id = :agent_user_id LIMIT 1'
+        );
+        $statement->execute(['main_id' => $mainId, 'agent_user_id' => $agentUserId]);
+        $contactId = $statement->fetchColumn();
+        return $contactId === false ? null : (string) $contactId;
+    }
+
+    public function setDailyCallBookmark(int $mainId, int $agentUserId, ?string $contactId): ?string
+    {
+        $pdo = $this->db->pdo();
+        if ($contactId === null) {
+            $statement = $pdo->prepare('DELETE FROM daily_call_bookmarks WHERE main_id = :main_id AND agent_user_id = :agent_user_id');
+            $statement->execute(['main_id' => $mainId, 'agent_user_id' => $agentUserId]);
+            return null;
+        }
+
+        $statement = $pdo->prepare(
+            'INSERT INTO daily_call_bookmarks (main_id, agent_user_id, contact_id, updated_at)
+             VALUES (:main_id, :agent_user_id, :contact_id, CURRENT_TIMESTAMP)
+             ON DUPLICATE KEY UPDATE contact_id = VALUES(contact_id), updated_at = CURRENT_TIMESTAMP'
+        );
+        $statement->execute(['main_id' => $mainId, 'agent_user_id' => $agentUserId, 'contact_id' => $contactId]);
+        return $contactId;
     }
 
     public function assertCustomerViewAccess(int $mainId, string $contactId, int $viewerUserId): void
@@ -3086,6 +3117,7 @@ SQL;
         }
 
         $sql .= <<<SQL
+
 UNION ALL
 
 SELECT

@@ -734,6 +734,7 @@ function app_router(): Router
     $router->get('/api/v1/activity-logs/users', [$activityLogController, 'users']);
     $router->get('/api/v1/activity-logs/deletions/{auditId}', [$activityLogController, 'deletionDetail']);
     $router->get('/api/v1/customer-database', $requireViewAuth([$customerDatabaseController, 'list'], 'Customer Database'));
+    $router->get('/api/v1/customer-stars', $requireBearerAuthWithClaims([$customerDatabaseController, 'starredIds']));
     $router->get('/api/v1/customer-database/name-check', $requireViewAuth([$customerDatabaseController, 'nameCheck'], 'Customer Database'));
     $router->get('/api/v1/customer-database/province-summary', $requireViewAuth([$customerDatabaseController, 'provinceSummary'], 'Customer Database'));
     $router->get('/api/v1/customer-groups', $requireViewAuth([$customerGroupController, 'list'], 'Customer Group'));
@@ -742,6 +743,7 @@ function app_router(): Router
     $router->patch('/api/v1/customer-groups/{groupId}', $requireActionAuth([$customerGroupController, 'update'], 'Customer', 'edit'));
     $router->delete('/api/v1/customer-groups/{groupId}', $requireActionAuth([$customerGroupController, 'delete'], 'Customer', 'delete'));
     $router->get('/api/v1/customer-database/{sessionId}', $requireViewAuth([$customerDatabaseController, 'show'], 'Customer Database'));
+    $router->patch('/api/v1/customer-database/{sessionId}/star', $requireMasterUser([$customerDatabaseController, 'setStar']));
     $router->post('/api/v1/customer-database', $requireActionAuth(static function (array $params = [], array $query = [], array $body = []) use ($customerDatabaseController): array {
         $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
         $isMasterUser = (string) ($claims['user_type'] ?? '') === '1';
@@ -872,6 +874,7 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/sales-performance-dashboard', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'salesPerformanceDashboard']));
     $router->get('/api/v1/daily-call-monitoring/owner-snapshot', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'ownerSnapshot']));
     $router->get('/api/v1/daily-call-monitoring/agent-snapshot', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'agentSnapshot']));
+    $router->patch('/api/v1/daily-call-monitoring/call-bookmark', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'setCallBookmark']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/profile', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerProfile']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/metrics', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerMetrics']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/purchase-history', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerPurchaseHistory']));

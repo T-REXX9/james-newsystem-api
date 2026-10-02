@@ -37,6 +37,14 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
    - `mysql -u root topnotch < migrations/032_backfill_product_created_suggested_stock.sql`
    - `mysql -u root topnotch < migrations/047_repair_customer_sales_agent_ids.sql`
      *(Repairs legacy customer-agent assignments that stored a unique staff display name instead of its account ID.)*
+   - `mysql -u root topnotch < migrations/063_optimize_customer_database_contact_lookup.sql`
+     *(Adds the customer-reference index used by batched Daily Call contact lookups.)*
+   - `mysql -u root topnotch < migrations/064_add_customer_stars.sql`
+     *(Required before deploying customer stars in Customer Database, Daily Call, and Sales Report.)*
+   - `mysql -u root topnotch < migrations/065_create_daily_call_bookmarks.sql`
+     *(Required for per-agent Daily Call calling stop bookmarks.)*
+   - `mysql -u root topnotch < migrations/066_optimize_daily_call_master_list.sql`
+     *(Adds account/date and lookup indexes used by the Daily Call purchase priority summary.)*
   - Apply `migrations/017_create_customer_requests.sql`,
     `migrations/019_add_procurement_recovery_columns.sql`, and
     `migrations/023_add_customer_product_soft_delete_columns.sql` to your configured

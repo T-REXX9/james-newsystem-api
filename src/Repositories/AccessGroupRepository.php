@@ -415,6 +415,7 @@ final class AccessGroupRepository
 
         $this->findOrCreateAccessGroup($mainId, self::WAREHOUSE_PERSONNEL_NAME, 'Warehouse access for inventory, stock movement, purchasing, receiving, and warehouse reports.', [
             'home',
+            'sales-reports-sales-report',
             'warehouse-inventory-product-database',
             'warehouse-inventory-stock-movement',
             'warehouse-inventory-transfer-stock',

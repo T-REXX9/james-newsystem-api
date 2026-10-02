@@ -100,6 +100,16 @@ SQL;
                 COALESCE(iq.ldate, \'\') AS sales_date,
                 COALESCE(iq.ltime, \'\') AS sales_time,
                 CONCAT(COALESCE(iq.ldate, \'\'), \' \', COALESCE(NULLIF(iq.ltime, \'\'), \'00:00:00\')) AS created_at,
+                CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM tbltransaction order_record
+                    WHERE order_record.lmain_id = iq.lmain_id
+                      AND (
+                          order_record.linquiry_refno = iq.lrefno
+                          OR (COALESCE(iq.lso_refno, \'\') <> \'\' AND order_record.lrefno = iq.lso_refno)
+                      )
+                      AND COALESCE(order_record.lcancel, 0) = 0
+                ) THEN 1 ELSE 0 END AS converted_to_order,
                 COALESCE(SUM(COALESCE(it.lqty, 0) * COALESCE(it.lprice, 0)), 0) AS grand_total,
                 COUNT(it.lid) AS item_count
              FROM tblinquiry iq
@@ -142,6 +152,7 @@ SQL;
                 'sales_date' => (string) ($row['sales_date'] ?? ''),
                 'sales_time' => (string) ($row['sales_time'] ?? ''),
                 'created_at' => (string) ($row['created_at'] ?? ''),
+                'converted_to_order' => (int) ($row['converted_to_order'] ?? 0) === 1,
                 'grand_total' => $grandTotal,
                 'item_count' => (int) ($row['item_count'] ?? 0),
                 'items' => [],

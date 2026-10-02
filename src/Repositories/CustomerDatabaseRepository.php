@@ -19,6 +19,41 @@ final class CustomerDatabaseRepository
     private ?bool $hasCustomerDiscountCodeColumn = null;
     private ?bool $hasCustomerDeliveryAddressesTable = null;
 
+    public function setCustomerStar(int $mainId, int $userId, string $sessionId, bool $isStarred): array
+    {
+        $sessionId = trim($sessionId);
+        if ($mainId <= 0 || $userId <= 0 || $sessionId === '') {
+            throw new RuntimeException('Customer and user are required');
+        }
+        $pdo = $this->db->pdo();
+        $exists = $pdo->prepare('SELECT 1 FROM tblpatient WHERE lmain_id = :main_id AND lsessionid = :session_id AND COALESCE(ldeleted, 0) = 0 LIMIT 1');
+        $exists->execute(['main_id' => $mainId, 'session_id' => $sessionId]);
+        if (!$exists->fetchColumn()) {
+            throw new RuntimeException('Customer not found');
+        }
+        $stmt = $pdo->prepare(
+            'INSERT INTO tblpatient_stars (lmain_id, lsessionid, lis_starred, lupdated_by)
+             VALUES (:main_id, :session_id, :is_starred, :updated_by)
+             ON DUPLICATE KEY UPDATE lis_starred = VALUES(lis_starred), lupdated_by = VALUES(lupdated_by)'
+        );
+        $stmt->execute(['main_id' => $mainId, 'session_id' => $sessionId, 'is_starred' => $isStarred ? 1 : 0, 'updated_by' => $userId]);
+        return ['session_id' => $sessionId, 'is_starred' => $isStarred];
+    }
+
+    /** @return array<int, string> */
+    public function listStarredCustomerIds(int $mainId): array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT s.lsessionid
+             FROM tblpatient_stars s
+             INNER JOIN tblpatient p ON p.lmain_id = s.lmain_id AND p.lsessionid = s.lsessionid
+             WHERE s.lmain_id = :main_id AND s.lis_starred = 1 AND COALESCE(p.ldeleted, 0) = 0
+             ORDER BY s.lsessionid ASC'
+        );
+        $stmt->execute(['main_id' => $mainId]);
+        return array_map('strval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    }
+
     public function __construct(private readonly Database $db)
     {
     }
@@ -257,6 +292,7 @@ SQL;
 SELECT
     p.lid AS id,
     COALESCE(p.lsessionid, '') AS session_id,
+    COALESCE((SELECT s.lis_starred FROM tblpatient_stars s WHERE s.lmain_id = p.lmain_id AND s.lsessionid = p.lsessionid), 0) AS is_starred,
     COALESCE(p.lpatient_code, '') AS customer_code,
     COALESCE(p.lcompany, '') AS company,
     COALESCE(p.lemail, '') AS email,
@@ -301,6 +337,7 @@ SQL
 SELECT
     p.lid AS id,
     COALESCE(p.lsessionid, '') AS session_id,
+    COALESCE((SELECT s.lis_starred FROM tblpatient_stars s WHERE s.lmain_id = p.lmain_id AND s.lsessionid = p.lsessionid), 0) AS is_starred,
     COALESCE(p.lpatient_code, '') AS customer_code,
     COALESCE(p.lcompany, '') AS company,
     COALESCE((
@@ -376,10 +413,10 @@ SQL;
             // against laddress), then map it to the GeoJSON canonical name so
             // the Sales Map sidebar matches the map's colour counts.
             $items = $this->applyProvinceResolution($items);
-
+            $contactsBySession = $this->listContactsForSessions(array_column($items, 'session_id'));
             foreach ($items as &$item) {
                 $sessionId = trim((string) ($item['session_id'] ?? ''));
-                $item['contacts'] = $sessionId !== '' ? $this->listContacts($sessionId) : [];
+                $item['contacts'] = $contactsBySession[$sessionId] ?? [];
             }
             unset($item);
         }
@@ -416,6 +453,7 @@ SQL;
 SELECT
     p.lid AS id,
     COALESCE(p.lsessionid, '') AS session_id,
+    COALESCE((SELECT s.lis_starred FROM tblpatient_stars s WHERE s.lmain_id = p.lmain_id AND s.lsessionid = p.lsessionid), 0) AS is_starred,
     COALESCE(p.lpatient_code, '') AS customer_code,
     COALESCE(p.lcompany, '') AS company,
     COALESCE((
@@ -1603,6 +1641,52 @@ SQL;
         );
         $stmt->execute(['session_id' => $sessionId]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Fetch contact people for a customer page in one query instead of one
+     * query per customer. Customer list pages are capped at 500 rows.
+     *
+     * @param array<int, mixed> $sessionIds
+     * @return array<string, array<int, array<string, mixed>>>
+     */
+    private function listContactsForSessions(array $sessionIds): array
+    {
+        $sessionIds = array_values(array_unique(array_filter(
+            array_map(static fn ($id): string => trim((string) $id), $sessionIds),
+            static fn (string $id): bool => $id !== ''
+        )));
+        if ($sessionIds === []) {
+            return [];
+        }
+
+        $placeholders = [];
+        $params = [];
+        foreach ($sessionIds as $index => $sessionId) {
+            $placeholder = ':session_' . $index;
+            $placeholders[] = $placeholder;
+            $params[$placeholder] = $sessionId;
+        }
+
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT lid AS id, lsessionid AS session_id, lfname, lmname, llname, lposition, lc_phone, lc_mobile, lemail, laddress, lbday
+             FROM tblcontact_person
+             WHERE lrefno IN (' . implode(',', $placeholders) . ')
+             ORDER BY lrefno ASC, lid ASC'
+        );
+        foreach ($params as $placeholder => $value) {
+            $stmt->bindValue($placeholder, $value, PDO::PARAM_STR);
+        }
+        $stmt->execute();
+
+        $contactsBySession = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $contact) {
+            $sessionId = trim((string) ($contact['session_id'] ?? ''));
+            if ($sessionId !== '') {
+                $contactsBySession[$sessionId][] = $contact;
+            }
+        }
+        return $contactsBySession;
     }
 
     /**

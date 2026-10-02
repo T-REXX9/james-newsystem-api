@@ -482,9 +482,11 @@ SQL;
         $params = ['customer_id' => $sessionId];
         $dateSql = '';
         if ($fromDate !== null && $toDate !== null) {
-            $dateSql = ' AND DATE(l.ldatetime) >= :date_from AND DATE(l.ldatetime) <= :date_to';
-            $params['date_from'] = $fromDate;
-            $params['date_to'] = $toDate;
+            // Keep the datetime column bare so MySQL can use the existing
+            // (lcustomerid, ..., ldatetime) index for date-filtered reports.
+            $dateSql = ' AND l.ldatetime >= :date_from AND l.ldatetime < DATE_ADD(:date_to, INTERVAL 1 DAY)';
+            $params['date_from'] = $fromDate . ' 00:00:00';
+            $params['date_to'] = $toDate . ' 00:00:00';
         }
 
         $baseSql = <<<SQL
@@ -515,6 +517,8 @@ SQL;
 
         $rows = [];
         $summaryRows = [];
+        $rawLedgerRows = null;
+        $detailedReport = null;
         $totals = [
             'debit' => 0.0,
             'credit' => 0.0,
@@ -538,7 +542,7 @@ FROM tblledger l
 WHERE l.lcustomerid = :customer_id
   AND LOWER(TRIM(COALESCE(l.ltype, ''))) = 'debit'
   AND LOWER(TRIM(COALESCE(l.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
-  AND DATE(l.ldatetime) <= CURDATE()
+  AND l.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
 {$dateSql}
 GROUP BY YEAR(l.ldatetime)
 ORDER BY YEAR(l.ldatetime) ASC
@@ -593,10 +597,10 @@ SQL;
         } else {
             $stmt = $this->db->pdo()->prepare($baseSql . ' ORDER BY l.ldatetime ASC, l.ltype DESC, l.lid ASC');
             $stmt->execute($params);
-            $rawRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $rawLedgerRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             $detailedReport = CustomerLedgerCalculator::buildDetailedReport(
-                $rawRows,
+                $rawLedgerRows,
                 date('Y-m-d'),
                 $openingBalance
             );
@@ -604,7 +608,14 @@ SQL;
             $totals = $detailedReport['totals'];
         }
 
-        $metrics = $this->buildLedgerMetrics($sessionId, $customer);
+        // Metrics always describe the customer's full history. A filtered
+        // detailed response can reuse its rows only when it is unfiltered.
+        $metrics = $this->buildLedgerMetrics(
+            $sessionId,
+            $customer,
+            $fromDate === null ? $rawLedgerRows : null,
+            $fromDate === null ? $detailedReport : null
+        );
 
         return [
             'customer' => [
@@ -638,13 +649,13 @@ SELECT
     l.lcheckdate
 FROM tblledger l
 WHERE l.lcustomerid = :customer_id
-  AND DATE(l.ldatetime) < :before_date
+  AND l.ldatetime < :before_date
 ORDER BY l.ldatetime ASC, l.ltype DESC, l.lid ASC
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute([
             'customer_id' => $sessionId,
-            'before_date' => $beforeDate,
+            'before_date' => $beforeDate . ' 00:00:00',
         ]);
         $rawRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -652,7 +663,12 @@ SQL;
         return (float) $report['totals']['balance'];
     }
 
-    private function buildLedgerMetrics(string $sessionId, array $customer): array
+    private function buildLedgerMetrics(
+        string $sessionId,
+        array $customer,
+        ?array $rawLedgerRows = null,
+        ?array $detailedReport = null
+    ): array
     {
         $salesTotals = $this->loadCustomerSalesTotals($sessionId);
         $monthlySales = (float) ($salesTotals['monthly_sales'] ?? 0);
@@ -660,8 +676,8 @@ SQL;
         $dealershipSales = (float) ($salesTotals['dealership_sales'] ?? 0);
         $ishinomotoSales = (float) ($salesTotals['ishinomoto_sales'] ?? 0);
 
-        $ledgerRows = $this->loadLedgerRows($sessionId);
-        $ledgerReport = CustomerLedgerCalculator::buildDetailedReport($ledgerRows, date('Y-m-d'));
+        $ledgerRows = $rawLedgerRows ?? $this->loadLedgerRows($sessionId);
+        $ledgerReport = $detailedReport ?? CustomerLedgerCalculator::buildDetailedReport($ledgerRows, date('Y-m-d'));
         $balance = (float) $ledgerReport['totals']['balance'];
 
         $termsStmt = $this->db->pdo()->prepare(

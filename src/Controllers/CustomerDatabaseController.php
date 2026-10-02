@@ -62,6 +62,35 @@ final class CustomerDatabaseController
         return $record;
     }
 
+    public function setStar(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $userId = (int) (($body['__auth_claims']['sub'] ?? 0));
+        if ($mainId <= 0 || $userId <= 0) {
+            throw new HttpException(422, 'Authenticated user and account scope are required');
+        }
+        if (!array_key_exists('is_starred', $body) || !is_bool($body['is_starred'])) {
+            throw new HttpException(422, 'is_starred must be a boolean');
+        }
+        try {
+            return $this->repo->setCustomerStar($mainId, $userId, (string) ($params['sessionId'] ?? ''), $body['is_starred']);
+        } catch (RuntimeException $error) {
+            if ($error->getMessage() === 'Customer not found') {
+                throw new HttpException(404, $error->getMessage());
+            }
+            throw $error;
+        }
+    }
+
+    public function starredIds(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['__auth_claims']['main_userid'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        return ['items' => $this->repo->listStarredCustomerIds($mainId)];
+    }
+
     public function nameCheck(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);

@@ -511,6 +511,7 @@ final class RolePermissionRepository
             ],
             'warehouse', 'warehouse staff', 'warehouse personnel' => [
                 'home',
+                'sales-reports-sales-report',
                 'warehouse-inventory-product-database',
                 'warehouse-inventory-stock-movement',
                 'warehouse-inventory-stock-adjustment',
@@ -524,6 +525,10 @@ final class RolePermissionRepository
                 'warehouse-reports-item-suggested-for-stock-report',
                 'warehouse-reports-fast-slow-inventory-report',
                 'warehouse-reports-incident-items-report',
+            ],
+            'staff' => [
+                'home',
+                'sales-reports-sales-report',
             ],
             default => [],
         };
