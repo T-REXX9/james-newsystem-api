@@ -87,4 +87,44 @@ sales_report_current_month AS (
 )
 SQL;
     }
+
+    /**
+     * Current-month posted sales documents whose customer identifier is blank.
+     * Kept separate from the customer-keyed CTE so existing consumers retain
+     * their current customer grouping behavior while company totals can still
+     * reconcile all posted documents.
+     */
+    public static function currentMonthBlankCustomerSalesCte(): string
+    {
+        $invoicePosted = self::invoiceIsPosted('l');
+        $receiptPosted = self::deliveryReceiptIsPosted('l');
+
+        return <<<SQL
+posted_sales_current_month_blank_customer AS (
+    SELECT COALESCE(SUM(document_sales.amount), 0) AS amount
+    FROM (
+        SELECT SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
+            * CASE WHEN LOWER(COALESCE(l.ltax_type, '')) = 'exclusive' THEN 1.12 ELSE 1 END) AS amount
+        FROM tblinvoice_list l
+        INNER JOIN tblinvoice_itemrec i ON i.linvoice_refno = l.lrefno
+        WHERE l.lmain_id = :blank_sales_invoice_main_id
+          AND {$invoicePosted}
+          AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND l.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+          AND COALESCE(l.lcustomerid, '') = ''
+
+        UNION ALL
+
+        SELECT SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)) AS amount
+        FROM tbldelivery_receipt l
+        INNER JOIN tbldelivery_receipt_items i ON i.lor_refno = l.lrefno
+        WHERE l.lmain_id = :blank_sales_receipt_main_id
+          AND {$receiptPosted}
+          AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND l.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+          AND COALESCE(l.lcustomerid, '') = ''
+    ) document_sales
+)
+SQL;
+    }
 }

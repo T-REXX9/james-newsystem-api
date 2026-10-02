@@ -345,6 +345,237 @@ SQL);
         ];
     }
 
+    /**
+     * Current-month posted sales and assigned-customer status totals for the
+     * Daily Call Monitoring team view. Sales amounts use the canonical Sales
+     * Report invoice/delivery-receipt definition; each customer is assigned to
+     * exactly one current salesperson or to the unassigned group.
+     */
+    public function getDailyCallSalesColorBreakdown(int $mainId): array
+    {
+        $agentStmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT CAST(a.lid AS CHAR) AS id,
+       COALESCE(NULLIF(TRIM(REGEXP_REPLACE(CONCAT_WS(' ', NULLIF(TRIM(a.lfname), ''), NULLIF(TRIM(a.lmname), ''), NULLIF(TRIM(a.llname), '')), '[[:space:]]+', ' ')), ''), 'Unnamed agent') AS name
+FROM tblaccount a
+JOIN tblusertype agent_type
+  ON agent_type.lid = a.ltype
+ AND LOWER(TRIM(REGEXP_REPLACE(COALESCE(agent_type.ltype_name, ''), '[[:space:]]+', ' '))) IN ('sales agent', 'sales person', 'salesperson')
+WHERE a.lmother_id = :main_id
+  AND a.lstatus = 1
+ORDER BY name ASC, a.lid ASC
+SQL);
+        $agentStmt->execute(['main_id' => $mainId]);
+        $agents = [];
+        foreach ($agentStmt->fetchAll(PDO::FETCH_ASSOC) as $agent) {
+            $id = (string) ($agent['id'] ?? '');
+            if ($id !== '') {
+                $agents[$id] = $this->emptyDailyCallSalesColorAgent($id, (string) $agent['name']);
+            }
+        }
+
+        $postedSalesCtes = PostedSalesDocumentSql::currentMonthCustomerSalesCtes();
+        $blankCustomerSalesCte = PostedSalesDocumentSql::currentMonthBlankCustomerSalesCte();
+        $sql = <<<SQL
+WITH {$postedSalesCtes},
+{$blankCustomerSalesCte},
+purchase_date_candidates AS (
+    SELECT lg.lcustomerid AS customer_id, MAX(DATE(lg.ldatetime)) AS last_purchase_date
+    FROM tblledger lg
+    WHERE lg.lmainid = :ledger_main_id
+      AND lg.ldatetime >= DATE_SUB(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 2 MONTH)
+      AND lg.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+      AND COALESCE(lg.lcustomerid, '') <> ''
+      AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
+      AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+    GROUP BY lg.lcustomerid
+
+    UNION ALL
+
+    SELECT tr.lcustomerid AS customer_id, MAX(DATE(tr.ldate)) AS last_purchase_date
+    FROM tbltransaction tr
+    WHERE tr.lmain_id = :transaction_main_id
+      AND tr.ldate >= DATE_SUB(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 2 MONTH)
+      AND tr.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+      AND COALESCE(tr.lcancel, 0) = 0
+      AND COALESCE(tr.lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+      AND COALESCE(tr.invoice_refno, '') = ''
+      AND COALESCE(tr.ldr_refno, '') = ''
+      AND COALESCE(tr.lcustomerid, '') <> ''
+    GROUP BY tr.lcustomerid
+),
+purchase_history AS (
+    SELECT customer_id, MAX(last_purchase_date) AS last_purchase_date
+    FROM purchase_date_candidates
+    GROUP BY customer_id
+),
+purchase_customer_ids AS (
+    SELECT customer_id FROM purchase_history
+    UNION
+    SELECT customer_id FROM sales_report_current_month
+),
+scoped_sales_agents AS (
+    SELECT a.lid,
+           LOWER(TRIM(REGEXP_REPLACE(CONCAT_WS(' ', NULLIF(TRIM(a.lfname), ''), NULLIF(TRIM(a.llname), '')), '[[:space:]]+', ' '))) AS legacy_normalized_name,
+           LOWER(TRIM(REGEXP_REPLACE(CONCAT_WS(' ', NULLIF(TRIM(a.lfname), ''), NULLIF(TRIM(a.lmname), ''), NULLIF(TRIM(a.llname), '')), '[[:space:]]+', ' '))) AS full_normalized_name
+    FROM tblaccount a
+    JOIN tblusertype agent_type
+      ON agent_type.lid = a.ltype
+     AND LOWER(TRIM(REGEXP_REPLACE(COALESCE(agent_type.ltype_name, ''), '[[:space:]]+', ' '))) IN ('sales agent', 'sales person', 'salesperson')
+    WHERE a.lmother_id = :assignment_main_id
+      AND a.lstatus = 1
+),
+sales_agent_name_aliases AS (
+    SELECT lid, legacy_normalized_name AS normalized_name
+    FROM scoped_sales_agents
+    WHERE legacy_normalized_name <> ''
+
+    UNION
+
+    SELECT lid, full_normalized_name AS normalized_name
+    FROM scoped_sales_agents
+    WHERE full_normalized_name <> ''
+),
+unique_sales_agent_names AS (
+    SELECT normalized_name, MIN(lid) AS agent_id
+    FROM sales_agent_name_aliases
+    WHERE normalized_name <> ''
+    GROUP BY normalized_name
+    HAVING COUNT(*) = 1
+),
+last_purchase AS (
+    SELECT customer.customer_id,
+           COALESCE(history.last_purchase_date, sales.last_sale_date) AS last_purchase_date
+    FROM purchase_customer_ids customer
+    LEFT JOIN purchase_history history ON history.customer_id = customer.customer_id
+    LEFT JOIN sales_report_current_month sales ON sales.customer_id = customer.customer_id
+),
+live_customers AS (
+    SELECT p.lsessionid AS customer_id,
+           p.lsales_person AS assigned_agent_id,
+           COALESCE(p.lstatus, 1) AS customer_status,
+           COALESCE(p.ldebt_type, 'Good') AS debt_type
+    FROM tblpatient p
+    WHERE p.lmain_id = :customer_main_id
+      AND COALESCE(p.ldeleted, 0) = 0
+),
+missing_sales_customers AS (
+    SELECT sales.customer_id, NULL AS assigned_agent_id, 1 AS customer_status,
+           'Good' AS debt_type
+    FROM sales_report_current_month sales
+    LEFT JOIN live_customers p ON p.customer_id = sales.customer_id
+    WHERE p.customer_id IS NULL
+),
+customer_universe AS (
+    SELECT * FROM live_customers
+    UNION ALL
+    SELECT * FROM missing_sales_customers
+),
+classified_customers AS (
+    SELECT
+        CASE WHEN account.lid IS NULL THEN NULL ELSE CAST(account.lid AS CHAR) END AS agent_id,
+        COALESCE(NULLIF(TRIM(REGEXP_REPLACE(CONCAT_WS(' ', NULLIF(TRIM(account.lfname), ''), NULLIF(TRIM(account.lmname), ''), NULLIF(TRIM(account.llname), '')), '[[:space:]]+', ' ')), ''), 'Unassigned') AS agent_name,
+        CASE
+            WHEN customer.customer_status = 4 OR LOWER(TRIM(customer.debt_type)) = 'bad' THEN 'red'
+            WHEN COALESCE(sales.current_month_sales, 0) > 0 THEN 'green'
+            WHEN purchase.last_purchase_date IS NULL THEN 'white'
+            WHEN ((YEAR(CURDATE()) - YEAR(purchase.last_purchase_date)) * 12
+                + MONTH(CURDATE()) - MONTH(purchase.last_purchase_date)) >= 3 THEN 'white'
+            WHEN ((YEAR(CURDATE()) - YEAR(purchase.last_purchase_date)) * 12
+                + MONTH(CURDATE()) - MONTH(purchase.last_purchase_date)) = 2 THEN 'purple'
+            ELSE 'yellow'
+        END AS color,
+        COALESCE(sales.current_month_sales, 0) AS sales
+    FROM customer_universe customer
+    LEFT JOIN scoped_sales_agents direct_account
+      ON CAST(direct_account.lid AS CHAR) = TRIM(CAST(customer.assigned_agent_id AS CHAR))
+    LEFT JOIN unique_sales_agent_names assigned_name
+      ON assigned_name.normalized_name = LOWER(TRIM(REGEXP_REPLACE(CAST(customer.assigned_agent_id AS CHAR), '[[:space:]]+', ' ')))
+    LEFT JOIN tblaccount account
+     ON account.lid = COALESCE(direct_account.lid, assigned_name.agent_id)
+     AND account.lmother_id = :agent_main_id
+     AND account.lstatus = 1
+     AND EXISTS (
+        SELECT 1
+        FROM tblusertype account_type
+        WHERE account_type.lid = account.ltype
+          AND LOWER(TRIM(REGEXP_REPLACE(COALESCE(account_type.ltype_name, ''), '[[:space:]]+', ' '))) IN ('sales agent', 'sales person', 'salesperson')
+     )
+    LEFT JOIN sales_report_current_month sales ON sales.customer_id = customer.customer_id
+    LEFT JOIN last_purchase purchase ON purchase.customer_id = customer.customer_id
+)
+SELECT agent_id, agent_name, color, COUNT(*) AS customer_count,
+       COALESCE(SUM(sales), 0) AS sales
+FROM classified_customers
+GROUP BY agent_id, agent_name, color
+UNION ALL
+SELECT NULL AS agent_id, 'Unassigned' AS agent_name, 'unclassified' AS color,
+       0 AS customer_count, blank_sales.amount AS sales
+FROM posted_sales_current_month_blank_customer blank_sales
+WHERE blank_sales.amount <> 0
+ORDER BY agent_name ASC, color ASC
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute([
+            'sales_report_invoice_main_id' => $mainId,
+            'sales_report_dr_main_id' => $mainId,
+            'blank_sales_invoice_main_id' => $mainId,
+            'blank_sales_receipt_main_id' => $mainId,
+            'ledger_main_id' => $mainId,
+            'transaction_main_id' => $mainId,
+            'customer_main_id' => $mainId,
+            'assignment_main_id' => $mainId,
+            'agent_main_id' => $mainId,
+        ]);
+
+        $companyTotal = 0.0;
+        $unassigned = $this->emptyDailyCallSalesColorAgent('', 'Unassigned');
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $id = trim((string) ($row['agent_id'] ?? ''));
+            $name = (string) ($row['agent_name'] ?? 'Unassigned');
+            if ($id === '') {
+                $target =& $unassigned;
+            } else {
+                if (!isset($agents[$id])) {
+                    // Keep an attributed row in the totals if the account
+                    // roster changed between the roster and aggregation queries.
+                    $agents[$id] = $this->emptyDailyCallSalesColorAgent($id, $name);
+                }
+                $target =& $agents[$id];
+            }
+            $color = (string) ($row['color'] ?? 'white');
+            $customerCount = (int) ($row['customer_count'] ?? 0);
+            $sales = (float) ($row['sales'] ?? 0);
+            $target['customer_count'] += $customerCount;
+            $target['sales'] += $sales;
+            if ($color === 'unclassified') {
+                $target['unclassified_sales'] += $sales;
+            } else {
+                $target['colors'][$color]['customer_count'] += $customerCount;
+                $target['colors'][$color]['sales'] += $sales;
+            }
+            $companyTotal += $sales;
+            unset($target);
+        }
+
+        $agents = array_values($agents);
+        usort($agents, static fn(array $a, array $b): int => strcasecmp($a['name'], $b['name']));
+        return [
+            'month' => date('Y-m'),
+            'company_total' => $companyTotal,
+            'agents' => $agents,
+            'unassigned' => $unassigned,
+        ];
+    }
+
+    private function emptyDailyCallSalesColorAgent(string $id, string $name): array
+    {
+        $colors = [];
+        foreach (['green', 'yellow', 'purple', 'white', 'red'] as $color) {
+            $colors[$color] = ['customer_count' => 0, 'sales' => 0.0];
+        }
+        return ['id' => $id, 'name' => $name, 'customer_count' => 0, 'sales' => 0.0, 'unclassified_sales' => 0.0, 'colors' => $colors];
+    }
+
     public function getPurchaseMasterList(
         int $mainId,
         string $fromDate = '2025-10-01',

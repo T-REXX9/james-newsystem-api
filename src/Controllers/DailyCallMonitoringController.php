@@ -63,6 +63,18 @@ final class DailyCallMonitoringController
         return $this->repo->getSalesPerformanceDashboard($mainId, $year);
     }
 
+    public function salesColorBreakdown(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = $this->authenticatedMainId($body, $query);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        // This company-wide summary is read-only, but still requires an
+        // authenticated staff account and is always scoped to its token tenant.
+        $this->authenticatedViewerUserId($body);
+        return $this->repo->getDailyCallSalesColorBreakdown($mainId);
+    }
+
     public function masterList(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = $this->authenticatedMainId($body, $query);

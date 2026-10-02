@@ -872,6 +872,7 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/excel', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'excelRows']));
     $router->get('/api/v1/daily-call-monitoring/master-list', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'masterList']));
     $router->get('/api/v1/daily-call-monitoring/sales-performance-dashboard', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'salesPerformanceDashboard']));
+    $router->get('/api/v1/daily-call-monitoring/sales-color-breakdown', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'salesColorBreakdown']));
     $router->get('/api/v1/daily-call-monitoring/owner-snapshot', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'ownerSnapshot']));
     $router->get('/api/v1/daily-call-monitoring/agent-snapshot', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'agentSnapshot']));
     $router->patch('/api/v1/daily-call-monitoring/call-bookmark', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'setCallBookmark']));
