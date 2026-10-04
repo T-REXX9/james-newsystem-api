@@ -335,6 +335,48 @@ SQL;
         return $this->getStaffById($mainId, $staffId);
     }
 
+    public function updateOwnSalesQuota(int $mainId, int $userId, string $userType, string $quota): ?float
+    {
+        if ($mainId <= 0 || $userId <= 0) {
+            return null;
+        }
+
+        if ($userType === '1') {
+            if ($userId !== $mainId) {
+                return null;
+            }
+            $updateSql = 'UPDATE tblaccount SET lsales_quota = :quota WHERE lid = :user_id AND ltype = 1 AND COALESCE(lstatus, 0) = 1 LIMIT 1';
+            $readSql = 'SELECT lsales_quota FROM tblaccount WHERE lid = :user_id AND ltype = 1 AND COALESCE(lstatus, 0) = 1 LIMIT 1';
+        } else {
+            $roleJoin = "INNER JOIN tblusertype ut ON ut.lid = a.ltype AND (ut.lmain_id = :role_main_id OR COALESCE(ut.lmain_id, 0) = 0)";
+            $salesAgentRole = "LOWER(TRIM(COALESCE(ut.ltype_name, ''))) IN ('sales agent', 'sales person', 'salesperson')";
+            $updateSql = "UPDATE tblaccount a {$roleJoin} SET a.lsales_quota = :quota WHERE a.lid = :user_id AND a.lmother_id = :main_id AND {$salesAgentRole} AND COALESCE(a.larchieve, 0) = 0 AND COALESCE(a.lstatus, 0) = 1 LIMIT 1";
+            $readSql = "SELECT a.lsales_quota FROM tblaccount a {$roleJoin} WHERE a.lid = :user_id AND a.lmother_id = :main_id AND {$salesAgentRole} AND COALESCE(a.larchieve, 0) = 0 AND COALESCE(a.lstatus, 0) = 1 LIMIT 1";
+        }
+
+        $stmt = $this->db->pdo()->prepare($updateSql);
+        $stmt->bindValue('quota', $quota, PDO::PARAM_STR);
+        $stmt->bindValue('user_id', $userId, PDO::PARAM_INT);
+        if ($userType !== '1') {
+            $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        }
+        if ($userType !== '1') {
+            $stmt->bindValue('role_main_id', $mainId, PDO::PARAM_INT);
+        }
+        $stmt->execute();
+
+        $read = $this->db->pdo()->prepare($readSql);
+        $read->bindValue('user_id', $userId, PDO::PARAM_INT);
+        if ($userType !== '1') {
+            $read->bindValue('main_id', $mainId, PDO::PARAM_INT);
+            $read->bindValue('role_main_id', $mainId, PDO::PARAM_INT);
+        }
+        $read->execute();
+        $savedQuota = $read->fetchColumn();
+
+        return $savedQuota === false ? null : (float) $savedQuota;
+    }
+
     public function createStaff(int $mainId, array $data): array
     {
         $nameParts = preg_split('/\s+/', trim((string) ($data['full_name'] ?? '')), 2) ?: [];

@@ -2779,7 +2779,7 @@ SQL;
     private function getProfileRows(int $mainId): array
     {
         $stmt = $this->db->pdo()->prepare(
-            'SELECT CAST(lid AS CHAR) AS id, TRIM(CONCAT(COALESCE(lfname, \'\'), \' \', COALESCE(llname, \'\'))) AS full_name, COALESCE(lsales_quota, 0) AS monthly_quota
+            'SELECT CAST(lid AS CHAR) AS id, TRIM(CONCAT(COALESCE(lfname, \'\'), \' \', COALESCE(llname, \'\'))) AS full_name
              FROM tblaccount
              WHERE CAST(COALESCE(lmother_id, 0) AS SIGNED) = :main_id_1 OR CAST(lid AS SIGNED) = :main_id_2'
         );

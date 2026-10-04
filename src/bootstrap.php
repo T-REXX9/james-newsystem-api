@@ -1158,6 +1158,7 @@ function app_router(): Router
     $router->get('/api/v1/staff', $requireBearerAuthWithClaims([$staffController, 'list']));
     $router->post('/api/v1/staff', $requireMasterUser([$staffController, 'create']));
     $router->get('/api/v1/staff/roles', $requireBearerAuthWithClaims([$staffController, 'roles']));
+    $router->patch('/api/v1/staff/me/sales-quota', $requireBearerAuthWithClaims([$staffController, 'updateOwnSalesQuota']));
     $router->get('/api/v1/staff/{staffId}', $requireBearerAuthWithClaims([$staffController, 'show']));
     $router->patch('/api/v1/staff/{staffId}', $requireMasterUser([$staffController, 'update']));
     $router->post('/api/v1/staff/{staffId}/password', $requireMasterUser([$staffController, 'changePassword']));

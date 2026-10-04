@@ -25,23 +25,46 @@ final class StaffController
 
     public function list(array $params = [], array $query = [], array $body = []): array
     {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $claimMainId = (int) ($claims['main_userid'] ?? 0);
         $mainId = (int) ($query['main_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
+        }
+        if ($claimMainId <= 0 || $mainId !== $claimMainId) {
+            throw new HttpException(403, 'Invalid account scope');
         }
 
         $search = trim((string) ($query['search'] ?? ''));
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, (int) ($query['per_page'] ?? 100));
 
-        return $this->repo->listStaff($mainId, $search, $page, $perPage);
+        $result = $this->repo->listStaff($mainId, $search, $page, $perPage);
+        $viewerId = (int) ($claims['sub'] ?? 0);
+        $isMaster = (string) ($claims['user_type'] ?? '') === '1'
+            && $viewerId > 0
+            && $viewerId === (int) ($claims['main_userid'] ?? 0);
+        if (!$isMaster) {
+            $result['items'] = array_map(static function (array $staff) use ($viewerId): array {
+                if ((int) ($staff['id'] ?? 0) !== $viewerId) {
+                    unset($staff['monthly_quota'], $staff['sales_quota']);
+                }
+                return $staff;
+            }, $result['items'] ?? []);
+        }
+        return $result;
     }
 
     public function show(array $params = [], array $query = [], array $body = []): array
     {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $claimMainId = (int) ($claims['main_userid'] ?? 0);
         $mainId = (int) ($query['main_id'] ?? 0);
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
+        }
+        if ($claimMainId <= 0 || $mainId !== $claimMainId) {
+            throw new HttpException(403, 'Invalid account scope');
         }
 
         $staffId = (int) ($params['staffId'] ?? 0);
@@ -54,6 +77,13 @@ final class StaffController
             throw new HttpException(404, 'Staff member not found');
         }
 
+        $viewerId = (int) ($claims['sub'] ?? 0);
+        $isMaster = (string) ($claims['user_type'] ?? '') === '1'
+            && $viewerId > 0
+            && $viewerId === (int) ($claims['main_userid'] ?? 0);
+        if (!$isMaster && $staffId !== $viewerId) {
+            unset($staff['monthly_quota'], $staff['sales_quota']);
+        }
         return $staff;
     }
 
@@ -110,6 +140,35 @@ final class StaffController
         }
 
         return $updated;
+    }
+
+    public function updateOwnSalesQuota(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $userId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($claims['main_userid'] ?? 0);
+        $userType = (string) ($claims['user_type'] ?? '');
+        if ($userId <= 0 || $mainId <= 0 || $userType === '') {
+            throw new HttpException(403, 'Only a Master User or Sales Agent can update their own quota');
+        }
+        if ($userType === '1' && $userId !== $mainId) {
+            throw new HttpException(403, 'Invalid Master User account scope');
+        }
+        if (!array_key_exists('sales_quota', $body) || !is_numeric($body['sales_quota'])) {
+            throw new HttpException(422, 'A valid sales_quota is required');
+        }
+
+        $quota = (float) $body['sales_quota'];
+        if (!is_finite($quota) || $quota < 0 || $quota > 9999999999999.99) {
+            throw new HttpException(422, 'sales_quota must be between 0 and 9999999999999.99');
+        }
+
+        $updatedQuota = $this->repo->updateOwnSalesQuota($mainId, $userId, $userType, number_format($quota, 2, '.', ''));
+        if ($updatedQuota === null) {
+            throw new HttpException(403, 'This account cannot update its own sales quota');
+        }
+
+        return ['id' => (string) $userId, 'monthly_quota' => $updatedQuota];
     }
 
     public function changePassword(array $params = [], array $query = [], array $body = []): array

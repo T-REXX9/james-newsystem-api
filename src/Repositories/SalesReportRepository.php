@@ -705,6 +705,8 @@ SQL;
             if ($salesperson === '') {
                 $salesperson = 'Unassigned';
             }
+            $salespersonId = trim((string) ($tx['current_agent_id'] ?? ''));
+            $salespersonKey = $salespersonId !== '' ? 'id:' . $salespersonId : 'name:' . $salesperson;
 
             $so = (float) ($tx['so_amount'] ?? 0);
             $dr = (float) ($tx['dr_amount'] ?? 0);
@@ -726,32 +728,44 @@ SQL;
             $categoryTotals[$category]['drAmount'] += $dr;
             $categoryTotals[$category]['invoiceAmount'] += $invoice;
 
-            if (!isset($salespersonBuckets[$salesperson])) {
-                $salespersonBuckets[$salesperson] = [];
+            if (!isset($salespersonBuckets[$salespersonKey])) {
+                $salespersonBuckets[$salespersonKey] = [
+                    'id' => $salespersonId,
+                    'salesperson' => $salesperson,
+                    'categories' => [],
+                ];
             }
-            if (!isset($salespersonBuckets[$salesperson][$category])) {
-                $salespersonBuckets[$salesperson][$category] = [
+            if (!isset($salespersonBuckets[$salespersonKey]['categories'][$category])) {
+                $salespersonBuckets[$salespersonKey]['categories'][$category] = [
                     'category' => $category,
                     'soAmount' => 0.0,
                     'drAmount' => 0.0,
                     'invoiceAmount' => 0.0,
                 ];
             }
-            $salespersonBuckets[$salesperson][$category]['soAmount'] += $so;
-            $salespersonBuckets[$salesperson][$category]['drAmount'] += $dr;
-            $salespersonBuckets[$salesperson][$category]['invoiceAmount'] += $invoice;
+            $salespersonBuckets[$salespersonKey]['categories'][$category]['soAmount'] += $so;
+            $salespersonBuckets[$salespersonKey]['categories'][$category]['drAmount'] += $dr;
+            $salespersonBuckets[$salespersonKey]['categories'][$category]['invoiceAmount'] += $invoice;
         }
 
         foreach ($this->fetchActiveSalespeople($mainId, $agentId) as $salesperson) {
-            if (!isset($salespersonBuckets[$salesperson])) {
-                $salespersonBuckets[$salesperson] = [];
+            $salespersonId = (string) ($salesperson['id'] ?? '');
+            $salespersonName = (string) ($salesperson['salesperson'] ?? 'Unassigned');
+            $salespersonKey = $salespersonId !== '' ? 'id:' . $salespersonId : 'name:' . $salespersonName;
+            if (!isset($salespersonBuckets[$salespersonKey])) {
+                $salespersonBuckets[$salespersonKey] = [
+                    'id' => $salespersonId,
+                    'salesperson' => $salespersonName,
+                    'categories' => [],
+                ];
             }
         }
 
         ksort($categoryTotals);
 
         $salespersonTotals = [];
-        foreach ($salespersonBuckets as $salesperson => $categories) {
+        foreach ($salespersonBuckets as $bucket) {
+            $categories = $bucket['categories'];
             $categoriesList = array_values($categories);
             usort(
                 $categoriesList,
@@ -766,7 +780,8 @@ SQL;
             }
 
             $salespersonTotals[] = [
-                'salesperson' => $salesperson,
+                'id' => $bucket['id'],
+                'salesperson' => $bucket['salesperson'],
                 'categories' => $categoriesList,
                 'total' => $total,
             ];
@@ -891,9 +906,7 @@ SQL,
         }
     }
 
-    /**
-     * @return array<int, string>
-     */
+    /** @return array<int, array{id:string,salesperson:string}> */
     private function fetchActiveSalespeople(int $mainId, ?string $agentId): array
     {
         $sql = <<<SQL
@@ -903,7 +916,7 @@ SELECT
 FROM tblaccount a
 WHERE a.lmother_id = :main_id
   AND a.ltype = '2'
-  AND COALESCE(a.larchieve, 0) = 0
+  AND a.lstatus = 1
 SQL;
         if ($agentId !== null && trim($agentId) !== '') {
             $sql .= ' AND CAST(a.lid AS CHAR) = :agent_id';
@@ -917,10 +930,13 @@ SQL;
         }
         $stmt->execute();
 
-        return array_values(array_unique(array_filter(array_map(
-            static fn(array $row): string => trim((string) ($row['salesperson'] ?? '')),
+        return array_values(array_map(
+            static fn(array $row): array => [
+                'id' => trim((string) ($row['id'] ?? '')),
+                'salesperson' => trim((string) ($row['salesperson'] ?? '')),
+            ],
             $stmt->fetchAll(PDO::FETCH_ASSOC)
-        ))));
+        ));
     }
 
     /**
