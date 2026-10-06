@@ -213,6 +213,7 @@ final class CustomerLedgerCalculator
             'id' => (int) ($row['lid'] ?? 0),
             'date' => self::normalizeDate((string) ($row['ldatetime'] ?? '')),
             'datetime' => (string) ($row['ldatetime'] ?? ''),
+            'created_at' => (string) ($row['created_at'] ?? ''),
             'reference' => strtoupper((string) ($row['lmesssage'] ?? '')),
             'ref_no' => (string) ($row['lrefno'] ?? ''),
             'ref_type' => (string) ($row['lref_name'] ?? ''),

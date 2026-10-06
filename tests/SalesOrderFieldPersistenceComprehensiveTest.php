@@ -58,8 +58,8 @@ $pdo->exec('CREATE TABLE tblinquiry (
     lcity TEXT, lshipped TEXT, lurgency TEXT, lurgency_date TEXT, lso_no TEXT, lso_refno TEXT
 )');
 $pdo->exec('CREATE TABLE tblinquiry_item (lid INTEGER PRIMARY KEY AUTOINCREMENT, linq_no TEXT, linq_refno TEXT, litem_id TEXT, litem_refno TEXT, lqty REAL, lprice REAL, litem_code TEXT, lpartno TEXT, lbrand TEXT, ldesc TEXT, llocation TEXT, lremark TEXT, linquiry_date TEXT, lapproved INTEGER)');
-$pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT)');
-$pdo->exec('CREATE TABLE tblpatient (lid INTEGER PRIMARY KEY, lmain_id INTEGER, lsessionid TEXT, lfname TEXT, llname TEXT, lcompany TEXT, ldelivery_address TEXT, lprice_group TEXT, lcredit TEXT, lterms TEXT, lsales_person TEXT, lcity TEXT, ltransaction_type TEXT, lvat_type TEXT, lvat_percent REAL)');
+$pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT, lstatus INTEGER)');
+$pdo->exec('CREATE TABLE tblpatient (lid INTEGER PRIMARY KEY, lmain_id INTEGER, lsessionid TEXT, lfname TEXT, llname TEXT, lcompany TEXT, ldelivery_address TEXT, lprice_group TEXT, lcredit TEXT, lterms TEXT, lsales_person TEXT, lcity TEXT, ltransaction_type TEXT, lvat_type TEXT, lvat_percent REAL, ldeleted INTEGER)');
 $pdo->exec('CREATE TABLE tblnumber_generator (lid INTEGER PRIMARY KEY AUTOINCREMENT, ltransaction_type TEXT, lmax_no INTEGER)');
 $pdo->exec('CREATE TABLE tblapprover_assignment (lid INTEGER PRIMARY KEY, lmain_id INTEGER, luser_id INTEGER, ldocument_type TEXT)');
 $pdo->exec('CREATE TABLE tblvip_document_discount (
@@ -70,8 +70,8 @@ $pdo->exec('CREATE TABLE tblvip_document_discount (
 $pdo->exec('CREATE TABLE tblinventory_logs (lid INTEGER PRIMARY KEY AUTOINCREMENT, lrefno TEXT, ltransaction_type TEXT)');
 
 // Seed test data
-$pdo->exec("INSERT INTO tblpatient VALUES (1, 1, 'cust-1', 'Jane', 'Doe', 'Acme Corp', '123 Main St', 'Standard', '10000', 'NET30', '12', 'Metro', 'Regular', '', 0)");
-$pdo->exec("INSERT INTO tblaccount VALUES (12, 'Alice', 'Agent')");
+$pdo->exec("INSERT INTO tblpatient VALUES (1, 1, 'cust-1', 'Jane', 'Doe', 'Acme Corp', '123 Main St', 'Standard', '10000', 'NET30', '12', 'Metro', 'Regular', '', 0, 0)");
+$pdo->exec("INSERT INTO tblaccount VALUES (12, 'Alice', 'Agent', 1)");
 
 $reflection = new ReflectionClass($db);
 $property = $reflection->getProperty('pdo');

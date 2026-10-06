@@ -351,10 +351,16 @@ SELECT
     COALESCE(i.ldesc, '') AS description,
     CAST(COALESCE(i.lqty, 0) AS DECIMAL(15,2)) AS qty,
     COALESCE(i.lremark, '') AS remark,
-    TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), '') AS sales_person
 FROM tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
-LEFT JOIN tblaccount acc ON acc.lid = tr.luser
+LEFT JOIN tblpatient current_customer
+    ON current_customer.lmain_id = tr.lmain_id
+   AND current_customer.lsessionid = tr.lcustomerid
+   AND COALESCE(current_customer.ldeleted, 0) = 0
+LEFT JOIN tblaccount current_agent
+    ON current_agent.lid = current_customer.lsales_person
+   AND COALESCE(current_agent.lstatus, 0) = 1
 {$inventoryJoins}
 WHERE {$whereSql}
 ORDER BY tr.ldate DESC, i.lid DESC

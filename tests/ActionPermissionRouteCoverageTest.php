@@ -92,7 +92,10 @@ $expectedViewRoutes = [
     '/api/v1/order-slips' => 'Order Slip',
     '/api/v1/invoices' => 'Invoice',
     '/api/v1/sales-returns' => 'Sales Return',
+    '/api/v1/sales-development-report' => 'Sales Development Report',
+    '/api/v1/sales-development-report/summary' => 'Sales Development Report',
     '/api/v1/sales-inquiries' => 'Sales Inquiry',
+    '/api/v1/sales-inquiries/{inquiryRefno}' => 'Sales Inquiry',
 ];
 
 foreach ($expectedViewRoutes as $route => $page) {

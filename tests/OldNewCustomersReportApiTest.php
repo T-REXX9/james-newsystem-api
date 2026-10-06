@@ -10,20 +10,33 @@ declare(strict_types=1);
 
 $API_BASE = rtrim(getenv('API_BASE_URL') ?: 'http://127.0.0.1:8081', '/');
 $MAIN_ID = 1;
+$AUTH_TOKEN = trim((string) getenv('OLD_NEW_CUSTOMERS_TEST_TOKEN'));
 
 $passed = 0;
 $failed = 0;
 $errors = [];
 
-function request(string $method, string $url): array
+function request(string $method, string $url, ?array $body = null): array
 {
+    global $AUTH_TOKEN;
+    $headers = ['Accept: application/json'];
+    if ($AUTH_TOKEN !== '') {
+        $headers[] = 'Authorization: Bearer ' . $AUTH_TOKEN;
+    }
+    if ($body !== null) {
+        $headers[] = 'Content-Type: application/json';
+    }
+
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_CUSTOMREQUEST => strtoupper($method),
-        CURLOPT_HTTPHEADER => ['Accept: application/json'],
+        CURLOPT_HTTPHEADER => $headers,
         CURLOPT_TIMEOUT => 15,
     ]);
+    if ($body !== null) {
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body));
+    }
 
     $responseBody = curl_exec($ch);
     $httpCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -37,6 +50,23 @@ function request(string $method, string $url): array
         'body' => json_decode((string) $responseBody, true),
         'raw' => $responseBody,
     ];
+}
+
+if ($AUTH_TOKEN === '') {
+    $email = trim((string) getenv('OLD_NEW_CUSTOMERS_TEST_EMAIL'));
+    $password = (string) getenv('OLD_NEW_CUSTOMERS_TEST_PASSWORD');
+    if ($email === '' || $password === '') {
+        fwrite(STDERR, "Set OLD_NEW_CUSTOMERS_TEST_TOKEN or OLD_NEW_CUSTOMERS_TEST_EMAIL/OLD_NEW_CUSTOMERS_TEST_PASSWORD before running this integration test.\n");
+        exit(2);
+    }
+
+    $login = request('POST', "{$API_BASE}/api/v1/auth/login", ['email' => $email, 'password' => $password]);
+    $AUTH_TOKEN = (string) ($login['body']['data']['token'] ?? '');
+    $MAIN_ID = (int) ($login['body']['data']['main_userid'] ?? 0);
+    if (($login['http_code'] ?? 0) !== 200 || $AUTH_TOKEN === '' || $MAIN_ID <= 0) {
+        fwrite(STDERR, "Unable to authenticate for Old/New Customers API tests.\n");
+        exit(1);
+    }
 }
 
 function assert_true(bool $condition, string $message, int &$passed, int &$failed, array &$errors): void
@@ -93,6 +123,13 @@ $allItems = $all['body']['data']['items'] ?? [];
 if (count($allItems) > 0) {
     assert_true(isset($allItems[0]['customer_type']), 'List rows include customer_type', $passed, $failed, $errors);
     assert_true(isset($allItems[0]['customer_since']), 'List rows include customer_since', $passed, $failed, $errors);
+    assert_eq('2026-01-01', (string) ($all['body']['data']['summary']['cutoff_date'] ?? ''), 'Report uses the fixed 2026 year boundary', $passed, $failed, $errors);
+    $allRowsMatchYearSplit = count(array_filter($allItems, static function (array $row): bool {
+        $year = (int) substr((string) ($row['customer_since'] ?? ''), 0, 4);
+        $type = (string) ($row['customer_type'] ?? '');
+        return $year > 0 && (($year <= 2025 && $type === 'old') || ($year >= 2026 && $type === 'new'));
+    })) === count($allItems);
+    assert_true($allRowsMatchYearSplit, 'List rows use the 2025/2026 year split', $passed, $failed, $errors);
 }
 
 echo "\n--- 3. Filter Old ---\n";
@@ -149,7 +186,7 @@ assert_eq(1, (int) ($pageTwo['body']['data']['meta']['per_page'] ?? 0), 'Paginat
 
 echo "\n--- 7. Validation Errors ---\n";
 $missingMainId = request('GET', "{$API_BASE}/api/v1/old-new-customers-report");
-assert_eq(422, $missingMainId['http_code'], 'Missing main_id returns 422', $passed, $failed, $errors);
+assert_eq(200, $missingMainId['http_code'], 'Authenticated tenant supplies main_id when omitted', $passed, $failed, $errors);
 
 $invalidStatus = request('GET', "{$API_BASE}/api/v1/old-new-customers-report?main_id={$MAIN_ID}&status=recent");
 assert_eq(422, $invalidStatus['http_code'], 'Invalid status returns 422', $passed, $failed, $errors);

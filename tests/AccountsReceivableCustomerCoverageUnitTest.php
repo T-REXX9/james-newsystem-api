@@ -43,7 +43,8 @@ $pdo->exec('CREATE TABLE tblledger (
     lcredit REAL,
     ldatetime TEXT,
     ltype TEXT,
-    lref_name TEXT
+    lref_name TEXT,
+    created_at TEXT
 )');
 $pdo->exec('CREATE TABLE tbltransaction (
     lid INTEGER PRIMARY KEY,

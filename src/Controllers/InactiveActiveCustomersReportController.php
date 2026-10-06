@@ -26,16 +26,27 @@ final class InactiveActiveCustomersReportController
         }
 
         $search = trim((string) ($query['search'] ?? ''));
-        $cutoffMonths = (int) ($query['cutoff_months'] ?? 3);
-        if ($cutoffMonths <= 0) {
-            $cutoffMonths = 3;
+        $cutoffMonths = 3;
+
+        $yearFrom = isset($query['year_from']) && trim((string) $query['year_from']) !== ''
+            ? (int) $query['year_from']
+            : null;
+        $yearTo = isset($query['year_to']) && trim((string) $query['year_to']) !== ''
+            ? (int) $query['year_to']
+            : null;
+        $currentYear = (int) date('Y');
+        foreach ([$yearFrom, $yearTo] as $year) {
+            if ($year !== null && ($year < 2000 || $year > $currentYear)) {
+                throw new HttpException(422, 'year range must be between 2000 and the current year');
+            }
         }
-        $cutoffMonths = min($cutoffMonths, 24);
+        if ($yearFrom !== null && $yearTo !== null && $yearFrom > $yearTo) {
+            throw new HttpException(422, 'year_from must be less than or equal to year_to');
+        }
 
         $page = max(1, (int) ($query['page'] ?? 1));
         $perPage = max(1, min(300, (int) ($query['per_page'] ?? 100)));
 
-        return $this->repo->report($mainId, $status, $search, $cutoffMonths, $page, $perPage);
+        return $this->repo->report($mainId, $status, $search, $cutoffMonths, $page, $perPage, $yearFrom, $yearTo);
     }
 }
-

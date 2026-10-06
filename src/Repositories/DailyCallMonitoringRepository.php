@@ -257,8 +257,8 @@ SELECT
     COALESCE(NULLIF(TRIM(CONCAT(a.lfname, ' ', a.llname)), ''), 'Unassigned') AS salesperson,
     COALESCE(SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS amount
 FROM tblledger lg
-LEFT JOIN tblpatient p ON p.lsessionid = lg.lcustomerid AND p.lmain_id = lg.lmainid
-LEFT JOIN tblaccount a ON a.lid = p.lsales_person
+LEFT JOIN tblpatient p ON p.lsessionid = lg.lcustomerid AND p.lmain_id = lg.lmainid AND COALESCE(p.ldeleted, 0) = 0
+LEFT JOIN tblaccount a ON a.lid = p.lsales_person AND COALESCE(a.lstatus, 0) = 1
 WHERE lg.lmainid = :main_id
   AND lg.ldatetime >= :month_start
   AND lg.ldatetime < :next_month_start
@@ -1009,7 +1009,7 @@ CASE
     ) AS months_since_last_purchase
 FROM customer_universe p
 LEFT JOIN tblaccount a
-    ON a.lid = p.lsales_person
+    ON a.lid = p.lsales_person AND COALESCE(a.lstatus, 0) = 1
 LEFT JOIN tblaccount encoder
     ON encoder.lid = p.lencoded_by
 LEFT JOIN tblteamstaff team
@@ -1797,7 +1797,7 @@ SQL;
 
     public function getCustomerLogs(int $mainId, string $contactId): array
     {
-        $sql = <<<SQL
+        $sqlTemplate = <<<'SQL'
 SELECT
     CAST(cl.lid AS CHAR) AS id,
     CAST(cl.lcustomer_id AS CHAR) AS contact_id,
@@ -1921,7 +1921,6 @@ WHERE tr.lmain_id = :main_id
   AND tr.lcustomerid = :contact_id
   AND COALESCE(tr.lcancel, 0) = 0
 ORDER BY tr.ldate DESC, tr.lid DESC
-LIMIT 150
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute([
@@ -1958,9 +1957,16 @@ SELECT
     inq.ldate AS date,
     inq.ltime AS time,
     inq.lsubmitstat AS submit_status,
-    CAST(COALESCE(inq.lsales_person_id, inq.lsalesperson) AS CHAR) AS sales_agent,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), 'Unassigned') AS sales_agent,
     inq.lnote AS notes
 FROM tblinquiry inq
+LEFT JOIN tblpatient current_customer
+    ON current_customer.lmain_id = inq.lmain_id
+   AND current_customer.lsessionid = inq.lcustomerid
+   AND COALESCE(current_customer.ldeleted, 0) = 0
+LEFT JOIN tblaccount current_agent
+    ON current_agent.lid = current_customer.lsales_person
+   AND COALESCE(current_agent.lstatus, 0) = 1
 WHERE inq.lmain_id = :main_id
   AND inq.lcustomerid = :contact_id
   AND COALESCE(inq.IsCancel, 0) = 0
@@ -2406,8 +2412,8 @@ SELECT
     p.lcompany AS company,
     p.lprovince AS province,
     p.lcity AS city,
-    CAST(p.lsales_person AS CHAR) AS assignedAgent,
-    CAST(p.lsales_person AS CHAR) AS salesman,
+    COALESCE(NULLIF(TRIM(CONCAT(a.lfname, ' ', a.llname)), ''), 'Unassigned') AS assignedAgent,
+    COALESCE(NULLIF(TRIM(CONCAT(a.lfname, ' ', a.llname)), ''), 'Unassigned') AS salesman,
     COALESCE(p.lverification, '') AS verification,
     CASE
         WHEN (LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' OR COALESCE(p.lstatus, 1) = 3) AND COALESCE(p.lverification, '') = 'Verified' THEN 'verified_prospect'
@@ -2421,6 +2427,7 @@ SELECT
     COALESCE(lg_bal.balance, 0) AS balance,
     0 AS is_deleted
 FROM tblpatient p
+LEFT JOIN tblaccount a ON a.lid = p.lsales_person AND COALESCE(a.lstatus, 0) = 1
 LEFT JOIN (
     SELECT lg.lcustomerid, SUM(COALESCE(lg.ldebit, 0) - COALESCE(lg.lcredit, 0)) AS balance
     FROM tblledger lg
@@ -2489,7 +2496,7 @@ SELECT
         ELSE 'active'
     END AS status_label
 FROM tblpatient p
-LEFT JOIN tblaccount a ON a.lid = p.lsales_person
+LEFT JOIN tblaccount a ON a.lid = p.lsales_person AND COALESCE(a.lstatus, 0) = 1
 LEFT JOIN tblteamstaff agent_team ON agent_team.lid = a.lteam AND agent_team.lmain_id = p.lmain_id
 LEFT JOIN tblteamstaff team ON team.lid = p.lsales_team AND team.lmain_id = p.lmain_id
 LEFT JOIN (
@@ -2760,11 +2767,18 @@ SQL;
 SELECT
     inq.lrefno AS id,
     inq.lcustomerid AS contact_id,
-    CAST(COALESCE(inq.lsales_person_id, inq.lsalesperson) AS CHAR) AS sales_person,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), 'Unassigned') AS sales_person,
     inq.lsubmitstat AS status,
     inq.ldate AS sales_date,
     COALESCE(inq.IsCancel, 0) AS is_deleted
 FROM tblinquiry inq
+LEFT JOIN tblpatient current_customer
+    ON current_customer.lmain_id = inq.lmain_id
+   AND current_customer.lsessionid = inq.lcustomerid
+   AND COALESCE(current_customer.ldeleted, 0) = 0
+LEFT JOIN tblaccount current_agent
+    ON current_agent.lid = current_customer.lsales_person
+   AND COALESCE(current_agent.lstatus, 0) = 1
 WHERE inq.lmain_id = ?
   AND inq.lcustomerid IN ({$placeholders})
   AND inq.ldate >= ?
@@ -3163,36 +3177,37 @@ SQL;
             return [];
         }
 
-        $placeholders = implode(',', array_fill(0, count($refnos), '?'));
-        $sql = <<<SQL
+        $sqlTemplate = <<<'SQL'
 SELECT
     it.lrefno AS refno,
     COALESCE(NULLIF(it.ldesc, ''), NULLIF(it.lname, ''), NULLIF(it.lpartno, ''), NULLIF(it.litemcode, ''), 'Item') AS item_name,
     COALESCE(it.lqty, 0) AS qty,
     COALESCE(it.lprice, 0) AS price
 FROM tbltransaction_item it
-WHERE it.lrefno IN ({$placeholders})
+WHERE it.lrefno IN (__REFNO_PLACEHOLDERS__)
   AND COALESCE(it.lcancel, 0) = 0
 ORDER BY it.lid ASC
 SQL;
-        $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute($refnos);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
         $grouped = [];
-        foreach ($rows as $row) {
-            $ref = (string) ($row['refno'] ?? '');
-            if ($ref === '') {
-                continue;
+        foreach (array_chunk($refnos, 500) as $refnoChunk) {
+            $placeholders = implode(',', array_fill(0, count($refnoChunk), '?'));
+            $sql = str_replace('__REFNO_PLACEHOLDERS__', $placeholders, $sqlTemplate);
+            $stmt = $this->db->pdo()->prepare($sql);
+            $stmt->execute($refnoChunk);
+            foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $ref = (string) ($row['refno'] ?? '');
+                if ($ref === '') {
+                    continue;
+                }
+                if (!isset($grouped[$ref])) {
+                    $grouped[$ref] = [];
+                }
+                $grouped[$ref][] = [
+                    'name' => (string) ($row['item_name'] ?? 'Item'),
+                    'quantity' => (float) ($row['qty'] ?? 0),
+                    'price' => (float) ($row['price'] ?? 0),
+                ];
             }
-            if (!isset($grouped[$ref])) {
-                $grouped[$ref] = [];
-            }
-            $grouped[$ref][] = [
-                'name' => (string) ($row['item_name'] ?? 'Item'),
-                'quantity' => (float) ($row['qty'] ?? 0),
-                'price' => (float) ($row['price'] ?? 0),
-            ];
         }
 
         return $grouped;

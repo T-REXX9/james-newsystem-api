@@ -290,7 +290,7 @@ SQL;
             $where[] = 'l.lcustomerid = :customer_id';
             $params['customer_id'] = $trimmedCustomerId;
         }
-        $currentAgentJoin = 'LEFT JOIN tblpatient p ON p.lmain_id = l.lmain_id AND p.lsessionid = l.lcustomerid LEFT JOIN tblaccount current_agent ON current_agent.lid = p.lsales_person';
+        $currentAgentJoin = 'LEFT JOIN tblpatient p ON p.lmain_id = l.lmain_id AND p.lsessionid = l.lcustomerid AND COALESCE(p.ldeleted, 0) = 0 LEFT JOIN tblaccount current_agent ON current_agent.lid = p.lsales_person AND COALESCE(current_agent.lstatus, 0) = 1';
         if ($agentId !== null && $agentId !== '') {
             $where[] = 'p.lsales_person = :agent_id';
             $params['agent_id'] = $agentId;
@@ -308,7 +308,7 @@ SELECT
     COALESCE(l.linvoice_no, '') AS ref_no,
     COALESCE(l.lsales_refno, '') AS sales_refno,
     COALESCE(l.ltax_type, '') AS ltax_type,
-    COALESCE(l.lsales_person, '') AS salesperson,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), 'Unassigned') AS salesperson,
     COALESCE(p.lsales_person, '') AS current_agent_id,
     COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), 'Unassigned') AS current_agent,
     l.lid AS sort_id
@@ -365,6 +365,7 @@ SQL,
                 'date' => (string) ($doc['date'] ?? ''),
                 'customer' => (string) ($doc['customer'] ?? ''),
                 'customer_id' => (string) ($doc['customer_id'] ?? ''),
+                'is_starred' => (int) ($doc['is_starred'] ?? 0),
                 'terms' => (string) ($doc['terms'] ?? ''),
                 'ref_no' => (string) ($doc['ref_no'] ?? ''),
                 'so_no' => (string) ($so['so_no'] ?? ''),
@@ -410,7 +411,7 @@ SQL,
             $where[] = 'l.lcustomerid = :customer_id';
             $params['customer_id'] = $trimmedCustomerId;
         }
-        $currentAgentJoin = 'LEFT JOIN tblpatient p ON p.lmain_id = l.lmain_id AND p.lsessionid = l.lcustomerid LEFT JOIN tblaccount current_agent ON current_agent.lid = p.lsales_person';
+        $currentAgentJoin = 'LEFT JOIN tblpatient p ON p.lmain_id = l.lmain_id AND p.lsessionid = l.lcustomerid AND COALESCE(p.ldeleted, 0) = 0 LEFT JOIN tblaccount current_agent ON current_agent.lid = p.lsales_person AND COALESCE(current_agent.lstatus, 0) = 1';
         if ($agentId !== null && $agentId !== '') {
             $where[] = 'p.lsales_person = :agent_id';
             $params['agent_id'] = $agentId;
@@ -428,7 +429,7 @@ SELECT
     COALESCE(l.linvoice_no, '') AS ref_no,
     COALESCE(l.lsales_refno, '') AS sales_refno,
     COALESCE(l.ltax_type, '') AS ltax_type,
-    COALESCE(l.lsales_person, '') AS salesperson,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), 'Unassigned') AS salesperson,
     COALESCE(p.lsales_person, '') AS current_agent_id,
     COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), 'Unassigned') AS current_agent,
     l.lid AS sort_id
@@ -480,6 +481,7 @@ SQL,
                 'date' => (string) ($doc['date'] ?? ''),
                 'customer' => (string) ($doc['customer'] ?? ''),
                 'customer_id' => (string) ($doc['customer_id'] ?? ''),
+                'is_starred' => (int) ($doc['is_starred'] ?? 0),
                 'terms' => (string) ($doc['terms'] ?? ''),
                 'ref_no' => (string) ($doc['ref_no'] ?? ''),
                 'so_no' => (string) ($so['so_no'] ?? ''),
@@ -698,6 +700,8 @@ SQL;
         $grandSo = 0.0;
         $grandDr = 0.0;
         $grandInvoice = 0.0;
+        $starredSales = 0.0;
+        $starredCustomerIds = [];
 
         foreach ($transactions as $tx) {
             $category = (string) ($tx['category'] ?? 'No category recorded');
@@ -715,6 +719,14 @@ SQL;
             $grandSo += $so;
             $grandDr += $dr;
             $grandInvoice += $invoice;
+
+            if ((int) ($tx['is_starred'] ?? 0) === 1) {
+                $starredSales += $dr + $invoice;
+                $customerId = trim((string) ($tx['customer_id'] ?? ''));
+                if ($customerId !== '') {
+                    $starredCustomerIds[$customerId] = true;
+                }
+            }
 
             if (!isset($categoryTotals[$category])) {
                 $categoryTotals[$category] = [
@@ -800,6 +812,10 @@ SQL;
                 'drAmount' => $grandDr,
                 'invoiceAmount' => $grandInvoice,
                 'total' => $grandDr + $grandInvoice,
+            ],
+            'starredCustomerSales' => [
+                'total' => $starredSales,
+                'customerCount' => count($starredCustomerIds),
             ],
         ];
     }

@@ -127,8 +127,8 @@ SELECT
     COALESCE(so.ltime, '') AS sales_time,
     COALESCE(so.lcustomerid, '') AS contact_id,
     COALESCE(so.lcompany, '') AS customer_company,
-    COALESCE(so.lsales_person, '') AS sales_person,
-    COALESCE(so.lsales_person_id, '') AS sales_person_id,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), '') AS sales_person,
+    COALESCE(CAST(current_agent.lid AS CHAR), '') AS sales_person_id,
     COALESCE(so.lsales_address, '') AS delivery_address,
     COALESCE(so.lmy_refno, '') AS reference_no,
     COALESCE(so.lyour_refno, '') AS customer_reference,
@@ -153,6 +153,13 @@ SELECT
 FROM tbltransaction so
 LEFT JOIN tblaccount acc
     ON acc.lid = so.luser
+LEFT JOIN tblpatient current_customer
+    ON current_customer.lmain_id = so.lmain_id
+   AND current_customer.lsessionid = so.lcustomerid
+   AND COALESCE(current_customer.ldeleted, 0) = 0
+LEFT JOIN tblaccount current_agent
+    ON current_agent.lid = current_customer.lsales_person
+   AND COALESCE(current_agent.lstatus, 0) = 1
 WHERE {$whereSql}
 ORDER BY so.lid DESC
 LIMIT :limit OFFSET :offset
@@ -294,8 +301,8 @@ SELECT
     COALESCE(so.ltime, '') AS sales_time,
     COALESCE(so.lcustomerid, '') AS contact_id,
     COALESCE(so.lcompany, '') AS customer_company,
-    COALESCE(so.lsales_person, '') AS sales_person,
-    COALESCE(so.lsales_person_id, '') AS sales_person_id,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), '') AS sales_person,
+    COALESCE(CAST(current_agent.lid AS CHAR), '') AS sales_person_id,
     COALESCE(so.lsales_address, '') AS delivery_address,
     COALESCE(so.lmy_refno, '') AS reference_no,
     COALESCE(so.lyour_refno, '') AS customer_reference,
@@ -323,6 +330,13 @@ SELECT
 FROM tbltransaction so
 LEFT JOIN tblaccount acc
     ON acc.lid = so.luser
+LEFT JOIN tblpatient current_customer
+    ON current_customer.lmain_id = so.lmain_id
+   AND current_customer.lsessionid = so.lcustomerid
+   AND COALESCE(current_customer.ldeleted, 0) = 0
+LEFT JOIN tblaccount current_agent
+    ON current_agent.lid = current_customer.lsales_person
+   AND COALESCE(current_agent.lstatus, 0) = 1
 WHERE so.lmain_id = :main_id
   AND (so.lrefno = :sales_refno_by_ref OR so.lid = CAST(:sales_refno_by_id AS UNSIGNED))
 LIMIT 1
@@ -1212,7 +1226,7 @@ SELECT
     p.ltransaction_type,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person_name
 FROM tblpatient p
-LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person
+LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person AND COALESCE(acc.lstatus, 0) = 1
 WHERE p.lmain_id = :main_id
   AND p.lsessionid = :contact_id
 LIMIT 1
@@ -1540,11 +1554,12 @@ SQL;
             $salesTime = date('H:i:s');
         }
 
+        $createdAt = date('Y-m-d H:i:s');
         $insert = $pdo->prepare(
             'INSERT INTO tblledger
-            (lcustomerid, lrefno, lamt, lmesssage, ldatetime, lmainid, ltype, lcredit, ldebit, luserid, lcheckdate, lcheck_no, ldcr, lpdc, lremarks, lref_name, ldebit_refno)
+            (lcustomerid, lrefno, lamt, lmesssage, ldatetime, lmainid, ltype, lcredit, ldebit, luserid, lcheckdate, lcheck_no, ldcr, lpdc, lremarks, lref_name, ldebit_refno, created_at)
             VALUES
-            (:lcustomerid, :lrefno, :lamt, :lmesssage, :ldatetime, :lmainid, :ltype, 0, :ldebit, :luserid, :lcheckdate, :lcheck_no, :ldcr, :lpdc, :lremarks, :lref_name, :ldebit_refno)'
+            (:lcustomerid, :lrefno, :lamt, :lmesssage, :ldatetime, :lmainid, :ltype, 0, :ldebit, :luserid, :lcheckdate, :lcheck_no, :ldcr, :lpdc, :lremarks, :lref_name, :ldebit_refno, :created_at)'
         );
         $insert->execute([
             'lcustomerid' => $customerId,
@@ -1563,6 +1578,7 @@ SQL;
             'lremarks' => (string) ($order['remarks'] ?? ''),
             'lref_name' => $referenceName,
             'ldebit_refno' => date('Ymd') . random_int(1, 1000000) . random_int(1, 1000000),
+            'created_at' => $createdAt,
         ]);
 
         $this->syncCustomerSalesActivity($mainId, $customerId, $salesDate);

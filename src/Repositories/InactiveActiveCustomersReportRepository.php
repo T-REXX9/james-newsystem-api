@@ -19,29 +19,32 @@ final class InactiveActiveCustomersReportRepository
         string $search,
         int $cutoffMonths,
         int $page,
-        int $perPage
+        int $perPage,
+        ?int $yearFrom = null,
+        ?int $yearTo = null
     ): array {
         $offset = ($page - 1) * $perPage;
         $cutoffDate = date('Y-m-d', strtotime('-' . $cutoffMonths . ' month'));
-        $effectiveLastTransactionExpr = <<<SQL
-COALESCE(
-    CASE
-        WHEN p.llast_transaction IS NULL
-          OR TRIM(COALESCE(p.llast_transaction, '')) = ''
-          OR p.llast_transaction IN ('0000-00-00', '0000-00-00 00:00:00')
-        THEN NULL
-        ELSE DATE(p.llast_transaction)
-    END,
-    (
-        SELECT MAX(DATE(l.ldatetime))
-        FROM tblledger l
-        WHERE l.lcustomerid = p.lsessionid
-    )
-)
+        $ledgerDateExclusiveEnd = date('Y-m-d', strtotime('+1 day'));
+        // This report defines active/inactive strictly from customer ledger purchases.
+        $ledgerPurchaseJoin = <<<SQL
+LEFT JOIN (
+    SELECT l.lmainid, l.lcustomerid, MAX(DATE(l.ldatetime)) AS last_purchase, MAX(l.created_at) AS last_purchase_at
+    FROM tblledger l
+    WHERE l.lmainid = :ledger_main_id
+      AND l.ldatetime < :ledger_date_exclusive_end
+      AND LOWER(TRIM(COALESCE(l.ltype, ''))) = 'debit'
+      AND LOWER(TRIM(COALESCE(l.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+    GROUP BY l.lmainid, l.lcustomerid
+) ledger_purchase
+    ON ledger_purchase.lmainid = p.lmain_id
+    AND ledger_purchase.lcustomerid = p.lsessionid
 SQL;
 
         $params = [
             'main_id' => $mainId,
+            'ledger_main_id' => $mainId,
+            'ledger_date_exclusive_end' => $ledgerDateExclusiveEnd,
             'cutoff_date' => $cutoffDate,
             'cutoff_date_active' => $cutoffDate,
             'cutoff_date_inactive' => $cutoffDate,
@@ -50,13 +53,23 @@ SQL;
 
         $where = [
             '(CAST(COALESCE(p.lmain_id, 0) AS SIGNED) = :main_id)',
-            "({$effectiveLastTransactionExpr}) IS NOT NULL",
+            '(COALESCE(p.ldeleted, 0) = 0)',
+            '(TRIM(COALESCE(p.lsessionid, \'\')) <> \'\')',
         ];
 
         if ($status === 'active') {
-            $where[] = "({$effectiveLastTransactionExpr}) >= :cutoff_date";
+            $where[] = '(ledger_purchase.last_purchase >= :cutoff_date)';
         } elseif ($status === 'inactive') {
-            $where[] = "({$effectiveLastTransactionExpr}) <= :cutoff_date";
+            $where[] = '(ledger_purchase.last_purchase < :cutoff_date OR ledger_purchase.last_purchase IS NULL)';
+        }
+
+        if ($yearFrom !== null) {
+            $where[] = '(ledger_purchase.last_purchase >= :year_from_date)';
+            $params['year_from_date'] = sprintf('%04d-01-01', $yearFrom);
+        }
+        if ($yearTo !== null) {
+            $where[] = '(ledger_purchase.last_purchase < :year_to_date)';
+            $params['year_to_date'] = sprintf('%04d-01-01', $yearTo + 1);
         }
 
         $trimmedSearch = trim($search);
@@ -80,11 +93,12 @@ SQL;
 
         $countSql = <<<SQL
 SELECT
-    SUM(CASE WHEN ({$effectiveLastTransactionExpr}) >= :cutoff_date_active THEN 1 ELSE 0 END) AS active_count,
-    SUM(CASE WHEN ({$effectiveLastTransactionExpr}) <= :cutoff_date_inactive THEN 1 ELSE 0 END) AS inactive_count,
+    SUM(CASE WHEN ledger_purchase.last_purchase >= :cutoff_date_active THEN 1 ELSE 0 END) AS active_count,
+    SUM(CASE WHEN ledger_purchase.last_purchase < :cutoff_date_inactive OR ledger_purchase.last_purchase IS NULL THEN 1 ELSE 0 END) AS inactive_count,
     COUNT(*) AS total_count
 FROM tblpatient p
-LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR)
+LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR) AND COALESCE(acc.lstatus, 0) = 1
+{$ledgerPurchaseJoin}
 WHERE {$whereSql}
 SQL;
         $countStmt = $this->db->pdo()->prepare($countSql);
@@ -99,15 +113,17 @@ SELECT
     COALESCE(p.lpatient_code, '') AS customer_code,
     COALESCE(p.lgroup, '') AS customer_group,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person,
-    {$effectiveLastTransactionExpr} AS last_purchase,
+    ledger_purchase.last_purchase AS last_purchase,
+    ledger_purchase.last_purchase_at AS last_purchase_at,
     CASE
-        WHEN ({$effectiveLastTransactionExpr}) >= :cutoff_date_case THEN 'active'
+        WHEN ledger_purchase.last_purchase >= :cutoff_date_case THEN 'active'
         ELSE 'inactive'
     END AS customer_status
 FROM tblpatient p
-LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR)
+LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR) AND COALESCE(acc.lstatus, 0) = 1
+{$ledgerPurchaseJoin}
 WHERE {$whereSql}
-ORDER BY ({$effectiveLastTransactionExpr}) DESC, p.lid DESC
+ORDER BY ledger_purchase.last_purchase DESC, p.lid DESC
 LIMIT :limit OFFSET :offset
 SQL;
 
@@ -126,6 +142,7 @@ SQL;
                 'customer_group' => (string) ($row['customer_group'] ?? ''),
                 'sales_person' => trim((string) ($row['sales_person'] ?? '')),
                 'last_purchase' => (string) ($row['last_purchase'] ?? ''),
+                'last_purchase_at' => (string) ($row['last_purchase_at'] ?? ''),
                 'customer_status' => (string) ($row['customer_status'] ?? 'inactive'),
             ], $rows),
             'summary' => [

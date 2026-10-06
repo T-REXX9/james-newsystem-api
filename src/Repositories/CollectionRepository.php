@@ -71,11 +71,12 @@ SQL;
         $next = $this->nextCollectionCounter();
         $refno = date('ymdHis') . (string) random_int(1000, 999999);
         $collectionNo = $prefix . $next;
+        $createdAt = date('Y-m-d H:i:s');
 
         $pdo = $this->db->pdo();
         $stmt = $pdo->prepare(
-            'INSERT INTO tblcollection (lrefno, lmain_id, luserid, lstatus, lcolection_no, lamt, ldatetime)
-             VALUES (:refno, :main_id, :user_id, :status, :collection_no, :amt, NOW())'
+            'INSERT INTO tblcollection (lrefno, lmain_id, luserid, lstatus, lcolection_no, lamt, ldatetime, created_at)
+             VALUES (:refno, :main_id, :user_id, :status, :collection_no, :amt, NOW(), :created_at)'
         );
         $stmt->execute([
             'refno' => $refno,
@@ -84,6 +85,7 @@ SQL;
             'status' => 'Pending',
             'collection_no' => $collectionNo,
             'amt' => 0.00,
+            'created_at' => $createdAt,
         ]);
 
         $stmt2 = $pdo->prepare(
@@ -307,6 +309,7 @@ SQL;
                 COALESCE(ci.lnotes, \'\') AS lnotes,
                 COALESCE(ci.lremarks, \'\') AS lremarks,
                 COALESCE(ci.ldatetime, \'\') AS ldatetime,
+                COALESCE(ci.created_at, \'\') AS created_at,
                 COALESCE(ci.lcollect_date, \'\') AS lcollect_date,
                 COALESCE(c.lcolection_no, \'\') AS lcollection_no
              FROM tblcollection_item ci
@@ -374,7 +377,8 @@ SQL;
 
             $normalizedCollectionRows[] = [
                 'customer_id' => (string) ($row['lcustomer'] ?? ''),
-                'date' => $row['ldatetime'] !== '' ? date('Y-m-d', strtotime((string) $row['ldatetime'])) : (string) ($row['lcollect_date'] ?? ''),
+                'date' => (string) ($row['lcollect_date'] ?? ''),
+                'created_at' => (string) ($row['created_at'] ?? ''),
                 'customer' => (string) ($row['lcustomer_fname'] ?? ''),
                 'dcr_no' => ltrim((string) ($row['lcollection_no'] ?? ''), 'DCR-'),
                 'cash' => $cash,
@@ -410,6 +414,7 @@ SELECT
     COALESCE(dm.ldm_no, '') AS ldm_no,
     COALESCE(dm.lcustomer_fname, '') AS lcustomer_code,
     COALESCE(dm.lcustomer_lname, '') AS lcustomer_name,
+    COALESCE(dm.created_at, '') AS created_at,
     /* ldate is the legacy business date; ldatetime is the migration/audit timestamp. */
     /* Avoid DATE('') in MySQL strict mode; ldate is the business date. */
     COALESCE(dm.ldate, NULLIF(SUBSTRING(dm.ldatetime, 1, 10), ''), '') AS ldatetime,
@@ -482,9 +487,9 @@ SQL,
         try {
             $stmt = $pdo->prepare(
                 'INSERT INTO tblcollection_item
-                 (lrefno, lmainid, luserid, lcustomer, lcustomer_fname, lcustomer_lname, ltype, lbank, lchk_no, lchk_date, lamt, lstatus, lremarks, lcollect_date, lpost)
+                 (lrefno, lmainid, luserid, lcustomer, lcustomer_fname, lcustomer_lname, ltype, lbank, lchk_no, lchk_date, lamt, lstatus, lremarks, lcollect_date, lpost, created_at)
                  VALUES
-                 (:lrefno, :lmainid, :luserid, :lcustomer, :lcustomer_fname, :lcustomer_lname, :ltype, :lbank, :lchk_no, :lchk_date, :lamt, :lstatus, :lremarks, :lcollect_date, 0)'
+                 (:lrefno, :lmainid, :luserid, :lcustomer, :lcustomer_fname, :lcustomer_lname, :ltype, :lbank, :lchk_no, :lchk_date, :lamt, :lstatus, :lremarks, :lcollect_date, 0, :created_at)'
             );
             $stmt->execute([
                 'lrefno' => $collectionRefno,
@@ -501,6 +506,7 @@ SQL,
                 'lstatus' => $payload['status'],
                 'lremarks' => $payload['remarks'],
                 'lcollect_date' => $collectDate,
+                'created_at' => date('Y-m-d H:i:s'),
             ]);
 
             $itemId = (int) $pdo->lastInsertId();
@@ -759,9 +765,9 @@ SQL;
 
             $insert = $pdo->prepare(
                 'INSERT INTO tblledger
-                 (lcustomerid, lrefno, lmesssage, lamt, ldatetime, lmainid, ltype, lcredit, ldebit, luserid, lcheckdate, lcheck_no, ldcr, lpdc, lbalance, lremarks, lref_name, lcollection_id)
+                 (lcustomerid, lrefno, lmesssage, lamt, ldatetime, lmainid, ltype, lcredit, ldebit, luserid, lcheckdate, lcheck_no, ldcr, lpdc, lbalance, lremarks, lref_name, lcollection_id, created_at)
                  VALUES
-                 (:lcustomerid, :lrefno, :lmesssage, :lamt, :ldatetime, :lmainid, :ltype, :lcredit, :ldebit, :luserid, :lcheckdate, :lcheck_no, :ldcr, :lpdc, :lbalance, :lremarks, :lref_name, :lcollection_id)'
+                 (:lcustomerid, :lrefno, :lmesssage, :lamt, :ldatetime, :lmainid, :ltype, :lcredit, :ldebit, :luserid, :lcheckdate, :lcheck_no, :ldcr, :lpdc, :lbalance, :lremarks, :lref_name, :lcollection_id, :created_at)'
             );
 
             $today = date('Y-m-d');
@@ -775,6 +781,7 @@ SQL;
                     'lmesssage' => strtoupper((string) $item['ltype']),
                     'lamt' => $amount,
                     'ldatetime' => $item['lcollect_date'] ?: date('Y-m-d'),
+                    'created_at' => date('Y-m-d H:i:s'),
                     'lmainid' => $item['lmainid'],
                     'ltype' => 'Credit',
                     'lcredit' => $isPostDated ? 0.0 : $amount,
@@ -1033,9 +1040,9 @@ SQL;
                 $isDebit = ((float) $item['lamt']) < 0;
                 $insert = $pdo->prepare(
                     'INSERT INTO tblledger
-                     (lcustomerid, lrefno, lmesssage, lamt, lcredit, ldebit, lcheckdate, lcheck_no, ldcr, lremarks, lref_name, lmainid, ltype, luserid, lcollection_id, ldatetime)
+                     (lcustomerid, lrefno, lmesssage, lamt, lcredit, ldebit, lcheckdate, lcheck_no, ldcr, lremarks, lref_name, lmainid, ltype, luserid, lcollection_id, ldatetime, created_at)
                      VALUES
-                     (:lcustomerid, :lrefno, :lmesssage, :lamt, :lcredit, :ldebit, :lcheckdate, :lcheck_no, :ldcr, :lremarks, :lref_name, :lmainid, :ltype, :luserid, :lcollection_id, :ldatetime)'
+                     (:lcustomerid, :lrefno, :lmesssage, :lamt, :lcredit, :ldebit, :lcheckdate, :lcheck_no, :ldcr, :lremarks, :lref_name, :lmainid, :ltype, :luserid, :lcollection_id, :ldatetime, :created_at)'
                 );
                 $insert->execute([
                     'lcustomerid' => $item['lcustomer'],
@@ -1054,6 +1061,7 @@ SQL;
                     'luserid' => (string) $userId,
                     'lcollection_id' => $itemId,
                     'ldatetime' => date('Y-m-d H:i:s', strtotime((string) ($item['lcollect_date'] ?? date('Y-m-d')))),
+                    'created_at' => date('Y-m-d H:i:s'),
                 ]);
 
                 $count++;

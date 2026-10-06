@@ -16,7 +16,7 @@ final class OldNewCustomersReportRepository
     public function report(int $mainId, string $status, string $search, int $page, int $perPage): array
     {
         $offset = ($page - 1) * $perPage;
-        $cutoffDate = date('Y-m-d', strtotime('-1 year'));
+        $cutoffDate = '2026-01-01';
         $effectiveSinceExpr = <<<SQL
 COALESCE(
     CASE
@@ -60,7 +60,7 @@ SQL;
         if ($status === 'old') {
             $where[] = "({$effectiveSinceExpr}) < :cutoff_old_filter";
         } elseif ($status === 'new') {
-            $where[] = "({$effectiveSinceExpr}) > :cutoff_new_filter";
+            $where[] = "({$effectiveSinceExpr}) >= :cutoff_new_filter";
         }
 
         $trimmedSearch = trim($search);
@@ -85,10 +85,10 @@ SQL;
         $countSql = <<<SQL
 SELECT
     SUM(CASE WHEN ({$effectiveSinceExpr}) < :cutoff_old_count THEN 1 ELSE 0 END) AS old_count,
-    SUM(CASE WHEN ({$effectiveSinceExpr}) > :cutoff_new_count THEN 1 ELSE 0 END) AS new_count,
+    SUM(CASE WHEN ({$effectiveSinceExpr}) >= :cutoff_new_count THEN 1 ELSE 0 END) AS new_count,
     COUNT(*) AS total_count
 FROM tblpatient p
-LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR)
+LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR) AND COALESCE(acc.lstatus, 0) = 1
 WHERE {$whereSql}
 SQL;
 
@@ -105,12 +105,13 @@ SELECT
     COALESCE(p.lgroup, '') AS customer_group,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person,
     {$effectiveSinceExpr} AS customer_since,
+    COALESCE(p.created_at, '') AS created_at,
     CASE
         WHEN ({$effectiveSinceExpr}) < :cutoff_case_type THEN 'old'
         ELSE 'new'
     END AS customer_type
 FROM tblpatient p
-LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR)
+LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR) AND COALESCE(acc.lstatus, 0) = 1
 WHERE {$whereSql}
 ORDER BY
     CASE WHEN ({$effectiveSinceExpr}) < :cutoff_case_order THEN 0 ELSE 1 END ASC,
@@ -136,6 +137,7 @@ SQL;
                 'customer_group' => (string) ($row['customer_group'] ?? ''),
                 'sales_person' => trim((string) ($row['sales_person'] ?? '')),
                 'customer_since' => (string) ($row['customer_since'] ?? ''),
+                'created_at' => (string) ($row['created_at'] ?? ''),
                 'customer_type' => (string) ($row['customer_type'] ?? 'new'),
             ], $rows),
             'summary' => [

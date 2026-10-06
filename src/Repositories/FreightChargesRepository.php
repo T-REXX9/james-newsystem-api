@@ -119,6 +119,7 @@ SELECT
     COALESCE(deb.ltrans_refno, '') AS ltrans_refno,
     COALESCE(deb.linvoice_no, '') AS linvoice_no,
     COALESCE(deb.ldatetime, '') AS ldatetime,
+    COALESCE(deb.created_at, '') AS created_at,
     COALESCE(acc.lfname, '') AS userfname,
     COALESCE(acc.llname, '') AS userlname
 FROM tbldebit_memo deb
@@ -180,7 +181,8 @@ SELECT
     COALESCE(deb.lamt, 0) AS lamt,
     COALESCE(deb.lstatus, 'Pending') AS lstatus,
     COALESCE(deb.ltransaction_type, 'No Reference') AS ltransaction_type,
-    COALESCE(deb.linvoice_no, '') AS linvoice_no
+    COALESCE(deb.linvoice_no, '') AS linvoice_no,
+    COALESCE(deb.created_at, '') AS created_at
 FROM tbldebit_memo deb
 LEFT JOIN tblpatient pat
   ON pat.lsessionid = deb.lcustomer
@@ -215,6 +217,7 @@ SQL;
                 'tracking_no' => (string) ($row['ltrackingno'] ?? ''),
                 'courier' => (string) ($row['lcurier_name'] ?? ''),
                 'date' => $this->normalizeReportDate((string) ($row['ldate'] ?? '')),
+                'created_at' => (string) ($row['created_at'] ?? ''),
                 'status' => (string) ($row['lstatus'] ?? 'Pending'),
                 'amount' => $amount,
             ];
@@ -252,6 +255,7 @@ SELECT
     COALESCE(deb.ltrans_refno, '') AS ltrans_refno,
     COALESCE(deb.linvoice_no, '') AS linvoice_no,
     COALESCE(deb.ldatetime, '') AS ldatetime,
+    COALESCE(deb.created_at, '') AS created_at,
     COALESCE(acc.lfname, '') AS userfname,
     COALESCE(acc.llname, '') AS userlname
 FROM tbldebit_memo deb
@@ -310,6 +314,7 @@ SQL;
 
         $remarks = trim((string) ($payload['remarks'] ?? ''));
         $date = $this->normalizeDateTime((string) ($payload['date'] ?? 'now'));
+        $createdAt = date('Y-m-d H:i:s');
 
         $refno = date('YmdHis') . random_int(12345, 99999);
         $counter = $this->nextDebitMemoCounter();
@@ -328,9 +333,9 @@ SQL;
 
             $insert = $pdo->prepare(
                 'INSERT INTO tbldebit_memo
-                (lrefno, ldm_no, lcustomer, lcustomer_lname, lmain_id, luserid, ldate, ltrans_refno, lcurier_name, ltrackingno, lamt, ltransaction_type, lremarks, IsFreightCollect, linvoice_refno, linvoice_no, lstatus)
+                (lrefno, ldm_no, lcustomer, lcustomer_lname, lmain_id, luserid, ldate, ltrans_refno, lcurier_name, ltrackingno, lamt, ltransaction_type, lremarks, IsFreightCollect, linvoice_refno, linvoice_no, lstatus, created_at)
                 VALUES
-                (:lrefno, :ldm_no, :lcustomer, :lcustomer_lname, :lmain_id, :luserid, :ldate, :ltrans_refno, :lcurier_name, :ltrackingno, :lamt, :ltransaction_type, :lremarks, :IsFreightCollect, :linvoice_refno, :linvoice_no, :lstatus)'
+                (:lrefno, :ldm_no, :lcustomer, :lcustomer_lname, :lmain_id, :luserid, :ldate, :ltrans_refno, :lcurier_name, :ltrackingno, :lamt, :ltransaction_type, :lremarks, :IsFreightCollect, :linvoice_refno, :linvoice_no, :lstatus, :created_at)'
             );
             $insert->execute([
                 'lrefno' => $refno,
@@ -350,6 +355,7 @@ SQL;
                 'linvoice_refno' => $transRefno,
                 'linvoice_no' => $invoiceNo,
                 'lstatus' => 'Pending',
+                'created_at' => $createdAt,
             ]);
 
             $this->syncLinkedDocumentHeader(
@@ -623,9 +629,9 @@ SQL;
             if ($exists->fetch(PDO::FETCH_ASSOC) === false) {
                 $insert = $pdo->prepare(
                     'INSERT INTO tblledger
-                    (lcustomerid, lrefno, lamt, lmesssage, ldatetime, lmainid, ltype, lcredit, ldebit, luserid, lcheckdate, lcheck_no, ldcr, lpdc, lremarks, lref_name, ldebit_refno)
+                    (lcustomerid, lrefno, lamt, lmesssage, ldatetime, lmainid, ltype, lcredit, ldebit, luserid, lcheckdate, lcheck_no, ldcr, lpdc, lremarks, lref_name, ldebit_refno, created_at)
                     VALUES
-                    (:lcustomerid, :lrefno, :lamt, :lmesssage, :ldatetime, :lmainid, :ltype, 0, :ldebit, :luserid, :lcheckdate, :lcheck_no, :ldcr, :lpdc, :lremarks, :lref_name, :ldebit_refno)'
+                    (:lcustomerid, :lrefno, :lamt, :lmesssage, :ldatetime, :lmainid, :ltype, 0, :ldebit, :luserid, :lcheckdate, :lcheck_no, :ldcr, :lpdc, :lremarks, :lref_name, :ldebit_refno, :created_at)'
                 );
                 $insert->execute([
                     'lcustomerid' => $customerId,
@@ -644,6 +650,7 @@ SQL;
                     'lremarks' => $remarks,
                     'lref_name' => 'Freight Charges',
                     'ldebit_refno' => date('Ymd') . random_int(1, 1000000) . random_int(1, 1000000),
+                    'created_at' => $createdAt,
                 ]);
             }
 

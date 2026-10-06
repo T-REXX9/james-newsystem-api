@@ -72,7 +72,17 @@ final class SalesInquiryRepository
     COALESCE(iq.linqno, '') LIKE :search_no
     OR COALESCE(iq.lrefno, '') LIKE :search_ref
     OR COALESCE(iq.lcompany, '') LIKE :search_company
-    OR COALESCE(iq.lsalesperson, '') LIKE :search_sales
+    OR EXISTS (
+        SELECT 1
+        FROM tblpatient search_customer
+        LEFT JOIN tblaccount search_agent
+          ON search_agent.lid = search_customer.lsales_person
+         AND COALESCE(search_agent.lstatus, 0) = 1
+        WHERE search_customer.lmain_id = iq.lmain_id
+          AND search_customer.lsessionid = iq.lcustomerid
+          AND COALESCE(search_customer.ldeleted, 0) = 0
+          AND TRIM(CONCAT(COALESCE(search_agent.lfname, ''), ' ', COALESCE(search_agent.llname, ''))) LIKE :search_sales
+    )
     OR COALESCE(iq.lcustomerid, '') LIKE :search_customer
 )
 SQL;
@@ -95,8 +105,8 @@ SELECT
     COALESCE(iq.ltime, '') AS sales_time,
     COALESCE(iq.lcustomerid, '') AS contact_id,
     COALESCE(iq.lcompany, '') AS customer_company,
-    COALESCE(iq.lsalesperson, '') AS sales_person,
-    COALESCE(iq.lsales_person_id, '') AS sales_person_id,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(assigned_agent.lfname, ''), ' ', COALESCE(assigned_agent.llname, ''))), ''), '') AS sales_person,
+    COALESCE(CAST(assigned_agent.lid AS CHAR), '') AS sales_person_id,
     COALESCE(iq.luser, '') AS created_by,
     TRIM(CONCAT(COALESCE(creator.lfname, ''), ' ', COALESCE(creator.llname, ''))) AS created_by_name,
     COALESCE(iq.lsales_address, '') AS delivery_address,
@@ -137,6 +147,13 @@ SELECT
     END AS is_editable
 FROM tblinquiry iq
 LEFT JOIN tblaccount creator ON creator.lid = CAST(iq.luser AS UNSIGNED)
+LEFT JOIN tblpatient assigned_customer
+    ON assigned_customer.lmain_id = iq.lmain_id
+   AND assigned_customer.lsessionid = iq.lcustomerid
+   AND COALESCE(assigned_customer.ldeleted, 0) = 0
+LEFT JOIN tblaccount assigned_agent
+    ON assigned_agent.lid = assigned_customer.lsales_person
+   AND COALESCE(assigned_agent.lstatus, 0) = 1
 WHERE {$whereSql}
 ORDER BY iq.lid DESC
 LIMIT :limit OFFSET :offset
@@ -242,8 +259,8 @@ SELECT
     COALESCE(iq.ltime, '') AS sales_time,
     COALESCE(iq.lcustomerid, '') AS contact_id,
     COALESCE(iq.lcompany, '') AS customer_company,
-    COALESCE(iq.lsalesperson, '') AS sales_person,
-    COALESCE(iq.lsales_person_id, '') AS sales_person_id,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(assigned_agent.lfname, ''), ' ', COALESCE(assigned_agent.llname, ''))), ''), '') AS sales_person,
+    COALESCE(CAST(assigned_agent.lid AS CHAR), '') AS sales_person_id,
     COALESCE(iq.luser, '') AS created_by,
     TRIM(CONCAT(COALESCE(creator.lfname, ''), ' ', COALESCE(creator.llname, ''))) AS created_by_name,
     COALESCE(iq.lsales_address, '') AS delivery_address,
@@ -287,6 +304,13 @@ SELECT
     END AS is_editable
 FROM tblinquiry iq
 LEFT JOIN tblaccount creator ON creator.lid = CAST(iq.luser AS UNSIGNED)
+LEFT JOIN tblpatient assigned_customer
+    ON assigned_customer.lmain_id = iq.lmain_id
+   AND assigned_customer.lsessionid = iq.lcustomerid
+   AND COALESCE(assigned_customer.ldeleted, 0) = 0
+LEFT JOIN tblaccount assigned_agent
+    ON assigned_agent.lid = assigned_customer.lsales_person
+   AND COALESCE(assigned_agent.lstatus, 0) = 1
 WHERE iq.lmain_id = :main_id
   AND iq.lrefno = :inquiry_refno
 LIMIT 1
@@ -1301,7 +1325,7 @@ SELECT
     p.ltransaction_type,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person_name
 FROM tblpatient p
-LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person
+LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person AND COALESCE(acc.lstatus, 0) = 1
 WHERE p.lmain_id = :main_id
   AND p.lsessionid = :contact_id
 LIMIT 1

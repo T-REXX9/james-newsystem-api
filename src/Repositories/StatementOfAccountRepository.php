@@ -115,6 +115,7 @@ SELECT
     COALESCE(l.lmesssage, '') AS reference,
     COALESCE(l.ldebit, 0) AS amount,
     COALESCE(l.ldatetime, '') AS ldatetime,
+    COALESCE(l.created_at, '') AS created_at,
     COALESCE(l.lremarks, '') AS remarks,
     COALESCE(
         (
@@ -192,6 +193,7 @@ SQL;
                 'terms' => (string) ($row['lterms'] ?? ''),
                 'date' => $this->normalizeDate((string) ($row['ldatetime'] ?? '')),
                 'datetime' => (string) ($row['ldatetime'] ?? ''),
+                'created_at' => (string) ($row['created_at'] ?? ''),
                 'reference' => (string) ($row['reference'] ?? ''),
                 'amount' => $amount,
                 'amount_paid' => $amountPaid,

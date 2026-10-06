@@ -50,10 +50,7 @@ SELECT
     COALESCE(tr.ldate, '') AS sales_date,
     COALESCE(tr.lcustomerid, '') AS customer_id,
     TRIM(COALESCE(tr.lcompany, '')) AS customer_company,
-    COALESCE(
-        NULLIF(TRIM(COALESCE(tr.lsalesperson, '')), ''),
-        TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, '')))
-    ) AS sales_person,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), '') AS sales_person,
     COALESCE(i.lpartno, '') AS part_no,
     COALESCE(i.litem_code, '') AS item_code,
     COALESCE(i.ldesc, '') AS description,
@@ -63,7 +60,13 @@ SELECT
     COALESCE(i.lremark, '') AS remark
 FROM tblinquiry_item i
 INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
-LEFT JOIN tblaccount acc ON acc.lid = tr.luser
+LEFT JOIN tblpatient current_customer
+    ON current_customer.lmain_id = tr.lmain_id
+   AND current_customer.lsessionid = tr.lcustomerid
+   AND COALESCE(current_customer.ldeleted, 0) = 0
+LEFT JOIN tblaccount current_agent
+    ON current_agent.lid = current_customer.lsales_person
+   AND COALESCE(current_agent.lstatus, 0) = 1
 WHERE {$whereSql}
 ORDER BY tr.ldate DESC, i.lid DESC
 LIMIT :limit OFFSET :offset

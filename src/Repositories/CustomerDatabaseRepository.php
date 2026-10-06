@@ -276,7 +276,7 @@ SQL;
         $whereSql = implode(' AND ', $where);
         $total = 0;
         if (!$isPickerMode) {
-            $countSql = "SELECT COUNT(*) AS total FROM tblpatient p LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person WHERE {$whereSql}";
+            $countSql = "SELECT COUNT(*) AS total FROM tblpatient p LEFT JOIN tblaccount acc ON acc.lid = p.lsales_person AND COALESCE(acc.lstatus, 0) = 1 WHERE {$whereSql}";
             $countStmt = $this->db->pdo()->prepare($countSql);
             $this->bindParams($countStmt, $params, false);
             $countStmt->execute();
@@ -299,6 +299,7 @@ SELECT
     COALESCE(p.lphone, '') AS phone,
     COALESCE(p.lmobile, '') AS mobile,
     COALESCE(p.lsales_person, '') AS sales_person_id,
+    TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person_name,
     COALESCE(p.laddress, '') AS address,
     COALESCE(p.ldelivery_address, '') AS delivery_address,
     COALESCE(p.larea, '') AS area,
@@ -329,6 +330,9 @@ SELECT
         LIMIT 1
     ), '') AS old_name
 FROM tblpatient p
+LEFT JOIN tblaccount acc
+    ON acc.lid = p.lsales_person
+   AND COALESCE(acc.lstatus, 0) = 1
 WHERE {$whereSql}
 ORDER BY p.lcompany ASC, p.lid ASC
 {$paginationSql}
@@ -398,6 +402,7 @@ SELECT
 FROM tblpatient p
 LEFT JOIN tblaccount acc
     ON acc.lid = p.lsales_person
+   AND COALESCE(acc.lstatus, 0) = 1
 WHERE {$whereSql}
 ORDER BY p.lcompany ASC, p.lid ASC
 {$paginationSql}
@@ -512,6 +517,7 @@ SELECT
 FROM tblpatient p
 LEFT JOIN tblaccount acc
     ON acc.lid = p.lsales_person
+   AND COALESCE(acc.lstatus, 0) = 1
 WHERE p.lmain_id = :main_id
   AND p.lsessionid = :session_id
   AND COALESCE(p.ldeleted, 0) = 0
@@ -589,9 +595,9 @@ SQL;
             $discountCodeInsertValue = $this->hasCustomerDiscountCodeColumn() ? ', :discount_code' : '';
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, ldate_assigned, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, ldate_assigned, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince, created_at)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :date_assigned, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :date_assigned, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date, :datereg)'
             );
             $insertParams = [
                 'main_id' => $mainId,

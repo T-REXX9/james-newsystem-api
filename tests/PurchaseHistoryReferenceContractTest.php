@@ -13,8 +13,8 @@ $checks = [
     'customer sales totals are sourced from the ledger' => str_contains($repository, 'FROM tblledger l') && str_contains($repository, "l.lref_name") && str_contains($repository, "'invoice', 'order slip', 'order_slip'"),
     'purchase history returns persisted discount code' => str_contains($controller, "'discount_code' =>"),
     'outstanding balance and credit limit are returned' => str_contains($controller, "'outstanding_balance'") && str_contains($controller, "'credit_limit'"),
-    'returns are linked to their source transaction' => str_contains($repository, 'ret.source_refno = src.source_refno'),
-    'only finalized returns affect totals' => str_contains($repository, "IN ('Posted', 'Approved')"),
+    'purchase history uses the legacy invoice and delivery item tables' => str_contains($repository, 'INNER JOIN tblinvoice_itemrec item ON item.linvoice_refno = inv.lrefno') && str_contains($repository, 'INNER JOIN tbldelivery_receipt_items dri ON dri.lor_refno = dr.lrefno'),
+    'returns use the legacy source transaction and item code linkage' => str_contains($repository, 'cri.ltransaction_item_id = src.source_refno') && str_contains($repository, 'cri.litemcode = src.litemcode'),
     'purchased item lookup is available for complaints and returns' => str_contains($repository, 'function searchPurchasedItems') && str_contains($repository, 'function assertCustomerPurchasedItem'),
     'discount code normalization is centralized' => str_contains($repository, 'function normalizeDiscountCode'),
 ];

@@ -164,15 +164,16 @@ SQL;
         if ($sessionId === '') {
             $sessionId = $this->generateSessionId($mainId);
         }
+        $createdAt = date('Y-m-d H:i:s');
 
         $sql = <<<SQL
 INSERT INTO tblpatient
-(lmain_id, lencoded_by, ldatetime, lsessionid, lcompany, laddress, ldelivery_address,
+(lmain_id, lencoded_by, ldatetime, lsessionid, lcompany, laddress, ldelivery_address, created_at,
  lprovince, lcity, larea, ltin, lbusiness_line, lterms, ltransaction_type, lvat_type,
  lvat_percent, ldealer_since, ldealer_quota, lcredit, lnotes, ldebt_type, lprice_group,
  lsales_person, lemail, lphone, lmobile, lstatus)
 VALUES
-(:main_id, :encoded_by, NOW(), :session_id, :company, :address, :delivery_address,
+(:main_id, :encoded_by, NOW(), :session_id, :company, :address, :delivery_address, :created_at,
  :province, :city, :area, :tin, :business_line, :terms, :transaction_type, :vat_type,
  :vat_percent, :dealer_since, :dealer_quota, :credit, :notes, :debt_type, :price_group,
  :sales_person, :email, :phone, :mobile, :status)
@@ -186,6 +187,7 @@ SQL;
             'company' => (string) ($data['company'] ?? ''),
             'address' => (string) ($data['address'] ?? ''),
             'delivery_address' => (string) ($data['deliveryAddress'] ?? $data['address'] ?? ''),
+            'created_at' => $createdAt,
             'province' => (string) ($data['province'] ?? ''),
             'city' => (string) ($data['city'] ?? ''),
             'area' => (string) ($data['area'] ?? ''),

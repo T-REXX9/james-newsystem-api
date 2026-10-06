@@ -21,6 +21,7 @@ $pdo = new PDO('sqlite::memory:');
 $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 $pdo->exec('CREATE TABLE tblpatient (lid INTEGER PRIMARY KEY, lmain_id INTEGER, lsessionid TEXT, lcompany TEXT, lpatient_code TEXT, lstatus INTEGER, lsince TEXT, ldatereg TEXT, lsales_person TEXT)');
+$pdo->exec('ALTER TABLE tblpatient ADD COLUMN ldeleted INTEGER DEFAULT 0');
 $pdo->exec('CREATE TABLE tblpatient_stars (lmain_id INTEGER, lsessionid TEXT, lis_starred INTEGER)');
 $pdo->exec('CREATE TABLE tblledger (lid INTEGER PRIMARY KEY, lcustomerid TEXT, ldatetime TEXT)');
 $pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT, ltype TEXT, larchieve INTEGER, lmother_id INTEGER, lstatus INTEGER)');
@@ -37,10 +38,11 @@ $property = $reflection->getProperty('pdo');
 $property->setValue($db, $pdo);
 
 $pdo->exec("INSERT INTO tblpatient VALUES
-    (1, 1, 'cust-a', 'Alpha', 'A-1', 1, '2020-01-01', NULL, '12'),
-    (2, 1, 'cust-b', 'Beta', 'B-1', 1, NULL, '" . date('Y-m-d') . "', '13'),
-    (3, 1, 'cust-c', 'Gamma', 'C-1', 1, NULL, NULL, '12'),
-    (4, 1, 'cust-hidden', 'Hidden', 'H-1', 0, '2020-01-01', NULL, NULL)");
+    (1, 1, 'cust-a', 'Alpha', 'A-1', 1, '2020-01-01', NULL, '12', 0),
+    (2, 1, 'cust-b', 'Beta', 'B-1', 1, NULL, '" . date('Y-m-d') . "', '13', 0),
+    (3, 1, 'cust-c', 'Gamma', 'C-1', 1, NULL, NULL, '12', 0),
+    (4, 1, 'cust-hidden', 'Hidden', 'H-1', 0, '2020-01-01', NULL, NULL, 0)");
+$pdo->exec("INSERT INTO tblpatient_stars VALUES (1, 'cust-a', 1), (1, 'cust-b', 0)");
 $pdo->exec("INSERT INTO tblledger VALUES (1, 'cust-c', '" . date('Y-m-d') . " 09:00:00')");
 
 $pdo->exec("INSERT INTO tblaccount VALUES
@@ -94,6 +96,12 @@ sales_report_expect(($report['summary']['grandTotal']['soAmount'] ?? null) === 3
 sales_report_expect(($report['summary']['grandTotal']['drAmount'] ?? null) === 150.0, 'delivery-receipt total is included');
 sales_report_expect(($report['summary']['grandTotal']['invoiceAmount'] ?? null) === 312.0, 'VAT-exclusive invoices receive the legacy 12 percent display adjustment');
 sales_report_expect(($report['summary']['grandTotal']['total'] ?? null) === 462.0, 'total sales uses legacy invoice and delivery-receipt display amounts only');
+sales_report_expect(($report['summary']['starredCustomerSales']['total'] ?? null) === 312.0, 'starred-customer sales include only posted invoice and DR values for currently starred customers');
+sales_report_expect(($report['summary']['starredCustomerSales']['customerCount'] ?? null) === 1, 'starred-customer count includes unique customers with matching posted sales');
+$starredCustomerReport = $repo->getSalesReport(1, 'custom', '2026-09-10', '2026-09-11', 'cust-a');
+sales_report_expect(($starredCustomerReport['summary']['starredCustomerSales']['total'] ?? null) === 312.0, 'starred-sales total follows the selected-customer filter');
+$starredAgentReport = $repo->getSalesReport(1, 'custom', '2026-09-10', '2026-09-11', 'All', 1200, '12');
+sales_report_expect(($starredAgentReport['summary']['starredCustomerSales']['total'] ?? null) === 312.0, 'starred-sales total follows the assigned-agent filter');
 sales_report_expect(($report['summary']['productTotals'][0]['product'] ?? null) === 'Engine Part', 'product breakdown names the leading product');
 sales_report_expect(abs((float) ($report['summary']['productTotals'][0]['total'] ?? 0) - 462.0) < 0.001, 'product breakdown reconciles to posted invoice and delivery-receipt sales including exclusive VAT');
 sales_report_expect(($report['transactions'][0]['date'] ?? null) === '2026-09-10', 'invoice report date uses the true sales date, not the import timestamp');

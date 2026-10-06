@@ -138,7 +138,7 @@ SELECT
         0
     ) AS latest_balance
 FROM tblpatient p
-LEFT JOIN tblaccount agent ON agent.lid = p.lsales_person
+LEFT JOIN tblaccount agent ON agent.lid = p.lsales_person AND COALESCE(agent.lstatus, 0) = 1
 WHERE p.lsessionid = :session_id
 {$mainFilter}
   AND COALESCE(p.ldeleted, 0) = 0
@@ -199,13 +199,19 @@ SELECT
     src.source_refno,
     src.source_no,
     src.ldate,
+    src.created_at,
     src.litemcode,
     src.lpartno,
     src.ldesc,
     src.lbrand,
     src.lqty,
     src.lprice,
-    COALESCE(ret.return_qty, 0) AS return_qty
+    COALESCE((
+        SELECT SUM(COALESCE(cri.lqty, 0))
+        FROM tblcredit_return_item cri
+        WHERE cri.ltransaction_item_id = src.source_refno
+          AND cri.litemcode = src.litemcode
+    ), 0) AS return_qty
 FROM (
     SELECT
         'INVOICE' AS source_type,
@@ -213,6 +219,7 @@ FROM (
         inv.lrefno AS source_refno,
         inv.linvoice_no AS source_no,
         inv.ldate,
+        COALESCE(inv.created_at, '') AS created_at,
         item.litemcode,
         item.lpartno,
         item.ldesc,
@@ -222,6 +229,7 @@ FROM (
     FROM tblinvoice_list inv
     INNER JOIN tblinvoice_itemrec item ON item.linvoice_refno = inv.lrefno
     WHERE inv.lcustomerid = :customer_id_invoice
+      AND COALESCE(inv.lcancel, 0) = 0
       AND COALESCE(inv.lcancel_invoice, 0) = 0
 
     UNION ALL
@@ -232,6 +240,7 @@ FROM (
         dr.lrefno AS source_refno,
         dr.linvoice_no AS source_no,
         dr.ldate,
+        COALESCE(dr.created_at, '') AS created_at,
         dri.litemcode,
         dri.lpartno,
         dri.ldesc,
@@ -243,19 +252,6 @@ FROM (
     WHERE dr.lcustomerid = :customer_id_or
       AND COALESCE(dr.lcancel, 0) = 0
 ) src
-LEFT JOIN (
-    SELECT
-        cm.linvoice_refno AS source_refno,
-        cri.litemcode,
-        cri.lpartno,
-        SUM(COALESCE(cri.lqty, 0)) AS return_qty
-    FROM tblcredit_return_item cri
-    INNER JOIN tblcredit_memo cm ON cm.lrefno = cri.lrefno
-    WHERE COALESCE(cm.lstatus, '') IN ('Posted', 'Approved')
-    GROUP BY cm.linvoice_refno, cri.litemcode, cri.lpartno
-) ret ON ret.source_refno = src.source_refno
-     AND ret.litemcode = src.litemcode
-     AND ret.lpartno = src.lpartno
 WHERE 1=1
 {$filters}
 ORDER BY src.ldate DESC, src.source_type ASC
@@ -497,6 +493,7 @@ SELECT
     l.lmesssage,
     l.lamt,
     l.ldatetime,
+    l.created_at,
     l.lmainid,
     l.ltype,
     l.lcredit,

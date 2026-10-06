@@ -185,7 +185,8 @@ SELECT
     l.lrefno AS refno,
     l.lmesssage AS reference,
     l.ldebit AS amount,
-    l.ldatetime AS ldatetime
+    l.ldatetime AS ldatetime,
+    l.created_at AS created_at
 FROM tblledger l
 WHERE l.lcustomerid IN ({$customerWhere})
   AND l.ltype = 'Debit'
@@ -264,6 +265,7 @@ SQL;
             $reports[$customerId]['rows'][] = [
                 'terms' => (string) ($termsByRefno[(string) ($row['refno'] ?? '')] ?? ''),
                 'date' => $this->normalizeDate((string) ($row['ldatetime'] ?? '')),
+                'created_at' => (string) ($row['created_at'] ?? ''),
                 'reference' => (string) ($row['reference'] ?? ''),
                 'amount' => $amount,
                 'amount_paid' => $amountPaid,

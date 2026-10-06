@@ -124,8 +124,8 @@ SELECT
     COALESCE(inv.lcustomerid, '') AS contact_id,
     COALESCE(inv.lcustomer_name, '') AS customer_name,
     COALESCE(inv.ldate, '') AS sales_date,
-    COALESCE(inv.lsales_person, '') AS sales_person,
-    COALESCE(inv.lsales_person_id, '') AS sales_person_id,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), '') AS sales_person,
+    COALESCE(CAST(current_agent.lid AS CHAR), '') AS sales_person_id,
     COALESCE(inv.lsales_address, '') AS delivery_address,
     COALESCE(inv.lmy_refno, '') AS reference_no,
     COALESCE(inv.lyour_refno, '') AS customer_reference,
@@ -155,6 +155,13 @@ SELECT
 FROM tblinvoice_list inv
 LEFT JOIN tblaccount acc
     ON acc.lid = inv.luser
+LEFT JOIN tblpatient current_customer
+    ON current_customer.lmain_id = inv.lmain_id
+   AND current_customer.lsessionid = inv.lcustomerid
+   AND COALESCE(current_customer.ldeleted, 0) = 0
+LEFT JOIN tblaccount current_agent
+    ON current_agent.lid = current_customer.lsales_person
+   AND COALESCE(current_agent.lstatus, 0) = 1
 WHERE {$whereSql}
 ORDER BY inv.lid DESC
 LIMIT :limit OFFSET :offset
@@ -294,8 +301,8 @@ SELECT
     COALESCE(inv.lcustomerid, '') AS contact_id,
     COALESCE(inv.lcustomer_name, '') AS customer_name,
     COALESCE(inv.ldate, '') AS sales_date,
-    COALESCE(inv.lsales_person, '') AS sales_person,
-    COALESCE(inv.lsales_person_id, '') AS sales_person_id,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), '') AS sales_person,
+    COALESCE(CAST(current_agent.lid AS CHAR), '') AS sales_person_id,
     COALESCE(inv.lsales_address, '') AS delivery_address,
     COALESCE(inv.lmy_refno, '') AS reference_no,
     COALESCE(inv.lyour_refno, '') AS customer_reference,
@@ -325,6 +332,13 @@ SELECT
 FROM tblinvoice_list inv
 LEFT JOIN tblaccount acc
     ON acc.lid = inv.luser
+LEFT JOIN tblpatient current_customer
+    ON current_customer.lmain_id = inv.lmain_id
+   AND current_customer.lsessionid = inv.lcustomerid
+   AND COALESCE(current_customer.ldeleted, 0) = 0
+LEFT JOIN tblaccount current_agent
+    ON current_agent.lid = current_customer.lsales_person
+   AND COALESCE(current_agent.lstatus, 0) = 1
 WHERE inv.lmain_id = :main_id
   AND inv.lrefno = :invoice_refno
 LIMIT 1
@@ -391,19 +405,20 @@ SQL;
             $salesDate = trim((string) ($payload['sales_date'] ?? date('Y-m-d')));
             $status = $this->normalizeStatus((string) ($payload['status'] ?? 'Posted'));
             $customerName = $this->resolveCustomerCompany($mainId, $contactId);
+            $createdAt = date('Y-m-d H:i:s');
 
             $stmt = $pdo->prepare(
                 'INSERT INTO tblinvoice_list (
                     linvoice_no, lmain_id, luser, lrefno, lstatus,
                     lsales_refno, lsales_no, lcustomerid, lcustomer_name,
-                    ldate, ldatetime, lsales_person, lsales_person_id,
+                    ldate, ldatetime, created_at, lsales_person, lsales_person_id,
                     lsales_address, lmy_refno, lyour_refno, lshipped,
                     lprice_group, lcredit_limit, lterms, lpromisorry_note,
                     lpo_no, lnote, IsPrinted, lcancel_invoice
                 ) VALUES (
                     :linvoice_no, :lmain_id, :luser, :lrefno, :lstatus,
                     :lsales_refno, :lsales_no, :lcustomerid, :lcustomer_name,
-                    :ldate, :ldatetime, :lsales_person, :lsales_person_id,
+                    :ldate, :ldatetime, :created_at, :lsales_person, :lsales_person_id,
                     :lsales_address, :lmy_refno, :lyour_refno, :lshipped,
                     :lprice_group, :lcredit_limit, :lterms, :lpromisorry_note,
                     :lpo_no, :lnote, :is_printed, 0
@@ -421,6 +436,7 @@ SQL;
                 'lcustomer_name' => $customerName,
                 'ldate' => $salesDate,
                 'ldatetime' => $salesDate . ' ' . date('H:i:s'),
+                'created_at' => $createdAt,
                 'lsales_person' => (string) ($payload['sales_person'] ?? ''),
                 'lsales_person_id' => (string) ($payload['sales_person_id'] ?? ''),
                 'lsales_address' => (string) ($payload['delivery_address'] ?? ''),

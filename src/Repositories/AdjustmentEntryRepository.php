@@ -94,6 +94,7 @@ SELECT
     COALESCE(adjust.lcustomerid, '') AS lcustomerid,
     COALESCE(adjust.lcustomername, '') AS lcustomername,
     adjust.ldate,
+    adjust.created_at,
     COALESCE(adjust.ltype, '') AS ltype,
     COALESCE(adjust.lamount, 0) AS lamount,
     COALESCE(adjust.lremark, '') AS lremark,
@@ -146,6 +147,7 @@ SELECT
     COALESCE(adjust.lcustomerid, '') AS lcustomerid,
     COALESCE(adjust.lcustomername, '') AS lcustomername,
     adjust.ldate,
+    adjust.created_at,
     COALESCE(adjust.ltype, '') AS ltype,
     COALESCE(adjust.lamount, 0) AS lamount,
     COALESCE(adjust.lremark, '') AS lremark,
@@ -194,6 +196,7 @@ SQL;
         }
 
         $date = $this->normalizeDateTime((string) ($payload['date'] ?? 'now'));
+        $createdAt = date('Y-m-d H:i:s');
         $remark = trim((string) ($payload['remark'] ?? ''));
 
         $pdo = $this->db->pdo();
@@ -209,9 +212,9 @@ SQL;
 
             $insert = $pdo->prepare(
                 'INSERT INTO tbladjustment
-                (lrefno, lno, lcustomerid, lcustomername, luserid, ldate, ltype, lamount, lremark, lstatus)
+                (lrefno, lno, lcustomerid, lcustomername, luserid, ldate, ltype, lamount, lremark, lstatus, created_at)
                 VALUES
-                (:lrefno, :lno, :lcustomerid, :lcustomername, :luserid, :ldate, :ltype, :lamount, :lremark, :lstatus)'
+                (:lrefno, :lno, :lcustomerid, :lcustomername, :luserid, :ldate, :ltype, :lamount, :lremark, :lstatus, :created_at)'
             );
             $insert->execute([
                 'lrefno' => $refno,
@@ -224,6 +227,7 @@ SQL;
                 'lamount' => $amount,
                 'lremark' => $remark,
                 'lstatus' => 'Pending',
+                'created_at' => $createdAt,
             ]);
 
             $pdo->commit();
@@ -369,9 +373,9 @@ SQL;
                 if ($type === 'Debit') {
                     $insertLedger = $pdo->prepare(
                         'INSERT INTO tblledger
-                        (lcustomerid, lrefno, lamt, lmesssage, ldatetime, lmainid, ltype, lcredit, ldebit, luserid, lcheckdate, lcheck_no, ldcr, lpdc, lremarks, lref_name, ldebit_refno)
+                        (lcustomerid, lrefno, lamt, lmesssage, ldatetime, lmainid, ltype, lcredit, ldebit, luserid, lcheckdate, lcheck_no, ldcr, lpdc, lremarks, lref_name, ldebit_refno, created_at)
                         VALUES
-                        (:lcustomerid, :lrefno, :lamt, :lmesssage, :ldatetime, :lmainid, :ltype, 0, :ldebit, :luserid, :lcheckdate, :lcheck_no, :ldcr, :lpdc, :lremarks, :lref_name, :ldebit_refno)'
+                        (:lcustomerid, :lrefno, :lamt, :lmesssage, :ldatetime, :lmainid, :ltype, 0, :ldebit, :luserid, :lcheckdate, :lcheck_no, :ldcr, :lpdc, :lremarks, :lref_name, :ldebit_refno, :created_at)'
                     );
                     $insertLedger->execute([
                         'lcustomerid' => $customerId,
@@ -390,13 +394,14 @@ SQL;
                         'lremarks' => $remarks,
                         'lref_name' => 'Adjustment',
                         'ldebit_refno' => date('Ymd') . random_int(1, 1000000) . random_int(1, 1000000),
+                        'created_at' => date('Y-m-d H:i:s'),
                     ]);
                 } else {
                     $insertLedger = $pdo->prepare(
                         'INSERT INTO tblledger
-                        (lcustomerid, lrefno, lmesssage, lamt, lcredit, lcheckdate, lcheck_no, ldcr, lremarks, lref_name, lmainid, ltype, luserid, ldebit, ldatetime, llast_type)
+                        (lcustomerid, lrefno, lmesssage, lamt, lcredit, lcheckdate, lcheck_no, ldcr, lremarks, lref_name, lmainid, ltype, luserid, ldebit, ldatetime, llast_type, created_at)
                         VALUES
-                        (:lcustomerid, :lrefno, :lmesssage, :lamt, :lcredit, :lcheckdate, :lcheck_no, :ldcr, :lremarks, :lref_name, :lmainid, :ltype, :luserid, 0, :ldatetime, :llast_type)'
+                        (:lcustomerid, :lrefno, :lmesssage, :lamt, :lcredit, :lcheckdate, :lcheck_no, :ldcr, :lremarks, :lref_name, :lmainid, :ltype, :luserid, 0, :ldatetime, :llast_type, :created_at)'
                     );
                     $insertLedger->execute([
                         'lcustomerid' => $customerId,
@@ -414,6 +419,7 @@ SQL;
                         'luserid' => $userId,
                         'ldatetime' => $date,
                         'llast_type' => $type === 'Zero-Out' ? 'Zero-Out' : null,
+                        'created_at' => date('Y-m-d H:i:s'),
                     ]);
                 }
             }

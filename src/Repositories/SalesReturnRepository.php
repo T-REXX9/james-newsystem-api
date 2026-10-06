@@ -193,10 +193,17 @@ FROM (
         COALESCE(inv.linvoice_no, '') AS doc_no,
         COALESCE(inv.lcustomerid, '') AS contact_id,
         COALESCE(inv.lcustomer_name, '') AS customer_name,
-        COALESCE(inv.lsales_person, '') AS sales_person,
+        COALESCE(NULLIF(TRIM(CONCAT(COALESCE(invoice_agent.lfname, ''), ' ', COALESCE(invoice_agent.llname, ''))), ''), 'Unassigned') AS sales_person,
         COALESCE(inv.ldate, '') AS sales_date,
         COALESCE(inv.lstatus, '') AS status
     FROM tblinvoice_list inv
+    LEFT JOIN tblpatient invoice_customer
+      ON invoice_customer.lmain_id = inv.lmain_id
+     AND invoice_customer.lsessionid = inv.lcustomerid
+     AND COALESCE(invoice_customer.ldeleted, 0) = 0
+    LEFT JOIN tblaccount invoice_agent
+      ON invoice_agent.lid = invoice_customer.lsales_person
+     AND COALESCE(invoice_agent.lstatus, 0) = 1
     WHERE inv.lmain_id = :invoice_main_id
       AND COALESCE(inv.lcancel_invoice, 0) = 0
       AND LOWER(COALESCE(inv.lstatus, '')) <> 'cancelled'
@@ -210,10 +217,17 @@ FROM (
         COALESCE(dr.linvoice_no, '') AS doc_no,
         COALESCE(dr.lcustomerid, '') AS contact_id,
         COALESCE(dr.lcustomer_name, '') AS customer_name,
-        COALESCE(dr.lsales_person, '') AS sales_person,
+        COALESCE(NULLIF(TRIM(CONCAT(COALESCE(slip_agent.lfname, ''), ' ', COALESCE(slip_agent.llname, ''))), ''), 'Unassigned') AS sales_person,
         COALESCE(dr.ldate, '') AS sales_date,
         COALESCE(dr.lstatus, '') AS status
     FROM tbldelivery_receipt dr
+    LEFT JOIN tblpatient slip_customer
+      ON slip_customer.lmain_id = dr.lmain_id
+     AND slip_customer.lsessionid = dr.lcustomerid
+     AND COALESCE(slip_customer.ldeleted, 0) = 0
+    LEFT JOIN tblaccount slip_agent
+      ON slip_agent.lid = slip_customer.lsales_person
+     AND COALESCE(slip_agent.lstatus, 0) = 1
     WHERE dr.lmain_id = :order_slip_main_id
       AND COALESCE(dr.lcancel, 0) = 0
       AND LOWER(COALESCE(dr.lstatus, '')) <> 'cancelled'
@@ -345,12 +359,12 @@ SQL;
             $insert = $pdo->prepare(<<<'SQL'
 INSERT INTO tblcredit_memo (
     lrefno, lmainid, luserid, lcredit_no, lcustomer, clname, lstatus, lprestatus,
-    linvoice_refno, linvoice_no, ltype, ldate, ldaterec, ldatetime,
+    linvoice_refno, linvoice_no, ltype, ldate, ldaterec, ldatetime, created_at,
     lsalesman, lshipvia, ltrackno, lremark, lnote, lcomplaintnote,
     ltransaction_refno, ldiscount_amt, ltax_type
 ) VALUES (
     :lrefno, :lmainid, :luserid, :lcredit_no, :lcustomer, :clname, 'Pending', '',
-    :linvoice_refno, :linvoice_no, :ltype, :ldate, :ldaterec, :ldatetime,
+    :linvoice_refno, :linvoice_no, :ltype, :ldate, :ldaterec, :ldatetime, :created_at,
     :lsalesman, :lshipvia, :ltrackno, :lremark, :lnote, :lcomplaintnote,
     :ltransaction_refno, :ldiscount_amt, :ltax_type
 )
@@ -369,6 +383,7 @@ SQL);
                 'ldate' => trim((string) ($payload['date'] ?? date('Y-m-d'))),
                 'ldaterec' => $now,
                 'ldatetime' => $now,
+                'created_at' => $now,
                 'lsalesman' => trim((string) ($payload['salesman'] ?? '')),
                 'lshipvia' => trim((string) ($payload['ship_via'] ?? '')),
                 'ltrackno' => trim((string) ($payload['tracking_no'] ?? '')),
@@ -588,6 +603,7 @@ SQL;
         $originalQty = (float) ($payload['original_qty'] ?? 0);
         $discount = (float) ($payload['discount'] ?? 0);
         $transactionItemId = trim((string) ($payload['transaction_item_id'] ?? ''));
+        $createdAt = date('Y-m-d H:i:s');
 
         if ($qty <= 0) {
             throw new RuntimeException('Quantity must be greater than 0');
@@ -604,11 +620,11 @@ SQL;
 INSERT INTO tblcredit_return_item (
     lrefno, litemcode, lpartno, lbrand, ldesc, lprice, lqty,
     luser, linv_refno, lunit, llocation, loriginal_qty,
-    ltransaction_item_id, ldiscount, lremark
+    ltransaction_item_id, ldiscount, lremark, created_at
 ) VALUES (
     :lrefno, :litemcode, :lpartno, :lbrand, :ldesc, :lprice, :lqty,
     :luser, :linv_refno, :lunit, :llocation, :loriginal_qty,
-    :ltransaction_item_id, :ldiscount, :lremark
+    :ltransaction_item_id, :ldiscount, :lremark, :created_at
 )
 SQL);
         $insert->execute([
@@ -627,11 +643,13 @@ SQL);
             'ltransaction_item_id' => $transactionItemId,
             'ldiscount' => $discount,
             'lremark' => $remark,
+            'created_at' => $createdAt,
         ]);
 
         $newId = (int) $pdo->lastInsertId();
         return [
             'id' => $newId,
+            'created_at' => $createdAt,
             'item_code' => $itemCode,
             'part_no' => $partNo,
             'brand' => $brand,
@@ -744,16 +762,17 @@ SQL);
             $customerId = (string) ($cm['lcustomer'] ?? '');
             $cmDate = (string) ($cm['ldate'] ?? date('Y-m-d'));
             $remarkMsg = 'Sales Return:' . (string) ($cm['lremark'] ?? '');
+            $postedAt = date('Y-m-d H:i:s');
 
             $ledgerInsert = $pdo->prepare(<<<'SQL'
 INSERT INTO tblledger (
     lcustomerid, lrefno, lamt, lmesssage, ldatetime, lmainid, ltype,
     lcredit, ldebit, luserid, lcheckdate, lcheck_no, ldcr, lpdc,
-    lremarks, lref_name
+    lremarks, lref_name, created_at
 ) VALUES (
     :lcustomerid, :lrefno, :lamt, :lmesssage, :ldatetime, :lmainid, 'Credit',
     :lcredit, 0, :luserid, '', '', '', 0,
-    :lremarks, 'Credit Memo'
+    :lremarks, 'Credit Memo', :created_at
 )
 SQL);
             $ledgerInsert->execute([
@@ -766,6 +785,7 @@ SQL);
                 'lcredit' => $grandPrice,
                 'luserid' => (string) $userId,
                 'lremarks' => $remarkMsg,
+                'created_at' => $postedAt,
             ]);
 
             // 8. Insert inventory logs for each item (stock back in)
@@ -940,25 +960,30 @@ SELECT
     COALESCE(cm.linvoice_no, '') AS linvoice_no,
     COALESCE(cm.linvoice_refno, '') AS linvoice_refno,
     COALESCE(cm.ldate, '') AS ldate,
+    COALESCE(cm.created_at, '') AS created_at,
     COALESCE(cm.lstatus, 'Pending') AS lstatus,
     COALESCE(cm.ltype, '') AS ltype,
     COALESCE(cm.lcustomer, '') AS lcustomer,
     TRIM(
         COALESCE(NULLIF(cm.clname, ''), NULLIF(pt.lcompany, ''), 'Unknown Customer')
     ) AS customer_name,
-    COALESCE(cm.lsalesman, '') AS sales_person,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), 'Unassigned') AS sales_person,
     COALESCE(cm.ltrackno, '') AS tracking_no,
     COALESCE(cm.lshipvia, '') AS ship_via,
     COALESCE(cm.lremark, '') AS lremark,
     CAST(COALESCE(SUM(COALESCE(itm.lqty, 0)), 0) AS DECIMAL(15,2)) AS total_qty,
     CAST(COALESCE(SUM(COALESCE(itm.lqty, 0) * COALESCE(itm.lprice, 0)), 0) AS DECIMAL(15,2)) AS total_amount
 FROM tblcredit_memo cm
-LEFT JOIN tblpatient pt ON CAST(pt.lsessionid AS CHAR) = CAST(cm.lcustomer AS CHAR)
+LEFT JOIN tblpatient pt
+  ON CAST(pt.lsessionid AS CHAR) = CAST(cm.lcustomer AS CHAR)
+ AND pt.lmain_id = cm.lmainid
+ AND COALESCE(pt.ldeleted, 0) = 0
+LEFT JOIN tblaccount current_agent ON current_agent.lid = pt.lsales_person AND COALESCE(current_agent.lstatus, 0) = 1
 LEFT JOIN tblcredit_return_item itm ON itm.lrefno = cm.lrefno
 WHERE {$whereSql}
 GROUP BY
-    cm.lrefno, cm.lcredit_no, cm.linvoice_no, cm.linvoice_refno, cm.ldate, cm.lstatus,
-    cm.ltype, cm.lcustomer, cm.clname, pt.lcompany, cm.lsalesman, cm.ltrackno, cm.lshipvia, cm.lremark
+    cm.lrefno, cm.lcredit_no, cm.linvoice_no, cm.linvoice_refno, cm.ldate, cm.created_at, cm.lstatus,
+    cm.ltype, cm.lcustomer, cm.clname, pt.lcompany, current_agent.lid, current_agent.lfname, current_agent.llname, cm.ltrackno, cm.lshipvia, cm.lremark
 ORDER BY sort_id DESC
 LIMIT :limit OFFSET :offset
 SQL;
@@ -1001,13 +1026,14 @@ SELECT
     COALESCE(cm.linvoice_no, '') AS linvoice_no,
     COALESCE(cm.linvoice_refno, '') AS linvoice_refno,
     COALESCE(cm.ldate, '') AS ldate,
+    COALESCE(cm.created_at, '') AS created_at,
     COALESCE(cm.lstatus, 'Pending') AS lstatus,
     COALESCE(cm.ltype, '') AS ltype,
     COALESCE(cm.lcustomer, '') AS lcustomer,
     TRIM(
         COALESCE(NULLIF(cm.clname, ''), NULLIF(pt.lcompany, ''), 'Unknown Customer')
     ) AS customer_name,
-    COALESCE(cm.lsalesman, '') AS sales_person,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), 'Unassigned') AS sales_person,
     COALESCE(cm.ltrackno, '') AS tracking_no,
     COALESCE(cm.lshipvia, '') AS ship_via,
     COALESCE(cm.lremark, '') AS lremark,
@@ -1015,13 +1041,17 @@ SELECT
     CAST(COALESCE(SUM(COALESCE(itm.lqty, 0)), 0) AS DECIMAL(15,2)) AS total_qty,
     CAST(COALESCE(SUM(COALESCE(itm.lqty, 0) * COALESCE(itm.lprice, 0)), 0) AS DECIMAL(15,2)) AS total_amount
 FROM tblcredit_memo cm
-LEFT JOIN tblpatient pt ON CAST(pt.lsessionid AS CHAR) = CAST(cm.lcustomer AS CHAR)
+LEFT JOIN tblpatient pt
+  ON CAST(pt.lsessionid AS CHAR) = CAST(cm.lcustomer AS CHAR)
+ AND pt.lmain_id = cm.lmainid
+ AND COALESCE(pt.ldeleted, 0) = 0
+LEFT JOIN tblaccount current_agent ON current_agent.lid = pt.lsales_person AND COALESCE(current_agent.lstatus, 0) = 1
 LEFT JOIN tblcredit_return_item itm ON itm.lrefno = cm.lrefno
 WHERE CAST(COALESCE(cm.lmainid, 0) AS SIGNED) = :main_id
   AND cm.lrefno = :refno
 GROUP BY
-    cm.lrefno, cm.lcredit_no, cm.linvoice_no, cm.linvoice_refno, cm.ldate, cm.lstatus, cm.ltype,
-    cm.lcustomer, cm.clname, pt.lcompany, cm.lsalesman, cm.ltrackno, cm.lshipvia, cm.lremark, cm.lmy_remarks
+    cm.lrefno, cm.lcredit_no, cm.linvoice_no, cm.linvoice_refno, cm.ldate, cm.created_at, cm.lstatus, cm.ltype,
+    cm.lcustomer, cm.clname, pt.lcompany, current_agent.lid, current_agent.lfname, current_agent.llname, cm.ltrackno, cm.lshipvia, cm.lremark, cm.lmy_remarks
 LIMIT 1
 SQL;
 
@@ -1047,7 +1077,8 @@ SELECT
     CAST(COALESCE(itm.lqty, 0) AS DECIMAL(15,2)) AS qty,
     CAST(COALESCE(itm.lprice, 0) AS DECIMAL(15,2)) AS unit_price,
     CAST(COALESCE(itm.lqty, 0) * COALESCE(itm.lprice, 0) AS DECIMAL(15,2)) AS amount,
-    COALESCE(itm.lremark, '') AS remark
+    COALESCE(itm.lremark, '') AS remark,
+    COALESCE(itm.created_at, '') AS created_at
 FROM tblcredit_return_item itm
 INNER JOIN tblcredit_memo cm ON cm.lrefno = itm.lrefno
 WHERE CAST(COALESCE(cm.lmainid, 0) AS SIGNED) = :main_id
