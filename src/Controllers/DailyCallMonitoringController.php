@@ -111,8 +111,21 @@ final class DailyCallMonitoringController
         }
 
         $viewerUserId = $this->authenticatedViewerUserId($body);
+        if (!$this->repo->isSalesAgentAccount($mainId, $viewerUserId)) {
+            throw new HttpException(403, 'Only sales agents can access the Daily Call agent snapshot.');
+        }
 
         return $this->repo->getAgentSnapshot($mainId, $viewerUserId);
+    }
+
+    public function companyDoNotContactCustomers(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = $this->authenticatedMainId($body, $query);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        $viewerUserId = $this->authenticatedViewerUserId($body);
+        return $this->repo->getCompanyDoNotContactCustomersForAgent($mainId, $viewerUserId);
     }
 
     public function setCallBookmark(array $params = [], array $query = [], array $body = []): array

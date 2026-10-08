@@ -876,6 +876,7 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/sales-color-breakdown', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'salesColorBreakdown']));
     $router->get('/api/v1/daily-call-monitoring/owner-snapshot', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'ownerSnapshot']));
     $router->get('/api/v1/daily-call-monitoring/agent-snapshot', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'agentSnapshot']));
+    $router->get('/api/v1/daily-call-monitoring/do-not-contact-customers', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'companyDoNotContactCustomers']));
     $router->patch('/api/v1/daily-call-monitoring/call-bookmark', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'setCallBookmark']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/profile', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerProfile']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/metrics', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerMetrics']));

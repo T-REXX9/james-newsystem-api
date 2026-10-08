@@ -1466,6 +1466,7 @@ SQL;
         // access gate.
         $customers = $this->getCustomerBaseRows($mainId, 'all', '', $viewerUserId);
         $masterList = $this->getPurchaseMasterList($mainId, '2025-10-01', '', $viewerUserId);
+        $doNotContactCustomers = $this->getCompanyDoNotContactCustomers($mainId);
         $contactIds = array_values(array_filter(array_map(
             static fn(array $row): string => (string) ($row['id'] ?? ''),
             $customers
@@ -1479,8 +1480,67 @@ SQL;
             'purchases' => $this->getPurchaseRows($mainId, $contactIds, $twelveMonthsAgo),
             'team_messages' => $this->getRecentOwnerMessages($viewerUserId),
             'master_list' => $masterList['items'] ?? [],
+            'do_not_contact_customers' => $doNotContactCustomers,
             'bookmarked_contact_id' => $this->getDailyCallBookmark($mainId, $viewerUserId),
         ];
+    }
+
+    public function isSalesAgentAccount(int $mainId, int $viewerUserId): bool
+    {
+        $statement = $this->db->pdo()->prepare(<<<'SQL'
+SELECT 1
+FROM tblaccount a
+JOIN tblusertype account_type
+    ON account_type.lid = a.ltype
+   AND LOWER(TRIM(REGEXP_REPLACE(COALESCE(account_type.ltype_name, ''), '[[:space:]]+', ' '))) IN ('sales agent', 'sales person', 'salesperson')
+WHERE a.lid = :viewer_user_id
+  AND a.lmother_id = :main_id
+  AND COALESCE(a.lstatus, 0) = 1
+LIMIT 1
+SQL);
+        $statement->execute(['viewer_user_id' => $viewerUserId, 'main_id' => $mainId]);
+        return $statement->fetchColumn() !== false;
+    }
+
+    public function getCompanyDoNotContactCustomersForAgent(int $mainId, int $viewerUserId): array
+    {
+        if (!$this->isSalesAgentAccount($mainId, $viewerUserId)) {
+            throw new \App\Support\Exceptions\HttpException(403, 'Only sales agents can view the company Do Not Contact list.');
+        }
+        return $this->getCompanyDoNotContactCustomers($mainId);
+    }
+
+    /**
+     * Every sales agent can see which company customers are off-limits, while
+     * the rest of the Daily Call snapshot remains assignment-scoped. Return
+     * only the fields needed to identify the customer and their owner.
+     */
+    private function getCompanyDoNotContactCustomers(int $mainId): array
+    {
+        $statement = $this->db->pdo()->prepare(<<<'SQL'
+SELECT
+    p.lsessionid AS id,
+    COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Shop') AS shop_name,
+    COALESCE(NULLIF(TRIM(CONCAT_WS(' ', a.lfname, a.llname)), ''), 'Unassigned') AS assigned_to,
+    COALESCE(team.lteamname, '') AS assigned_team
+FROM tblpatient p
+LEFT JOIN tblaccount a
+    ON a.lid = p.lsales_person
+    AND a.lmother_id = p.lmain_id
+    AND COALESCE(a.lstatus, 0) = 1
+LEFT JOIN tblteamstaff team
+    ON team.lid = p.lsales_team
+    AND team.lmain_id = p.lmain_id
+WHERE p.lmain_id = :main_id
+  AND COALESCE(p.ldeleted, 0) = 0
+  AND (
+      COALESCE(p.lstatus, 1) = 4
+      OR LOWER(TRIM(COALESCE(p.ldebt_type, ''))) = 'bad'
+  )
+ORDER BY p.lcompany ASC
+SQL);
+        $statement->execute(['main_id' => $mainId]);
+        return $statement->fetchAll(PDO::FETCH_ASSOC);
     }
 
     public function getDailyCallBookmark(int $mainId, int $agentUserId): ?string
