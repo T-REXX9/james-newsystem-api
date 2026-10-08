@@ -93,14 +93,16 @@ try {
     $mergeId = (int) $result['merge_id'];
     $assert($result['status'] === 'completed', 'live merge completes');
 
-    $customer = $pdo->prepare('SELECT lcompany, ldeleted, lmerged_into_sessionid FROM tblpatient WHERE lmain_id = :main_id AND lsessionid = :session_id');
+    $customer = $pdo->prepare('SELECT lcompany, ldeleted FROM tblpatient WHERE lmain_id = :main_id AND lsessionid = :session_id');
     $customer->execute(['main_id' => $mainId, 'session_id' => $survivor]);
     $survivorRow = $customer->fetch(PDO::FETCH_ASSOC);
     $assert(($survivorRow['lcompany'] ?? '') === "Merged {$stamp}", 'survivor keeps the selected final company name');
     $customer->execute(['main_id' => $mainId, 'session_id' => $duplicate]);
     $duplicateRow = $customer->fetch(PDO::FETCH_ASSOC);
     $assert((int) ($duplicateRow['ldeleted'] ?? 0) === 1, 'duplicate is retired');
-    $assert(($duplicateRow['lmerged_into_sessionid'] ?? '') === $survivor, 'duplicate points to survivor');
+    $redirect = $pdo->prepare('SELECT surviving_customer_session_id FROM customer_merge_redirects WHERE main_id = :main_id AND old_customer_session_id = :session_id');
+    $redirect->execute(['main_id' => $mainId, 'session_id' => $duplicate]);
+    $assert((string) $redirect->fetchColumn() === $survivor, 'duplicate points to survivor');
 
     foreach ([
         ['tblinvoice_list', 'lcustomerid'],

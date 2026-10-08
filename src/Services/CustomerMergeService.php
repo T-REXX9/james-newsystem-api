@@ -254,7 +254,7 @@ final class CustomerMergeService
             }
             $this->applyFieldDecisions($mainId, $survivorId, $customers[0], $customers[1], $fieldDecisions);
             $this->updateSurvivor($mainId, $survivorId, trim($finalName), $duplicateId);
-            $this->retireDuplicate($mainId, $duplicateId, $survivorId, $userId, trim($reason), $mergeId);
+            $this->retireDuplicate($mainId, $duplicateId, $survivorId, $userId, trim($reason));
             $this->createRedirect($mainId, $duplicateId, $survivorId, $mergeId, $userId);
             $duplicateRequestsMerged = $this->syncPendingDuplicateRequests($mainId, $survivorId, $duplicateId, (int) $customers[0]['lid'], (int) $customers[1]['lid'], $mergeId, $userId, $duplicateRequestId);
             $this->assertReconciled($mainId, $duplicateId, $inventory['entries'], (int) $customers[1]['lid']);
@@ -682,15 +682,14 @@ final class CustomerMergeService
         }
     }
 
-    private function retireDuplicate(int $mainId, string $id, string $survivor, int $userId, string $reason, int $mergeId): void
+    private function retireDuplicate(int $mainId, string $id, string $survivor, int $userId, string $reason): void
     {
         $stmt = $this->db->pdo()->prepare(
             'UPDATE tblpatient SET ldeleted = 1, ldeleted_at = NOW(), ldeleted_by = :deleted_by,
-             ldelete_reason = :reason, lstatus = 0, lmerged_into_sessionid = :survivor,
-             lmerged_at = NOW(), lmerged_by = :merged_by, lmerge_id = :merge_id
+             ldelete_reason = :reason, lstatus = 0
              WHERE lmain_id = :main_id AND lsessionid = :id AND COALESCE(ldeleted, 0) = 0'
         );
-        $stmt->execute(['deleted_by' => $userId, 'merged_by' => $userId, 'reason' => 'Merged into ' . $survivor . ': ' . $reason, 'survivor' => $survivor, 'merge_id' => $mergeId, 'main_id' => $mainId, 'id' => $id]);
+        $stmt->execute(['deleted_by' => $userId, 'reason' => 'Merged into ' . $survivor . ': ' . $reason, 'main_id' => $mainId, 'id' => $id]);
         if ($stmt->rowCount() !== 1) {
             throw new HttpException(409, 'The duplicate customer could not be retired.');
         }
@@ -950,7 +949,7 @@ final class CustomerMergeService
             'customer_merge_requests' => ['field_decisions', 'preview_snapshot', 'preview_checksum', 'after_snapshot'],
             'customer_merge_transfer_log' => ['table_name', 'customer_reference_column', 'rows_found', 'rows_updated'],
             'customer_merge_redirects' => ['old_customer_session_id', 'surviving_customer_session_id'],
-            'tblpatient' => ['ldeleted', 'ldeleted_at', 'ldeleted_by', 'ldelete_reason', 'lmerged_into_sessionid', 'lmerged_at', 'lmerged_by', 'lmerge_id'],
+            'tblpatient' => ['ldeleted', 'ldeleted_at', 'ldeleted_by', 'ldelete_reason'],
             'tblaudit_trail' => ['lreason', 'lold_status', 'lnew_status'],
         ];
         foreach ($requiredColumns as $table => $columns) {
