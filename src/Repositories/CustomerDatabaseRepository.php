@@ -817,6 +817,116 @@ SQL;
         return array_slice($matches, 0, 10);
     }
 
+    /** @return array<int, array{session_ids: array<int, string>, matched_fields: array<int, string>}> */
+    public function findDuplicateCustomerGroups(int $mainId): array
+    {
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT p.lsessionid AS session_id, TRIM(COALESCE(p.lcompany, '')) AS company,
+                    COALESCE(p.ltin, '') AS tin, COALESCE(p.lphone, '') AS phone,
+                    COALESCE(p.lmobile, '') AS mobile, COALESCE(p.laddress, '') AS address,
+                    COALESCE(p.ldelivery_address, '') AS delivery_address,
+                    COALESCE(p.lcity, '') AS city, COALESCE(p.lprovince, '') AS province
+             FROM tblpatient p
+             WHERE p.lmain_id = :main_id AND COALESCE(p.ldeleted, 0) = 0
+             ORDER BY p.lcompany ASC, p.lsessionid ASC"
+        );
+        $stmt->execute(['main_id' => $mainId]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (count($rows) < 2) {
+            return [];
+        }
+
+        $sessionIds = array_map(static fn (array $row): string => (string) $row['session_id'], $rows);
+        $contactNames = $this->batchGetContactPersonNames($mainId, $sessionIds);
+        $normalized = [];
+        foreach ($rows as $index => $row) {
+            $normalized[$index] = [
+                'company' => strtolower(trim((string) $row['company'])),
+                'tin' => preg_replace('/[\s-]+/', '', strtolower((string) $row['tin'])) ?? '',
+                'phones' => array_values(array_unique(array_merge(
+                    PhoneNumberNormalizer::candidates((string) $row['phone']),
+                    PhoneNumberNormalizer::candidates((string) $row['mobile'])
+                ))),
+                'address' => $this->normalizeIdentityText(implode(' ', [
+                    (string) $row['address'], (string) $row['delivery_address'],
+                    (string) $row['city'], (string) $row['province'],
+                ])),
+                'contact_person' => $this->normalizeIdentityText($contactNames[(string) $row['session_id']] ?? ''),
+            ];
+        }
+
+        $parents = array_keys($rows);
+        $findRoot = static function (int $index) use (&$parents): int {
+            $root = $index;
+            while ($parents[$root] !== $root) {
+                $root = $parents[$root];
+            }
+            while ($parents[$index] !== $index) {
+                $next = $parents[$index];
+                $parents[$index] = $root;
+                $index = $next;
+            }
+            return $root;
+        };
+        $pairMatches = [];
+
+        for ($left = 0; $left < count($rows); $left++) {
+            for ($right = $left + 1; $right < count($rows); $right++) {
+                $leftIdentity = $normalized[$left];
+                $rightIdentity = $normalized[$right];
+                $fields = [];
+                $companyMatch = $this->companyNameMatchField(
+                    $leftIdentity['company'],
+                    $rightIdentity['company'],
+                );
+                if ($companyMatch !== null) {
+                    $fields[] = $companyMatch;
+                }
+                if ($leftIdentity['tin'] !== '' && $leftIdentity['tin'] === $rightIdentity['tin']) {
+                    $fields[] = 'tin';
+                }
+                if (array_intersect($leftIdentity['phones'], $rightIdentity['phones']) !== []) {
+                    $fields[] = 'phone';
+                }
+                if ($leftIdentity['address'] !== '' && $leftIdentity['address'] === $rightIdentity['address']) {
+                    $fields[] = 'address';
+                }
+                $leftPerson = $leftIdentity['contact_person'];
+                $rightPerson = $rightIdentity['contact_person'];
+                if ($leftPerson !== '' && $rightPerson !== '' && (
+                    $leftPerson === $rightPerson || str_contains($leftPerson, $rightPerson) || str_contains($rightPerson, $leftPerson)
+                )) {
+                    $fields[] = 'contact_person';
+                }
+                if ($fields === []) {
+                    continue;
+                }
+
+                $parents[$findRoot($right)] = $findRoot($left);
+                $pairMatches[] = [$left, $right, $fields];
+            }
+        }
+
+        $groups = [];
+        foreach ($pairMatches as [$left, $right, $fields]) {
+            $root = $findRoot($left);
+            $groups[$root] ??= ['session_ids' => [], 'matched_fields' => []];
+            foreach ([$left, $right] as $index) {
+                $sessionId = (string) $rows[$index]['session_id'];
+                if (!in_array($sessionId, $groups[$root]['session_ids'], true)) {
+                    $groups[$root]['session_ids'][] = $sessionId;
+                }
+            }
+            $groups[$root]['matched_fields'] = array_values(array_unique([
+                ...$groups[$root]['matched_fields'], ...$fields,
+            ]));
+        }
+
+        $groups = array_values($groups);
+        usort($groups, static fn (array $left, array $right): int => strcmp($left['session_ids'][0] ?? '', $right['session_ids'][0] ?? ''));
+        return $groups;
+    }
+
     /**
      * Batch-fetch contact person names for multiple session IDs.
      * Reduces N+1 queries to 1 batch query.
@@ -897,14 +1007,52 @@ SQL;
 
     private function isSimilarCompanyName(string $left, string $right): bool
     {
-        $normalizedLeft = $this->normalizeIdentityText($left);
-        $normalizedRight = $this->normalizeIdentityText($right);
+        $normalizedLeft = $this->normalizeCompanyNameForDuplicateDetection($left);
+        $normalizedRight = $this->normalizeCompanyNameForDuplicateDetection($right);
         if (strlen($normalizedLeft) < 8 || strlen($normalizedRight) < 8) {
             return false;
         }
 
         similar_text($normalizedLeft, $normalizedRight, $percent);
         return $percent >= 88.0;
+    }
+
+    private function companyNameMatchField(string $left, string $right): ?string
+    {
+        $left = strtolower(trim($left));
+        $right = strtolower(trim($right));
+        if ($left === '' || $right === '') {
+            return null;
+        }
+        if ($left === $right) {
+            return 'company_exact';
+        }
+
+        $normalizedLeft = $this->normalizeCompanyNameForDuplicateDetection($left);
+        $normalizedRight = $this->normalizeCompanyNameForDuplicateDetection($right);
+        if (strlen($normalizedLeft) < 8 || strlen($normalizedRight) < 8) {
+            return null;
+        }
+        if (
+            str_contains($normalizedLeft, $normalizedRight)
+            || str_contains($normalizedRight, $normalizedLeft)
+            || $this->isSimilarCompanyName($normalizedLeft, $normalizedRight)
+        ) {
+            return 'company_similar';
+        }
+
+        return null;
+    }
+
+    private function normalizeCompanyNameForDuplicateDetection(string $company): string
+    {
+        $tokens = preg_split('/[^a-z0-9]+/', strtolower(trim($company))) ?: [];
+        $ignoredTokens = ['calibration', 'diesel'];
+        $tokens = array_filter(
+            $tokens,
+            static fn (string $token): bool => $token !== '' && !in_array($token, $ignoredTokens, true),
+        );
+        return implode('', $tokens);
     }
 
     /** @return array<int, string> */

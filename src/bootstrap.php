@@ -736,6 +736,7 @@ function app_router(): Router
     $router->get('/api/v1/customer-database', $requireViewAuth([$customerDatabaseController, 'list'], 'Customer Database'));
     $router->get('/api/v1/customer-stars', $requireBearerAuthWithClaims([$customerDatabaseController, 'starredIds']));
     $router->get('/api/v1/customer-database/name-check', $requireViewAuth([$customerDatabaseController, 'nameCheck'], 'Customer Database'));
+    $router->get('/api/v1/customer-database/duplicate-groups', $requireViewAuth([$customerDatabaseController, 'duplicateGroups'], 'Customer Database'));
     $router->get('/api/v1/customer-database/province-summary', $requireViewAuth([$customerDatabaseController, 'provinceSummary'], 'Customer Database'));
     $router->get('/api/v1/customer-groups', $requireViewAuth([$customerGroupController, 'list'], 'Customer Group'));
     $router->get('/api/v1/customer-groups/{groupId}', $requireViewAuth([$customerGroupController, 'show'], 'Customer Group'));
