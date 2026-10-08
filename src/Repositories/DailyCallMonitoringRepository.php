@@ -1396,7 +1396,8 @@ SQL;
                 JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.address')) AS address,
                 JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.refer_by')) AS refer_by,
                 JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.sales_person_id')) AS sales_person_id,
-                JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.duplicate_override_reason')) AS duplicate_override_reason
+                JSON_UNQUOTE(JSON_EXTRACT(cr.payload, '$.duplicate_override_reason')) AS duplicate_override_reason,
+                cr.payload AS payload_json
             FROM customer_requests cr
             LEFT JOIN tblaccount a ON a.lid = cr.submitted_by
             WHERE cr.main_id = :main_id
@@ -1408,55 +1409,23 @@ SQL;
         $stmt->execute(['main_id' => $mainId]);
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
 
-        // Batch-fetch conflicting customers for all pending requests in one query.
-        // Build a LIKE condition per company name and union them with OR, avoiding N+1.
-        $companies = array_values(array_unique(array_filter(
-            array_map(static fn (array $r): string => strtolower(trim((string) ($r['company'] ?? ''))), $rows)
-        )));
-
-        $conflictsByCompany = [];
-        if ($companies !== []) {
-            $orClauses = [];
-            $cParams = ['main_id' => $mainId];
-            foreach ($companies as $i => $company) {
-                $key = 'c' . $i;
-                $orClauses[] = "LOWER(TRIM(COALESCE(p.lcompany, ''))) LIKE :{$key}";
-                $cParams[$key] = '%' . $company . '%';
-            }
-            $conflictSql = "SELECT p.lsessionid AS session_id, TRIM(COALESCE(p.lcompany, '')) AS company,"
-                . " COALESCE(p.lmobile, '') AS mobile, COALESCE(p.lphone, '') AS phone,"
-                . " COALESCE(p.laddress, '') AS address, COALESCE(p.lverification, '') AS verification,"
-                . " COALESCE(p.lprofile_type, '') AS profile_type"
-                . ' FROM tblpatient p'
-                . ' WHERE p.lmain_id = :main_id AND COALESCE(p.ldeleted, 0) = 0'
-                . ' AND (' . implode(' OR ', $orClauses) . ')'
-                . ' ORDER BY p.ldatetime DESC';
-            $cstmt = $this->db->pdo()->prepare($conflictSql);
-            $cstmt->execute($cParams);
-            foreach ($cstmt->fetchAll(\PDO::FETCH_ASSOC) as $c) {
-                $existingCompany = strtolower(trim((string) ($c['company'] ?? '')));
-                $mapped = [
-                    'session_id'   => (string) ($c['session_id'] ?? ''),
-                    'company'      => (string) ($c['company'] ?? ''),
-                    'mobile'       => (string) ($c['mobile'] ?? ''),
-                    'phone'        => (string) ($c['phone'] ?? ''),
-                    'address'      => (string) ($c['address'] ?? ''),
-                    'verification' => (string) ($c['verification'] ?? ''),
-                    'profile_type' => (string) ($c['profile_type'] ?? ''),
-                ];
-                // Associate this result with every pending company that matches it
-                foreach ($companies as $company) {
-                    if (str_contains($existingCompany, $company) || str_contains($company, $existingCompany)) {
-                        $conflictsByCompany[$company][] = $mapped;
-                    }
-                }
-            }
-        }
-
-        return array_map(static function (array $row) use ($conflictsByCompany): array {
-            $company = strtolower(trim((string) ($row['company'] ?? '')));
-            $conflicts = array_slice($conflictsByCompany[$company] ?? [], 0, 5);
-            return [
+        $customerRepository = new CustomerDatabaseRepository($this->db);
+        $pending = [];
+        foreach ($rows as $row) {
+            $payload = json_decode((string) ($row['payload_json'] ?? ''), true);
+            $payload = is_array($payload) ? $payload : [];
+            $matches = $customerRepository->findSimilarCustomers($mainId, $payload);
+            $conflicts = array_map(static fn (array $match): array => [
+                'session_id' => (string) ($match['session_id'] ?? ''),
+                'company' => (string) ($match['company'] ?? ''),
+                'mobile' => (string) ($match['mobile'] ?? ''),
+                'phone' => (string) ($match['phone'] ?? ''),
+                'address' => (string) ($match['address'] ?? ''),
+                'verification' => (string) ($match['verification'] ?? ''),
+                'profile_type' => (string) ($match['profile_type'] ?? ''),
+                'matched_fields' => array_values($match['matched_fields'] ?? []),
+            ], $matches);
+            $pending[] = [
                 'request_id'               => (string) ($row['request_id'] ?? ''),
                 'contact_id'               => (string) ($row['contact_id'] ?? ''),
                 'submitted_at'             => (string) ($row['submitted_at'] ?? ''),
@@ -1471,7 +1440,9 @@ SQL;
                 'duplicate_override_reason'=> (string) ($row['duplicate_override_reason'] ?? ''),
                 'conflicting_customers'    => $conflicts,
             ];
-        }, $rows);
+        }
+
+        return $pending;
     }
 
     private function purchaseAgeGroup(int $daysSinceLastPurchase): string

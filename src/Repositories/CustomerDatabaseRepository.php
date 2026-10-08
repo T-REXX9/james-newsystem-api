@@ -773,10 +773,19 @@ SQL;
         if ($contactPerson === '' && isset($payload['contactPersons']) && is_array($payload['contactPersons']) && count($payload['contactPersons']) > 0) {
             $contactPerson = trim((string) ($payload['contactPersons'][0]['name'] ?? ''));
         }
+        if ($contactPerson === '' && isset($payload['contacts'][0]) && is_array($payload['contacts'][0])) {
+            $firstContact = $payload['contacts'][0];
+            $contactPerson = trim(implode(' ', array_filter([
+                (string) ($firstContact['first_name'] ?? ''),
+                (string) ($firstContact['middle_name'] ?? ''),
+                (string) ($firstContact['last_name'] ?? ''),
+            ], static fn (string $part): bool => trim($part) !== '')));
+        }
         if ($company === '' && $tin === '' && $phones === [] && $address === '' && $contactPerson === '') return [];
 
         $sql = "SELECT p.lsessionid AS session_id, TRIM(COALESCE(p.lcompany, '')) AS company,
                        COALESCE(p.lstatus, 1) AS status, COALESCE(p.lprofile_type, 'Old') AS profile_type,
+                       COALESCE(p.lverification, '') AS verification,
                        COALESCE(p.ldebt_type, 'Good') AS debt_type, COALESCE(p.ltin, '') AS tin,
                        COALESCE(p.lphone, '') AS phone, COALESCE(p.lmobile, '') AS mobile,
                        COALESCE(p.laddress, '') AS address, COALESCE(p.ldelivery_address, '') AS delivery_address,
@@ -811,7 +820,21 @@ SQL;
             if ($address !== '' && $existingAddress !== '' && $address === $existingAddress) $fields[] = 'address';
             if ($contactPerson !== '' && $existingContactPerson !== '' && ($this->normalizeIdentityText($contactPerson) === $this->normalizeIdentityText($existingContactPerson) || str_contains($this->normalizeIdentityText($existingContactPerson), $this->normalizeIdentityText($contactPerson)) || str_contains($this->normalizeIdentityText($contactPerson), $this->normalizeIdentityText($existingContactPerson)))) $fields[] = 'contact_person';
             if ($fields === []) continue;
-            $matches[] = ['session_id' => (string) $row['session_id'], 'company' => (string) $row['company'], 'status' => (string) $row['status'], 'profile_type' => (string) $row['profile_type'], 'is_blacklisted' => strtolower((string) $row['debt_type']) === 'bad', 'matched_fields' => $fields];
+            $matches[] = [
+                'session_id' => $sessionId,
+                'company' => (string) $row['company'],
+                'status' => (string) $row['status'],
+                'profile_type' => (string) $row['profile_type'],
+                'verification' => (string) $row['verification'],
+                'mobile' => (string) $row['mobile'],
+                'phone' => (string) $row['phone'],
+                'address' => (string) $row['address'],
+                'delivery_address' => (string) $row['delivery_address'],
+                'city' => (string) $row['city'],
+                'province' => (string) $row['province'],
+                'is_blacklisted' => strtolower((string) $row['debt_type']) === 'bad',
+                'matched_fields' => $fields,
+            ];
         }
         usort($matches, static fn (array $a, array $b): int => count($b['matched_fields']) <=> count($a['matched_fields']));
         return array_slice($matches, 0, 10);

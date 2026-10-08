@@ -26,6 +26,7 @@ $pdo->exec(
         lcompany TEXT,
         lstatus INTEGER,
         lprofile_type TEXT,
+        lverification TEXT,
         ldebt_type TEXT,
         ltin TEXT,
         lphone TEXT,
