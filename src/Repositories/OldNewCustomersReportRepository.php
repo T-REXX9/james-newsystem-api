@@ -105,12 +105,15 @@ SELECT
     COALESCE(p.lgroup, '') AS customer_group,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person,
     {$effectiveSinceExpr} AS customer_since,
-    COALESCE(p.created_at, '') AS created_at,
+    COALESCE(customer_created_at.created_at, '') AS created_at,
     CASE
         WHEN ({$effectiveSinceExpr}) < :cutoff_case_type THEN 'old'
         ELSE 'new'
     END AS customer_type
 FROM tblpatient p
+LEFT JOIN tblpatient_created_at customer_created_at
+    ON customer_created_at.lmain_id = p.lmain_id
+   AND customer_created_at.lsessionid = p.lsessionid
 LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(p.lsales_person AS CHAR) AND COALESCE(acc.lstatus, 0) = 1
 WHERE {$whereSql}
 ORDER BY

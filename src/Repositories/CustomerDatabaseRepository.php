@@ -595,9 +595,9 @@ SQL;
             $discountCodeInsertValue = $this->hasCustomerDiscountCodeColumn() ? ', :discount_code' : '';
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, ldate_assigned, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince, created_at)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, ldate_assigned, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :date_assigned, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date, :datereg)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :date_assigned, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
             );
             $insertParams = [
                 'main_id' => $mainId,
@@ -641,6 +641,8 @@ SQL;
                 $insertParams['discount_code'] = $this->normalizeDiscountCode((string) ($payload['discount_code'] ?? ''));
             }
             $insert->execute($insertParams);
+            $createdAt = $pdo->prepare('INSERT INTO tblpatient_created_at (lmain_id, lsessionid, created_at) VALUES (:main_id, :session_id, :created_at) ON DUPLICATE KEY UPDATE created_at = VALUES(created_at)');
+            $createdAt->execute(['main_id' => $mainId, 'session_id' => $sessionId, 'created_at' => $insertParams['datereg']]);
             $this->recordAssignmentHistory(
                 $pdo,
                 $mainId,
@@ -800,10 +802,9 @@ SQL;
             $sessionId = (string) $row['session_id'];
             $existingContactPerson = $contactPersonsBySessionId[$sessionId] ?? '';
             $fields = [];
-            if ($company !== '' && $existingCompany !== '' && ($existingCompany === $company || str_contains($existingCompany, $company) || str_contains($company, $existingCompany))) {
-                $fields[] = $existingCompany === $company ? 'company_exact' : 'company_similar';
-            } elseif ($company !== '' && $existingCompany !== '' && $this->isSimilarCompanyName($company, $existingCompany)) {
-                $fields[] = 'company_similar';
+            $companyMatch = $this->companyNameMatchField($company, $existingCompany);
+            if ($companyMatch !== null) {
+                $fields[] = $companyMatch;
             }
             if ($tin !== '' && $existingTin !== '' && $tin === $existingTin) $fields[] = 'tin';
             if ($phones !== [] && array_intersect($phones, $existingPhones) !== []) $fields[] = 'phone';

@@ -168,12 +168,12 @@ SQL;
 
         $sql = <<<SQL
 INSERT INTO tblpatient
-(lmain_id, lencoded_by, ldatetime, lsessionid, lcompany, laddress, ldelivery_address, created_at,
+(lmain_id, lencoded_by, ldatetime, lsessionid, lcompany, laddress, ldelivery_address,
  lprovince, lcity, larea, ltin, lbusiness_line, lterms, ltransaction_type, lvat_type,
  lvat_percent, ldealer_since, ldealer_quota, lcredit, lnotes, ldebt_type, lprice_group,
  lsales_person, lemail, lphone, lmobile, lstatus)
 VALUES
-(:main_id, :encoded_by, NOW(), :session_id, :company, :address, :delivery_address, :created_at,
+(:main_id, :encoded_by, NOW(), :session_id, :company, :address, :delivery_address,
  :province, :city, :area, :tin, :business_line, :terms, :transaction_type, :vat_type,
  :vat_percent, :dealer_since, :dealer_quota, :credit, :notes, :debt_type, :price_group,
  :sales_person, :email, :phone, :mobile, :status)
@@ -187,7 +187,6 @@ SQL;
             'company' => (string) ($data['company'] ?? ''),
             'address' => (string) ($data['address'] ?? ''),
             'delivery_address' => (string) ($data['deliveryAddress'] ?? $data['address'] ?? ''),
-            'created_at' => $createdAt,
             'province' => (string) ($data['province'] ?? ''),
             'city' => (string) ($data['city'] ?? ''),
             'area' => (string) ($data['area'] ?? ''),
@@ -209,6 +208,8 @@ SQL;
             'mobile' => (string) ($data['mobile'] ?? ''),
             'status' => isset($data['status']) ? (int) $data['status'] : 1,
         ]);
+        $createdAtStmt = $this->db->pdo()->prepare('INSERT INTO tblpatient_created_at (lmain_id, lsessionid, created_at) VALUES (:main_id, :session_id, :created_at) ON DUPLICATE KEY UPDATE created_at = VALUES(created_at)');
+        $createdAtStmt->execute(['main_id' => $mainId, 'session_id' => $sessionId, 'created_at' => $createdAt]);
 
         // Return created contact
         return $this->show($mainId, $sessionId) ?? ['id' => $sessionId];
