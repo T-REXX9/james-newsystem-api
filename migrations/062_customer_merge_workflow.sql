@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS customer_merge_redirects (
     CONSTRAINT fk_customer_merge_redirect_request FOREIGN KEY (merge_id) REFERENCES customer_merge_requests(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-SET @merge_column_sql := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblpatient') = 1 AND (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblpatient' AND COLUMN_NAME = 'lmerged_into_sessionid') = 0, 'ALTER TABLE tblpatient ADD COLUMN lmerged_into_sessionid VARCHAR(64) NULL', 'SELECT 1');
+SET @merge_column_sql := IF((SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblpatient') = 1 AND (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblpatient' AND COLUMN_NAME = 'lmerged_into_sessionid') = 0, 'ALTER TABLE tblpatient ADD COLUMN lmerged_into_sessionid TEXT NULL', 'SELECT 1');
 PREPARE merge_column_stmt FROM @merge_column_sql;
 EXECUTE merge_column_stmt;
 DEALLOCATE PREPARE merge_column_stmt;
