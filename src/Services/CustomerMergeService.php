@@ -24,6 +24,7 @@ final class CustomerMergeService
      */
     private const SUPPORTED_REFERENCES = [
         'tbldebit_memo_items' => ['column' => 'lcustomerid', 'mode' => 'session', 'label' => 'Debit memo items'],
+        'tbldebit_memo' => ['column' => 'lcustomer', 'mode' => 'session', 'label' => 'Debit memos'],
         'tbldelivery_receipt' => ['column' => 'lcustomerid', 'mode' => 'session', 'label' => 'Delivery receipts'],
         'tbldelivery_receipt_items' => ['column' => 'lpatient_id', 'mode' => 'session', 'label' => 'Delivery receipt items'],
         'tblinquiry' => ['column' => 'lcustomerid', 'mode' => 'session', 'label' => 'Inquiries'],
@@ -65,6 +66,15 @@ final class CustomerMergeService
         'tblcall_logs_v2' => ['column' => 'lcustomer_id', 'mode' => 'patient_lid', 'label' => 'Call logs'],
         'tblcall_dial_requests' => ['column' => 'lcustomer_id', 'mode' => 'patient_lid', 'label' => 'Call dial requests'],
         'tblpatient_duplicate_request' => ['column' => 'lsessionid', 'mode' => 'session', 'label' => 'Legacy duplicate requests'],
+        'tblinventory_logs' => ['column' => 'lcustomer_id', 'mode' => 'session', 'label' => 'Inventory movement history'],
+        'tlbCustomer_Details' => ['column' => 'lsessionid', 'mode' => 'session', 'label' => 'Customer name history'],
+        // Some installations corrected the legacy table-name typo.
+        'tblCustomer_Details' => ['column' => 'lsessionid', 'mode' => 'session', 'label' => 'Customer name history'],
+    ];
+
+    /** Tables containing archived customer snapshots, rather than live references. */
+    private const NON_REFERENCE_TABLES = [
+        'tblpatient_old',
     ];
 
     /**
@@ -791,6 +801,7 @@ final class CustomerMergeService
             if ($table === 'tblpatient'
                 || in_array($table, self::WORKFLOW_TABLES, true)
                 || in_array($table, self::KNOWN_WORKFLOW_TABLES, true)
+                || in_array($table, self::NON_REFERENCE_TABLES, true)
                 || isset($supportedKeys[$table . '.' . $column])
                 || isset(self::NON_REFERENCE_COLUMNS[strtolower($column)])) {
                 continue;
