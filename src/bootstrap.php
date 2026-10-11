@@ -504,6 +504,36 @@ function app_router(): Router
         });
     };
 
+    $requireCustomerWorkflowRequestAuth = static function (callable $handler) use ($requireBearerAuthWithClaims, $permissionMiddleware): callable {
+        return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($handler, $permissionMiddleware): array {
+            $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+            $mainId = (int) ($claims['main_userid'] ?? 0);
+            if ($mainId <= 0) {
+                throw new HttpException(403, 'Invalid account scope');
+            }
+
+            $kind = trim((string) ($body['kind'] ?? ''));
+            $action = $kind === 'customer_update' ? 'edit' : 'add';
+            $body['main_id'] = $mainId;
+            $query['main_id'] = (string) $mainId;
+            $body['user_id'] = (int) ($claims['sub'] ?? 0);
+            if ($action === 'edit') {
+                // Customer update requests can be submitted from either the
+                // Customer Database page or the Sales Agent daily call view.
+                // Honor the page grant where the request originated, while
+                // keeping both paths protected by their own edit permission.
+                try {
+                    $permissionMiddleware->assertActionPermission($claims, 'edit', 'Daily Call Monitoring Dashboard');
+                } catch (HttpException $dailyCallPermissionError) {
+                    $permissionMiddleware->assertActionPermission($claims, 'edit', 'Customer Data');
+                }
+            } else {
+                $permissionMiddleware->assertActionPermission($claims, $action, 'Customer Data');
+            }
+            return $handler($params, $query, $body);
+        });
+    };
+
     /**
      * Action auth plus Backdated posting checks for named body date fields.
      * When a key is present and non-empty, assertDocumentDateWrite runs (previous=null).
@@ -714,7 +744,7 @@ function app_router(): Router
     $router->get('/api/v1/customer-workflows/{contactId}/returns', $requireBearerAuthWithClaims([$customerWorkflowController, 'returns']));
     $router->get('/api/v1/customer-workflows/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'allRequests']));
     $router->get('/api/v1/customer-workflows/{contactId}/requests', $requireBearerAuthWithClaims([$customerWorkflowController, 'requests']));
-    $router->post('/api/v1/customer-workflows/{contactId}/requests', $requireActionAuth([$customerWorkflowController, 'createRequest'], 'Customer', 'add'));
+    $router->post('/api/v1/customer-workflows/{contactId}/requests', $requireCustomerWorkflowRequestAuth([$customerWorkflowController, 'createRequest']));
     $router->post('/api/v1/customer-workflows/{contactId}/requests/{requestId}/review', $requireMasterUser([$customerWorkflowController, 'reviewRequest']));
     $router->get('/api/v1/customers/{sessionId}', $requireViewAuth([$customerController, 'show'], 'Customer Database'));
     $router->get('/api/v1/customers/{sessionId}/purchase-history', $requireViewAuth([$customerController, 'purchaseHistory'], 'Customer Database'));
@@ -897,6 +927,7 @@ function app_router(): Router
     $router->post('/api/v1/daily-call-monitoring/sales-report-attachments/upload', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'uploadSalesReportAttachment']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-attachments/{filename}', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'downloadSalesReportAttachment']));
     $router->get('/api/v1/daily-call-monitoring/sales-report-unread-counts', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'salesReportUnreadCounts']));
+    $router->get('/api/v1/daily-call-monitoring/sales-report-submissions', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'dailySubmittedSalesReports']));
     $router->post('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/messages', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createCallReportReply']));
     $router->patch('/api/v1/daily-call-monitoring/call-report-threads/{threadId}/read', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'markCallReportThreadRead']));
     $router->post('/api/v1/daily-call-monitoring/incident-reports', $requireActionAuth([$dailyCallMonitoringController, 'createIncidentReport'], 'Daily Call Monitoring Dashboard', 'add'));

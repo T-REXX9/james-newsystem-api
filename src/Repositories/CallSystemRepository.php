@@ -88,19 +88,26 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
         return $device;
     }
 
-    public function findCustomerIdByPhone(int $mainId, string $phoneNumber): ?int
+    public function findCustomerIdByPhone(int $mainId, string $phoneNumber, ?string $contactId = null): ?int
     {
         if ($mainId <= 0) {
             return null;
         }
 
+        $contactId = trim((string) $contactId);
+        $contactFilter = $contactId !== '' ? ' AND p.lsessionid = :contact_id' : '';
         $stmt = $this->db->pdo()->prepare(
-            'SELECT p.lid, p.lmobile, p.lphone, cp.lc_mobile, cp.lc_phone
+            "SELECT p.lid, p.lmobile, p.lphone, cp.lc_mobile, cp.lc_phone,
+                    p.lstatus, p.ldebt_type
              FROM tblpatient p
              LEFT JOIN tblcontact_person cp ON cp.lrefno = p.lsessionid
-             WHERE p.lmain_id = :main_id'
+             WHERE p.lmain_id = :main_id{$contactFilter}
+             ORDER BY CASE WHEN COALESCE(p.lstatus, 1) = 4 OR LOWER(TRIM(COALESCE(p.ldebt_type, 'Good'))) = 'bad' THEN 0 ELSE 1 END,
+                      p.lid ASC"
         );
-        $stmt->execute(['main_id' => $mainId]);
+        $params = ['main_id' => $mainId];
+        if ($contactId !== '') $params['contact_id'] = $contactId;
+        $stmt->execute($params);
         $target = PhoneNumberNormalizer::normalize($phoneNumber);
         if ($target === '') {
             return null;
@@ -115,6 +122,21 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
         }
 
         return null;
+    }
+
+    public function isCustomerDoNotContact(int $mainId, int $customerId): bool
+    {
+        if ($mainId <= 0 || $customerId <= 0) {
+            return false;
+        }
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT CASE WHEN COALESCE(lstatus, 1) = 4 OR LOWER(TRIM(COALESCE(ldebt_type, 'Good'))) = 'bad' THEN 1 ELSE 0 END
+             FROM tblpatient
+             WHERE lmain_id = :main_id AND lid = :customer_id
+             LIMIT 1"
+        );
+        $stmt->execute(['main_id' => $mainId, 'customer_id' => $customerId]);
+        return (int) ($stmt->fetchColumn() ?: 0) === 1;
     }
 
     public function createCallLog(int $agentId, string $deviceId, array $call): array
@@ -322,7 +344,7 @@ final class CallSystemRepository implements CallSystemRepositoryInterface
         }
 
         $stmt = $this->db->pdo()->prepare(
-            'SELECT c.lid, c.lagent_id, c.ldevice_id, c.lcustomer_id, c.lphone_number,
+            'SELECT c.lid, c.lagent_id, c.ldevice_id, c.lcustomer_id, p.lsessionid AS customer_session_id, c.lphone_number,
                     c.ldirection, c.lduration_seconds, c.lcall_timestamp, c.lsource, c.lcreated_at,
                     COALESCE(a.lfname, \'\') AS agent_first_name,
                     COALESCE(a.llname, \'\') AS agent_last_name,

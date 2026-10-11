@@ -908,6 +908,18 @@ CASE
         ''
     ) AS contact_number,
     NULLIF(TRIM(CONCAT_WS(' ', cp_first.lfname, cp_first.lmname, cp_first.llname)), '') AS contact_person_name,
+    COALESCE((
+        SELECT GROUP_CONCAT(DISTINCT NULLIF(TRIM(CONCAT_WS(' ', cp.lfname, cp.lmname, cp.llname)), '') SEPARATOR ' | ')
+        FROM tblcontact_person cp
+        WHERE cp.lrefno = p.lsessionid
+    ), '') AS contact_person_names,
+    CONCAT_WS('|',
+        NULLIF(TRIM(p.lmobile), ''),
+        NULLIF(TRIM(p.lphone), ''),
+        (SELECT GROUP_CONCAT(DISTINCT CONCAT_WS('|', NULLIF(TRIM(cp.lc_mobile), ''), NULLIF(TRIM(cp.lc_phone), '')) SEPARATOR '|')
+         FROM tblcontact_person cp
+         WHERE cp.lrefno = p.lsessionid)
+    ) AS contact_numbers,
     TRIM(CONCAT(COALESCE(a.lfname, ''), ' ', COALESCE(a.llname, ''))) AS assigned_to,
     p.ldate_assigned AS assigned_date_raw,
     CAST(COALESCE(p.lsales_person, '') AS CHAR) AS assigned_agent_id,
@@ -1275,6 +1287,8 @@ SQL;
                 'city' => $this->cleanDisplayText($row['city'] ?? '', '—'),
                 'contactNumber' => $this->cleanDisplayText($row['contact_number'] ?? '', '—'),
                 'contactPersonName' => $this->cleanDisplayText($row['contact_person_name'] ?? '', ''),
+                'contactPersonNames' => $this->cleanDisplayText($row['contact_person_names'] ?? '', ''),
+                'contactNumbers' => $this->cleanDisplayText($row['contact_numbers'] ?? '', ''),
                 'assignedTo' => $this->cleanDisplayText($row['assigned_to'] ?? '', 'Unassigned'),
                 'assigned_to' => $this->cleanDisplayText($row['assigned_to'] ?? '', 'Unassigned'),
                 'assignedDate' => $this->formatDateText($row['assigned_date_raw'] ?? null),
@@ -1605,6 +1619,24 @@ SQL);
         ]);
         if (!$statement->fetchColumn()) {
             throw new HttpException(403, 'You can only view customers assigned to you');
+        }
+    }
+
+    public function assertCustomerCanBeContacted(int $mainId, string $contactId): void
+    {
+        $statement = $this->db->pdo()->prepare(
+            'SELECT lstatus, ldebt_type
+             FROM tblpatient
+             WHERE lmain_id = :main_id AND lsessionid = :contact_id AND COALESCE(ldeleted, 0) = 0
+             LIMIT 1'
+        );
+        $statement->execute(['main_id' => $mainId, 'contact_id' => $contactId]);
+        $customer = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!$customer) {
+            throw new HttpException(404, 'Customer not found');
+        }
+        if ((int) ($customer['lstatus'] ?? 0) === 4 || strtolower(trim((string) ($customer['ldebt_type'] ?? ''))) === 'bad') {
+            throw new HttpException(409, 'This customer is Do Not Contact. New sales report messages are disabled.');
         }
     }
 

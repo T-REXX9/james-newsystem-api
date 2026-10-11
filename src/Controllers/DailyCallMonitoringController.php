@@ -579,6 +579,15 @@ final class DailyCallMonitoringController
             throw new HttpException(403, 'Invalid account scope');
         }
 
+        $thread = $this->callReportRepo->getThreadById($mainId, $threadId, $senderUserId);
+        if ($thread === null) {
+            throw new HttpException(404, 'Report thread was not found.');
+        }
+        $threadContactId = trim((string) ($thread['contact_id'] ?? ''));
+        if ($threadContactId !== '') {
+            $this->repo->assertCustomerCanBeContacted($mainId, $this->resolveContactId($mainId, $threadContactId));
+        }
+
         $senderName = $this->callReportRepo->resolveAccountDisplayName($senderUserId) ?: 'Master User';
         $messageBody = trim((string) ($body['body'] ?? ''));
         $attachmentUrl = trim((string) ($body['attachment_url'] ?? ''));
@@ -630,6 +639,7 @@ final class DailyCallMonitoringController
             throw new HttpException(403, 'Invalid account scope');
         }
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $senderUserId);
+        $this->repo->assertCustomerCanBeContacted($mainId, $contactId);
 
         $senderName = $this->callReportRepo->resolveAccountDisplayName($senderUserId) ?: 'Staff';
         $messageBody = trim((string) ($body['body'] ?? ''));
@@ -792,6 +802,42 @@ final class DailyCallMonitoringController
             'counts' => $this->callReportRepo->getUnreadCountsForContacts($mainId, $contactIds, $viewerUserId),
             'reported_contact_ids' => $this->callReportRepo->getReportedContactIds($mainId, $contactIds),
         ];
+    }
+
+    public function dailySubmittedSalesReports(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $viewerUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($query['main_id'] ?? $body['main_id'] ?? 0);
+        $date = trim((string) ($query['date'] ?? ''));
+        $parsedDate = \DateTimeImmutable::createFromFormat('!Y-m-d', $date);
+        if ($viewerUserId <= 0 || $mainId <= 0 || !$parsedDate || $parsedDate->format('Y-m-d') !== $date) {
+            throw new HttpException(422, 'main_id, date, and authenticated account are required');
+        }
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+
+        $rawIds = $query['contact_ids'] ?? [];
+        if (is_string($rawIds)) {
+            $rawIds = array_filter(array_map('trim', explode(',', $rawIds)));
+        }
+        if (!is_array($rawIds)) {
+            $rawIds = [];
+        }
+        $contactIds = [];
+        foreach (array_slice($rawIds, 0, 500) as $rawId) {
+            $contactId = trim((string) $rawId);
+            if ($contactId === '') continue;
+            $contactId = $this->resolveContactId($mainId, $contactId);
+            try {
+                $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
+                $contactIds[] = $contactId;
+            } catch (HttpException) {
+            }
+        }
+
+        return ['contact_ids' => $this->callReportRepo->getSubmittedReportContactIds($mainId, $viewerUserId, $contactIds, $date)];
     }
 
     public function markCallReportThreadRead(array $params = [], array $query = [], array $body = []): array

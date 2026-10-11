@@ -23,7 +23,9 @@ interface CallSystemRepositoryInterface
      */
     public function updateHeartbeat(int $agentId, string $deviceId, string $status): array;
 
-    public function findCustomerIdByPhone(int $mainId, string $phoneNumber): ?int;
+    public function findCustomerIdByPhone(int $mainId, string $phoneNumber, ?string $contactId = null): ?int;
+
+    public function isCustomerDoNotContact(int $mainId, int $customerId): bool;
 
     /**
      * @param array<string, mixed> $call

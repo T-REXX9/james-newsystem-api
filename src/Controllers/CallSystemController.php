@@ -141,7 +141,14 @@ final class CallSystemController
             throw new HttpException(422, 'phone_number is required and must not exceed 50 characters');
         }
 
-        $customerId = $this->repo->findCustomerIdByPhone($mainId, $phoneNumber);
+        $requestedContactId = trim((string) ($body['customer_id'] ?? ''));
+        $customerId = $this->repo->findCustomerIdByPhone($mainId, $phoneNumber, $requestedContactId !== '' ? $requestedContactId : null);
+        if ($requestedContactId !== '' && $customerId === null) {
+            throw new HttpException(422, 'The phone number does not belong to the selected customer.');
+        }
+        if ($customerId !== null && $this->repo->isCustomerDoNotContact($mainId, $customerId)) {
+            throw new HttpException(409, 'This customer is Do Not Contact. A dial request cannot be created.');
+        }
         $request = $this->repo->createDialRequest($agentId, $customerId, $phoneNumber);
         $this->realtimeNotifier?->notifyDialRequestCreated($agentId, $request);
 

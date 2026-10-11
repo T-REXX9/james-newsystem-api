@@ -534,15 +534,17 @@ SQL;
             $yearlySql = <<<SQL
 SELECT
     YEAR(l.ldatetime) AS year,
+    MONTH(l.ldatetime) AS month,
     SUM(COALESCE(l.ldebit, 0)) AS debit
 FROM tblledger l
 WHERE l.lcustomerid = :customer_id
   AND LOWER(TRIM(COALESCE(l.ltype, ''))) = 'debit'
   AND LOWER(TRIM(COALESCE(l.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+  AND COALESCE(l.ldebit, 0) > 0
   AND l.ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
 {$dateSql}
-GROUP BY YEAR(l.ldatetime)
-ORDER BY YEAR(l.ldatetime) ASC
+GROUP BY YEAR(l.ldatetime), MONTH(l.ldatetime)
+ORDER BY YEAR(l.ldatetime) ASC, MONTH(l.ldatetime) ASC
 SQL;
             $stmt = $this->db->pdo()->prepare($yearlySql);
             $stmt->execute($params);
@@ -550,14 +552,15 @@ SQL;
             $totalDebit = 0.0;
             foreach ($rawYearly as $rawRow) {
                 $year = (int) ($rawRow['year'] ?? 0);
+                $month = (int) ($rawRow['month'] ?? 0);
                 $debit = (float) ($rawRow['debit'] ?? 0);
-                if ($year <= 0) {
+                if ($year <= 0 || $month < 1 || $month > 12) {
                     continue;
                 }
                 $totalDebit += $debit;
                 $summaryRows[] = [
                     'year' => $year,
-                    'month' => 0,
+                    'month' => $month,
                     'month_name' => '',
                     'debit' => $debit,
                     'credit' => 0.0,

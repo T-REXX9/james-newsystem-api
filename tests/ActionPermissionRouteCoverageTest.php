@@ -24,7 +24,7 @@ $expected = [
     '/api/v1/freight-charges/{refno}' => '$requireActionAuth',
     '/api/v1/freight-charges/{refno}/actions/{action}' => '$requireApproverAction',
     '/api/v1/recycle-bin/{type}/{itemId}/restore' => '$requireActionAuth',
-    '/api/v1/customer-workflows/{contactId}/requests' => '$requireActionAuth',
+    '/api/v1/customer-workflows/{contactId}/requests' => '$requireCustomerWorkflowRequestAuth',
     '/api/v1/daily-call-monitoring/customer-logs' => '$requireActionAuth',
     '/api/v1/daily-call-monitoring/incident-reports' => '$requireActionAuth',
     '/api/v1/call-system/auto-reply-settings' => '$requireMasterUser',
@@ -79,6 +79,17 @@ foreach ([
 ] as $requiredCollectionItemGuard) {
     if (!str_contains($source, $requiredCollectionItemGuard)) {
         throw new RuntimeException("FAIL: collection item update is missing {$requiredCollectionItemGuard}");
+    }
+}
+
+foreach ([
+    "\$kind === 'customer_update' ? 'edit' : 'add'",
+    "assertActionPermission(\$claims, 'edit', 'Daily Call Monitoring Dashboard')",
+    "assertActionPermission(\$claims, 'edit', 'Customer Data')",
+    "assertActionPermission(\$claims, \$action, 'Customer Data')",
+] as $requiredCustomerRequestGuard) {
+    if (!str_contains($source, $requiredCustomerRequestGuard)) {
+        throw new RuntimeException("FAIL: customer workflow requests are missing {$requiredCustomerRequestGuard}");
     }
 }
 

@@ -21,6 +21,12 @@ final class FakeCallSystemRepository implements CallSystemRepositoryInterface
     /** @var array<string, mixed>|null */
     public ?array $lastDialRequest = null;
 
+    public bool $customerDoNotContact = false;
+
+    public int $dialRequestCreateCount = 0;
+
+    public ?string $lastLookupContactId = null;
+
     /** @var array<string, mixed>|null */
     public ?array $autoSettings = null;
 
@@ -52,9 +58,17 @@ final class FakeCallSystemRepository implements CallSystemRepositoryInterface
         return $device;
     }
 
-    public function findCustomerIdByPhone(int $mainId, string $phoneNumber): ?int
+    public function findCustomerIdByPhone(int $mainId, string $phoneNumber, ?string $contactId = null): ?int
     {
-        return $mainId === 7 && $phoneNumber !== '' ? 101 : null;
+        $this->lastLookupContactId = $contactId;
+        if ($mainId !== 7 || $phoneNumber === '') return null;
+        if ($contactId !== null && $contactId !== 'customer-session-1') return null;
+        return 101;
+    }
+
+    public function isCustomerDoNotContact(int $mainId, int $customerId): bool
+    {
+        return $mainId === 7 && $customerId === 101 && $this->customerDoNotContact;
     }
 
     public function createCallLog(int $agentId, string $deviceId, array $call): array
@@ -69,6 +83,7 @@ final class FakeCallSystemRepository implements CallSystemRepositoryInterface
 
     public function createDialRequest(int $agentId, ?int $customerId, string $phoneNumber): array
     {
+        $this->dialRequestCreateCount++;
         $this->lastDialRequest = [
             'lid' => 5,
             'lagent_id' => $agentId,
@@ -313,9 +328,37 @@ expect_http_exception(
 $dial = $controller->createDialRequest([], [], [
     '__auth_claims' => ['sub' => 42, 'main_userid' => 7],
     'phone_number' => '09171234567',
+    'customer_id' => 'customer-session-1',
 ]);
 expect_true(($dial['queued'] ?? false) === true, 'dial request returns queued=true');
 expect_true(($dial['customer_matched'] ?? false) === true, 'dial request reports a matched customer');
+expect_true($repo->lastLookupContactId === 'customer-session-1', 'dial request lookup is scoped to the selected customer');
+
+$dialRequestCount = $repo->dialRequestCreateCount;
+expect_http_exception(
+    static fn() => $controller->createDialRequest([], [], [
+        '__auth_claims' => ['sub' => 42, 'main_userid' => 7],
+        'phone_number' => '09171234567',
+        'customer_id' => 'different-customer',
+    ]),
+    422,
+    'dial request rejects a phone number that does not belong to its selected customer'
+);
+expect_true($repo->dialRequestCreateCount === $dialRequestCount, 'mismatched customer phone is not queued');
+
+$repo->customerDoNotContact = true;
+$dialRequestCount = $repo->dialRequestCreateCount;
+expect_http_exception(
+    static fn() => $controller->createDialRequest([], [], [
+        '__auth_claims' => ['sub' => 42, 'main_userid' => 7],
+        'phone_number' => '09171234567',
+        'customer_id' => 'customer-session-1',
+    ]),
+    409,
+    'dial request rejects a matched Do Not Contact customer'
+);
+expect_true($repo->dialRequestCreateCount === $dialRequestCount, 'Do Not Contact dial attempt is not queued');
+$repo->customerDoNotContact = false;
 
 $pending = $controller->listPendingDialRequests([], [], [
     '__auth_claims' => ['sub' => 42, 'main_userid' => 7],

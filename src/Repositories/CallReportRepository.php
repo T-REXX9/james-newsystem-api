@@ -736,6 +736,34 @@ GROUP BY t.contact_id";
         return array_keys($reported);
     }
 
+    /** @param list<string> $contactIds @return list<string> */
+    public function getSubmittedReportContactIds(int $mainId, int $agentUserId, array $contactIds, string $date): array
+    {
+        $ids = array_values(array_unique(array_filter(array_map(
+            static fn ($contactId): string => trim((string) $contactId),
+            $contactIds
+        ))));
+        if ($ids === []) {
+            return [];
+        }
+
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $this->db->pdo()->prepare("SELECT DISTINCT contact_id
+FROM call_report_threads
+WHERE main_id = ?
+  AND agent_user_id = ?
+  AND contact_id IN ($placeholders)
+  AND report_deleted_at IS NULL
+  AND TRIM(COALESCE(report_body, '')) <> ''
+  AND created_at >= ?
+  AND created_at < DATE_ADD(?, INTERVAL 1 DAY)");
+        $stmt->execute(array_merge([$mainId, $agentUserId], $ids, [$date, $date]));
+        return array_values(array_filter(array_map(
+            static fn (array $row): string => trim((string) ($row['contact_id'] ?? '')),
+            $stmt->fetchAll(PDO::FETCH_ASSOC) ?: []
+        )));
+    }
+
     public function backfillThreadsFromCallLogs(int $mainId, string $contactId, int $viewerUserId): void
     {
         $sql = <<<SQL

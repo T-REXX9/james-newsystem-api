@@ -14,7 +14,12 @@ use App\Repositories\ProductRepository;
 use App\Repositories\NotificationsRepository;
 use App\Controllers\CustomerWorkflowController;
 use App\Controllers\CustomerDatabaseController;
+use App\Controllers\DailyCallMonitoringController;
 use App\Support\Exceptions\HttpException;
+use App\Repositories\DailyCallMonitoringRepository;
+use App\Repositories\CallReportRepository;
+use App\Repositories\CustomerRepository;
+use App\Repositories\CallSystemRepository;
 
 $db = new Database(app_config());
 $pdo = $db->pdo();
@@ -22,6 +27,9 @@ foreach (['customer_requests','tblpatient','tblcontact_person','tblpatient_terms
     $ddl = $pdo->query("SHOW CREATE TABLE {$table}")->fetch(PDO::FETCH_NUM)[1];
     $pdo->exec(preg_replace('/^CREATE TABLE/', 'CREATE TEMPORARY TABLE', $ddl));
 }
+$pdo->exec('CREATE TEMPORARY TABLE call_report_threads (id INT AUTO_INCREMENT PRIMARY KEY, main_id INT NOT NULL, contact_id VARCHAR(100) NOT NULL, call_log_entry_id INT NOT NULL, call_log_refno VARCHAR(100) NOT NULL, agent_user_id INT NOT NULL, agent_name VARCHAR(100) NOT NULL, outcome VARCHAR(40) NOT NULL, report_body TEXT NOT NULL, concern TEXT NULL, `action` TEXT NULL, report_deleted_at DATETIME NULL, created_at DATETIME NOT NULL, call_started_at DATETIME NULL, call_ended_at DATETIME NULL, duration_seconds INT NOT NULL DEFAULT 0)');
+$pdo->exec('CREATE TEMPORARY TABLE call_report_messages (id INT AUTO_INCREMENT PRIMARY KEY, thread_id INT NOT NULL, sender_user_id INT NOT NULL, sender_name VARCHAR(100) NOT NULL, sender_role VARCHAR(20) NOT NULL, body TEXT NOT NULL, attachment_url TEXT NULL, attachment_mime VARCHAR(100) NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME NULL)');
+$pdo->exec('CREATE TEMPORARY TABLE call_report_read_states (thread_id INT NOT NULL, user_id INT NOT NULL, last_read_at DATETIME NULL, PRIMARY KEY (thread_id, user_id))');
 $pdo->exec("ALTER TABLE customer_requests MODIFY kind ENUM('customer_update','discount','duplicate_prospect') NOT NULL");
 $insert = static function (string $table, array $values) use ($pdo): void {
     foreach ($pdo->query("SHOW COLUMNS FROM {$table}")->fetchAll() as $column) {
@@ -74,6 +82,32 @@ $decisionNotifications = (new NotificationsRepository($db))->listByUser((string)
 $decisionMetadata = $decisionNotifications[0]['metadata'] ?? [];
 $assert(($decisionMetadata['conversation_type'] ?? '') === 'agent_sales_report', 'approval decision notification opens the agent sales report conversation');
 $reject(fn() => $controller->reviewRequest($params + ['requestId'=>$created['id']], $query, $ownerClaims + ['decision'=>'approved']), 409, 'duplicate review is rejected');
+
+$blacklistRequest = $controller->createRequest($params, $query, $agentClaims + [
+    'kind' => 'customer_update',
+    'payload' => ['status' => 1, 'debt_type' => 'Bad', 'notes' => 'Customer requested no further calls'],
+]);
+$controller->reviewRequest($params + ['requestId'=>$blacklistRequest['id']], $query, $ownerClaims + ['decision'=>'approved']);
+$blacklistedCustomer = $repo->customer($main, $customer);
+$assert((int) ($blacklistedCustomer['status'] ?? 0) === 1 && strtolower((string) ($blacklistedCustomer['debt_type'] ?? '')) === 'bad', 'approved Do Not Contact request persists blacklisted debt type');
+$callSystemRepository = new CallSystemRepository($db);
+$matchedCustomerId = $callSystemRepository->findCustomerIdByPhone($main, '09123456789');
+$assert($matchedCustomerId !== null && $callSystemRepository->isCustomerDoNotContact($main, $matchedCustomerId), 'dial lookup recognizes approved Do Not Contact customer');
+$insert('tblpatient', ['lid'=>910004,'lmain_id'=>$main,'lsessionid'=>'LOCAL-WORKFLOW-SHARED-PHONE','lcompany'=>'Shared Phone Active Customer','lstatus'=>1,'ldebt_type'=>'Good','lphone'=>'09123456789','lmobile'=>'09123456789']);
+$preferredCustomerId = $callSystemRepository->findCustomerIdByPhone($main, '09123456789');
+$assert($preferredCustomerId !== null && $callSystemRepository->isCustomerDoNotContact($main, $preferredCustomerId), 'unscoped shared-phone lookup prioritizes a Do Not Contact match');
+$selectedActiveId = $callSystemRepository->findCustomerIdByPhone($main, '09123456789', 'LOCAL-WORKFLOW-SHARED-PHONE');
+$assert($selectedActiveId === 910004 && !$callSystemRepository->isCustomerDoNotContact($main, $selectedActiveId), 'selected customer lookup remains scoped to that customer');
+$pdo->prepare('DELETE FROM tblpatient WHERE lmain_id = ? AND lid = ?')->execute([$main, 910004]);
+$dailyCallController = new DailyCallMonitoringController(
+    new DailyCallMonitoringRepository($db),
+    new CallReportRepository($db),
+    new CustomerDatabaseRepository($db),
+    new CustomerRepository($db)
+);
+$reject(fn() => $dailyCallController->createSalesReportMessage($params, [], $agentClaims + ['main_id'=>$main, 'body'=>'Should be blocked']), 409, 'sales report message endpoint blocks blacklisted customers');
+$pdo->prepare('INSERT INTO call_report_threads (main_id, contact_id, call_log_entry_id, call_log_refno, agent_user_id, agent_name, outcome, report_body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())')->execute([$main, $customer, 990001, 'QA-DNC-REPORT', $agent, 'Test Agent', 'note', 'Existing call report']);
+$reject(fn() => $dailyCallController->createCallReportReply(['threadId'=>'1'], [], $agentClaims + ['main_id'=>$main, 'body'=>'Should be blocked']), 409, 'call report thread reply endpoint blocks blacklisted customers');
 
 // A staff-created unverified prospect is implicitly assigned to its creator,
 // and that assignment must be date-stamped for the Master User's Daily Call list.
