@@ -6,7 +6,6 @@ namespace App\Controllers;
 
 use App\Database;
 use App\Repositories\CustomerDatabaseRepository;
-use App\Repositories\CustomerRequestRepository;
 use App\Repositories\NotificationsRepository;
 use App\Support\Exceptions\HttpException;
 use App\Support\CustomerMergeRedirectResolver;
@@ -133,47 +132,17 @@ final class CustomerDatabaseController
         $isMasterUser = (string) ($account['ltype'] ?? '') === '1';
         $isUnverifiedProspect = $isProspect
             && strtolower(trim((string) ($body['verification'] ?? ''))) !== 'verified';
-        if ($isUnverifiedProspect && !$isMasterUser && trim((string) ($body['sales_person_id'] ?? '')) === '') {
-            // Staff-created unverified prospects are implicitly assigned to their
-            // creator. Passing the assignment through the normal repository create
-            // path also records ldate_assigned at insert time.
+        if ($isUnverifiedProspect && trim((string) ($body['sales_person_id'] ?? '')) === '') {
+            // Unassigned unverified prospects belong to their creator by default.
+            // Passing this through the normal create path also stamps ldate_assigned.
             $body['sales_person_id'] = (string) $userId;
         }
         if ($matches !== [] && $isProspect && !$isMasterUser) {
-            $requestPayload = $body;
-            unset($requestPayload['main_id'], $requestPayload['user_id'], $requestPayload['__auth_claims']);
-            $request = (new CustomerRequestRepository($this->db))->createDuplicateProspect($mainId, $userId, $requestPayload);
-            $prospectName = trim((string) ($body['company'] ?? '')) ?: 'an unnamed prospect';
-            $actorName = $this->repo->getAccountDisplayName($userId) ?: 'A sales agent';
-            try {
-                (new NotificationsRepository($this->db))->create([
-                    'recipient_id' => (string) $mainId,
-                    'title' => 'Duplicate Prospect Approval Required',
-                    'message' => sprintf('%s submitted duplicate prospect %s for approval.', $actorName, $prospectName),
-                    'type' => 'info',
-                    'category' => 'notification',
-                    'main_id' => (string) $mainId,
-                    'action_url' => 'sales-database-customer-database',
-                    'metadata' => [
-                        'entity_type' => 'duplicate_prospect_request',
-                        'entity_id' => (string) $request['id'],
-                        'contact_id' => (string) $request['contact_id'],
-                        'action' => 'review',
-                        'status' => 'pending',
-                        'action_url' => 'sales-database-customer-database',
-                        'refno' => 'duplicate-prospect-request:' . (string) $request['id'],
-                        'idempotency_key' => 'duplicate-prospect-request:' . (string) $request['id'],
-                        'category' => 'notification',
-                    ],
-                ]);
-            } catch (\Throwable) {
-                // A notification outage must not discard a persisted approval request.
-            }
-            return [
-                'pending_approval' => true,
-                'request_id' => $request['id'],
-                'contact_id' => $request['contact_id'],
-            ];
+            // A sales agent's reason authorizes saving the possible duplicate,
+            // while the record remains an unverified prospect for normal review.
+            $body['status'] = 3;
+            $body['verification'] = 'Unverified';
+            $body['duplicate_override_confirmed'] = true;
         }
 
         try {

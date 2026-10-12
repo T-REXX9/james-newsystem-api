@@ -27,6 +27,7 @@ foreach (['customer_requests','tblpatient','tblcontact_person','tblpatient_terms
     $ddl = $pdo->query("SHOW CREATE TABLE {$table}")->fetch(PDO::FETCH_NUM)[1];
     $pdo->exec(preg_replace('/^CREATE TABLE/', 'CREATE TEMPORARY TABLE', $ddl));
 }
+$pdo->exec('CREATE TEMPORARY TABLE tblpatient_created_at (lmain_id INT NOT NULL, lsessionid VARCHAR(64) NOT NULL, created_at DATETIME NULL DEFAULT NULL, PRIMARY KEY (lmain_id, lsessionid))');
 $pdo->exec('CREATE TEMPORARY TABLE call_report_threads (id INT AUTO_INCREMENT PRIMARY KEY, main_id INT NOT NULL, contact_id VARCHAR(100) NOT NULL, call_log_entry_id INT NOT NULL, call_log_refno VARCHAR(100) NOT NULL, agent_user_id INT NOT NULL, agent_name VARCHAR(100) NOT NULL, outcome VARCHAR(40) NOT NULL, report_body TEXT NOT NULL, concern TEXT NULL, `action` TEXT NULL, report_deleted_at DATETIME NULL, created_at DATETIME NOT NULL, call_started_at DATETIME NULL, call_ended_at DATETIME NULL, duration_seconds INT NOT NULL DEFAULT 0)');
 $pdo->exec('CREATE TEMPORARY TABLE call_report_messages (id INT AUTO_INCREMENT PRIMARY KEY, thread_id INT NOT NULL, sender_user_id INT NOT NULL, sender_name VARCHAR(100) NOT NULL, sender_role VARCHAR(20) NOT NULL, body TEXT NOT NULL, attachment_url TEXT NULL, attachment_mime VARCHAR(100) NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME NULL)');
 $pdo->exec('CREATE TEMPORARY TABLE call_report_read_states (thread_id INT NOT NULL, user_id INT NOT NULL, last_read_at DATETIME NULL, PRIMARY KEY (thread_id, user_id))');
@@ -127,7 +128,23 @@ $createdProspectRow = $pdo->query(
 $assert((string) ($createdProspectRow['lsales_person'] ?? '') === (string) $agent, 'staff-created prospect is assigned to its creator');
 $assert(substr((string) ($createdProspectRow['ldate_assigned'] ?? ''), 0, 10) === date('Y-m-d'), 'staff-created prospect records today as assignment date');
 
-// A staff member's duplicate prospect remains absent until the Master User approves it.
+$createdOwnerProspect = $customerController->create([], [], $ownerClaims + [
+    'main_id' => $main,
+    'user_id' => $main,
+    'company' => 'LOCAL-OWNER-PROSPECT-' . $main,
+    'status' => 3,
+    'profile_type' => 'Prospect',
+    'verification' => 'Unverified',
+    'refer_by' => 'Google Search',
+]);
+$createdOwnerProspectRow = $pdo->query(
+    "SELECT lsales_person, ldate_assigned FROM tblpatient WHERE lmain_id = {$main} AND lsessionid = '"
+    . addslashes((string) ($createdOwnerProspect['session_id'] ?? '')) . "' LIMIT 1"
+)->fetch(PDO::FETCH_ASSOC) ?: [];
+$assert((string) ($createdOwnerProspectRow['lsales_person'] ?? '') === (string) $main, 'Master User-created prospect is assigned to its creator');
+$assert(substr((string) ($createdOwnerProspectRow['ldate_assigned'] ?? ''), 0, 10) === date('Y-m-d'), 'Master User-created prospect records today as assignment date');
+
+// A staff member's duplicate prospect with a reason is created immediately as unverified.
 $existingProspect = 'EXISTING-DUPLICATE-PROSPECT';
 $insert('tblpatient', ['lid'=>910010,'lmain_id'=>$main,'lsessionid'=>$existingProspect,'lcompany'=>'Duplicate Prospect Co','lstatus'=>3,'lprofile_type'=>'Prospect','lverification'=>'Unverified']);
 $duplicatePayload = $agentClaims + [
@@ -138,18 +155,17 @@ $duplicatePayload = $agentClaims + [
     'profile_type' => 'Prospect',
     'refer_by' => 'Google Search',
     'duplicate_override_reason' => 'Separate branch with a different contact number',
-    'duplicate_override_confirmed' => true,
 ];
-$duplicateRequest = $customerController->create([], [], $duplicatePayload);
-$assert(($duplicateRequest['pending_approval'] ?? false) === true, 'staff duplicate prospect is submitted for approval instead of created');
-$assert((int) $pdo->query("SELECT COUNT(*) FROM tblpatient WHERE lmain_id = {$main} AND lcompany = 'Duplicate Prospect Co'")->fetchColumn() === 1, 'pending duplicate prospect does not create a customer record');
+$createdDuplicate = $customerController->create([], [], $duplicatePayload);
+$assert(!($createdDuplicate['pending_approval'] ?? false), 'staff duplicate prospect with a reason is created without approval request');
+$assert((int) $pdo->query("SELECT COUNT(*) FROM tblpatient WHERE lmain_id = {$main} AND lcompany = 'Duplicate Prospect Co'")->fetchColumn() === 2, 'duplicate prospect with a reason is created immediately');
 $reject(fn() => $customerController->create([], [], array_diff_key($duplicatePayload, ['duplicate_override_reason'=>true,'duplicate_override_confirmed'=>true])), 422, 'duplicate prospect requires a reason');
-$duplicateParams = ['contactId'=>$duplicateRequest['contact_id'], 'requestId'=>$duplicateRequest['request_id']];
-$reject(fn() => $controller->reviewRequest($duplicateParams, $query, $agentClaims + ['decision'=>'approved']), 403, 'staff cannot approve a duplicate prospect');
-$approvedDuplicate = $controller->reviewRequest($duplicateParams, $query, $ownerClaims + ['decision'=>'approved']);
-$assert(($approvedDuplicate['status'] ?? '') === 'approved', 'Master User can approve a duplicate prospect');
-$assert((int) $pdo->query("SELECT COUNT(*) FROM tblpatient WHERE lmain_id = {$main} AND lcompany = 'Duplicate Prospect Co'")->fetchColumn() === 2, 'approved duplicate prospect is created');
-$assert((string) $pdo->query("SELECT lduplicate_override_reason FROM tblpatient WHERE lmain_id = {$main} AND lsessionid = '" . $approvedDuplicate['contact_id'] . "'")->fetchColumn() === 'Separate branch with a different contact number', 'approved duplicate prospect retains the submitted reason');
+$createdDuplicateRow = $pdo->query(
+    "SELECT lduplicate_override_reason, lstatus, lverification FROM tblpatient WHERE lmain_id = {$main} AND lsessionid = '"
+    . addslashes((string) ($createdDuplicate['session_id'] ?? '')) . "' LIMIT 1"
+)->fetch(PDO::FETCH_ASSOC) ?: [];
+$assert((string) ($createdDuplicateRow['lduplicate_override_reason'] ?? '') === 'Separate branch with a different contact number', 'created duplicate prospect retains the submitted reason');
+$assert((int) ($createdDuplicateRow['lstatus'] ?? 0) === 3 && (string) ($createdDuplicateRow['lverification'] ?? '') === 'Unverified', 'created duplicate prospect remains unverified');
 
 // A notification outage must not make a persisted request or decision look like a failure.
 $pdo->exec('DROP TEMPORARY TABLE tblnotifications');

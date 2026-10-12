@@ -45,6 +45,8 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
      *(Required for per-agent Daily Call calling stop bookmarks.)*
    - `mysql -u root topnotch < migrations/066_optimize_daily_call_master_list.sql`
      *(Adds account/date and lookup indexes used by the Daily Call purchase priority summary.)*
+   - `mysql -u root topnotch < migrations/067_add_accounting_created_at_timestamps.sql`
+     *(Required for customer creation; creates `tblpatient_created_at`, which stores customer creation timestamps.)*
   - Apply `migrations/017_create_customer_requests.sql`,
     `migrations/019_add_procurement_recovery_columns.sql`, and
     `migrations/023_add_customer_product_soft_delete_columns.sql` to your configured
