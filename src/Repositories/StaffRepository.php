@@ -350,7 +350,9 @@ SQL;
         } else {
             $roleJoin = "INNER JOIN tblusertype ut ON ut.lid = a.ltype AND (ut.lmain_id = :role_main_id OR COALESCE(ut.lmain_id, 0) = 0)";
             $salesAgentRole = "LOWER(TRIM(COALESCE(ut.ltype_name, ''))) IN ('sales agent', 'sales person', 'salesperson')";
-            $updateSql = "UPDATE tblaccount a {$roleJoin} SET a.lsales_quota = :quota WHERE a.lid = :user_id AND a.lmother_id = :main_id AND {$salesAgentRole} AND COALESCE(a.larchieve, 0) = 0 AND COALESCE(a.lstatus, 0) = 1 LIMIT 1";
+            // Joined (multi-table) UPDATE statements cannot use LIMIT in MySQL.
+            // The account primary key predicate keeps this scoped to one row.
+            $updateSql = "UPDATE tblaccount a {$roleJoin} SET a.lsales_quota = :quota WHERE a.lid = :user_id AND a.lmother_id = :main_id AND {$salesAgentRole} AND COALESCE(a.larchieve, 0) = 0 AND COALESCE(a.lstatus, 0) = 1";
             $readSql = "SELECT a.lsales_quota FROM tblaccount a {$roleJoin} WHERE a.lid = :user_id AND a.lmother_id = :main_id AND {$salesAgentRole} AND COALESCE(a.larchieve, 0) = 0 AND COALESCE(a.lstatus, 0) = 1 LIMIT 1";
         }
 

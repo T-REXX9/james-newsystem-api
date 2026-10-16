@@ -27,6 +27,25 @@ final class TeamController
         return $this->repo->listTeams($mainId, $search, $page, $perPage);
     }
 
+    public function prospectOptions(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $teams = $this->repo->listTeams($mainId, '', 1, 500);
+        $items = array_values(array_map(
+            static fn (array $team): array => [
+                'id' => (int) ($team['id'] ?? 0),
+                'name' => (string) ($team['name'] ?? ''),
+            ],
+            array_filter($teams['items'] ?? [], static fn (array $team): bool => (int) ($team['status'] ?? 0) === 1)
+        ));
+
+        return ['items' => $items];
+    }
+
     public function show(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);

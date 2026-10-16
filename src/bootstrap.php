@@ -660,8 +660,40 @@ function app_router(): Router
         });
     };
 
-    $requireCustomerUpdateAuth = static function (callable $handler) use ($requireBearerAuthWithClaims, $requireActionAuth, $requireMasterUser): callable {
-        return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($handler, $requireActionAuth, $requireMasterUser): array {
+    $requireProspectTeamOptionsAuth = static function (callable $handler) use ($requireBearerAuthWithClaims, $permissionMiddleware): callable {
+        return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($handler, $permissionMiddleware): array {
+            $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+            $mainId = (int) ($claims['main_userid'] ?? 0);
+            if ($mainId <= 0) {
+                throw new HttpException(403, 'Invalid account scope');
+            }
+
+            $body['main_id'] = $mainId;
+            $query['main_id'] = (string) $mainId;
+
+            // The team dropdown is part of these protected customer workflows;
+            // Team management itself remains gated by the separate Team View permission.
+            $hasCustomerWorkflowViewAccess = false;
+            foreach (['Daily Call Monitoring Dashboard', 'Customer Data', 'Customer Database'] as $page) {
+                try {
+                    $permissionMiddleware->assertActionPermission($claims, 'view', $page);
+                    $hasCustomerWorkflowViewAccess = true;
+                    break;
+                } catch (HttpException) {
+                    // Try the other supported customer workflow page grants.
+                }
+            }
+
+            if (!$hasCustomerWorkflowViewAccess) {
+                throw new HttpException(403, 'Forbidden: Customer workflow access is required');
+            }
+
+            return $handler($params, $query, $body);
+        });
+    };
+
+    $requireCustomerUpdateAuth = static function (callable $handler, string $masterAction = 'edit') use ($requireBearerAuthWithClaims, $requireActionAuth, $requireMasterUser, $permissionMiddleware, $db): callable {
+        return $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($handler, $requireActionAuth, $requireMasterUser, $permissionMiddleware, $db, $masterAction): array {
             $updates = is_array($body['updates'] ?? null) ? $body['updates'] : $body;
             $assignmentFields = ['sales_person_id', 'sales_team_id', 'salesman', 'salesPerson', 'assignedAgent'];
             $hasAssignment = is_array($updates) && array_intersect($assignmentFields, array_keys($updates)) !== [];
@@ -676,7 +708,80 @@ function app_router(): Router
             if ($hasAssignment) {
                 return $requireMasterUser($handler)($params, $query, $body);
             }
-            return $requireActionAuth($handler, 'Customer Database', 'edit')($params, $query, $body);
+
+            $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+            if ((string) ($claims['user_type'] ?? '') === '1') {
+                return $requireActionAuth($handler, 'Customer Database', $masterAction)($params, $query, $body);
+            }
+
+            // Hiding a record changes its Customer Database visibility metadata,
+            // not the customer details covered by the change-request policy.
+            if (is_array($updates) && $updates !== []
+                && array_diff(array_keys($updates), ['isHidden', 'is_hidden']) === []) {
+                return $requireActionAuth($handler, 'Customer Database', 'edit')($params, $query, $body);
+            }
+
+            // Staff may directly edit only an unverified prospect from the Daily
+            // Call workflow. Verified prospects and regular customers continue
+            // through the customer change-request flow.
+            $sessionId = trim((string) ($params['sessionId'] ?? ''));
+            $mainId = (int) ($claims['main_userid'] ?? 0);
+            if ($sessionId === '' && isset($params['contactId'])) {
+                $contactStmt = $db->pdo()->prepare(
+                    'SELECT p.lsessionid
+                     FROM tblcontact_person cp
+                     INNER JOIN tblpatient p ON p.lsessionid = cp.lrefno
+                     WHERE p.lmain_id = :main_id AND cp.lid = :contact_id
+                       AND COALESCE(p.ldeleted, 0) = 0
+                     LIMIT 1'
+                );
+                $contactStmt->execute(['main_id' => $mainId, 'contact_id' => (int) $params['contactId']]);
+                $sessionId = trim((string) ($contactStmt->fetchColumn() ?: ''));
+            }
+            if ($sessionId === '' || $mainId <= 0) {
+                throw new HttpException(403, 'Direct customer edits are limited to unverified prospective customers');
+            }
+            $permissionMiddleware->assertActionPermission($claims, 'edit', 'Daily Call Monitoring Dashboard');
+            $prospectStmt = $db->pdo()->prepare(
+                "SELECT p.lverification, p.lstatus, p.lprofile_type, p.lencoded_by, p.lsales_person,
+                        EXISTS (
+                            SELECT 1 FROM tblaudit_trail a
+                            WHERE a.lmain_id = p.lmain_id
+                              AND a.lrefno = p.lsessionid
+                              AND a.lpage = 'Daily Call Monitoring Dashboard'
+                              AND a.laction = 'Verify Prospect'
+                        ) AS verified_in_system
+                 FROM tblpatient p
+                 WHERE p.lmain_id = :main_id AND p.lsessionid = :session_id
+                   AND COALESCE(p.ldeleted, 0) = 0 LIMIT 1"
+            );
+            $prospectStmt->execute(['main_id' => $mainId, 'session_id' => $sessionId]);
+            $prospect = $prospectStmt->fetch(PDO::FETCH_ASSOC);
+            $isProspect = is_array($prospect)
+                && ((int) ($prospect['lstatus'] ?? 0) === 3
+                    || str_contains(strtolower((string) ($prospect['lprofile_type'] ?? '')), 'prospect'));
+            $isVerified = !is_array($prospect)
+                || strtolower(trim((string) ($prospect['lverification'] ?? ''))) === 'verified'
+                || (bool) ($prospect['verified_in_system'] ?? false);
+            $userId = (string) ($claims['sub'] ?? '');
+            $isCreatorOrAssignee = is_array($prospect) && $userId !== ''
+                && ($userId === (string) ($prospect['lencoded_by'] ?? '')
+                    || $userId === (string) ($prospect['lsales_person'] ?? ''));
+            if (!$isProspect || $isVerified || !$isCreatorOrAssignee) {
+                throw new HttpException(403, 'Direct customer edits are limited to unverified prospective customers');
+            }
+            $changesProspectStatus = (isset($updates['status']) && (int) $updates['status'] !== 3)
+                || (isset($updates['verification']) && strtolower(trim((string) $updates['verification'])) === 'verified')
+                || (isset($updates['profile_type']) && !str_contains(strtolower((string) $updates['profile_type']), 'prospect'));
+            if ($changesProspectStatus) {
+                throw new HttpException(403, 'Changing a prospect status requires the verification or change-request workflow');
+            }
+            // Bind all writes to the verified account and actor, rather than
+            // trusting client-supplied main_id/user_id values.
+            $body['main_id'] = $mainId;
+            $body['user_id'] = (int) ($claims['sub'] ?? 0);
+            $query['main_id'] = (string) $mainId;
+            return $handler($params, $query, $body);
         });
     };
 
@@ -788,8 +893,8 @@ function app_router(): Router
     $router->patch('/api/v1/customer-database/bulk', $requireCustomerUpdateAuth([$customerDatabaseController, 'bulkUpdate']));
     $router->patch('/api/v1/customer-database/{sessionId}', $requireCustomerUpdateAuth([$customerDatabaseController, 'update']));
     $router->delete('/api/v1/customer-database/{sessionId}', $requireActionAuth([$customerDatabaseController, 'delete'], 'Customer Database', 'delete'));
-    $router->post('/api/v1/customer-database/{sessionId}/contacts', $requireActionAuth([$customerDatabaseController, 'addContact'], 'Customer Database', 'add'));
-    $router->patch('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'updateContact'], 'Customer Database', 'edit'));
+    $router->post('/api/v1/customer-database/{sessionId}/contacts', $requireCustomerUpdateAuth([$customerDatabaseController, 'addContact'], 'add'));
+    $router->patch('/api/v1/customer-database/contacts/{contactId}', $requireCustomerUpdateAuth([$customerDatabaseController, 'updateContact']));
     $router->delete('/api/v1/customer-database/contacts/{contactId}', $requireActionAuth([$customerDatabaseController, 'deleteContact'], 'Customer Database', 'delete'));
     $router->get('/api/v1/customer-database/{sessionId}/terms', $requireViewAuth([$customerDatabaseController, 'listTerms'], 'Customer Database'));
     $router->get('/api/v1/customer-database/{sessionId}/assignment-history', $requireViewAuth([$customerDatabaseController, 'assignmentHistory'], 'Customer Database'));
@@ -908,6 +1013,7 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/agent-snapshot', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'agentSnapshot']));
     $router->get('/api/v1/daily-call-monitoring/do-not-contact-customers', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'companyDoNotContactCustomers']));
     $router->patch('/api/v1/daily-call-monitoring/call-bookmark', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'setCallBookmark']));
+    $router->patch('/api/v1/daily-call-monitoring/do-not-contact-flag', $requireActionAuth([$dailyCallMonitoringController, 'setDoNotContactFlag'], 'Daily Call Monitoring Dashboard', 'edit'));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/profile', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerProfile']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/metrics', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerMetrics']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/purchase-history', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerPurchaseHistory']));
@@ -922,6 +1028,8 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/call-report-threads', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'callReportThreads']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-conversation', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'salesReportConversation']));
     $router->post('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-messages', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'createSalesReportMessage']));
+    $router->patch('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-messages/{messageId}', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'updateSalesReportMessage']));
+    $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-messages/{messageId}/edit-history', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'salesReportMessageEditHistory']));
     $router->delete('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-messages/{messageId}', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'deleteSalesReportMessage']));
     $router->patch('/api/v1/daily-call-monitoring/customers/{contactId}/sales-report-conversation/read', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'markSalesReportConversationRead']));
     $router->post('/api/v1/daily-call-monitoring/sales-report-attachments/upload', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'uploadSalesReportAttachment']));
@@ -1197,6 +1305,7 @@ function app_router(): Router
     $router->post('/api/v1/staff/{staffId}/password', $requireMasterUser([$staffController, 'changePassword']));
     $router->delete('/api/v1/staff/{staffId}', $requireMasterUser([$staffController, 'delete']));
     $router->get('/api/v1/teams', $requireViewAuth([$teamController, 'list'], 'Team'));
+    $router->get('/api/v1/prospect-team-options', $requireProspectTeamOptionsAuth([$teamController, 'prospectOptions']));
     $router->get('/api/v1/teams/{teamId}', $requireViewAuth([$teamController, 'show'], 'Team'));
     $router->post('/api/v1/teams', $requireActionAuth([$teamController, 'create'], 'Team', 'add'));
     $router->patch('/api/v1/teams/{teamId}', $requireActionAuth([$teamController, 'update'], 'Team', 'edit'));

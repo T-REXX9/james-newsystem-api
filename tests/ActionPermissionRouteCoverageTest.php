@@ -26,6 +26,7 @@ $expected = [
     '/api/v1/recycle-bin/{type}/{itemId}/restore' => '$requireActionAuth',
     '/api/v1/customer-workflows/{contactId}/requests' => '$requireCustomerWorkflowRequestAuth',
     '/api/v1/daily-call-monitoring/customer-logs' => '$requireActionAuth',
+    '/api/v1/daily-call-monitoring/do-not-contact-flag' => '$requireActionAuth',
     '/api/v1/daily-call-monitoring/incident-reports' => '$requireActionAuth',
     '/api/v1/call-system/auto-reply-settings' => '$requireMasterUser',
     '/api/v1/incident-report-items' => '$requireActionAuth',
@@ -84,6 +85,7 @@ foreach ([
 
 foreach ([
     "\$kind === 'customer_update' ? 'edit' : 'add'",
+    "'Daily Call Monitoring Dashboard', 'edit'",
     "assertActionPermission(\$claims, 'edit', 'Daily Call Monitoring Dashboard')",
     "assertActionPermission(\$claims, 'edit', 'Customer Data')",
     "assertActionPermission(\$claims, \$action, 'Customer Data')",
@@ -95,6 +97,7 @@ foreach ([
 
 $expectedViewRoutes = [
     '/api/v1/customer-database' => 'Customer Database',
+    '/api/v1/teams' => 'Team',
     '/api/v1/products' => 'Product Database',
     '/api/v1/purchase-requests' => 'Purchase Request',
     '/api/v1/purchase-orders' => 'Purchase Order',
@@ -120,6 +123,25 @@ foreach ($expectedViewRoutes as $route => $page) {
 
     if ($line === null || !str_contains($line, '$requireViewAuth') || !str_contains($line, "'{$page}'")) {
         throw new RuntimeException("FAIL: {$route} is not protected by View for {$page}");
+    }
+}
+
+$prospectTeamOptionsRoute = null;
+foreach (preg_split('/\R/', $source) ?: [] as $candidate) {
+    if (str_contains($candidate, "'/api/v1/prospect-team-options'")) {
+        $prospectTeamOptionsRoute = $candidate;
+        break;
+    }
+}
+if ($prospectTeamOptionsRoute === null || !str_contains($prospectTeamOptionsRoute, '$requireProspectTeamOptionsAuth')) {
+    throw new RuntimeException('FAIL: prospect team options must use its dedicated authorization wrapper');
+}
+foreach ([
+    "assertActionPermission(\$claims, 'view', \$page)",
+    "['Daily Call Monitoring Dashboard', 'Customer Data', 'Customer Database']",
+] as $prospectTeamOptionsPermissionCheck) {
+    if (!str_contains($source, $prospectTeamOptionsPermissionCheck)) {
+        throw new RuntimeException('FAIL: prospect team options must use configured customer workflow view permissions');
     }
 }
 

@@ -357,6 +357,14 @@ SELECT
     COALESCE(p.lmobile, '') AS mobile,
     COALESCE(p.lprofile_type, 'Old') AS profile_type,
     COALESCE(p.lverification, '') AS verification,
+    COALESCE(p.lencoded_by, 0) AS prospect_creator_id,
+    EXISTS (
+        SELECT 1 FROM tblaudit_trail verification_audit
+        WHERE verification_audit.lmain_id = p.lmain_id
+          AND verification_audit.lrefno = p.lsessionid
+          AND verification_audit.lpage = 'Daily Call Monitoring Dashboard'
+          AND verification_audit.laction = 'Verify Prospect'
+    ) AS verified_in_system,
     COALESCE(p.lstatus, 1) AS status,
     COALESCE(p.ltransaction_type, '') AS transaction_type,
     COALESCE(p.lsales_person, '') AS sales_person_id,
@@ -585,6 +593,20 @@ SQL;
             $payload['delivery_addresses'] ?? null,
             (string) ($payload['delivery_address'] ?? $payload['address'] ?? '')
         );
+        $salesTeamId = ($payload['sales_team_id'] ?? null) === '' || ($payload['sales_team_id'] ?? null) === null
+            ? null
+            : (int) $payload['sales_team_id'];
+        if ($salesTeamId !== null) {
+            $team = $pdo->prepare(
+                'SELECT 1 FROM tblteamstaff
+                 WHERE lid = :team_id AND lmain_id = :main_id AND COALESCE(lstatus, 1) = 1
+                 LIMIT 1'
+            );
+            $team->execute(['team_id' => $salesTeamId, 'main_id' => $mainId]);
+            if (!$team->fetchColumn()) {
+                throw new RuntimeException('Selected team is invalid or inactive');
+            }
+        }
         $ownsTransaction = !$pdo->inTransaction();
         if ($ownsTransaction) {
             $this->ensureAssignmentHistoryTable();
@@ -595,9 +617,9 @@ SQL;
             $discountCodeInsertValue = $this->hasCustomerDiscountCodeColumn() ? ', :discount_code' : '';
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, ldate_assigned, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, ldate_assigned, lsales_team, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :date_assigned, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :date_assigned, :sales_team, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
             );
             $insertParams = [
                 'main_id' => $mainId,
@@ -610,6 +632,7 @@ SQL;
                 'mobile' => (string) ($payload['mobile'] ?? ''),
                 'sales_person' => (string) ($payload['sales_person_id'] ?? ''),
                 'date_assigned' => trim((string) ($payload['sales_person_id'] ?? '')) !== '' ? date('Y-m-d') : null,
+                'sales_team' => $salesTeamId,
                 'refer_by' => (string) ($payload['refer_by'] ?? ''),
                 'address' => (string) ($payload['address'] ?? ''),
                 'delivery_address' => $deliveryAddresses[0] ?? (string) ($payload['address'] ?? ''),

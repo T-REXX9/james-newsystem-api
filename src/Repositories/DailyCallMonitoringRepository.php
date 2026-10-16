@@ -93,6 +93,7 @@ final class DailyCallMonitoringRepository
                 'province' => $customer['province'] ?: '—',
                 'city' => $customer['city'] ?: '—',
                 'shopName' => $customer['shop_name'] ?: 'Unnamed Shop',
+                'doNotContact' => (bool) ($customer['do_not_contact'] ?? false),
                 'pastName' => $customer['past_name'] ?: '',
                 'contactNumber' => $customer['contact_number'] ?: '—',
                 'contactPersonName' => $customer['contact_person_name'] ?: '',
@@ -879,6 +880,7 @@ latest_sales_report AS (
 )
 SELECT
     p.lsessionid AS id,
+    EXISTS (SELECT 1 FROM daily_call_do_not_contact_flags dnc WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid) AS do_not_contact,
     COALESCE((SELECT s.lis_starred FROM tblpatient_stars s WHERE s.lmain_id = p.lmain_id AND s.lsessionid = p.lsessionid), 0) AS is_starred,
     COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Shop') AS shop_name,
     COALESCE((
@@ -900,6 +902,7 @@ CASE
         ELSE 'QBP'
     END AS prospect_source,
     NULLIF(TRIM(CONCAT(COALESCE(encoder.lfname, ''), ' ', COALESCE(encoder.llname, ''))), '') AS prospect_created_by,
+    COALESCE(p.lencoded_by, 0) AS prospect_creator_id,
     COALESCE(
         NULLIF(TRIM(p.lmobile), ''),
         NULLIF(TRIM(p.lphone), ''),
@@ -1282,6 +1285,7 @@ SQL;
             return [
                 'id' => (string) ($row['id'] ?? ''),
                 'shopName' => (string) ($row['shop_name'] ?? 'Unnamed Shop'),
+                'doNotContact' => (bool) ($row['do_not_contact'] ?? false),
                 'pastName' => $this->cleanDisplayText($row['past_name'] ?? '', ''),
                 'province' => $this->cleanDisplayText($row['province'] ?? '', '—'),
                 'city' => $this->cleanDisplayText($row['city'] ?? '', '—'),
@@ -1322,6 +1326,8 @@ SQL;
                 'prospect_source' => $this->cleanDisplayText($row['prospect_source'] ?? '', ''),
                 'prospectCreatedBy' => $this->cleanDisplayText($row['prospect_created_by'] ?? '', ''),
                 'prospect_created_by' => $this->cleanDisplayText($row['prospect_created_by'] ?? '', ''),
+                'prospectCreatorId' => (string) ($row['prospect_creator_id'] ?? ''),
+                'prospect_creator_id' => (string) ($row['prospect_creator_id'] ?? ''),
                 'verifiedInSystem' => (bool) ($row['verified_in_system'] ?? false),
                 'verified_in_system' => (bool) ($row['verified_in_system'] ?? false),
                 'createdAt' => (string) ($row['created_at'] ?? ''),
@@ -1497,6 +1503,24 @@ SQL;
             'do_not_contact_customers' => $doNotContactCustomers,
             'bookmarked_contact_id' => $this->getDailyCallBookmark($mainId, $viewerUserId),
         ];
+    }
+
+    public function setDoNotContactFlag(int $mainId, string $contactId, int $userId, bool $marked): bool
+    {
+        if ($marked) {
+            $statement = $this->db->pdo()->prepare(<<<'SQL'
+INSERT INTO daily_call_do_not_contact_flags (main_id, contact_id, marked_by)
+VALUES (:main_id, :contact_id, :marked_by)
+ON DUPLICATE KEY UPDATE marked_by = VALUES(marked_by), marked_at = CURRENT_TIMESTAMP
+SQL);
+            $statement->execute(['main_id' => $mainId, 'contact_id' => $contactId, 'marked_by' => $userId]);
+            return true;
+        }
+        $statement = $this->db->pdo()->prepare(
+            'DELETE FROM daily_call_do_not_contact_flags WHERE main_id = :main_id AND contact_id = :contact_id'
+        );
+        $statement->execute(['main_id' => $mainId, 'contact_id' => $contactId]);
+        return false;
     }
 
     public function isSalesAgentAccount(int $mainId, int $viewerUserId): bool
@@ -2512,6 +2536,7 @@ SQL;
         $sql = <<<SQL
 SELECT
     p.lsessionid AS id,
+    EXISTS (SELECT 1 FROM daily_call_do_not_contact_flags dnc WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid) AS do_not_contact,
     p.lcompany AS shop_name,
     COALESCE((
         SELECT old_customer.loldname

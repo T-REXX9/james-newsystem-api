@@ -24,7 +24,7 @@ $assert(
     'Daily Call visibility includes only direct agent and direct team assignments'
 );
 $assert(
-    str_contains($dailyCall, 'viewerHasIndividualAssignments')
+    str_contains($dailyCall, "if (\$userType === '1'")
         && str_contains($dailyCall, "(int) (\$viewer['team_id'] ?? 0) > 0"),
     'Unassigned staff cannot widen Daily Call visibility through view-all permission'
 );

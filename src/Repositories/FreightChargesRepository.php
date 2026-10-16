@@ -99,6 +99,7 @@ SQL;
         $countStmt->execute();
         $total = (int) ($countStmt->fetchColumn() ?: 0);
 
+        $transactionNumberSql = $this->linkedTransactionNumberSql();
         $sql = <<<SQL
 SELECT
     deb.lid,
@@ -117,7 +118,7 @@ SELECT
     COALESCE(deb.ltransaction_type, 'No Reference') AS ltransaction_type,
     COALESCE(deb.IsFreightCollect, 0) AS IsFreightCollect,
     COALESCE(deb.ltrans_refno, '') AS ltrans_refno,
-    COALESCE(deb.linvoice_no, '') AS linvoice_no,
+    {$transactionNumberSql} AS linvoice_no,
     COALESCE(deb.ldatetime, '') AS ldatetime,
     COALESCE(deb.created_at, '') AS created_at,
     COALESCE(acc.lfname, '') AS userfname,
@@ -235,6 +236,7 @@ SQL;
 
     public function getByRefno(string $refno): ?array
     {
+        $transactionNumberSql = $this->linkedTransactionNumberSql();
         $sql = <<<SQL
 SELECT
     deb.lid,
@@ -253,7 +255,7 @@ SELECT
     COALESCE(deb.ltransaction_type, 'No Reference') AS ltransaction_type,
     COALESCE(deb.IsFreightCollect, 0) AS IsFreightCollect,
     COALESCE(deb.ltrans_refno, '') AS ltrans_refno,
-    COALESCE(deb.linvoice_no, '') AS linvoice_no,
+    {$transactionNumberSql} AS linvoice_no,
     COALESCE(deb.ldatetime, '') AS ldatetime,
     COALESCE(deb.created_at, '') AS created_at,
     COALESCE(acc.lfname, '') AS userfname,
@@ -270,6 +272,35 @@ SQL;
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         return $row !== false ? $row : null;
+    }
+
+    private function linkedTransactionNumberSql(): string
+    {
+        return <<<'SQL'
+CASE
+    WHEN deb.ltransaction_type = 'No Reference' THEN COALESCE(deb.linvoice_no, '')
+    ELSE COALESCE(
+        NULLIF(CONCAT(
+            COALESCE((
+                SELECT invoice.linvoice_no
+                FROM tblinvoice_list invoice
+                WHERE invoice.lrefno = deb.ltrans_refno
+                  AND CAST(COALESCE(invoice.lmain_id, 0) AS SIGNED) = CAST(COALESCE(deb.lmain_id, 0) AS SIGNED)
+                LIMIT 1
+            ), ''),
+            COALESCE((
+                SELECT delivery.linvoice_no
+                FROM tbldelivery_receipt delivery
+                WHERE delivery.lrefno = deb.ltrans_refno
+                  AND CAST(COALESCE(delivery.lmain_id, 0) AS SIGNED) = CAST(COALESCE(deb.lmain_id, 0) AS SIGNED)
+                LIMIT 1
+            ), '')
+        ), ''),
+        NULLIF(deb.linvoice_no, ''),
+        ''
+    )
+END
+SQL;
     }
 
     public function create(int $mainId, string $userId, array $payload): array

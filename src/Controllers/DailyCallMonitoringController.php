@@ -151,6 +151,22 @@ final class DailyCallMonitoringController
         return ['contact_id' => $this->repo->setDailyCallBookmark($mainId, $userId, $contactId)];
     }
 
+    public function setDoNotContactFlag(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $userId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($userId <= 0 || $mainId <= 0 || (int) ($claims['main_userid'] ?? 0) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        $contactId = trim((string) ($body['contact_id'] ?? ''));
+        if ($contactId === '') throw new HttpException(422, 'contact_id is required');
+        $contactId = $this->resolveContactId($mainId, $contactId);
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $userId);
+        $marked = filter_var($body['marked'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        return ['marked' => $this->repo->setDoNotContactFlag($mainId, $contactId, $userId, $marked)];
+    }
+
     public function customerPurchaseHistory(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = $this->authenticatedMainId($body, $query);
@@ -698,6 +714,51 @@ final class DailyCallMonitoringController
         }
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
         return $this->callReportRepo->deleteConversationMessage($mainId, $contactId, $messageId, $viewerUserId, $reason);
+    }
+
+    public function updateSalesReportMessage(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $viewerUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $contactId = trim((string) ($params['contactId'] ?? ''));
+        $messageId = trim((string) ($params['messageId'] ?? ''));
+        if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '' || $messageId === '') {
+            throw new HttpException(422, 'main_id, contactId, messageId, and authenticated account are required');
+        }
+        $contactId = $this->resolveContactId($mainId, $contactId);
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        if (!$this->repo->isSalesAgentAccount($mainId, $viewerUserId)) {
+            throw new HttpException(403, 'Only sales agents can edit their own Agent Sales Report messages.');
+        }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
+        return $this->callReportRepo->updateAgentConversationMessage(
+            $mainId,
+            $contactId,
+            $messageId,
+            $viewerUserId,
+            (string) ($body['body'] ?? '')
+        );
+    }
+
+    public function salesReportMessageEditHistory(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        $viewerUserId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($query['main_id'] ?? $body['main_id'] ?? 0);
+        $contactId = trim((string) ($params['contactId'] ?? ''));
+        $messageId = trim((string) ($params['messageId'] ?? ''));
+        if ($viewerUserId <= 0 || $mainId <= 0 || $contactId === '' || $messageId === '') {
+            throw new HttpException(422, 'main_id, contactId, messageId, and authenticated account are required');
+        }
+        $contactId = $this->resolveContactId($mainId, $contactId);
+        if ((int) ($claims['main_userid'] ?? $mainId) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        $this->repo->assertCustomerViewAccess($mainId, $contactId, $viewerUserId);
+        return ['history' => $this->callReportRepo->getConversationMessageEditHistory($mainId, $contactId, $messageId, $viewerUserId)];
     }
 
     public function uploadSalesReportAttachment(array $params = [], array $query = [], array $body = []): array

@@ -277,6 +277,7 @@ final class CallReportRepository
      */
     public function getUnifiedConversation(int $mainId, string $contactId, int $viewerUserId): array
     {
+        $canViewEditHistory = $this->isMasterUser($viewerUserId, $mainId);
         $this->backfillThreadsFromCallLogs($mainId, $contactId, $viewerUserId);
         $threads = $this->getThreadsByContact($mainId, $contactId, $viewerUserId);
         $messages = [];
@@ -306,6 +307,7 @@ final class CallReportRepository
                     'call_ended_at' => (string) ($thread['call_ended_at'] ?? ''),
                     'duration_seconds' => (int) ($thread['duration_seconds'] ?? 0),
                     'replyable' => !$isSynthetic && (($thread['replyable'] ?? true) !== false),
+                    'is_edited' => $canViewEditHistory && !empty($thread['report_edited_at']),
                 ];
             }
 
@@ -315,6 +317,7 @@ final class CallReportRepository
                     'kind' => 'reply',
                     'attachment_url' => $message['attachment_url'] ?? null,
                     'attachment_mime' => $message['attachment_mime'] ?? null,
+                    'is_edited' => $canViewEditHistory && !empty($message['edited_at']),
                 ]);
             }
         }
@@ -427,6 +430,147 @@ final class CallReportRepository
         }
 
         return true;
+    }
+
+    public function updateAgentConversationMessage(
+        int $mainId,
+        string $contactId,
+        string $conversationMessageId,
+        int $userId,
+        string $body
+    ): array {
+        $body = trim($body);
+        if ($body === '' || strlen($body) > 2000) {
+            throw new HttpException(422, 'Message text is required and must be 2,000 characters or fewer.');
+        }
+
+        $isReport = str_starts_with($conversationMessageId, 'report:');
+        $rawId = $isReport ? substr($conversationMessageId, 7) : $conversationMessageId;
+        if (preg_match('/^[1-9][0-9]*$/D', $rawId) !== 1) {
+            throw new HttpException(422, 'Only persisted agent messages can be edited.');
+        }
+        $recordId = (int) $rawId;
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            if ($isReport) {
+                $select = $pdo->prepare(
+                    'SELECT *, TIMESTAMPDIFF(SECOND, created_at, NOW()) AS age_seconds
+                     FROM call_report_threads
+                     WHERE id = :id AND main_id = :main_id AND contact_id = :contact_id
+                       AND report_deleted_at IS NULL
+                     FOR UPDATE'
+                );
+                $select->execute(['id' => $recordId, 'main_id' => $mainId, 'contact_id' => $contactId]);
+                $record = $select->fetch(PDO::FETCH_ASSOC);
+                if (!is_array($record) || trim((string) ($record['call_log_entry_id'] ?? '')) === '') {
+                    throw new HttpException(404, 'Persisted Agent Sales Report message was not found.');
+                }
+                if ((int) ($record['agent_user_id'] ?? 0) !== $userId) {
+                    throw new HttpException(403, 'You can only edit your own messages.');
+                }
+                if ((int) ($record['age_seconds'] ?? PHP_INT_MAX) < 0 || (int) $record['age_seconds'] > 86400) {
+                    throw new HttpException(403, 'Messages can only be edited within 24 hours of sending.');
+                }
+                $oldBody = (string) ($record['report_body'] ?? '');
+                if ($oldBody !== $body) {
+                    $this->recordConversationMessageEdit($pdo, $mainId, $contactId, $recordId, null, 'agent_report', $oldBody, $userId);
+                    $update = $pdo->prepare('UPDATE call_report_threads SET report_body = :body, report_edited_at = NOW() WHERE id = :id');
+                    $update->execute(['body' => $body, 'id' => $recordId]);
+                }
+            } else {
+                $select = $pdo->prepare(
+                    'SELECT m.*, t.main_id, t.contact_id, TIMESTAMPDIFF(SECOND, m.created_at, NOW()) AS age_seconds
+                     FROM call_report_messages m
+                     INNER JOIN call_report_threads t ON t.id = m.thread_id
+                     WHERE m.id = :id AND t.main_id = :main_id AND t.contact_id = :contact_id
+                       AND m.deleted_at IS NULL
+                     FOR UPDATE'
+                );
+                $select->execute(['id' => $recordId, 'main_id' => $mainId, 'contact_id' => $contactId]);
+                $record = $select->fetch(PDO::FETCH_ASSOC);
+                if (!is_array($record)) {
+                    throw new HttpException(404, 'Persisted Agent Sales Report message was not found.');
+                }
+                if ((string) ($record['sender_role'] ?? '') !== 'agent' || (int) ($record['sender_user_id'] ?? 0) !== $userId) {
+                    throw new HttpException(403, 'You can only edit your own agent messages.');
+                }
+                if ((int) ($record['age_seconds'] ?? PHP_INT_MAX) < 0 || (int) $record['age_seconds'] > 86400) {
+                    throw new HttpException(403, 'Messages can only be edited within 24 hours of sending.');
+                }
+                $oldBody = (string) ($record['body'] ?? '');
+                if ($oldBody !== $body) {
+                    $this->recordConversationMessageEdit($pdo, $mainId, $contactId, (int) $record['thread_id'], $recordId, 'reply', $oldBody, $userId);
+                    $update = $pdo->prepare('UPDATE call_report_messages SET body = :body, edited_at = NOW() WHERE id = :id');
+                    $update->execute(['body' => $body, 'id' => $recordId]);
+                }
+            }
+            $pdo->commit();
+        } catch (\Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+
+        $conversation = $this->getUnifiedConversation($mainId, $contactId, $userId);
+        foreach ($conversation['messages'] as $message) {
+            if ((string) ($message['id'] ?? '') === $conversationMessageId) return $message;
+        }
+        throw new HttpException(500, 'Updated Agent Sales Report message could not be reloaded.');
+    }
+
+    /** @return list<array{body: string, actor_user_id: string, actor_name: string, edited_at: string}> */
+    public function getConversationMessageEditHistory(int $mainId, string $contactId, string $conversationMessageId, int $viewerUserId): array
+    {
+        if (!$this->isMasterUser($viewerUserId, $mainId)) {
+            throw new HttpException(403, 'Only the Master User can view Agent Sales Report edit history.');
+        }
+        $isReport = str_starts_with($conversationMessageId, 'report:');
+        $rawId = $isReport ? substr($conversationMessageId, 7) : $conversationMessageId;
+        if (preg_match('/^[1-9][0-9]*$/D', $rawId) !== 1) {
+            throw new HttpException(422, 'Only persisted Agent Sales Report messages have edit history.');
+        }
+        $recordId = (int) $rawId;
+        $lookup = $this->db->pdo()->prepare($isReport
+            ? 'SELECT id FROM call_report_threads WHERE id = :id AND main_id = :main_id AND contact_id = :contact_id AND report_deleted_at IS NULL AND call_log_entry_id IS NOT NULL LIMIT 1'
+            : 'SELECT m.id FROM call_report_messages m INNER JOIN call_report_threads t ON t.id = m.thread_id WHERE m.id = :id AND t.main_id = :main_id AND t.contact_id = :contact_id AND m.deleted_at IS NULL LIMIT 1');
+        $lookup->execute(['id' => $recordId, 'main_id' => $mainId, 'contact_id' => $contactId]);
+        if (!$lookup->fetchColumn()) {
+            throw new HttpException(404, 'Agent Sales Report message was not found.');
+        }
+        $history = $this->db->pdo()->prepare(
+            'SELECT previous_body, actor_user_id, actor_name, edited_at
+             FROM call_report_message_edit_history
+             WHERE main_id = :main_id AND contact_id = :contact_id AND record_type = :record_type AND record_id = :record_id
+             ORDER BY edited_at ASC, id ASC'
+        );
+        $history->execute([
+            'main_id' => $mainId,
+            'contact_id' => $contactId,
+            'record_type' => $isReport ? 'agent_report' : 'reply',
+            'record_id' => $recordId,
+        ]);
+        return array_map(static fn(array $row): array => [
+            'body' => (string) $row['previous_body'],
+            'actor_user_id' => (string) $row['actor_user_id'],
+            'actor_name' => (string) $row['actor_name'],
+            'edited_at' => (string) $row['edited_at'],
+        ], $history->fetchAll(PDO::FETCH_ASSOC) ?: []);
+    }
+
+    private function recordConversationMessageEdit(PDO $pdo, int $mainId, string $contactId, int $threadId, ?int $messageId, string $recordType, string $previousBody, int $actorUserId): void
+    {
+        $actorName = $this->resolveAccountDisplayName($actorUserId) ?: ('User ' . $actorUserId);
+        $audit = $pdo->prepare(
+            'INSERT INTO call_report_message_edit_history
+             (main_id, contact_id, thread_id, message_id, record_type, record_id, previous_body, actor_user_id, actor_name, edited_at)
+             VALUES (:main_id, :contact_id, :thread_id, :message_id, :record_type, :record_id, :previous_body, :actor_user_id, :actor_name, NOW())'
+        );
+        $audit->execute([
+            'main_id' => $mainId, 'contact_id' => $contactId, 'thread_id' => $threadId,
+            'message_id' => $messageId, 'record_type' => $recordType,
+            'record_id' => $messageId ?? $threadId, 'previous_body' => $previousBody,
+            'actor_user_id' => $actorUserId, 'actor_name' => $actorName,
+        ]);
     }
 
     /** @return array{deleted: bool, record_type: string, id: string} */
@@ -862,6 +1006,7 @@ SQL;
             'agent_name' => (string) ($row['agent_name'] ?? ''),
             'outcome' => (string) ($row['outcome'] ?? 'note'),
             'report_body' => (string) ($row['report_body'] ?? ''),
+            'report_edited_at' => $row['report_edited_at'] ?? null,
             'report_deleted_at' => $row['report_deleted_at'] ?? null,
             'created_at' => (string) ($row['created_at'] ?? ''),
             'call_started_at' => (string) ($row['call_started_at'] ?? ''),
@@ -916,6 +1061,7 @@ SQL;
             'attachment_url' => $attachmentUrl !== '' ? $attachmentUrl : null,
             'attachment_mime' => $attachmentUrl !== '' ? ($attachmentMime !== '' ? $attachmentMime : null) : null,
             'created_at' => (string) ($row['created_at'] ?? ''),
+            'edited_at' => $row['edited_at'] ?? null,
             'is_from_current_user' => $senderUserId === $viewerUserId,
             'is_from_master' => $senderRole === 'master',
         ];
