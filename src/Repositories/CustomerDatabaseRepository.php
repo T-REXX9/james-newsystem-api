@@ -368,6 +368,8 @@ SELECT
     COALESCE(p.lstatus, 1) AS status,
     COALESCE(p.ltransaction_type, '') AS transaction_type,
     COALESCE(p.lsales_person, '') AS sales_person_id,
+    CAST(COALESCE(p.lsales_team, 0) AS CHAR) AS sales_team_id,
+    COALESCE((SELECT t.lteamname FROM tblteamstaff t WHERE t.lid = p.lsales_team AND t.lmain_id = p.lmain_id LIMIT 1), '') AS team,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person_name,
     CASE
         WHEN TRIM(COALESCE(p.lrefer_by, '')) = ''
@@ -390,6 +392,7 @@ SELECT
     COALESCE(p.lvat_percent, 0) AS vat_percent,
     NULLIF(NULLIF(NULLIF(CAST(p.lsince AS CHAR), '1970-01-01'), '0000-00-00'), '') AS since,
     NULLIF(NULLIF(NULLIF(CAST(p.ldealer_since AS CHAR), '1970-01-01'), '0000-00-00'), '') AS dealer_since,
+    COALESCE(p.ldealer_terms, '') AS dealer_terms,
     COALESCE(p.ldealer_quota, 0) AS dealer_quota,
     COALESCE(p.lcredit, 0) AS credit_limit,
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
@@ -485,6 +488,8 @@ SELECT
     COALESCE(p.lstatus, 1) AS status,
     COALESCE(p.ltransaction_type, '') AS transaction_type,
     COALESCE(p.lsales_person, '') AS sales_person_id,
+    CAST(COALESCE(p.lsales_team, 0) AS CHAR) AS sales_team_id,
+    COALESCE((SELECT t.lteamname FROM tblteamstaff t WHERE t.lid = p.lsales_team AND t.lmain_id = p.lmain_id LIMIT 1), '') AS team,
     TRIM(CONCAT(COALESCE(acc.lfname, ''), ' ', COALESCE(acc.llname, ''))) AS sales_person_name,
     CASE
         WHEN TRIM(COALESCE(p.lrefer_by, '')) = ''
@@ -507,6 +512,7 @@ SELECT
     COALESCE(p.lvat_percent, 0) AS vat_percent,
     NULLIF(NULLIF(NULLIF(CAST(p.lsince AS CHAR), '1970-01-01'), '0000-00-00'), '') AS since,
     NULLIF(NULLIF(NULLIF(CAST(p.ldealer_since AS CHAR), '1970-01-01'), '0000-00-00'), '') AS dealer_since,
+    COALESCE(p.ldealer_terms, '') AS dealer_terms,
     COALESCE(p.ldealer_quota, 0) AS dealer_quota,
     COALESCE(p.lcredit, 0) AS credit_limit,
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
@@ -617,9 +623,9 @@ SQL;
             $discountCodeInsertValue = $this->hasCustomerDiscountCodeColumn() ? ', :discount_code' : '';
             $insert = $pdo->prepare(
                 'INSERT INTO tblpatient
-                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, ldate_assigned, lsales_team, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
+                (lmain_id, lencoded_by, lremarks, ldatereg, ldatetime, lpatient_today, lsessionid, lcompany, lemail, lphone, lmobile, lsales_person, ldate_assigned, lsales_team, lrefer_by, laddress, ldelivery_address, larea, ltin, lprice_group' . $discountCodeInsertColumn . ', lbusiness_line, lterms, ltransaction_type, lvat_type, lvat_percent, ldealer_since, ldealer_terms, ldealer_quota, lcredit, lstatus, lnotes, lduplicate_override_reason, lrecord_image, lrecord_image_position, lprovince, lcity, ldebt_type, lpreferred_brand, lprofile_type, lverification, lsince)
                 VALUES
-                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :date_assigned, :sales_team, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
+                (:main_id, :encoded_by, "New Patient", :datereg, NOW(), CURDATE(), :session_id, :company, :email, :phone, :mobile, :sales_person, :date_assigned, :sales_team, :refer_by, :address, :delivery_address, :area, :tin, :price_group' . $discountCodeInsertValue . ', :business_line, :terms, :transaction_type, :vat_type, :vat_percent, :dealer_since, :dealer_terms, :dealer_quota, :credit, :status, :notes, :duplicate_override_reason, :record_image, :record_image_position, :province, :city, :debt_type, :preferred_brand, :profile_type, :verification, :since_date)'
             );
             $insertParams = [
                 'main_id' => $mainId,
@@ -645,6 +651,7 @@ SQL;
                 'vat_type' => (string) (($payload['vat_type'] ?? '') !== '' ? $payload['vat_type'] : self::DEFAULT_VAT_TYPE),
                 'vat_percent' => isset($payload['vat_percent']) ? ((float) $payload['vat_percent']) : 0.12,
                 'dealer_since' => $this->normalizeDateNullable((string) ($payload['dealer_since'] ?? ''), 'dealer_since'),
+                'dealer_terms' => (string) ($payload['dealer_terms'] ?? ''),
                 'dealer_quota' => isset($payload['dealer_quota']) ? (float) $payload['dealer_quota'] : 0,
                 'credit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : 0,
                 'status' => isset($payload['status']) ? (int) $payload['status'] : 1,
@@ -1258,6 +1265,20 @@ SQL;
         if (array_key_exists('sales_person_id', $payload)) {
             $payload['sales_person_id'] = $this->normalizeSalesPersonIdForAssignment($mainId, $payload['sales_person_id']);
         }
+        $salesTeamId = array_key_exists('sales_team_id', $payload)
+            ? (($payload['sales_team_id'] === '' || $payload['sales_team_id'] === null) ? null : (int) $payload['sales_team_id'])
+            : (isset($existing['sales_team_id']) ? (int) $existing['sales_team_id'] : null);
+        if (array_key_exists('sales_team_id', $payload) && $salesTeamId !== null) {
+            $team = $this->db->pdo()->prepare(
+                'SELECT 1 FROM tblteamstaff
+                 WHERE lid = :team_id AND lmain_id = :main_id AND COALESCE(lstatus, 1) = 1
+                 LIMIT 1'
+            );
+            $team->execute(['team_id' => $salesTeamId, 'main_id' => $mainId]);
+            if (!$team->fetchColumn()) {
+                throw new RuntimeException('Selected sales team is unavailable. Refresh the team list and try again.');
+            }
+        }
         $nextSalesPerson = (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? '');
         $currentSalesPerson = (string) ($existing['sales_person_id'] ?? '');
         $salesPersonChanged = array_key_exists('sales_person_id', $payload)
@@ -1286,6 +1307,7 @@ SET
     lphone = :phone,
     lmobile = :mobile,
     lsales_person = :sales_person{$assignmentDateClause},
+    lsales_team = :sales_team,
     lrefer_by = :refer_by,
     laddress = :address,
     ldelivery_address = :delivery_address,
@@ -1298,6 +1320,7 @@ SET
     lvat_type = :vat_type,
     lvat_percent = :vat_percent,
     ldealer_since = :dealer_since,
+    ldealer_terms = :dealer_terms,
     lsince = :since_date,
     ldealer_quota = :dealer_quota,
     lcredit = :credit,
@@ -1322,6 +1345,7 @@ SQL;
                 'phone' => (string) ($payload['phone'] ?? $existing['phone'] ?? ''),
                 'mobile' => (string) ($payload['mobile'] ?? $existing['mobile'] ?? ''),
                 'sales_person' => (string) ($payload['sales_person_id'] ?? $existing['sales_person_id'] ?? ''),
+                'sales_team' => $salesTeamId,
                 'refer_by' => (string) ($payload['refer_by'] ?? $existing['refer_by'] ?? ''),
                 'address' => (string) ($payload['address'] ?? $existing['address'] ?? ''),
                 'delivery_address' => $deliveryAddresses[0] ?? (string) ($payload['delivery_address'] ?? $existing['delivery_address'] ?? ''),
@@ -1334,6 +1358,7 @@ SQL;
                 'vat_type' => (string) ($payload['vat_type'] ?? $existing['vat_type'] ?? ''),
                 'vat_percent' => isset($payload['vat_percent']) ? ((float) $payload['vat_percent']) : (float) ($existing['vat_percent'] ?? 0),
                 'dealer_since' => $this->normalizeDateNullable((string) ($payload['dealer_since'] ?? $existing['dealer_since'] ?? ''), 'dealer_since'),
+                'dealer_terms' => (string) ($payload['dealer_terms'] ?? $existing['dealer_terms'] ?? ''),
                 'since_date' => $this->normalizeDateNullable((string) ($payload['since'] ?? $existing['since'] ?? ''), 'since_date'),
                 'dealer_quota' => isset($payload['dealer_quota']) ? (float) $payload['dealer_quota'] : (float) ($existing['dealer_quota'] ?? 0),
                 'credit' => isset($payload['credit_limit']) ? (float) $payload['credit_limit'] : (float) ($existing['credit_limit'] ?? 0),
