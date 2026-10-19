@@ -1268,7 +1268,9 @@ SQL;
         $salesTeamId = array_key_exists('sales_team_id', $payload)
             ? (($payload['sales_team_id'] === '' || $payload['sales_team_id'] === null) ? null : (int) $payload['sales_team_id'])
             : (isset($existing['sales_team_id']) ? (int) $existing['sales_team_id'] : null);
-        if (array_key_exists('sales_team_id', $payload) && $salesTeamId !== null) {
+        $currentSalesTeamId = isset($existing['sales_team_id']) ? (int) $existing['sales_team_id'] : null;
+        $salesTeamChanged = array_key_exists('sales_team_id', $payload) && $salesTeamId !== $currentSalesTeamId;
+        if ($salesTeamChanged && $salesTeamId !== null) {
             $team = $this->db->pdo()->prepare(
                 'SELECT 1 FROM tblteamstaff
                  WHERE lid = :team_id AND lmain_id = :main_id AND COALESCE(lstatus, 1) = 1
