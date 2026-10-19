@@ -163,54 +163,85 @@ final class DailyCallMonitoringRepository
 
         $summaryStmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT
-    MONTH(t.ldate) AS month,
-    COALESCE(SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
-        * CASE WHEN t.ltax_type = 'Exclusive' THEN 1.12 ELSE 1 END), 0) AS sales,
-    0 AS collections
-FROM tbltransaction t
-INNER JOIN tbltransaction_item i ON i.lrefno = t.lrefno
-WHERE t.lmain_id = :main_id
-  AND COALESCE(t.lcancel, 0) = 0
-  AND COALESCE(t.limported, 0) = 1
-  AND t.ldate >= :year_start
-  AND t.ldate < :next_year_start
-GROUP BY MONTH(t.ldate)
-ORDER BY MONTH(t.ldate)
+    monthly.month,
+    COALESCE(SUM(monthly.sales), 0) AS sales,
+    COALESCE(SUM(monthly.collections), 0) AS collections
+FROM (
+    SELECT
+        MONTH(t.ldate) AS month,
+        SUM(COALESCE(item.lqty, 0) * COALESCE(item.lprice, 0)
+            * CASE WHEN t.ltax_type = 'Exclusive' THEN 1.12 ELSE 1 END) AS sales,
+        0 AS collections
+    FROM tbltransaction t
+    INNER JOIN tbltransaction_item item ON item.lrefno = t.lrefno
+    WHERE t.lmain_id = :sales_main_id
+      AND t.ldate >= :sales_year_start
+      AND t.ldate < :sales_next_year_start
+    GROUP BY MONTH(t.ldate)
+
+    UNION ALL
+
+    SELECT
+        MONTH(lg.ldatetime) AS month,
+        0 AS sales,
+        SUM(COALESCE(lg.lcredit, 0)) AS collections
+    FROM tblledger lg
+    WHERE lg.lmainid = :collection_main_id
+      AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'credit'
+      AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('dcr', 'collection', 'collections')
+      AND COALESCE(lg.lcredit, 0) > 0
+      AND lg.ldatetime >= :collections_year_start
+      AND lg.ldatetime < :collections_next_year_start
+    GROUP BY MONTH(lg.ldatetime)
+) monthly
+GROUP BY monthly.month
+ORDER BY monthly.month
 SQL);
         $summaryStmt->execute([
-            'main_id' => $mainId,
-            'year_start' => $yearStart,
-            'next_year_start' => $nextYearStart,
+            'sales_main_id' => $mainId,
+            'sales_year_start' => $yearStart,
+            'sales_next_year_start' => $nextYearStart,
+            'collection_main_id' => $mainId,
+            'collections_year_start' => $yearStart,
+            'collections_next_year_start' => $nextYearStart,
         ]);
         $summaryRows = $summaryStmt->fetchAll(PDO::FETCH_ASSOC);
-        $monthlySales = array_fill(0, 12, ['sales' => 0.0, 'collections' => 0.0]);
+        $monthlySales = array_map(
+            static fn(int $monthNumber): array => [
+                'month' => $monthNumber,
+                'sales' => 0.0,
+                'collections' => 0.0,
+            ],
+            range(1, 12)
+        );
         foreach ($summaryRows as $row) {
             $month = (int) ($row['month'] ?? 0);
             if ($month >= 1 && $month <= 12) {
                 $monthlySales[$month - 1] = [
+                    'month' => $month,
                     'sales' => (float) ($row['sales'] ?? 0),
                     'collections' => (float) ($row['collections'] ?? 0),
                 ];
             }
         }
-        // Keep the headline total in lockstep with the dashboard's monthly
-        // sales series, which follows the legacy imported sales-order date.
+        // Keep the headline total in lockstep with the legacy transaction
+        // calculation used to build the monthly series.
         $totalSalesYtd = array_sum(array_column($monthlySales, 'sales'));
 
         $kpiStmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT
-    COALESCE(SUM(CASE WHEN lg.ldatetime >= :sales_year_start AND lg.ldatetime < :sales_next_year_start AND COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS total_sales_ytd,
-    COALESCE(SUM(CASE WHEN lg.ldatetime >= :collections_year_start AND lg.ldatetime < :collections_next_year_start AND COALESCE(lg.lcredit, 0) > 0 THEN COALESCE(lg.lcredit, 0) ELSE 0 END), 0) AS total_collections_ytd,
+    COALESCE(SUM(CASE
+        WHEN lg.ldatetime >= :collections_year_start AND lg.ldatetime < :collections_next_year_start
+          AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'credit'
+          AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('dcr', 'collection', 'collections')
+          AND COALESCE(lg.lcredit, 0) > 0 THEN lg.lcredit
+        ELSE 0 END), 0) AS total_collections_ytd,
     COALESCE(SUM(COALESCE(lg.ldebit, 0) - COALESCE(lg.lcredit, 0)), 0) AS outstanding_receivables
 FROM tblledger lg
 WHERE lg.lmainid = :main_id
-  AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
-  AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
 SQL);
         $kpiStmt->execute([
             'main_id' => $mainId,
-            'sales_year_start' => $yearStart,
-            'sales_next_year_start' => $nextYearStart,
             'collections_year_start' => $yearStart,
             'collections_next_year_start' => $nextYearStart,
         ]);
@@ -229,19 +260,29 @@ SQL);
         $activeStmt->execute(['main_id' => $mainId]);
         $activeCustomers = (int) ($activeStmt->fetchColumn() ?: 0);
 
+        // The legacy dashboard ranked each customer by one monthly transaction
+        // from get_monthly_purchasers(), not by a sum of ledger debits. That
+        // grouped query selected the first transaction; MIN(lid) preserves
+        // that observed behavior deterministically under strict SQL modes.
         $topCustomersStmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT
-    p.lsessionid AS customer_id,
-    COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Customer') AS customer_name,
-    COALESCE(SUM(CASE WHEN COALESCE(lg.ldebit, 0) > 0 THEN COALESCE(lg.ldebit, 0) ELSE 0 END), 0) AS amount
-FROM tblledger lg
-LEFT JOIN tblpatient p ON p.lsessionid = lg.lcustomerid AND p.lmain_id = lg.lmainid
-WHERE lg.lmainid = :main_id
-  AND lg.ldatetime >= :month_start
-  AND lg.ldatetime < :next_month_start
-  AND LOWER(TRIM(COALESCE(lg.ltype, ''))) = 'debit'
-  AND LOWER(TRIM(COALESCE(lg.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
-GROUP BY p.lsessionid, p.lcompany
+    t.lcustomerid AS customer_id,
+    COALESCE(NULLIF(TRIM(t.lcompany), ''), 'Unnamed Customer') AS customer_name,
+    SUM(COALESCE(item.lqty, 0) * COALESCE(item.lprice, 0))
+        * CASE WHEN t.ltax_type = 'Exclusive' THEN 1.12 ELSE 1 END AS amount
+FROM tbltransaction t
+INNER JOIN (
+    SELECT lmain_id, lcustomerid, MIN(lid) AS first_transaction_id
+    FROM tbltransaction
+    WHERE lmain_id = :main_id
+      AND limported = 1
+      AND lcancel = 0
+      AND ldate >= :month_start
+      AND ldate < :next_month_start
+    GROUP BY lmain_id, lcustomerid
+) monthly_purchasers ON monthly_purchasers.first_transaction_id = t.lid
+INNER JOIN tbltransaction_item item ON item.lrefno = t.lrefno
+GROUP BY t.lcustomerid, t.lcompany, t.ltax_type
 HAVING amount > 0
 ORDER BY amount DESC, customer_name ASC
 LIMIT 10
