@@ -1014,6 +1014,7 @@ function app_router(): Router
     $router->get('/api/v1/daily-call-monitoring/do-not-contact-customers', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'companyDoNotContactCustomers']));
     $router->patch('/api/v1/daily-call-monitoring/call-bookmark', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'setCallBookmark']));
     $router->patch('/api/v1/daily-call-monitoring/do-not-contact-flag', $requireActionAuth([$dailyCallMonitoringController, 'setDoNotContactFlag'], 'Daily Call Monitoring Dashboard', 'edit'));
+    $router->patch('/api/v1/daily-call-monitoring/do-not-contact-flags/bulk', $requireActionAuth([$dailyCallMonitoringController, 'setDoNotContactFlagsBulk'], 'Daily Call Monitoring Dashboard', 'edit'));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/profile', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerProfile']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/metrics', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerMetrics']));
     $router->get('/api/v1/daily-call-monitoring/customers/{contactId}/purchase-history', $requireBearerAuthWithClaims([$dailyCallMonitoringController, 'customerPurchaseHistory']));

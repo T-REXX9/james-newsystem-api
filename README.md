@@ -51,6 +51,8 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
      *(Required for the separate Do Not Call badge in Daily Call Monitoring; does not alter customer status.)*
    - `mysql -u root topnotch < migrations/070_add_agent_sales_report_edit_history.sql`
      *(Required for Agent Sales Report message editing and Master User edit history.)*
+   - `mysql -u root topnotch < migrations/071_add_daily_call_do_not_contact_reason.sql`
+     *(Required to save and display the reason for a Do Not Call mark.)*
   - Apply `migrations/017_create_customer_requests.sql`,
     `migrations/019_add_procurement_recovery_columns.sql`, and
     `migrations/023_add_customer_product_soft_delete_columns.sql` to your configured

@@ -27,6 +27,7 @@ $expected = [
     '/api/v1/customer-workflows/{contactId}/requests' => '$requireCustomerWorkflowRequestAuth',
     '/api/v1/daily-call-monitoring/customer-logs' => '$requireActionAuth',
     '/api/v1/daily-call-monitoring/do-not-contact-flag' => '$requireActionAuth',
+    '/api/v1/daily-call-monitoring/do-not-contact-flags/bulk' => '$requireActionAuth',
     '/api/v1/daily-call-monitoring/incident-reports' => '$requireActionAuth',
     '/api/v1/call-system/auto-reply-settings' => '$requireMasterUser',
     '/api/v1/incident-report-items' => '$requireActionAuth',

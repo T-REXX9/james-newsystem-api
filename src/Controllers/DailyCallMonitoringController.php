@@ -154,6 +154,9 @@ final class DailyCallMonitoringController
     public function setDoNotContactFlag(array $params = [], array $query = [], array $body = []): array
     {
         $claims = (array) ($body['__auth_claims'] ?? []);
+        if ((string) ($claims['user_type'] ?? '') !== '1') {
+            throw new HttpException(403, 'Only a Master User can update the Do Not Call flag');
+        }
         $userId = (int) ($claims['sub'] ?? 0);
         $mainId = (int) ($body['main_id'] ?? 0);
         if ($userId <= 0 || $mainId <= 0 || (int) ($claims['main_userid'] ?? 0) !== $mainId) {
@@ -161,10 +164,65 @@ final class DailyCallMonitoringController
         }
         $contactId = trim((string) ($body['contact_id'] ?? ''));
         if ($contactId === '') throw new HttpException(422, 'contact_id is required');
+        $marked = filter_var($body['marked'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $reason = trim((string) ($body['reason'] ?? ''));
+        if ($marked && $reason === '') throw new HttpException(422, 'A reason is required to mark a customer Do Not Call');
+        $reasonLength = function_exists('mb_strlen') ? mb_strlen($reason, 'UTF-8') : strlen($reason);
+        if ($reasonLength > 500) throw new HttpException(422, 'Do Not Call reason must be 500 characters or fewer');
         $contactId = $this->resolveContactId($mainId, $contactId);
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $userId);
-        $marked = filter_var($body['marked'] ?? false, FILTER_VALIDATE_BOOLEAN);
-        return ['marked' => $this->repo->setDoNotContactFlag($mainId, $contactId, $userId, $marked)];
+        return ['marked' => $this->repo->setDoNotContactFlag($mainId, $contactId, $userId, $marked, $reason)];
+    }
+
+    public function setDoNotContactFlagsBulk(array $params = [], array $query = [], array $body = []): array
+    {
+        $claims = (array) ($body['__auth_claims'] ?? []);
+        if ((string) ($claims['user_type'] ?? '') !== '1') {
+            throw new HttpException(403, 'Only a Master User can update Do Not Call flags');
+        }
+        $userId = (int) ($claims['sub'] ?? 0);
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($userId <= 0 || $mainId <= 0 || (int) ($claims['main_userid'] ?? 0) !== $mainId) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+
+        $rawContactIds = $body['contact_ids'] ?? null;
+        if (!is_array($rawContactIds) || $rawContactIds === []) {
+            throw new HttpException(422, 'contact_ids must contain at least one customer');
+        }
+        if (count($rawContactIds) > 5000) {
+            throw new HttpException(422, 'A maximum of 5,000 customers can be marked at once');
+        }
+        $contactIds = [];
+        foreach ($rawContactIds as $rawContactId) {
+            if (!is_string($rawContactId) && !is_int($rawContactId)) {
+                throw new HttpException(422, 'Each contact_id must be a string or integer');
+            }
+            $contactId = trim((string) $rawContactId);
+            if ($contactId === '' || strlen($contactId) > 64) {
+                throw new HttpException(422, 'Each contact_id must be between 1 and 64 characters');
+            }
+            $contactIds[] = $this->resolveContactId($mainId, $contactId);
+        }
+        $contactIds = array_values(array_unique($contactIds));
+        $rawReason = $body['reason'] ?? null;
+        if (!is_string($rawReason)) {
+            throw new HttpException(422, 'A shared reason is required to mark customers Do Not Call');
+        }
+        $reason = trim($rawReason);
+        if ($reason === '') {
+            throw new HttpException(422, 'A shared reason is required to mark customers Do Not Call');
+        }
+        $reasonLength = function_exists('mb_strlen') ? mb_strlen($reason, 'UTF-8') : strlen($reason);
+        if ($reasonLength > 500) {
+            throw new HttpException(422, 'Do Not Call reason must be 500 characters or fewer');
+        }
+
+        foreach ($contactIds as $contactId) {
+            $this->repo->assertCustomerViewAccess($mainId, $contactId, $userId);
+        }
+        $markedCount = $this->repo->setDoNotContactFlagsBulk($mainId, $contactIds, $userId, $reason);
+        return ['marked_count' => $markedCount];
     }
 
     public function customerPurchaseHistory(array $params = [], array $query = [], array $body = []): array

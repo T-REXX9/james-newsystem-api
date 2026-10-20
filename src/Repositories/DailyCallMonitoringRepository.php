@@ -922,6 +922,7 @@ latest_sales_report AS (
 SELECT
     p.lsessionid AS id,
     EXISTS (SELECT 1 FROM daily_call_do_not_contact_flags dnc WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid) AS do_not_contact,
+    COALESCE((SELECT dnc.reason FROM daily_call_do_not_contact_flags dnc WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid LIMIT 1), '') AS do_not_contact_reason,
     COALESCE((SELECT s.lis_starred FROM tblpatient_stars s WHERE s.lmain_id = p.lmain_id AND s.lsessionid = p.lsessionid), 0) AS is_starred,
     COALESCE(NULLIF(TRIM(p.lcompany), ''), 'Unnamed Shop') AS shop_name,
     COALESCE((
@@ -1327,6 +1328,7 @@ SQL;
                 'id' => (string) ($row['id'] ?? ''),
                 'shopName' => (string) ($row['shop_name'] ?? 'Unnamed Shop'),
                 'doNotContact' => (bool) ($row['do_not_contact'] ?? false),
+                'doNotContactReason' => $this->cleanDisplayText($row['do_not_contact_reason'] ?? '', ''),
                 'pastName' => $this->cleanDisplayText($row['past_name'] ?? '', ''),
                 'province' => $this->cleanDisplayText($row['province'] ?? '', '—'),
                 'city' => $this->cleanDisplayText($row['city'] ?? '', '—'),
@@ -1546,15 +1548,15 @@ SQL;
         ];
     }
 
-    public function setDoNotContactFlag(int $mainId, string $contactId, int $userId, bool $marked): bool
+    public function setDoNotContactFlag(int $mainId, string $contactId, int $userId, bool $marked, string $reason = ''): bool
     {
         if ($marked) {
             $statement = $this->db->pdo()->prepare(<<<'SQL'
-INSERT INTO daily_call_do_not_contact_flags (main_id, contact_id, marked_by)
-VALUES (:main_id, :contact_id, :marked_by)
-ON DUPLICATE KEY UPDATE marked_by = VALUES(marked_by), marked_at = CURRENT_TIMESTAMP
+INSERT INTO daily_call_do_not_contact_flags (main_id, contact_id, marked_by, reason)
+VALUES (:main_id, :contact_id, :marked_by, :reason)
+ON DUPLICATE KEY UPDATE marked_by = VALUES(marked_by), reason = VALUES(reason), marked_at = CURRENT_TIMESTAMP
 SQL);
-            $statement->execute(['main_id' => $mainId, 'contact_id' => $contactId, 'marked_by' => $userId]);
+            $statement->execute(['main_id' => $mainId, 'contact_id' => $contactId, 'marked_by' => $userId, 'reason' => $reason]);
             return true;
         }
         $statement = $this->db->pdo()->prepare(
@@ -1562,6 +1564,70 @@ SQL);
         );
         $statement->execute(['main_id' => $mainId, 'contact_id' => $contactId]);
         return false;
+    }
+
+    /** @param list<string> $contactIds */
+    public function setDoNotContactFlagsBulk(int $mainId, array $contactIds, int $userId, string $reason): int
+    {
+        $contactIds = array_values(array_unique(array_filter(array_map('strval', $contactIds), static fn(string $id): bool => $id !== '')));
+        if ($contactIds === []) {
+            return 0;
+        }
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $existingIds = [];
+            foreach (array_chunk($contactIds, 500) as $chunkIndex => $chunk) {
+                $placeholders = [];
+                $bindings = ['main_id_' . $chunkIndex => $mainId];
+                foreach ($chunk as $index => $contactId) {
+                    $key = 'contact_' . $chunkIndex . '_' . $index;
+                    $placeholders[] = ':' . $key;
+                    $bindings[$key] = $contactId;
+                }
+                $lookup = $pdo->prepare(
+                    'SELECT lsessionid FROM tblpatient
+                     WHERE lmain_id = :main_id_' . $chunkIndex . '
+                       AND COALESCE(ldeleted, 0) = 0
+                       AND lsessionid IN (' . implode(', ', $placeholders) . ')'
+                );
+                $lookup->execute($bindings);
+                foreach ($lookup->fetchAll(PDO::FETCH_COLUMN) as $existingId) {
+                    $existingIds[(string) $existingId] = true;
+                }
+            }
+            if (count($existingIds) !== count($contactIds)) {
+                throw new HttpException(404, 'One or more selected customers could not be found');
+            }
+
+            foreach (array_chunk($contactIds, 100) as $chunkIndex => $chunk) {
+                $values = [];
+                $bindings = [];
+                foreach ($chunk as $index => $contactId) {
+                    $prefix = 'row_' . $chunkIndex . '_' . $index . '_';
+                    $values[] = sprintf('(:%smain_id, :%scontact_id, :%smarked_by, :%sreason)', $prefix, $prefix, $prefix, $prefix);
+                    $bindings[$prefix . 'main_id'] = $mainId;
+                    $bindings[$prefix . 'contact_id'] = $contactId;
+                    $bindings[$prefix . 'marked_by'] = $userId;
+                    $bindings[$prefix . 'reason'] = $reason;
+                }
+                $statement = $pdo->prepare(
+                    'INSERT INTO daily_call_do_not_contact_flags (main_id, contact_id, marked_by, reason) VALUES '
+                    . implode(', ', $values)
+                    . ' ON DUPLICATE KEY UPDATE marked_by = VALUES(marked_by), reason = VALUES(reason), marked_at = CURRENT_TIMESTAMP'
+                );
+                $statement->execute($bindings);
+            }
+
+            $pdo->commit();
+            return count($contactIds);
+        } catch (\Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
     }
 
     public function isSalesAgentAccount(int $mainId, int $viewerUserId): bool
@@ -2578,6 +2644,7 @@ SQL;
 SELECT
     p.lsessionid AS id,
     EXISTS (SELECT 1 FROM daily_call_do_not_contact_flags dnc WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid) AS do_not_contact,
+    COALESCE((SELECT dnc.reason FROM daily_call_do_not_contact_flags dnc WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid LIMIT 1), '') AS do_not_contact_reason,
     p.lcompany AS shop_name,
     COALESCE((
         SELECT old_customer.loldname

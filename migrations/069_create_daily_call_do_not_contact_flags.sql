@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS daily_call_do_not_contact_flags (
   main_id INT NOT NULL,
   contact_id VARCHAR(64) NOT NULL,
   marked_by INT NOT NULL,
+  reason VARCHAR(500) NULL,
   marked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (main_id, contact_id),
   KEY idx_daily_call_dnc_marked_by (main_id, marked_by)
