@@ -15,9 +15,9 @@ use RuntimeException;
  * Guarantees against the live (target) database:
  * - Never DROP / TRUNCATE / DELETE tables or rows
  * - Writes via INSERT IGNORE for every table, so existing rows are never
- *   modified -- EXCEPT the product pricing tables (see PRICE_UPSERT_COLUMNS),
- *   where the imported CURRENT price amount overwrites the matching row via
- *   INSERT ... ON DUPLICATE KEY UPDATE so an updated price migrates across.
+ *   modified -- unless the caller explicitly enables product price updates,
+ *   in which case only the current price columns on product pricing tables
+ *   overwrite matching rows.
  * - Only shared columns that already exist on the target are written
  * - Tables present only in the dump are skipped (not created)
  * - Target-only tables and columns are left untouched
@@ -45,7 +45,7 @@ final class CorporateDumpImportService
      *   details: list<string>
      * }
      */
-    public function importDumpFile(string $dumpPath): array
+    public function importDumpFile(string $dumpPath, bool $overwriteProductPrices = false): array
     {
         if (!is_file($dumpPath) || !is_readable($dumpPath)) {
             throw new RuntimeException('Dump file is missing or unreadable');
@@ -72,7 +72,7 @@ final class CorporateDumpImportService
                 'CREATE DATABASE `' . str_replace('`', '``', $stagingDb) . '` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci'
             );
             $this->loadDumpIntoDatabase($dumpPath, $stagingDb);
-            $report = $this->mergeStagingIntoTarget($admin, $stagingDb, $targetDb);
+            $report = $this->mergeStagingIntoTarget($admin, $stagingDb, $targetDb, $overwriteProductPrices);
             $report['staging_database'] = $stagingDb;
             return $report;
         } finally {
@@ -85,7 +85,9 @@ final class CorporateDumpImportService
     }
 
     /**
-     * Normalize MariaDB / MySQL dump quirks so the dump can load into the local server.
+     * Normalize MariaDB / MySQL dump quirks so the dump can load into the staging server.
+     * InnoDB tables use DYNAMIC rows in staging to keep long variable-width values
+     * off-page and avoid production servers rejecting otherwise valid wide tables.
      */
     public static function transformDumpLine(string $line): string
     {
@@ -94,6 +96,15 @@ final class CorporateDumpImportService
         $line = preg_replace('/ON\s+UPDATE\s+CURRENT_DATE(\(\))?/i', '', $line) ?? $line;
         $line = str_ireplace('utf8mb4_0900_ai_ci', 'utf8mb4_unicode_ci', $line);
         $line = preg_replace('/DEFINER=`[^`]+`@`[^`]+`/', '', $line) ?? $line;
+
+        if (preg_match('/\)\s*ENGINE\s*=\s*InnoDB\b/i', $line)) {
+            if (preg_match('/\bROW_FORMAT\s*=\s*[A-Za-z]+/i', $line)) {
+                $line = preg_replace('/\bROW_FORMAT\s*=\s*[A-Za-z]+/i', 'ROW_FORMAT=DYNAMIC', $line, 1) ?? $line;
+            } else {
+                $line = preg_replace('/\bENGINE\s*=\s*InnoDB\b/i', '$0 ROW_FORMAT=DYNAMIC', $line, 1) ?? $line;
+            }
+        }
+
         return $line;
     }
 
@@ -329,7 +340,12 @@ final class CorporateDumpImportService
      *   details: list<string>
      * }
      */
-    private function mergeStagingIntoTarget(PDO $pdo, string $sourceDb, string $targetDb): array
+    private function mergeStagingIntoTarget(
+        PDO $pdo,
+        string $sourceDb,
+        string $targetDb,
+        bool $overwriteProductPrices = false
+    ): array
     {
         $sourceTables = $this->listBaseTables($pdo, $sourceDb);
         $targetTables = $this->listBaseTables($pdo, $targetDb);
@@ -387,7 +403,7 @@ final class CorporateDumpImportService
                 $sourceDb,
                 $table,
                 $shared,
-                self::PRICE_UPSERT_COLUMNS[$table] ?? []
+                $overwriteProductPrices ? (self::PRICE_UPSERT_COLUMNS[$table] ?? []) : []
             );
             if ($plan === null) {
                 $skippedNoShared[] = $table;

@@ -12,6 +12,8 @@ require __DIR__ . '/../src/Services/AutomaticBackupSettingsStore.php';
 require __DIR__ . '/../src/Services/AutomaticBackupOrganizer.php';
 require __DIR__ . '/../src/Services/AutomaticBackupRunner.php';
 require __DIR__ . '/../src/Services/BackupDestinationLister.php';
+require __DIR__ . '/../src/Services/CorporateDumpImportService.php';
+require __DIR__ . '/../src/Services/CorporateDumpUploadStore.php';
 require __DIR__ . '/../src/Controllers/ServerMaintenanceController.php';
 
 use App\Config;
@@ -19,6 +21,8 @@ use App\Controllers\ServerMaintenanceController;
 use App\Services\AutomaticBackupRunner;
 use App\Services\AutomaticBackupSettingsStore;
 use App\Services\BackupDestinationLister;
+use App\Services\CorporateDumpImportService;
+use App\Services\CorporateDumpUploadStore;
 use App\Services\DatabaseBackupService;
 use App\Support\Exceptions\HttpException;
 
@@ -38,7 +42,9 @@ $controller = new ServerMaintenanceController(
     sys_get_temp_dir(),
     $store,
     new BackupDestinationLister([]),
-    $runner
+    $runner,
+    new CorporateDumpImportService($config),
+    new CorporateDumpUploadStore(sys_get_temp_dir() . '/sm-corporate-import-' . bin2hex(random_bytes(3)))
 );
 
 $denied = false;

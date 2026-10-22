@@ -41,7 +41,7 @@ final class ServerMaintenanceController
                 'supported_extensions' => ['.sql', '.sql.gz'],
                 'max_bytes' => CorporateDumpUploadStore::MAX_BYTES,
                 'chunk_max_bytes' => CorporateDumpUploadStore::CHUNK_MAX_BYTES,
-                'safety' => 'Never drops, truncates, or deletes live data. Inserts new rows using shared columns; local-only tables and columns stay untouched. The only overwrite is the current product price (tblinventory_price / tblinventory) so updated prices from the imported system win.',
+                'safety' => 'Never drops, truncates, or deletes live data. Inserts new rows using shared columns; local-only tables and columns stay untouched. Existing product prices are preserved unless you choose to overwrite them from the dump.',
             ],
         ];
     }
@@ -95,7 +95,14 @@ final class ServerMaintenanceController
             $finalized = $this->corporateDumpUploadStore->finalize($uploadId);
             $filename = $finalized['filename'];
             $bytes = $finalized['bytes'];
-            $report = $this->corporateDumpImportService->importDumpFile($finalized['path']);
+            $overwriteProductPrices = filter_var(
+                $body['overwrite_product_prices'] ?? false,
+                FILTER_VALIDATE_BOOLEAN
+            );
+            $report = $this->corporateDumpImportService->importDumpFile(
+                $finalized['path'],
+                $overwriteProductPrices
+            );
             $this->corporateDumpUploadStore->deleteSession($uploadId);
             return [
                 'filename' => $finalized['filename'],

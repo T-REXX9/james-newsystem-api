@@ -34,6 +34,31 @@ $run('transformDumpLine rewrites CURDATE defaults', static function (): void {
     }
 });
 
+$run('transformDumpLine applies DYNAMIC row format to InnoDB staging tables', static function (): void {
+    $out = CorporateDumpImportService::transformDumpLine(
+        ') ENGINE=InnoDB AUTO_INCREMENT=42 DEFAULT CHARSET=utf8mb4;'
+    );
+    if (!str_contains($out, 'ENGINE=InnoDB ROW_FORMAT=DYNAMIC')) {
+        throw new RuntimeException('expected DYNAMIC row format, got: ' . $out);
+    }
+});
+
+$run('transformDumpLine replaces restrictive InnoDB row formats', static function (): void {
+    $out = CorporateDumpImportService::transformDumpLine(
+        ') ENGINE=InnoDB ROW_FORMAT=COMPACT DEFAULT CHARSET=utf8mb4;'
+    );
+    if (!str_contains($out, 'ROW_FORMAT=DYNAMIC') || str_contains($out, 'ROW_FORMAT=COMPACT')) {
+        throw new RuntimeException('expected COMPACT to be replaced, got: ' . $out);
+    }
+});
+
+$run('transformDumpLine leaves non-InnoDB table options unchanged', static function (): void {
+    $line = ') ENGINE=MyISAM DEFAULT CHARSET=utf8mb4;';
+    if (CorporateDumpImportService::transformDumpLine($line) !== $line) {
+        throw new RuntimeException('non-InnoDB row format should not be changed');
+    }
+});
+
 $run('buildMergeSql inserts only new rows when shared non-primary columns exist', static function (): void {
     $plan = CorporateDumpImportService::buildMergeSql(
         'target_db',
@@ -90,6 +115,18 @@ $run('tblinventory_price upserts only the current price amount on collision', st
     }
     if (str_contains($plan['sql'], 'INSERT IGNORE')) {
         throw new RuntimeException('upsert must not be INSERT IGNORE');
+    }
+});
+
+$run('pricing rows stay add-only when price overwrite is not enabled', static function (): void {
+    $plan = CorporateDumpImportService::buildMergeSql(
+        'target_db',
+        'source_db',
+        'tblinventory_price',
+        ['lid', 'lprice_amt']
+    );
+    if ($plan === null || $plan['mode'] !== 'insert_ignore') {
+        throw new RuntimeException('expected pricing rows to stay add-only by default');
     }
 });
 
