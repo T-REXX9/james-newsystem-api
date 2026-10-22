@@ -59,6 +59,40 @@ $run('transformDumpLine leaves non-InnoDB table options unchanged', static funct
     }
 });
 
+$run('transformCreateTableStatement widens unindexed 255-character fields for staging', static function (): void {
+    $statement = <<<'SQL'
+CREATE TABLE `wide_table` (
+  `lid` int NOT NULL,
+  `description` varchar(255) DEFAULT NULL,
+  PRIMARY KEY (`lid`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+SQL;
+    $out = CorporateDumpImportService::transformCreateTableStatement($statement);
+    if (!str_contains($out, '`description` varchar(256)')) {
+        throw new RuntimeException('expected unindexed varchar(255) to widen for staging');
+    }
+    if (!str_contains($out, 'ROW_FORMAT=DYNAMIC')) {
+        throw new RuntimeException('expected DYNAMIC row format');
+    }
+});
+
+$run('transformCreateTableStatement preserves indexed 255-character fields', static function (): void {
+    $statement = <<<'SQL'
+CREATE TABLE `keyed_table` (
+  `code` varchar(255) NOT NULL,
+  `description` varchar(255) DEFAULT NULL,
+  UNIQUE KEY `uq_code` (`code`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+SQL;
+    $out = CorporateDumpImportService::transformCreateTableStatement($statement);
+    if (!str_contains($out, '`code` varchar(255)')) {
+        throw new RuntimeException('indexed varchar(255) must not be widened');
+    }
+    if (!str_contains($out, '`description` varchar(256)')) {
+        throw new RuntimeException('unindexed varchar(255) should be widened');
+    }
+});
+
 $run('buildMergeSql inserts only new rows when shared non-primary columns exist', static function (): void {
     $plan = CorporateDumpImportService::buildMergeSql(
         'target_db',

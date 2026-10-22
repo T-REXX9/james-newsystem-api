@@ -109,6 +109,48 @@ final class CorporateDumpImportService
     }
 
     /**
+     * Normalize a complete CREATE TABLE statement for the staging database.
+     * Older InnoDB versions can still reject wide DYNAMIC tables when many
+     * latin1 VARCHAR(255) fields remain ineligible for overflow-page storage.
+     * Widening unindexed VARCHAR(255) fields by one character makes them
+     * eligible, without changing the uploaded dump or the live target schema.
+     */
+    public static function transformCreateTableStatement(string $statement): string
+    {
+        $lines = preg_split('/(?<=\n)/', $statement) ?: [$statement];
+        $statement = implode('', array_map(self::transformDumpLine(...), $lines));
+
+        if (!preg_match('/\bCREATE\s+TABLE\b/i', $statement)
+            || !preg_match('/\bENGINE\s*=\s*InnoDB\b/i', $statement)) {
+            return $statement;
+        }
+
+        $indexedColumns = [];
+        preg_match_all(
+            '/\b(?:PRIMARY\s+KEY|UNIQUE\s+(?:KEY|INDEX)|(?:KEY|INDEX)|FOREIGN\s+KEY)\s*(?:`[^`]+`\s*)?\(([^)]*)\)/i',
+            $statement,
+            $indexMatches
+        );
+        foreach ($indexMatches[1] ?? [] as $indexColumns) {
+            preg_match_all('/`([^`]+)`/', $indexColumns, $columnMatches);
+            foreach ($columnMatches[1] ?? [] as $column) {
+                $indexedColumns[$column] = true;
+            }
+        }
+
+        return preg_replace_callback(
+            '/^(\s*`([^`]+)`\s+VARCHAR\s*\(\s*)255(\s*\))/im',
+            static function (array $matches) use ($indexedColumns): string {
+                if (isset($indexedColumns[$matches[2]])) {
+                    return $matches[0];
+                }
+                return $matches[1] . '256' . $matches[3];
+            },
+            $statement
+        ) ?? $statement;
+    }
+
+    /**
      * Per-table columns the corporate import is allowed to OVERWRITE on an
      * existing row (key collision). Every table not listed here stays strictly
      * add-only (INSERT IGNORE) so live data is never modified.
@@ -246,6 +288,7 @@ final class CorporateDumpImportService
         $stdout = '';
         $stderr = '';
         $lineBuffer = '';
+        $createTableBuffer = '';
         $streamError = null;
 
         try {
@@ -266,11 +309,47 @@ final class CorporateDumpImportService
                     while (($newline = strpos($lineBuffer, "\n")) !== false) {
                         $line = substr($lineBuffer, 0, $newline + 1);
                         $lineBuffer = substr($lineBuffer, $newline + 1);
+                        if ($createTableBuffer !== '' || preg_match('/^\s*CREATE\s+TABLE\b/i', $line)) {
+                            $createTableBuffer .= $line;
+                            if (str_ends_with(rtrim($line), ';')) {
+                                $this->writeToMysqlPipe(
+                                    $pipes[0],
+                                    self::transformCreateTableStatement($createTableBuffer),
+                                    $pipes[1],
+                                    $pipes[2],
+                                    $stdout,
+                                    $stderr
+                                );
+                                $createTableBuffer = '';
+                            }
+                            continue;
+                        }
                         $this->writeToMysqlPipe($pipes[0], self::transformDumpLine($line), $pipes[1], $pipes[2], $stdout, $stderr);
                     }
                 }
                 if ($lineBuffer !== '') {
-                    $this->writeToMysqlPipe($pipes[0], self::transformDumpLine($lineBuffer), $pipes[1], $pipes[2], $stdout, $stderr);
+                    if ($createTableBuffer !== '' || preg_match('/^\s*CREATE\s+TABLE\b/i', $lineBuffer)) {
+                        $createTableBuffer .= $lineBuffer;
+                        $this->writeToMysqlPipe(
+                            $pipes[0],
+                            self::transformCreateTableStatement($createTableBuffer),
+                            $pipes[1],
+                            $pipes[2],
+                            $stdout,
+                            $stderr
+                        );
+                    } else {
+                        $this->writeToMysqlPipe($pipes[0], self::transformDumpLine($lineBuffer), $pipes[1], $pipes[2], $stdout, $stderr);
+                    }
+                } elseif ($createTableBuffer !== '') {
+                    $this->writeToMysqlPipe(
+                        $pipes[0],
+                        self::transformCreateTableStatement($createTableBuffer),
+                        $pipes[1],
+                        $pipes[2],
+                        $stdout,
+                        $stderr
+                    );
                 }
             } finally {
                 if ($isGzip) {
