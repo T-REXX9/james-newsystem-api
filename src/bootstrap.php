@@ -1218,6 +1218,7 @@ function app_router(): Router
     $router->post('/api/v1/sales-returns', $requireActionAuthGuardingDates([$salesReturnController, 'create'], 'Sales Return', 'add', ['date']));
     $router->get('/api/v1/sales-returns/{refno}', $requireViewAuth([$salesReturnController, 'show'], 'Sales Return'));
     $router->patch('/api/v1/sales-returns/{refno}', $requireActionAuthGuardingDates([$salesReturnController, 'update'], 'Sales Return', 'edit', ['date']));
+    $router->delete('/api/v1/sales-returns/{refno}', $requireActionAuth([$salesReturnController, 'delete'], 'Sales Return', 'delete'));
     $router->get('/api/v1/sales-returns/{refno}/items', $requireViewAuth([$salesReturnController, 'items'], 'Sales Return'));
     $router->get('/api/v1/sales-returns/{refno}/source-items', $requireViewAuth([$salesReturnController, 'sourceItems'], 'Sales Return'));
     $router->post('/api/v1/sales-returns/{refno}/items', $requireActionAuth([$salesReturnController, 'addItem'], 'Sales Return', 'add'));

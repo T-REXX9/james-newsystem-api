@@ -700,6 +700,60 @@ SQL);
         return true;
     }
 
+    public function delete(int $mainId, string $refno): bool
+    {
+        $pdo = $this->db->pdo();
+        $pdo->exec('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare('SELECT lmainid, lstatus FROM tblcredit_memo WHERE lrefno = :refno FOR UPDATE');
+            $stmt->bindValue('refno', $refno, PDO::PARAM_STR);
+            $stmt->execute();
+            $matchingHeaders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            if (count($matchingHeaders) !== 1) {
+                throw new RuntimeException('Credit memo not found');
+            }
+            $row = $matchingHeaders[0];
+            if ((int) ($row['lmainid'] ?? 0) !== $mainId) {
+                throw new RuntimeException('Credit memo not found');
+            }
+            if (strtolower(trim((string) ($row['lstatus'] ?? ''))) !== 'pending') {
+                throw new RuntimeException('Only pending credit memos can be deleted');
+            }
+
+            $items = $pdo->prepare(<<<'SQL'
+DELETE cri
+FROM tblcredit_return_item cri
+INNER JOIN tblcredit_memo cm ON cm.lrefno = cri.lrefno
+WHERE cm.lrefno = :refno
+  AND CAST(COALESCE(cm.lmainid, 0) AS SIGNED) = :main_id
+SQL);
+            $items->execute(['refno' => $refno, 'main_id' => $mainId]);
+
+            $ledger = $pdo->prepare(
+                'DELETE FROM tblledger WHERE lrefno = :refno AND CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id'
+            );
+            $ledger->execute(['refno' => $refno, 'main_id' => $mainId]);
+
+            $inventoryLogs = $pdo->prepare("DELETE FROM tblinventory_logs WHERE lrefno = :refno AND ltransaction_type = 'Credit Memo'");
+            $inventoryLogs->execute(['refno' => $refno]);
+
+            $header = $pdo->prepare(
+                'DELETE FROM tblcredit_memo WHERE lrefno = :refno AND CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id'
+            );
+            $header->execute(['refno' => $refno, 'main_id' => $mainId]);
+            if ($header->rowCount() !== 1) {
+                throw new RuntimeException('Credit memo could not be deleted');
+            }
+
+            $pdo->commit();
+            return true;
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Post — sets Posted, creates ledger credit entry, restores inventory
     // -----------------------------------------------------------------------

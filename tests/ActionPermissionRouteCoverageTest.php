@@ -57,6 +57,7 @@ $expected = [
     '/api/v1/sales-inquiries/{inquiryRefno}' => '$requireSalesInquiryWriteAuth',
     '/api/v1/sales-inquiries/{inquiryRefno}/items' => '$requireSalesInquiryWriteAuth',
     '/api/v1/sales-inquiry-items/{itemId}' => '$requireSalesInquiryWriteAuth',
+    '/api/v1/sales-returns/{refno}' => '$requireActionAuth',
 ];
 
 foreach ($expected as $route => $wrapper) {
@@ -71,6 +72,11 @@ foreach ($expected as $route => $wrapper) {
     if ($line === null || !str_contains($line, $wrapper)) {
         throw new RuntimeException("FAIL: {$route} is not protected by {$wrapper}");
     }
+}
+
+$salesReturnDeleteRoute = "\$router->delete('/api/v1/sales-returns/{refno}', \$requireActionAuth([\$salesReturnController, 'delete'], 'Sales Return', 'delete'))";
+if (!str_contains($source, $salesReturnDeleteRoute)) {
+    throw new RuntimeException('FAIL: whole-record sales return deletion must require the Sales Return delete action');
 }
 
 foreach ([

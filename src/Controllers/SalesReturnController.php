@@ -193,6 +193,26 @@ final class SalesReturnController
         }
     }
 
+    public function delete(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $refno = trim((string) ($params['refno'] ?? ''));
+        if ($refno === '') {
+            throw new HttpException(422, 'refno is required');
+        }
+
+        try {
+            $this->repo->delete($mainId, $refno);
+            return ['deleted' => true, 'refno' => $refno];
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Post
     // -----------------------------------------------------------------------
