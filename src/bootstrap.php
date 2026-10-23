@@ -1081,6 +1081,8 @@ function app_router(): Router
     $router->post('/api/v1/suggested-stock-report/purchase-orders/{purchaseRefno}/items', $requireActionAuth([$suggestedStockReportController, 'addPurchaseOrderItem'], 'Purchase Order', 'add'));
     $router->get('/api/v1/products', $requireViewAuth([$productController, 'list'], 'Product Database'));
     $router->get('/api/v1/products/{productSession}', $requireViewAuth([$productController, 'show'], 'Product Database'));
+    $router->get('/api/v1/sales-inquiry-products', $requireViewAuth([$productController, 'listForSalesInquiry'], 'Sales Inquiry'));
+    $router->get('/api/v1/sales-inquiry-products/{productSession}', $requireViewAuth([$productController, 'showForSalesInquiry'], 'Sales Inquiry'));
     $router->post('/api/v1/products', $requireActionAuth([$productController, 'create'], 'Product Database', 'add'));
     $router->patch('/api/v1/products/{productSession}', $requireActionAuth([$productController, 'update'], 'Product Database', 'edit'));
     $router->post('/api/v1/products/bulk-update', $requireActionAuth([$productController, 'bulkUpdate'], 'Product Database', 'edit'));

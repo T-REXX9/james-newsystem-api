@@ -52,6 +52,48 @@ final class ProductController
         return $this->repo->listProducts($mainId, $search, $status, $page, $perPage, $fieldFilters, $reorderOnly);
     }
 
+    /** Product fields needed by the Sales Inquiry picker, scoped by that workflow's view permission. */
+    public function listForSalesInquiry(array $params = [], array $query = [], array $body = []): array
+    {
+        $result = $this->list($params, $query, $body);
+        $allowedFields = [
+            'id', 'part_no', 'oem_no', 'brand', 'barcode', 'no_of_pieces_per_box',
+            'item_code', 'description', 'packing', 'size', 'reorder_quantity', 'status',
+            'category', 'descriptive_inquiry', 'no_of_holes', 'original_pn_no',
+            'application', 'location', 'no_of_cylinder', 'price_vip1', 'price_vip2',
+            'price_vip3', 'total_stock', 'stock_wh1', 'stock_wh2', 'stock_wh3',
+            'stock_wh4', 'stock_wh5', 'stock_wh6', 'record_image',
+            'record_image_position', 'is_deleted',
+        ];
+
+        $result['items'] = array_map(
+            static fn (array $item): array => array_intersect_key($item, array_flip($allowedFields)),
+            $result['items'] ?? []
+        );
+        unset($result['meta']['warehouse_labels']);
+        return $result;
+    }
+
+    public function showForSalesInquiry(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $product = $this->show($params, $query, $body);
+        $allowedFields = [
+            'id', 'part_no', 'oem_no', 'brand', 'barcode', 'no_of_pieces_per_box',
+            'item_code', 'description', 'packing', 'size', 'reorder_quantity', 'status',
+            'category', 'descriptive_inquiry', 'no_of_holes', 'original_pn_no',
+            'application', 'location', 'no_of_cylinder', 'price_vip1', 'price_vip2',
+            'price_vip3', 'total_stock', 'stock_wh1', 'stock_wh2', 'stock_wh3',
+            'stock_wh4', 'stock_wh5', 'stock_wh6', 'record_image',
+            'record_image_position', 'is_deleted',
+        ];
+        return array_intersect_key($product, array_flip($allowedFields));
+    }
+
     public function show(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);
