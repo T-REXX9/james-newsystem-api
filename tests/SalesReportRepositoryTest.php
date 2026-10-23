@@ -26,7 +26,7 @@ $pdo->exec('CREATE TABLE tblpatient_stars (lmain_id INTEGER, lsessionid TEXT, li
 $pdo->exec('CREATE TABLE tblledger (lid INTEGER PRIMARY KEY, lcustomerid TEXT, ldatetime TEXT)');
 $pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT, ltype TEXT, larchieve INTEGER, lmother_id INTEGER, lstatus INTEGER)');
 $pdo->exec('CREATE TABLE tblcategory (lid INTEGER PRIMARY KEY, lname TEXT, lmain_id INTEGER)');
-$pdo->exec('CREATE TABLE tbltransaction (lrefno TEXT PRIMARY KEY, lsaleno TEXT, lmain_id INTEGER, lsales_person_id TEXT, ltax_type TEXT)');
+$pdo->exec('CREATE TABLE tbltransaction (lid INTEGER PRIMARY KEY, lrefno TEXT UNIQUE, lsaleno TEXT, lmain_id INTEGER, lsales_person_id TEXT, ltax_type TEXT, ldate TEXT, lcustomerid TEXT, lcompany TEXT, lterms TEXT, lsales_person TEXT, lsubmitstat TEXT, lcancel INTEGER, invoice_refno TEXT, ldr_refno TEXT)');
 $pdo->exec('CREATE TABLE tbltransaction_item (lid INTEGER PRIMARY KEY, lrefno TEXT, lqty REAL, lprice REAL, ltype TEXT, lcancel INTEGER, lremark TEXT, lcategory TEXT, ltransaction_date TEXT)');
 $pdo->exec('CREATE TABLE tblinvoice_list (lid INTEGER PRIMARY KEY, lrefno TEXT, lmain_id INTEGER, ldatetime TEXT, ldate TEXT, lcustomer_name TEXT, lcustomerid TEXT, lterms TEXT, linvoice_no TEXT, lsales_refno TEXT, ltax_type TEXT, lsales_person TEXT, lcancel TEXT, lcancel_invoice INTEGER, lstatus TEXT)');
 $pdo->exec('CREATE TABLE tblinvoice_itemrec (lid INTEGER PRIMARY KEY, linvoice_refno TEXT, lqty REAL, lprice REAL, lcategory TEXT)');
@@ -53,11 +53,15 @@ $pdo->exec("INSERT INTO tblaccount VALUES
     (16, 'Inactive', 'Agent', '2', 0, 1, 0)");
 $pdo->exec("INSERT INTO tblcategory VALUES (1, 'Parts', 1), (2, 'Service', 1)");
 $pdo->exec("INSERT INTO tbltransaction VALUES
-    ('so-1', 'SO-1', 1, '12', 'Exclusive'),
-    ('so-unposted', 'SO-UNPOSTED', 1, '12', 'Inclusive')");
+    (1, 'so-1', 'SO-1', 1, '12', 'Exclusive', '2026-09-10', 'cust-a', 'Alpha', '30 DAYS', 'Alice', 'Posted', 0, 'inv-1', 'dr-1'),
+    (2, 'so-unposted', 'SO-UNPOSTED', 1, '12', 'Inclusive', '2026-09-10', 'cust-a', 'Alpha', '30 DAYS', 'Alice', 'Draft', 0, '', ''),
+    (3, 'so-orphan', 'SO-ORPHAN', 1, '12', 'Inclusive', '2026-09-10', 'cust-a', 'Alpha', '30 DAYS', 'Alice', 'Posted', 0, 'missing-invoice', '')");
 $pdo->exec("INSERT INTO tbltransaction_item VALUES
     (1, 'so-1', 1, 100, 'Parts', 0, 'OnStock', 'Parts', '2026-09-10'),
-    (2, 'so-unposted', 1, 999, 'Parts', 0, 'Draft', 'Parts', '2026-09-10')");
+    (2, 'so-unposted', 1, 999, 'Parts', 0, 'Draft', 'Parts', '2026-09-10'),
+    (3, 'so-1', 1, 900, 'Parts', 0, 'NotStock', 'Parts', '2026-09-10'),
+    (4, 'so-orphan', 2, 125, 'Parts', 0, 'OnStock', 'Parts', '2026-09-10'),
+    (5, 'so-orphan', 1, 500, 'Parts', 0, 'NotStock', 'Parts', '2026-09-10')");
 $pdo->exec("INSERT INTO tblinvoice_list VALUES
     (1, 'inv-1', 1, '2026-10-01 12:00:00', '2026-09-10', 'Alpha', 'cust-a', '30 DAYS', 'INV-1', 'so-1', 'Inclusive', 'Alice', NULL, 0, 'Posted'),
     (2, 'inv-cancelled', 1, '2026-10-01 12:00:00', '2026-09-10', 'Alpha', 'cust-a', '30 DAYS', 'INV-C', 'so-1', 'Inclusive', 'Alice', '1', 0, 'Posted'),
@@ -91,11 +95,12 @@ sales_report_expect(count($customers) === 3, 'customer list includes every activ
 
 $report = $repo->getSalesReport(1, 'custom', '2026-09-10', '2026-09-11', 'All');
 $transactionCount = count($report['transactions']);
-sales_report_expect($transactionCount === 3, "report matches legacy invoice and delivery-receipt cancellation rules (got {$transactionCount})");
-sales_report_expect(($report['summary']['grandTotal']['soAmount'] ?? null) === 300.0, 'sales-order amount remains a reference column for each source document');
+sales_report_expect($transactionCount === 4, "report includes posted sales orders missing linked documents while retaining invoice and delivery-receipt rows (got {$transactionCount})");
+sales_report_expect(($report['summary']['grandTotal']['soAmount'] ?? null) === 550.0, 'sales-order amount sums OnStock lines and includes posted orders missing linked documents');
 sales_report_expect(($report['summary']['grandTotal']['drAmount'] ?? null) === 150.0, 'delivery-receipt total is included');
-sales_report_expect(($report['summary']['grandTotal']['invoiceAmount'] ?? null) === 312.0, 'VAT-exclusive invoices receive the legacy 12 percent display adjustment');
-sales_report_expect(($report['summary']['grandTotal']['total'] ?? null) === 462.0, 'total sales uses legacy invoice and delivery-receipt display amounts only');
+sales_report_expect(($report['summary']['grandTotal']['invoiceAmount'] ?? null) === 450.0, 'legacy invoice total uses OnStock order value and includes the posted order with a missing invoice row');
+sales_report_expect(abs((float) ($report['transactions'][0]['invoice_amount'] ?? 0) - 200.0) < 0.001, 'invoice item amount remains available separately from the legacy report invoice amount');
+sales_report_expect(($report['summary']['grandTotal']['total'] ?? null) === 550.0, 'report total matches the legacy Amount column based on OnStock sales-order amounts');
 sales_report_expect(($report['summary']['starredCustomerSales']['total'] ?? null) === 312.0, 'starred-customer sales include only posted invoice and DR values for currently starred customers');
 sales_report_expect(($report['summary']['starredCustomerSales']['customerCount'] ?? null) === 1, 'starred-customer count includes unique customers with matching posted sales');
 $starredCustomerReport = $repo->getSalesReport(1, 'custom', '2026-09-10', '2026-09-11', 'cust-a');
@@ -106,7 +111,7 @@ sales_report_expect(($report['summary']['productTotals'][0]['product'] ?? null) 
 sales_report_expect(abs((float) ($report['summary']['productTotals'][0]['total'] ?? 0) - 462.0) < 0.001, 'product breakdown reconciles to posted invoice and delivery-receipt sales including exclusive VAT');
 sales_report_expect(($report['transactions'][0]['date'] ?? null) === '2026-09-10', 'invoice report date uses the true sales date, not the import timestamp');
 sales_report_expect(($report['transactions'][0]['customer_type'] ?? null) === 'old', 'sales report classifies pre-2026 customers as existing');
-sales_report_expect(($report['transactions'][2]['customer_type'] ?? null) === 'new', 'sales report classifies customers since 2026 as new');
+sales_report_expect(count(array_filter($report['transactions'], static fn(array $row): bool => ($row['customer_id'] ?? '') === 'cust-b' && ($row['customer_type'] ?? '') === 'new')) === 1, 'sales report classifies customers since 2026 as new');
 sales_report_expect(($report['summary']['salespersonTotals'][0]['salesperson'] ?? null) === 'Alice Agent', 'salesperson display uses the legacy active sales-account list');
 sales_report_expect(($report['summary']['salespersonTotals'][2]['salesperson'] ?? null) === 'Chris Agent', 'active sales agents with no sales still appear in the period summary');
 sales_report_expect(($report['summary']['salespersonTotals'][2]['id'] ?? null) === '14', 'summary-only salesperson rows include the stable staff ID for quota matching');

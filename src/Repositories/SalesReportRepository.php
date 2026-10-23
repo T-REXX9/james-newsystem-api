@@ -64,13 +64,15 @@ SQL;
     ): array {
         [$normalizedDateType, $fromDate, $toDate] = $this->resolveDateRange($dateType, $dateFrom, $dateTo);
 
-        // The legacy Sales Report is a posted-sales report. It intentionally
-        // reads only invoices and delivery receipts; sales orders are shown as
-        // references on those records and must not become sales rows of their own.
+        // The legacy report's Amount column is based on OnStock sales-order
+        // lines. Posted invoices and delivery receipts provide the supporting
+        // columns, while posted orders with missing linked documents still
+        // contribute their sales-order amount.
         $invoiceRows = $this->fetchInvoiceRows($mainId, $fromDate, $toDate, $customerId, $limit, $agentId);
         $drRows = $this->fetchDrRows($mainId, $fromDate, $toDate, $customerId, $limit, $agentId);
+        $missingSalesOrderRows = $this->fetchMissingSalesOrderRows($mainId, $fromDate, $toDate, $customerId, $limit, $agentId);
 
-        $transactions = array_merge($invoiceRows, $drRows);
+        $transactions = array_merge($invoiceRows, $drRows, $missingSalesOrderRows);
         usort(
             $transactions,
             static fn(array $a, array $b): int => strcmp(
@@ -233,6 +235,7 @@ WHERE t.lmain_id = :main_id
   AND t.lrefno = :refno
   AND COALESCE(t.lcancel, 0) = 0
   AND COALESCE(i.lcancel, 0) = 0
+  AND COALESCE(i.lremark, '') = 'OnStock'
 ORDER BY i.lid ASC
 SQL;
         }
@@ -370,8 +373,10 @@ SQL,
                 'ref_no' => (string) ($doc['ref_no'] ?? ''),
                 'so_no' => (string) ($so['so_no'] ?? ''),
                 'so_amount' => (float) ($so['so_amount'] ?? 0),
+                'report_amount' => $salesRef !== '' ? (float) ($so['so_amount'] ?? 0) : $invoiceAmount,
                 'dr_amount' => 0.0,
                 'invoice_amount' => $invoiceAmount,
+                'report_invoice_amount' => $salesRef !== '' ? (float) ($so['so_amount'] ?? 0) : $invoiceAmount,
                 'salesperson' => (string) ($doc['current_agent'] ?? 'Unassigned'),
                 'current_agent_id' => (string) ($doc['current_agent_id'] ?? ''),
                 'category' => (string) ($item['category'] ?? 'No category recorded'),
@@ -486,6 +491,7 @@ SQL,
                 'ref_no' => (string) ($doc['ref_no'] ?? ''),
                 'so_no' => (string) ($so['so_no'] ?? ''),
                 'so_amount' => (float) ($so['so_amount'] ?? 0),
+                'report_amount' => $salesRef !== '' ? (float) ($so['so_amount'] ?? 0) : (float) ($item['amount'] ?? 0),
                 'dr_amount' => (float) ($item['amount'] ?? 0),
                 'invoice_amount' => 0.0,
                 'salesperson' => (string) ($doc['current_agent'] ?? 'Unassigned'),
@@ -498,6 +504,119 @@ SQL,
         }
 
         return $rows;
+    }
+
+    /**
+     * Posted sales orders whose linked invoice or delivery receipt row is
+     * missing must still appear in the legacy Amount total. Existing posted
+     * documents remain represented by their invoice/DR rows above.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function fetchMissingSalesOrderRows(
+        int $mainId,
+        ?string $fromDate,
+        ?string $toDate,
+        ?string $customerId,
+        int $limit,
+        ?string $agentId
+    ): array {
+        $where = [
+            't.lmain_id = :main_id',
+            'COALESCE(t.lcancel, 0) = 0',
+            "LOWER(COALESCE(t.lsubmitstat, '')) IN ('submitted', 'approved', 'posted')",
+            'NOT EXISTS (SELECT 1 FROM tblinvoice_list i WHERE i.lmain_id = t.lmain_id AND i.lsales_refno = t.lrefno AND ' . PostedSalesDocumentSql::invoiceIsPosted('i') . ')',
+            'NOT EXISTS (SELECT 1 FROM tbldelivery_receipt d WHERE d.lmain_id = t.lmain_id AND d.lsales_refno = t.lrefno AND ' . PostedSalesDocumentSql::deliveryReceiptIsPosted('d') . ')',
+        ];
+        $params = ['main_id' => $mainId];
+
+        if ($fromDate !== null && $toDate !== null) {
+            $where[] = 't.ldate >= :date_from';
+            $where[] = 't.ldate <= :date_to';
+            $params['date_from'] = $fromDate;
+            $params['date_to'] = $toDate;
+        }
+
+        $trimmedCustomerId = trim((string) $customerId);
+        if ($trimmedCustomerId !== '' && strtolower($trimmedCustomerId) !== 'all') {
+            $where[] = 't.lcustomerid = :customer_id';
+            $params['customer_id'] = $trimmedCustomerId;
+        }
+
+        $currentAgentJoin = 'LEFT JOIN tblpatient p ON p.lmain_id = t.lmain_id AND p.lsessionid = t.lcustomerid AND COALESCE(p.ldeleted, 0) = 0 LEFT JOIN tblaccount current_agent ON current_agent.lid = p.lsales_person AND COALESCE(current_agent.lstatus, 0) = 1';
+        if ($agentId !== null && $agentId !== '') {
+            $where[] = 'p.lsales_person = :agent_id';
+            $params['agent_id'] = $agentId;
+        }
+
+        $sql = sprintf(
+            <<<SQL
+SELECT
+    COALESCE(t.lrefno, '') AS id,
+    COALESCE(t.ldate, '') AS `date`,
+    TRIM(COALESCE(t.lcompany, '')) AS customer,
+    COALESCE(t.lcustomerid, '') AS customer_id,
+    COALESCE((SELECT s.lis_starred FROM tblpatient_stars s WHERE s.lmain_id = t.lmain_id AND s.lsessionid = t.lcustomerid), 0) AS is_starred,
+    COALESCE(t.lterms, '') AS terms,
+    COALESCE(t.lsaleno, '') AS ref_no,
+    COALESCE(t.lrefno, '') AS sales_refno,
+    COALESCE(t.invoice_refno, '') AS expected_invoice_refno,
+    COALESCE(t.ltax_type, '') AS ltax_type,
+    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(current_agent.lfname, ''), ' ', COALESCE(current_agent.llname, ''))), ''), NULLIF(TRIM(t.lsales_person), ''), 'Unassigned') AS salesperson,
+    COALESCE(p.lsales_person, '') AS current_agent_id,
+    t.lid AS sort_id
+FROM tbltransaction t
+{$currentAgentJoin}
+WHERE %s
+ORDER BY t.ldate DESC, t.lid DESC
+SQL,
+            implode(' AND ', $where)
+        );
+        $sql .= ' LIMIT :limit';
+
+        $stmt = $this->db->pdo()->prepare($sql);
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $key === 'main_id' ? (int) $value : (string) $value, $key === 'main_id' ? PDO::PARAM_INT : PDO::PARAM_STR);
+        }
+        $stmt->bindValue('limit', max(1, min(5000, $limit)), PDO::PARAM_INT);
+        $stmt->execute();
+        $docs = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if ($docs === []) {
+            return [];
+        }
+
+        $salesRefs = array_values(array_unique(array_filter(array_map(
+            static fn(array $row): string => (string) ($row['sales_refno'] ?? ''),
+            $docs
+        ))));
+        $soAgg = $this->fetchSoAgg($salesRefs);
+
+        return array_map(static function (array $doc) use ($soAgg): array {
+            $id = (string) ($doc['id'] ?? '');
+            $so = $soAgg[$id] ?? ['so_no' => '', 'so_amount' => 0.0, 'category' => 'No category recorded'];
+            $expectedInvoiceRef = trim((string) ($doc['expected_invoice_refno'] ?? ''));
+            return [
+                'id' => $id,
+                'date' => (string) ($doc['date'] ?? ''),
+                'customer' => (string) ($doc['customer'] ?? ''),
+                'customer_id' => (string) ($doc['customer_id'] ?? ''),
+                'is_starred' => (int) ($doc['is_starred'] ?? 0),
+                'terms' => (string) ($doc['terms'] ?? ''),
+                'ref_no' => (string) ($doc['ref_no'] ?? ''),
+                'so_no' => (string) ($so['so_no'] ?? $doc['ref_no'] ?? ''),
+                'so_amount' => (float) ($so['so_amount'] ?? 0),
+                'report_amount' => (float) ($so['so_amount'] ?? 0),
+                'dr_amount' => 0.0,
+                'invoice_amount' => 0.0,
+                'report_invoice_amount' => $expectedInvoiceRef === '' ? 0.0 : (float) ($so['so_amount'] ?? 0),
+                'salesperson' => (string) ($doc['salesperson'] ?? 'Unassigned'),
+                'current_agent_id' => (string) ($doc['current_agent_id'] ?? ''),
+                'category' => (string) ($so['category'] ?? 'No category recorded'),
+                'vat_type' => null,
+                'type' => 'so',
+                '_sort_id' => (int) ($doc['sort_id'] ?? 0),
+            ];
+        }, $docs);
     }
 
     private function fetchItemAgg(string $table, string $refColumn, array $refnos): array
@@ -571,6 +690,7 @@ SELECT
 FROM tbltransaction t
 LEFT JOIN tbltransaction_item i
   ON i.lrefno = t.lrefno
+ AND COALESCE(i.lremark, '') = 'OnStock'
 WHERE t.lrefno IN ({{IN}})
 GROUP BY t.lrefno
 SQL;
@@ -700,6 +820,7 @@ SQL;
         $grandSo = 0.0;
         $grandDr = 0.0;
         $grandInvoice = 0.0;
+        $grandReportAmount = 0.0;
         $starredSales = 0.0;
         $starredCustomerIds = [];
 
@@ -715,10 +836,13 @@ SQL;
             $so = (float) ($tx['so_amount'] ?? 0);
             $dr = (float) ($tx['dr_amount'] ?? 0);
             $invoice = (float) ($tx['invoice_amount'] ?? 0);
+            $reportInvoice = (float) ($tx['report_invoice_amount'] ?? $invoice);
+            $reportAmount = (float) ($tx['report_amount'] ?? $so);
 
             $grandSo += $so;
             $grandDr += $dr;
-            $grandInvoice += $invoice;
+            $grandInvoice += $reportInvoice;
+            $grandReportAmount += $reportAmount;
 
             if ((int) ($tx['is_starred'] ?? 0) === 1) {
                 $starredSales += $dr + $invoice;
@@ -786,8 +910,8 @@ SQL;
 
             $total = 0.0;
             foreach ($categoriesList as $entry) {
-                // The legacy report's total-sales figure is the posted amount:
-                // delivery receipts plus invoices. SO is contextual only.
+                // Agent cards describe posted documents; sales-order amounts
+                // are reported separately in the legacy Amount column.
                 $total += (float) $entry['drAmount'] + (float) $entry['invoiceAmount'];
             }
 
@@ -811,7 +935,7 @@ SQL;
                 'soAmount' => $grandSo,
                 'drAmount' => $grandDr,
                 'invoiceAmount' => $grandInvoice,
-                'total' => $grandDr + $grandInvoice,
+                'total' => $grandReportAmount,
             ],
             'starredCustomerSales' => [
                 'total' => $starredSales,
