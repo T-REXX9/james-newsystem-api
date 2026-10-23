@@ -423,13 +423,21 @@ SQL);
             'note' => 'lnote',
             'complaint_note' => 'lcomplaintnote',
             'customer_id' => 'lcustomer',
+            'invoice_refno' => 'linvoice_refno',
+            'invoice_no' => 'linvoice_no',
+            'type' => 'ltype',
+            'transaction_refno' => 'ltransaction_refno',
+            'discount_amt' => 'ldiscount_amt',
+            'tax_type' => 'ltax_type',
         ];
 
         foreach ($fieldMap as $payloadKey => $dbCol) {
             if (array_key_exists($payloadKey, $payload)) {
                 $paramKey = 'set_' . $payloadKey;
                 $sets[] = "{$dbCol} = :{$paramKey}";
-                $params[$paramKey] = trim((string) $payload[$payloadKey]);
+                $params[$paramKey] = in_array($payloadKey, ['discount_amt'], true)
+                    ? (float) $payload[$payloadKey]
+                    : trim((string) $payload[$payloadKey]);
             }
         }
 
@@ -1037,6 +1045,12 @@ SELECT
     COALESCE(cm.ltrackno, '') AS tracking_no,
     COALESCE(cm.lshipvia, '') AS ship_via,
     COALESCE(cm.lremark, '') AS lremark,
+    COALESCE(cm.lsalesman, '') AS salesman,
+    COALESCE(cm.lnote, '') AS lnote,
+    COALESCE(cm.lcomplaintnote, '') AS lcomplaintnote,
+    COALESCE(cm.ltransaction_refno, '') AS ltransaction_refno,
+    CAST(COALESCE(cm.ldiscount_amt, 0) AS DECIMAL(15,2)) AS ldiscount_amt,
+    COALESCE(cm.ltax_type, 'Exclusive') AS ltax_type,
     COALESCE(cm.lmy_remarks, '') AS internal_remarks,
     CAST(COALESCE(SUM(COALESCE(itm.lqty, 0)), 0) AS DECIMAL(15,2)) AS total_qty,
     CAST(COALESCE(SUM(COALESCE(itm.lqty, 0) * COALESCE(itm.lprice, 0)), 0) AS DECIMAL(15,2)) AS total_amount
@@ -1051,7 +1065,7 @@ WHERE CAST(COALESCE(cm.lmainid, 0) AS SIGNED) = :main_id
   AND cm.lrefno = :refno
 GROUP BY
     cm.lrefno, cm.lcredit_no, cm.linvoice_no, cm.linvoice_refno, cm.ldate, cm.created_at, cm.lstatus, cm.ltype,
-    cm.lcustomer, cm.clname, pt.lcompany, current_agent.lid, current_agent.lfname, current_agent.llname, cm.ltrackno, cm.lshipvia, cm.lremark, cm.lmy_remarks
+    cm.lcustomer, cm.clname, pt.lcompany, current_agent.lid, current_agent.lfname, current_agent.llname, cm.ltrackno, cm.lshipvia, cm.lremark, cm.lsalesman, cm.lnote, cm.lcomplaintnote, cm.ltransaction_refno, cm.ldiscount_amt, cm.ltax_type, cm.lmy_remarks
 LIMIT 1
 SQL;
 
