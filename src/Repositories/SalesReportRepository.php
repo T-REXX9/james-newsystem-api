@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\PostedSalesDocumentSql;
+use App\Support\VipDocumentDiscount;
 use DateTimeImmutable;
 use PDO;
 
@@ -63,6 +64,7 @@ SQL;
         ?string $agentId = null
     ): array {
         [$normalizedDateType, $fromDate, $toDate] = $this->resolveDateRange($dateType, $dateFrom, $dateTo);
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
 
         // The legacy report's Amount column is based on OnStock sales-order
         // lines. Posted invoices and delivery receipts provide the supporting
@@ -146,6 +148,7 @@ COALESCE(
         SELECT MIN(DATE(l.ldatetime))
         FROM tblledger l
         WHERE l.lcustomerid = p.lsessionid
+          AND CAST(COALESCE(l.lmainid, 0) AS SIGNED) = CAST(COALESCE(p.lmain_id, 0) AS SIGNED)
     )
 )
 SQL;
@@ -172,6 +175,41 @@ SQL;
                 continue;
             }
             $types[$customerId] = $customerSince < $cutoffDate ? 'old' : 'new';
+        }
+
+        // Some posted documents and ledger rows keep a customer ID/name even
+        // when the customer master row is missing. Use that tenant's first
+        // ledger date as the same fallback used for master rows without a
+        // since/registration date, so valid historical customers aren't left
+        // unclassified solely because their master row is absent.
+        $unclassifiedIds = array_values(array_filter(
+            $customerIds,
+            static fn(string $customerId): bool => !isset($types[$customerId])
+        ));
+        if ($unclassifiedIds !== []) {
+            [$ledgerInClause, $ledgerBindings] = $this->buildInClause('ledger_customer', $unclassifiedIds);
+            $ledgerSql = <<<SQL
+SELECT l.lcustomerid AS customer_id, MIN(DATE(l.ldatetime)) AS customer_since
+FROM tblledger l
+WHERE CAST(COALESCE(l.lmainid, 0) AS SIGNED) = :main_id
+  AND l.lcustomerid IN ({$ledgerInClause})
+GROUP BY l.lcustomerid
+SQL;
+            $ledgerStmt = $this->db->pdo()->prepare($ledgerSql);
+            $ledgerStmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+            foreach ($ledgerBindings as $key => $value) {
+                $ledgerStmt->bindValue($key, $value, PDO::PARAM_STR);
+            }
+            $ledgerStmt->execute();
+
+            foreach ($ledgerStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $customerId = (string) ($row['customer_id'] ?? '');
+                $customerSince = trim((string) ($row['customer_since'] ?? ''));
+                if ($customerId === '' || $customerSince === '') {
+                    continue;
+                }
+                $types[$customerId] = $customerSince < $cutoffDate ? 'old' : 'new';
+            }
         }
 
         return $types;
@@ -283,9 +321,9 @@ SQL;
             // preserves the actual invoice sales date in ldate, so reports
             // must filter on that field after a corporate sync.
             $where[] = 'l.ldate >= :date_from';
-            $where[] = 'l.ldate <= :date_to';
+            $where[] = 'l.ldate < :date_to_exclusive';
             $params['date_from'] = $fromDate;
-            $params['date_to'] = $toDate;
+            $params['date_to_exclusive'] = $this->exclusiveDate($toDate);
         }
 
         $trimmedCustomerId = trim((string) $customerId);
@@ -344,6 +382,7 @@ SQL,
 
         $invoiceAgg = $this->fetchItemAgg('tblinvoice_itemrec', 'linvoice_refno', $refnos);
         $soAgg = $this->fetchSoAgg($salesRefnos);
+        $vipDiscounts = (new VipDocumentDiscountRepository($this->db))->mapForType('invoice', $refnos);
 
         $rows = [];
         foreach ($docs as $doc) {
@@ -352,10 +391,15 @@ SQL,
             $item = $invoiceAgg[$id] ?? ['amount' => 0.0, 'category' => 'No category recorded'];
             $so = $soAgg[$salesRef] ?? ['so_no' => '', 'so_amount' => 0.0];
 
-            $invoiceAmount = (float) ($item['amount'] ?? 0);
+            $grossInvoiceAmount = (float) ($item['amount'] ?? 0);
             if (strtolower((string) ($doc['ltax_type'] ?? '')) === 'exclusive') {
-                $invoiceAmount *= 1.12;
+                $grossInvoiceAmount *= 1.12;
             }
+            $vipDiscount = $vipDiscounts[$id] ?? null;
+            $vipDiscountAmount = $vipDiscount !== null && (int) ($vipDiscount['vip_applied'] ?? 0) === 1
+                ? (float) ($vipDiscount['vip_discount_amount'] ?? 0)
+                : 0.0;
+            $invoiceAmount = VipDocumentDiscount::billedAmount($grossInvoiceAmount, $vipDiscountAmount);
 
             $vatType = null;
             $tax = strtolower((string) ($doc['ltax_type'] ?? ''));
@@ -373,10 +417,12 @@ SQL,
                 'ref_no' => (string) ($doc['ref_no'] ?? ''),
                 'so_no' => (string) ($so['so_no'] ?? ''),
                 'so_amount' => (float) ($so['so_amount'] ?? 0),
-                'report_amount' => $salesRef !== '' ? (float) ($so['so_amount'] ?? 0) : $invoiceAmount,
+                'report_amount' => (float) ($so['so_amount'] ?? 0),
                 'dr_amount' => 0.0,
                 'invoice_amount' => $invoiceAmount,
-                'report_invoice_amount' => $salesRef !== '' ? (float) ($so['so_amount'] ?? 0) : $invoiceAmount,
+                'gross_invoice_amount' => $grossInvoiceAmount,
+                'vip_discount_amount' => $vipDiscountAmount,
+                'report_invoice_amount' => $invoiceAmount,
                 'salesperson' => (string) ($doc['current_agent'] ?? 'Unassigned'),
                 'current_agent_id' => (string) ($doc['current_agent_id'] ?? ''),
                 'category' => (string) ($item['category'] ?? 'No category recorded'),
@@ -406,9 +452,9 @@ SQL,
 
         if ($fromDate !== null && $toDate !== null) {
             $where[] = 'l.ldate >= :date_from';
-            $where[] = 'l.ldate <= :date_to';
+            $where[] = 'l.ldate < :date_to_exclusive';
             $params['date_from'] = $fromDate;
-            $params['date_to'] = $toDate;
+            $params['date_to_exclusive'] = $this->exclusiveDate($toDate);
         }
 
         $trimmedCustomerId = trim((string) $customerId);
@@ -532,9 +578,9 @@ SQL,
 
         if ($fromDate !== null && $toDate !== null) {
             $where[] = 't.ldate >= :date_from';
-            $where[] = 't.ldate <= :date_to';
+            $where[] = 't.ldate < :date_to_exclusive';
             $params['date_from'] = $fromDate;
-            $params['date_to'] = $toDate;
+            $params['date_to_exclusive'] = $this->exclusiveDate($toDate);
         }
 
         $trimmedCustomerId = trim((string) $customerId);
@@ -608,7 +654,7 @@ SQL,
                 'report_amount' => (float) ($so['so_amount'] ?? 0),
                 'dr_amount' => 0.0,
                 'invoice_amount' => 0.0,
-                'report_invoice_amount' => $expectedInvoiceRef === '' ? 0.0 : (float) ($so['so_amount'] ?? 0),
+                'report_invoice_amount' => 0.0,
                 'salesperson' => (string) ($doc['salesperson'] ?? 'Unassigned'),
                 'current_agent_id' => (string) ($doc['current_agent_id'] ?? ''),
                 'category' => (string) ($so['category'] ?? 'No category recorded'),
@@ -747,7 +793,7 @@ INNER JOIN tbltransaction_item i
     ON i.lrefno = t.lrefno
    AND i.lremark = 'OnStock'
    AND i.ltransaction_date >= :date_from
-   AND i.ltransaction_date <= :date_to
+   AND i.ltransaction_date < :date_to_exclusive
 INNER JOIN tblcategory c
     ON c.lname = i.lcategory
    AND c.lmain_id = :category_main_id
@@ -764,7 +810,7 @@ SQL;
         $stmt->bindValue('category_main_id', $mainId, PDO::PARAM_INT);
         $stmt->bindValue('account_main_id', $mainId, PDO::PARAM_INT);
         $stmt->bindValue('date_from', $fromDate, PDO::PARAM_STR);
-        $stmt->bindValue('date_to', $toDate, PDO::PARAM_STR);
+        $stmt->bindValue('date_to_exclusive', $this->exclusiveDate($toDate), PDO::PARAM_STR);
         $stmt->execute();
 
         $totals = [];
@@ -836,13 +882,14 @@ SQL;
             $so = (float) ($tx['so_amount'] ?? 0);
             $dr = (float) ($tx['dr_amount'] ?? 0);
             $invoice = (float) ($tx['invoice_amount'] ?? 0);
-            $reportInvoice = (float) ($tx['report_invoice_amount'] ?? $invoice);
-            $reportAmount = (float) ($tx['report_amount'] ?? $so);
 
             $grandSo += $so;
             $grandDr += $dr;
-            $grandInvoice += $reportInvoice;
-            $grandReportAmount += $reportAmount;
+            // Sales totals include posted invoices and delivery receipts only.
+            // Sales-order amounts remain visible as a separate reference value;
+            // they are not sales until a document is posted.
+            $grandInvoice += $invoice;
+            $grandReportAmount += $dr + $invoice;
 
             if ((int) ($tx['is_starred'] ?? 0) === 1) {
                 $starredSales += $dr + $invoice;
@@ -1114,5 +1161,10 @@ SQL;
         }
 
         return date('Y-m-d', $timestamp);
+    }
+
+    private function exclusiveDate(string $date): string
+    {
+        return (new DateTimeImmutable($date))->modify('+1 day')->format('Y-m-d');
     }
 }

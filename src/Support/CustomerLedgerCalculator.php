@@ -217,6 +217,8 @@ final class CustomerLedgerCalculator
             'reference' => strtoupper((string) ($row['lmesssage'] ?? '')),
             'ref_no' => (string) ($row['lrefno'] ?? ''),
             'ref_type' => (string) ($row['lref_name'] ?? ''),
+            'unposted_sales_order_id' => (string) ($row['unposted_sales_order_id'] ?? ''),
+            'unposted_sales_order_no' => (string) ($row['unposted_sales_order_no'] ?? ''),
             'check_no' => (string) ($row['lcheck_no'] ?? ''),
             'check_date' => $effectiveCheckDate === '1970-01-01' ? null : $effectiveCheckDate,
             'dcr' => preg_replace('/^DCR-/i', '', (string) ($row['ldcr'] ?? '')) ?? '',

@@ -395,6 +395,7 @@ SQL);
      */
     public function getDailyCallSalesColorBreakdown(int $mainId): array
     {
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $agentStmt = $this->db->pdo()->prepare(<<<'SQL'
 SELECT CAST(a.lid AS CHAR) AS id,
        COALESCE(NULLIF(TRIM(REGEXP_REPLACE(CONCAT_WS(' ', NULLIF(TRIM(a.lfname), ''), NULLIF(TRIM(a.lmname), ''), NULLIF(TRIM(a.llname), '')), '[[:space:]]+', ' ')), ''), 'Unnamed agent') AS name
@@ -625,6 +626,7 @@ SQL;
         ?int $viewerUserId = null
     ): array
     {
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $normalizedFromDate = $this->normalizeDateOrDefault($fromDate, '2025-10-01');
         $viewerAssignmentId = $this->resolveViewerAssignmentId($mainId, $viewerUserId);
         $where = [

@@ -65,22 +65,9 @@ final class CustomerController
             throw new HttpException(404, 'Customer not found');
         }
 
-        $monthStart = date('Y-m-01');
-        $monthEnd = date('Y-m-t');
-        $monthRows = $this->repo->getPurchaseHistory($sessionId, $monthStart, $monthEnd);
-        $postedMonthRows = array_filter(
-            $monthRows,
-            static fn (array $row): bool => strtolower(trim((string) ($row['source_status'] ?? ''))) === 'posted'
-        );
-        $currentMonthSales = array_reduce(
-            $postedMonthRows,
-            static fn (float $sum, array $row): float => $sum
-                + (((float) ($row['lqty'] ?? 0) - (float) ($row['return_qty'] ?? 0)) * (float) ($row['lprice'] ?? 0)),
-            0.0
-        );
-
         $mainId = (int) ($customer['lmain_id'] ?? 0);
-        $salesTotals = $this->repo->getCustomerSalesTotals($sessionId);
+        $currentMonthSales = $this->repo->getCurrentMonthPostedSales($sessionId, $mainId);
+        $salesTotals = $this->repo->getCustomerSalesTotals($sessionId, $mainId);
         $vipStatus = strtoupper(
             $this->repo->resolveVipStandingLevel($mainId, (float) ($salesTotals['last_month_sales'] ?? 0))
         );
@@ -189,7 +176,14 @@ final class CustomerController
         $dateFrom = isset($query['date_from']) ? (string) $query['date_from'] : null;
         $dateTo = isset($query['date_to']) ? (string) $query['date_to'] : null;
 
-        $result = $this->repo->getCustomerLedger($sessionId, $reportType, $dateType, $dateFrom, $dateTo);
+        $result = $this->repo->getCustomerLedger(
+            $sessionId,
+            $reportType,
+            $dateType,
+            $dateFrom,
+            $dateTo,
+            $this->mainId($query, $body)
+        );
         $result['customer_session'] = $sessionId;
         $result['requested_customer_session'] = (string) ($params['sessionId'] ?? '');
         $result['customer_session_redirected'] = $redirect['redirected'];

@@ -8,6 +8,8 @@ use App\Database;
 use App\Services\InvoiceNumberSequenceStore;
 use App\Support\AuditTrailWriter;
 use App\Support\InvoiceNumberSequence;
+use App\Support\PostedSalesDocumentSql;
+use App\Support\VipDocumentDiscount;
 use InvalidArgumentException;
 use PDO;
 use RuntimeException;
@@ -453,6 +455,38 @@ SQL;
             ]);
 
             $this->replaceItems($invoiceRefno, $userId, $salesRefno, $payload['items'] ?? []);
+
+            $created = $this->getInvoice($mainId, $invoiceRefno);
+            if ($created === null) {
+                throw new RuntimeException('Failed to load created invoice');
+            }
+
+            $grandTotal = (float) ($created['summary']['grand_total'] ?? 0);
+            $orderId = trim((string) ($payload['order_id'] ?? $payload['sales_refno'] ?? ''));
+            if ($orderId !== '') {
+                (new VipDocumentDiscountRepository($this->db))->copyTo(
+                    $mainId,
+                    'sales_order',
+                    $orderId,
+                    'invoice',
+                    $invoiceRefno,
+                    $contactId,
+                    (string) ($created['invoice']['sales_date'] ?? $salesDate),
+                    $grandTotal
+                );
+            } elseif (array_key_exists('vip_applied', $payload) || array_key_exists('vip_tier', $payload)) {
+                (new VipDocumentDiscountRepository($this->db))->upsertFromPayload(
+                    $mainId,
+                    'invoice',
+                    $invoiceRefno,
+                    $contactId,
+                    (string) ($created['invoice']['sales_date'] ?? $salesDate),
+                    $grandTotal,
+                    $payload
+                );
+            }
+
+            $this->syncPostedInvoiceLedgerDebit($mainId, $invoiceRefno, $userId);
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Invoice', 'Create', $invoiceRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
@@ -460,38 +494,7 @@ SQL;
             throw $e;
         }
 
-        $created = $this->getInvoice($mainId, $invoiceRefno);
-        if ($created === null) {
-            throw new RuntimeException('Failed to load created invoice');
-        }
-
-        $grandTotal = (float) ($created['summary']['grand_total'] ?? 0);
-        $orderId = trim((string) ($payload['order_id'] ?? $payload['sales_refno'] ?? ''));
-        $refno = (string) ($created['invoice']['invoice_refno'] ?? $invoiceRefno);
-        if ($orderId !== '') {
-            (new VipDocumentDiscountRepository($this->db))->copyTo(
-                $mainId,
-                'sales_order',
-                $orderId,
-                'invoice',
-                $refno,
-                $contactId,
-                (string) ($created['invoice']['sales_date'] ?? $salesDate),
-                $grandTotal
-            );
-        } elseif (array_key_exists('vip_applied', $payload) || array_key_exists('vip_tier', $payload)) {
-            (new VipDocumentDiscountRepository($this->db))->upsertFromPayload(
-                $mainId,
-                'invoice',
-                $refno,
-                $contactId,
-                (string) ($created['invoice']['sales_date'] ?? $salesDate),
-                $grandTotal,
-                $payload
-            );
-        }
-
-        return $this->getInvoice($mainId, $refno) ?? $created;
+        return $this->getInvoice($mainId, $invoiceRefno) ?? $created;
     }
 
     /**
@@ -568,6 +571,12 @@ SQL;
                 $this->replaceItems($invoiceRefno, $userId, $salesRefno, $payload['items']);
             }
 
+            $this->syncPostedInvoiceLedgerDebit(
+                $mainId,
+                $invoiceRefno,
+                (int) ($payload['user_id'] ?? 0)
+            );
+
             $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
             (new AuditTrailWriter($pdo))->write($mainId, $auditUserId, 'Invoice', 'Update', $invoiceRefno);
             $pdo->commit();
@@ -626,14 +635,18 @@ SQL;
      */
     public function addItem(int $mainId, int $userId, string $invoiceRefno, array $payload): array
     {
-        if ($this->getInvoice($mainId, $invoiceRefno) === null) {
+        $invoice = $this->getInvoice($mainId, $invoiceRefno);
+        if ($invoice === null) {
             throw new RuntimeException('Invoice not found');
         }
 
         $data = $this->normalizeItemPayload($payload);
         $salesRefno = trim((string) ($payload['sales_refno'] ?? ''));
 
-        $stmt = $this->db->pdo()->prepare(
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+        $stmt = $pdo->prepare(
             'INSERT INTO tblinvoice_itemrec (
                 lrefno, linvoice_refno, litemid, litem_refno, linv_refno,
                 litemcode, lpartno, ldesc, llocation, lqty, lprice, lremark, luser
@@ -663,7 +676,15 @@ SQL;
         if ($item === null) {
             throw new RuntimeException('Failed to load created invoice item');
         }
+        $this->syncPostedInvoiceLedgerDebit($mainId, $invoiceRefno, $userId);
+        $pdo->commit();
         return $item;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -676,6 +697,10 @@ SQL;
             return null;
         }
 
+        $invoiceRefno = trim((string) ($existing['invoice_refno'] ?? ''));
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
         $set = [];
         $params = ['item_id' => $itemId, 'main_id' => (string) $mainId];
         $map = [
@@ -714,16 +739,43 @@ SET %s
 WHERE ii.lid = :item_id
   AND inv.lmain_id = :main_id
 SQL;
-            $stmt = $this->db->pdo()->prepare(sprintf($sql, implode(', ', $set)));
+            $stmt = $pdo->prepare(sprintf($sql, implode(', ', $set)));
             $stmt->execute($params);
         }
 
-        return $this->findItem($mainId, $itemId);
+        $item = $this->findItem($mainId, $itemId);
+        if ($invoiceRefno !== '') {
+            $this->syncPostedInvoiceLedgerDebit($mainId, $invoiceRefno);
+        }
+        $pdo->commit();
+        return $item;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
     }
 
     public function deleteItem(int $mainId, int $itemId): bool
     {
-        $stmt = $this->db->pdo()->prepare(
+        $pdo = $this->db->pdo();
+        $invoiceRefStmt = $pdo->prepare(
+            'SELECT inv.lrefno
+             FROM tblinvoice_itemrec ii
+             INNER JOIN tblinvoice_list inv ON inv.lrefno = ii.linvoice_refno
+             WHERE ii.lid = :item_id AND inv.lmain_id = :main_id
+             LIMIT 1'
+        );
+        $invoiceRefStmt->execute(['item_id' => $itemId, 'main_id' => (string) $mainId]);
+        $invoiceRefno = trim((string) ($invoiceRefStmt->fetchColumn() ?: ''));
+        if ($invoiceRefno === '') {
+            return false;
+        }
+
+        $pdo->beginTransaction();
+        try {
+        $stmt = $pdo->prepare(
             'DELETE ii
              FROM tblinvoice_itemrec ii
              INNER JOIN tblinvoice_list inv
@@ -735,7 +787,134 @@ SQL;
             'item_id' => $itemId,
             'main_id' => (string) $mainId,
         ]);
-        return $stmt->rowCount() > 0;
+        $deleted = $stmt->rowCount() > 0;
+        if ($deleted) {
+            $this->syncPostedInvoiceLedgerDebit($mainId, $invoiceRefno);
+        }
+        $pdo->commit();
+        return $deleted;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    private function syncPostedInvoiceLedgerDebit(int $mainId, string $invoiceRefno, int $actorId = 0): void
+    {
+        $invoiceRefno = trim($invoiceRefno);
+        if ($invoiceRefno === '') {
+            return;
+        }
+
+        $pdo = $this->db->pdo();
+        $postedCondition = PostedSalesDocumentSql::invoiceIsPosted('inv');
+        $invoiceStmt = $pdo->prepare(<<<SQL
+SELECT inv.lcustomerid AS customer_id,
+       inv.linvoice_no AS invoice_no,
+       inv.ldate AS sales_date,
+       inv.ltax_type AS tax_type,
+       inv.luser AS created_by
+FROM tblinvoice_list inv
+WHERE inv.lmain_id = :main_id
+  AND inv.lrefno = :invoice_refno
+  AND {$postedCondition}
+LIMIT 1
+SQL);
+        $invoiceStmt->execute([
+            'main_id' => (string) $mainId,
+            'invoice_refno' => $invoiceRefno,
+        ]);
+        $invoice = $invoiceStmt->fetch(PDO::FETCH_ASSOC);
+        if ($invoice === false) {
+            return;
+        }
+
+        $totalStmt = $pdo->prepare(<<<'SQL'
+SELECT COALESCE(SUM(COALESCE(ii.lqty, 0) * COALESCE(ii.lprice, 0)
+    * CASE WHEN LOWER(COALESCE(inv.ltax_type, '')) = 'exclusive' THEN 1.12 ELSE 1 END), 0)
+FROM tblinvoice_list inv
+INNER JOIN tblinvoice_itemrec ii ON ii.linvoice_refno = inv.lrefno
+WHERE inv.lmain_id = :main_id
+  AND inv.lrefno = :invoice_refno
+SQL);
+        $totalStmt->execute([
+            'main_id' => (string) $mainId,
+            'invoice_refno' => $invoiceRefno,
+        ]);
+        $amount = (float) $totalStmt->fetchColumn();
+        $vip = (new VipDocumentDiscountRepository($this->db))->get('invoice', $invoiceRefno);
+        if ($vip !== null && (int) ($vip['vip_applied'] ?? 0) > 0) {
+            $amount = VipDocumentDiscount::billedAmount($amount, (float) ($vip['vip_discount_amount'] ?? 0));
+        }
+        $amount = round($amount, 2);
+
+        $ledgerStmt = $pdo->prepare(<<<'SQL'
+SELECT lid
+FROM tblledger
+WHERE CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id
+  AND lrefno = :invoice_refno
+  AND LOWER(TRIM(COALESCE(lref_name, ''))) = 'invoice'
+  AND LOWER(TRIM(COALESCE(ltype, ''))) = 'debit'
+ORDER BY lid ASC
+SQL);
+        $ledgerStmt->execute([
+            'main_id' => $mainId,
+            'invoice_refno' => $invoiceRefno,
+        ]);
+        $ledgerIds = array_map('intval', $ledgerStmt->fetchAll(PDO::FETCH_COLUMN));
+        if (count($ledgerIds) > 1) {
+            throw new RuntimeException('Invoice has multiple customer-ledger debit entries; reconcile them before editing this invoice');
+        }
+
+        $customerId = trim((string) ($invoice['customer_id'] ?? ''));
+        if ($customerId === '') {
+            throw new RuntimeException('Posted invoice has no customer ID; its ledger entry cannot be synchronized');
+        }
+
+        if ($ledgerIds !== []) {
+            $update = $pdo->prepare(<<<'SQL'
+UPDATE tblledger
+SET lcustomerid = :customer_id,
+    lamt = :ledger_amount,
+    ldebit = :debit_amount,
+    ldatetime = :sales_datetime
+WHERE lid = :ledger_id
+SQL);
+            $update->execute([
+                'customer_id' => $customerId,
+                'ledger_amount' => $amount,
+                'debit_amount' => $amount,
+                'sales_datetime' => (string) ($invoice['sales_date'] ?? date('Y-m-d')),
+                'ledger_id' => $ledgerIds[0],
+            ]);
+            return;
+        }
+
+        if ($amount <= 0) {
+            return;
+        }
+        $insert = $pdo->prepare(<<<'SQL'
+INSERT INTO tblledger
+    (lcustomerid, lrefno, lamt, lmesssage, ldatetime, lmainid, ltype, lcredit, ldebit,
+     luserid, lcheckdate, lcheck_no, ldcr, lpdc, lremarks, lref_name, ldebit_refno, created_at)
+VALUES
+    (:customer_id, :invoice_refno, :ledger_amount, :invoice_no, :sales_datetime, :main_id, 'Debit',
+     0, :debit_amount, :user_id, '', '', '', 0, '', 'Invoice', :debit_refno, :created_at)
+SQL);
+        $insert->execute([
+            'customer_id' => $customerId,
+            'invoice_refno' => $invoiceRefno,
+            'ledger_amount' => $amount,
+            'debit_amount' => $amount,
+            'invoice_no' => (string) ($invoice['invoice_no'] ?? ''),
+            'sales_datetime' => (string) ($invoice['sales_date'] ?? date('Y-m-d')),
+            'main_id' => (string) $mainId,
+            'user_id' => $actorId > 0 ? $actorId : (int) ($invoice['created_by'] ?? 0),
+            'debit_refno' => date('Ymd') . random_int(1, 1000000) . random_int(1, 1000000),
+            'created_at' => date('Y-m-d H:i:s'),
+        ]);
     }
 
     /**
@@ -751,21 +930,37 @@ SQL;
         }
 
         if ($normalized === 'post' || $normalized === 'send' || $normalized === 'record_payment' || $normalized === 'mark_overdue') {
-            $stmt = $this->db->pdo()->prepare(
-                'UPDATE tblinvoice_list
-                 SET lstatus = :status, lcancel_invoice = 0
-                 WHERE lmain_id = :main_id AND lrefno = :invoice_refno
-                 LIMIT 1'
-            );
-            $stmt->execute([
-                'status' => 'Posted',
-                'main_id' => (string) $mainId,
-                'invoice_refno' => $invoiceRefno,
-            ]);
-            if ($stmt->rowCount() === 0) {
-                return null;
+            $pdo = $this->db->pdo();
+            $pdo->beginTransaction();
+            try {
+                $stmt = $pdo->prepare(
+                    'UPDATE tblinvoice_list
+                     SET lstatus = :status, lcancel_invoice = 0
+                     WHERE lmain_id = :main_id AND lrefno = :invoice_refno
+                     LIMIT 1'
+                );
+                $stmt->execute([
+                    'status' => 'Posted',
+                    'main_id' => (string) $mainId,
+                    'invoice_refno' => $invoiceRefno,
+                ]);
+                if ($stmt->rowCount() === 0) {
+                    $pdo->rollBack();
+                    return null;
+                }
+                $this->syncPostedInvoiceLedgerDebit(
+                    $mainId,
+                    $invoiceRefno,
+                    (int) ($payload['user_id'] ?? 0)
+                );
+                (new AuditTrailWriter($pdo))->write($mainId, (int) ($payload['user_id'] ?? 0), 'Invoice', 'Post Invoice', $invoiceRefno, '', 'Pending', 'Posted');
+                $pdo->commit();
+            } catch (\Throwable $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                throw $e;
             }
-            (new AuditTrailWriter($this->db->pdo()))->write($mainId, (int) ($payload['user_id'] ?? 0), 'Invoice', 'Post Invoice', $invoiceRefno, '', 'Pending', 'Posted');
             return $this->getInvoice($mainId, $invoiceRefno);
         }
 

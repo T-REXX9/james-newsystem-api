@@ -23,13 +23,14 @@ $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 $pdo->exec('CREATE TABLE tblpatient (lid INTEGER PRIMARY KEY, lmain_id INTEGER, lsessionid TEXT, lcompany TEXT, lpatient_code TEXT, lstatus INTEGER, lsince TEXT, ldatereg TEXT, lsales_person TEXT)');
 $pdo->exec('ALTER TABLE tblpatient ADD COLUMN ldeleted INTEGER DEFAULT 0');
 $pdo->exec('CREATE TABLE tblpatient_stars (lmain_id INTEGER, lsessionid TEXT, lis_starred INTEGER)');
-$pdo->exec('CREATE TABLE tblledger (lid INTEGER PRIMARY KEY, lcustomerid TEXT, ldatetime TEXT)');
+$pdo->exec('CREATE TABLE tblledger (lid INTEGER PRIMARY KEY, lcustomerid TEXT, ldatetime TEXT, lmainid INTEGER)');
 $pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT, ltype TEXT, larchieve INTEGER, lmother_id INTEGER, lstatus INTEGER)');
 $pdo->exec('CREATE TABLE tblcategory (lid INTEGER PRIMARY KEY, lname TEXT, lmain_id INTEGER)');
 $pdo->exec('CREATE TABLE tbltransaction (lid INTEGER PRIMARY KEY, lrefno TEXT UNIQUE, lsaleno TEXT, lmain_id INTEGER, lsales_person_id TEXT, ltax_type TEXT, ldate TEXT, lcustomerid TEXT, lcompany TEXT, lterms TEXT, lsales_person TEXT, lsubmitstat TEXT, lcancel INTEGER, invoice_refno TEXT, ldr_refno TEXT)');
 $pdo->exec('CREATE TABLE tbltransaction_item (lid INTEGER PRIMARY KEY, lrefno TEXT, lqty REAL, lprice REAL, ltype TEXT, lcancel INTEGER, lremark TEXT, lcategory TEXT, ltransaction_date TEXT)');
 $pdo->exec('CREATE TABLE tblinvoice_list (lid INTEGER PRIMARY KEY, lrefno TEXT, lmain_id INTEGER, ldatetime TEXT, ldate TEXT, lcustomer_name TEXT, lcustomerid TEXT, lterms TEXT, linvoice_no TEXT, lsales_refno TEXT, ltax_type TEXT, lsales_person TEXT, lcancel TEXT, lcancel_invoice INTEGER, lstatus TEXT)');
 $pdo->exec('CREATE TABLE tblinvoice_itemrec (lid INTEGER PRIMARY KEY, linvoice_refno TEXT, lqty REAL, lprice REAL, lcategory TEXT)');
+$pdo->exec('CREATE TABLE tblvip_document_discount (lid INTEGER PRIMARY KEY, lmain_id INTEGER, ldocument_type TEXT, ldocument_refno TEXT, lapplied INTEGER, ltier TEXT, lpercentage REAL, ldiscount_amount REAL, ltotal_to_pay REAL)');
 $pdo->exec('CREATE TABLE tbldelivery_receipt (lid INTEGER PRIMARY KEY, lrefno TEXT, lmain_id INTEGER, ldate TEXT, lcustomer_name TEXT, lcustomerid TEXT, lterms TEXT, linvoice_no TEXT, lsales_refno TEXT, ltax_type TEXT, lsales_person TEXT, lcancel INTEGER, lstatus TEXT)');
 $pdo->exec('CREATE TABLE tbldelivery_receipt_items (lid INTEGER PRIMARY KEY, lor_refno TEXT, lqty REAL, lprice REAL, lcategory TEXT)');
 
@@ -43,7 +44,7 @@ $pdo->exec("INSERT INTO tblpatient VALUES
     (3, 1, 'cust-c', 'Gamma', 'C-1', 1, NULL, NULL, '12', 0),
     (4, 1, 'cust-hidden', 'Hidden', 'H-1', 0, '2020-01-01', NULL, NULL, 0)");
 $pdo->exec("INSERT INTO tblpatient_stars VALUES (1, 'cust-a', 1), (1, 'cust-b', 0)");
-$pdo->exec("INSERT INTO tblledger VALUES (1, 'cust-c', '" . date('Y-m-d') . " 09:00:00')");
+$pdo->exec("INSERT INTO tblledger (lid, lcustomerid, ldatetime, lmainid) VALUES (1, 'cust-c', '" . date('Y-m-d') . " 09:00:00', 1)");
 
 $pdo->exec("INSERT INTO tblaccount VALUES
     (12, 'Alice', 'Agent', '2', 0, 1, 1),
@@ -95,20 +96,20 @@ sales_report_expect(count($customers) === 3, 'customer list includes every activ
 
 $report = $repo->getSalesReport(1, 'custom', '2026-09-10', '2026-09-11', 'All');
 $transactionCount = count($report['transactions']);
-sales_report_expect($transactionCount === 4, "report includes posted sales orders missing linked documents while retaining invoice and delivery-receipt rows (got {$transactionCount})");
-sales_report_expect(($report['summary']['grandTotal']['soAmount'] ?? null) === 550.0, 'sales-order amount sums OnStock lines and includes posted orders missing linked documents');
+sales_report_expect($transactionCount === 3, "report includes posted sales orders missing linked documents while excluding cancelled invoices (got {$transactionCount})");
+sales_report_expect(($report['summary']['grandTotal']['soAmount'] ?? null) === 450.0, 'sales-order amount sums OnStock lines and includes posted orders missing linked documents');
 sales_report_expect(($report['summary']['grandTotal']['drAmount'] ?? null) === 150.0, 'delivery-receipt total is included');
-sales_report_expect(($report['summary']['grandTotal']['invoiceAmount'] ?? null) === 450.0, 'legacy invoice total uses OnStock order value and includes the posted order with a missing invoice row');
+sales_report_expect(($report['summary']['grandTotal']['invoiceAmount'] ?? null) === 200.0, 'invoice total uses the posted invoice amount and excludes cancelled invoice rows');
 sales_report_expect(abs((float) ($report['transactions'][0]['invoice_amount'] ?? 0) - 200.0) < 0.001, 'invoice item amount remains available separately from the legacy report invoice amount');
-sales_report_expect(($report['summary']['grandTotal']['total'] ?? null) === 550.0, 'report total matches the legacy Amount column based on OnStock sales-order amounts');
-sales_report_expect(($report['summary']['starredCustomerSales']['total'] ?? null) === 312.0, 'starred-customer sales include only posted invoice and DR values for currently starred customers');
+sales_report_expect(($report['summary']['grandTotal']['total'] ?? null) === 350.0, 'posted report total is the sum of delivery receipts and non-cancelled invoices');
+sales_report_expect(($report['summary']['starredCustomerSales']['total'] ?? null) === 200.0, 'starred-customer sales include only posted invoice and DR values for currently starred customers');
 sales_report_expect(($report['summary']['starredCustomerSales']['customerCount'] ?? null) === 1, 'starred-customer count includes unique customers with matching posted sales');
 $starredCustomerReport = $repo->getSalesReport(1, 'custom', '2026-09-10', '2026-09-11', 'cust-a');
-sales_report_expect(($starredCustomerReport['summary']['starredCustomerSales']['total'] ?? null) === 312.0, 'starred-sales total follows the selected-customer filter');
+sales_report_expect(($starredCustomerReport['summary']['starredCustomerSales']['total'] ?? null) === 200.0, 'starred-sales total follows the selected-customer filter');
 $starredAgentReport = $repo->getSalesReport(1, 'custom', '2026-09-10', '2026-09-11', 'All', 1200, '12');
-sales_report_expect(($starredAgentReport['summary']['starredCustomerSales']['total'] ?? null) === 312.0, 'starred-sales total follows the assigned-agent filter');
+sales_report_expect(($starredAgentReport['summary']['starredCustomerSales']['total'] ?? null) === 200.0, 'starred-sales total follows the assigned-agent filter');
 sales_report_expect(($report['summary']['productTotals'][0]['product'] ?? null) === 'Engine Part', 'product breakdown names the leading product');
-sales_report_expect(abs((float) ($report['summary']['productTotals'][0]['total'] ?? 0) - 462.0) < 0.001, 'product breakdown reconciles to posted invoice and delivery-receipt sales including exclusive VAT');
+sales_report_expect(abs((float) ($report['summary']['productTotals'][0]['total'] ?? 0) - 350.0) < 0.001, 'product breakdown reconciles to posted invoice and delivery-receipt sales including exclusive VAT');
 sales_report_expect(($report['transactions'][0]['date'] ?? null) === '2026-09-10', 'invoice report date uses the true sales date, not the import timestamp');
 sales_report_expect(($report['transactions'][0]['customer_type'] ?? null) === 'old', 'sales report classifies pre-2026 customers as existing');
 sales_report_expect(count(array_filter($report['transactions'], static fn(array $row): bool => ($row['customer_id'] ?? '') === 'cust-b' && ($row['customer_type'] ?? '') === 'new')) === 1, 'sales report classifies customers since 2026 as new');
@@ -119,7 +120,7 @@ sales_report_expect(in_array('15', array_column($report['summary']['salespersonT
 sales_report_expect(!in_array('16', array_column($report['summary']['salespersonTotals'], 'id'), true), 'inactive non-archived accounts are excluded like the Staff page');
 sales_report_expect(($report['summary']['salespersonTotals'][2]['total'] ?? null) === 0.0, 'agents with no sales receive an accurate zero performance total');
 sales_report_expect(($report['summary']['salespersonTotals'][0]['categories'][0]['category'] ?? null) === 'Parts', 'salesperson display groups legacy OnStock Sales Order items by category');
-sales_report_expect(abs((float) ($report['summary']['salespersonTotals'][0]['total'] ?? 0) - 312.0) < 0.001, 'salesperson total reflects posted invoice value including the exclusive-VAT adjustment');
+sales_report_expect(abs((float) ($report['summary']['salespersonTotals'][0]['total'] ?? 0) - 200.0) < 0.001, 'salesperson total excludes cancelled invoice value');
 
 $monthReport = $repo->getSalesReport(1, 'month', null, null, 'All');
 sales_report_expect(($monthReport['date_from'] ?? null) === date('Y-m-01'), 'month starts on the first day like the legacy report');

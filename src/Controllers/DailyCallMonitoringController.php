@@ -300,7 +300,7 @@ final class DailyCallMonitoringController
         $contactId = $this->resolveContactId($mainId, $contactId);
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $this->authenticatedViewerUserId($body));
 
-        return $this->customerRepo->getCustomerLedger($contactId, 'detailed', 'all', null, null);
+        return $this->customerRepo->getCustomerLedger($contactId, 'detailed', 'all', null, null, $mainId);
     }
 
     public function customerSalesReports(array $params = [], array $query = [], array $body = []): array

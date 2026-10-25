@@ -14,12 +14,12 @@ final class PostedSalesDocumentSql
 {
     public static function invoiceIsPosted(string $alias = 'l'): string
     {
-        // "Not cancelled" in this data means lcancel is NULL, '', '0' or 0.
-        // Posted delivery receipts / invoices store lcancel = 0 (e.g. GREG's
-        // N-D39172), so neither `IS NULL` nor `COALESCE(lcancel,'')=''` matches
-        // them. Normalise then compare to '0': a real cancellation carries a
-        // non-zero flag.
-        return sprintf("COALESCE(NULLIF(TRIM(%s.lcancel), ''), '0') = '0'", $alias);
+        // Posted invoices also carry a separate cancellation flag. Normalize
+        // lcancel because posted documents commonly store it as 0 or blank.
+        return sprintf(
+            "(COALESCE(NULLIF(TRIM(%1\$s.lcancel), ''), '0') = '0' AND COALESCE(%1\$s.lcancel_invoice, 0) = 0 AND LOWER(COALESCE(%1\$s.lstatus, '')) <> 'cancelled')",
+            $alias
+        );
     }
 
     public static function deliveryReceiptIsPosted(string $alias = 'l'): string
@@ -42,20 +42,37 @@ final class PostedSalesDocumentSql
         return <<<SQL
 posted_sales_current_month_documents AS (
     SELECT
-        l.lcustomerid AS customer_id,
-        NULLIF(TRIM(l.lcustomer_name), '') AS customer_name,
-        DATE(l.ldate) AS sale_date,
-        SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
-            * CASE WHEN LOWER(COALESCE(l.ltax_type, '')) = 'exclusive' THEN 1.12 ELSE 1 END) AS amount,
-        COUNT(DISTINCT l.lrefno) AS document_count
-    FROM tblinvoice_list l
-    INNER JOIN tblinvoice_itemrec i ON i.linvoice_refno = l.lrefno
-    WHERE l.lmain_id = :sales_report_invoice_main_id
-      AND {$invoicePosted}
-      AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
-      AND l.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-      AND COALESCE(l.lcustomerid, '') <> ''
-    GROUP BY l.lcustomerid, NULLIF(TRIM(l.lcustomer_name), ''), DATE(l.ldate)
+        invoice_sales.customer_id,
+        invoice_sales.customer_name,
+        invoice_sales.sale_date,
+        SUM(invoice_sales.amount) AS amount,
+        COUNT(*) AS document_count
+    FROM (
+        SELECT
+            l.lrefno,
+            l.lcustomerid AS customer_id,
+            NULLIF(TRIM(l.lcustomer_name), '') AS customer_name,
+            DATE(l.ldate) AS sale_date,
+            GREATEST(
+                SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
+                    * CASE WHEN LOWER(COALESCE(l.ltax_type, '')) = 'exclusive' THEN 1.12 ELSE 1 END)
+                - CASE WHEN COALESCE(vip.lapplied, 0) = 1 THEN COALESCE(vip.ldiscount_amount, 0) ELSE 0 END,
+                0
+            ) AS amount
+        FROM tblinvoice_list l
+        INNER JOIN tblinvoice_itemrec i ON i.linvoice_refno = l.lrefno
+        LEFT JOIN tblvip_document_discount vip
+          ON vip.lmain_id = l.lmain_id
+         AND vip.ldocument_type = 'invoice'
+         AND vip.ldocument_refno = l.lrefno
+        WHERE l.lmain_id = :sales_report_invoice_main_id
+          AND {$invoicePosted}
+          AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND l.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+          AND COALESCE(l.lcustomerid, '') <> ''
+        GROUP BY l.lrefno, l.lcustomerid, l.lcustomer_name, DATE(l.ldate), vip.lapplied, vip.ldiscount_amount
+    ) invoice_sales
+    GROUP BY invoice_sales.customer_id, invoice_sales.customer_name, invoice_sales.sale_date
 
     UNION ALL
 
@@ -103,15 +120,29 @@ SQL;
 posted_sales_current_month_blank_customer AS (
     SELECT COALESCE(SUM(document_sales.amount), 0) AS amount
     FROM (
-        SELECT SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
-            * CASE WHEN LOWER(COALESCE(l.ltax_type, '')) = 'exclusive' THEN 1.12 ELSE 1 END) AS amount
-        FROM tblinvoice_list l
-        INNER JOIN tblinvoice_itemrec i ON i.linvoice_refno = l.lrefno
-        WHERE l.lmain_id = :blank_sales_invoice_main_id
-          AND {$invoicePosted}
-          AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
-          AND l.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-          AND COALESCE(l.lcustomerid, '') = ''
+        SELECT invoice_sales.amount
+        FROM (
+            SELECT
+                l.lrefno,
+                GREATEST(
+                    SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
+                        * CASE WHEN LOWER(COALESCE(l.ltax_type, '')) = 'exclusive' THEN 1.12 ELSE 1 END)
+                    - CASE WHEN COALESCE(vip.lapplied, 0) = 1 THEN COALESCE(vip.ldiscount_amount, 0) ELSE 0 END,
+                    0
+                ) AS amount
+            FROM tblinvoice_list l
+            INNER JOIN tblinvoice_itemrec i ON i.linvoice_refno = l.lrefno
+            LEFT JOIN tblvip_document_discount vip
+              ON vip.lmain_id = l.lmain_id
+             AND vip.ldocument_type = 'invoice'
+             AND vip.ldocument_refno = l.lrefno
+            WHERE l.lmain_id = :blank_sales_invoice_main_id
+              AND {$invoicePosted}
+              AND l.ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+              AND l.ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+              AND COALESCE(l.lcustomerid, '') = ''
+            GROUP BY l.lrefno, vip.lapplied, vip.ldiscount_amount
+        ) invoice_sales
 
         UNION ALL
 

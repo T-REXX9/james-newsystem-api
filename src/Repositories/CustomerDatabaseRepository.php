@@ -423,6 +423,33 @@ SQL;
         $stmt->execute();
         $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+        if ($isPickerMode) {
+            $existingSessionIds = array_fill_keys(array_map(
+                static fn(array $item): string => trim((string) ($item['session_id'] ?? '')),
+                $items
+            ), true);
+            $orphans = $this->listPostedSalesWithoutCustomerMaster($mainId, $trimmedSearch);
+            foreach ($orphans as $orphan) {
+                $sessionId = trim((string) ($orphan['session_id'] ?? ''));
+                if ($sessionId === '' || isset($existingSessionIds[$sessionId])) {
+                    continue;
+                }
+                $items[] = [
+                    'id' => 'unlinked:' . $sessionId,
+                    'session_id' => $sessionId,
+                    'is_starred' => 0,
+                    'customer_code' => '',
+                    'company' => 'Unlinked: ' . trim((string) ($orphan['company'] ?? '')),
+                    'old_name' => '',
+                ];
+                $existingSessionIds[$sessionId] = true;
+            }
+            usort($items, static fn(array $left, array $right): int =>
+                strcasecmp((string) ($left['company'] ?? ''), (string) ($right['company'] ?? ''))
+                ?: strcmp((string) ($left['session_id'] ?? ''), (string) ($right['session_id'] ?? ''))
+            );
+        }
+
         if (!$isPickerMode && $items !== []) {
             // Resolve the customer's province the same way the province-summary
             // endpoint does (lprovince, falling back to refprovince text match
@@ -454,6 +481,64 @@ SQL;
                 ],
             ],
         ];
+    }
+
+    /**
+     * Keep posted sales documents with a nonblank customer ID but no live
+     * customer master row reachable from the read-only Customer Ledger picker.
+     * These synthetic entries are clearly labeled and never create customer
+     * records or alter financial rows.
+     *
+     * @return list<array{session_id:string,company:string}>
+     */
+    private function listPostedSalesWithoutCustomerMaster(int $mainId, string $search): array
+    {
+        $invoicePosted = \App\Support\PostedSalesDocumentSql::invoiceIsPosted('inv');
+        $receiptPosted = \App\Support\PostedSalesDocumentSql::deliveryReceiptIsPosted('dr');
+        $searchSql = '';
+        $params = [
+            'invoice_main_id' => $mainId,
+            'receipt_main_id' => $mainId,
+            'master_main_id' => $mainId,
+        ];
+        if ($search !== '') {
+            $searchSql = ' AND (docs.customer_id LIKE :search_id OR docs.customer_name LIKE :search_name)';
+            $params['search_id'] = '%' . $search . '%';
+            $params['search_name'] = '%' . $search . '%';
+        }
+
+        $sql = <<<SQL
+SELECT docs.customer_id AS session_id,
+       COALESCE(MAX(NULLIF(TRIM(docs.customer_name), '')), docs.customer_id) AS company
+FROM (
+    SELECT inv.lcustomerid AS customer_id, inv.lcustomer_name AS customer_name
+    FROM tblinvoice_list inv
+    INNER JOIN tblinvoice_itemrec ii ON ii.linvoice_refno = inv.lrefno
+    WHERE inv.lmain_id = :invoice_main_id
+      AND {$invoicePosted}
+      AND COALESCE(TRIM(inv.lcustomerid), '') <> ''
+
+    UNION ALL
+
+    SELECT dr.lcustomerid AS customer_id, dr.lcustomer_name AS customer_name
+    FROM tbldelivery_receipt dr
+    INNER JOIN tbldelivery_receipt_items dri ON dri.lor_refno = dr.lrefno
+    WHERE dr.lmain_id = :receipt_main_id
+      AND {$receiptPosted}
+      AND COALESCE(TRIM(dr.lcustomerid), '') <> ''
+) docs
+LEFT JOIN tblpatient p
+  ON p.lmain_id = :master_main_id
+ AND p.lsessionid = docs.customer_id
+ AND COALESCE(p.ldeleted, 0) = 0
+WHERE p.lid IS NULL
+{$searchSql}
+GROUP BY docs.customer_id
+ORDER BY company ASC, docs.customer_id ASC
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**

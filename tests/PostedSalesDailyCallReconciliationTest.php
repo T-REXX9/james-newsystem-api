@@ -27,13 +27,14 @@ $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 $pdo->exec('CREATE TABLE tblpatient (lmain_id INTEGER, lsessionid TEXT, lcompany TEXT, ldeleted INTEGER, lsales_person INTEGER, lstatus INTEGER DEFAULT 1, lsince TEXT, ldatereg TEXT)');
 $pdo->exec('CREATE TABLE tblpatient_stars (lmain_id INTEGER, lsessionid TEXT, lis_starred INTEGER)');
-$pdo->exec('CREATE TABLE tblledger (lid INTEGER PRIMARY KEY, lcustomerid TEXT, ldatetime TEXT)');
+$pdo->exec('CREATE TABLE tblledger (lid INTEGER PRIMARY KEY, lcustomerid TEXT, ldatetime TEXT, lmainid INTEGER)');
 $pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT, ltype TEXT, larchieve INTEGER, lmother_id INTEGER, lstatus INTEGER DEFAULT 1)');
 $pdo->exec('CREATE TABLE tblcategory (lid INTEGER PRIMARY KEY, lname TEXT, lmain_id INTEGER)');
 $pdo->exec('CREATE TABLE tbltransaction (lid INTEGER PRIMARY KEY, lrefno TEXT UNIQUE, lsaleno TEXT, lmain_id INTEGER, lsales_person_id TEXT, ltax_type TEXT, ldate TEXT, lcustomerid TEXT, lcompany TEXT, lterms TEXT, lsales_person TEXT, lsubmitstat TEXT, lcancel INTEGER, invoice_refno TEXT, ldr_refno TEXT)');
 $pdo->exec('CREATE TABLE tbltransaction_item (lid INTEGER PRIMARY KEY, lrefno TEXT, lqty REAL, lprice REAL, ltype TEXT, lcancel INTEGER, lremark TEXT, lcategory TEXT, ltransaction_date TEXT)');
 $pdo->exec('CREATE TABLE tblinvoice_list (lid INTEGER PRIMARY KEY, lrefno TEXT, lmain_id INTEGER, ldatetime TEXT, ldate TEXT, lcustomer_name TEXT, lcustomerid TEXT, lterms TEXT, linvoice_no TEXT, lsales_refno TEXT, ltax_type TEXT, lsales_person TEXT, lcancel TEXT, lcancel_invoice INTEGER, lstatus TEXT)');
 $pdo->exec('CREATE TABLE tblinvoice_itemrec (lid INTEGER PRIMARY KEY, linvoice_refno TEXT, lqty REAL, lprice REAL, lcategory TEXT, litemcode TEXT, lpartno TEXT, lbrand TEXT, ldesc TEXT)');
+$pdo->exec('CREATE TABLE tblvip_document_discount (lid INTEGER PRIMARY KEY, lmain_id INTEGER, ldocument_type TEXT, ldocument_refno TEXT, lapplied INTEGER, ltier TEXT, lpercentage REAL, ldiscount_amount REAL, ltotal_to_pay REAL)');
 $pdo->exec('CREATE TABLE tbldelivery_receipt (lid INTEGER PRIMARY KEY AUTOINCREMENT, lrefno TEXT, lmain_id INTEGER, ldate TEXT, lcustomer_name TEXT, lcustomerid TEXT, lterms TEXT, linvoice_no TEXT, lsales_refno TEXT, ltax_type TEXT, lsales_person TEXT, lcancel INTEGER, lstatus TEXT)');
 $pdo->exec('CREATE TABLE tbldelivery_receipt_items (lid INTEGER PRIMARY KEY, lor_refno TEXT, lqty REAL, lprice REAL, lcategory TEXT, litemcode TEXT, lpartno TEXT, lbrand TEXT, ldesc TEXT)');
 
@@ -63,8 +64,8 @@ reconciliation_expect($salesReportTotal === 22300.0, 'Sales Report includes the 
 // PHP test date instead of SQLite's UTC clock so the fixture remains stable in
 // Asia/Manila around midnight.
 $postedSalesCtes = str_replace(
-    ["DATE_ADD(CURDATE(), INTERVAL 1 DAY)", "DATE_FORMAT(CURDATE(), '%Y-%m-01')"],
-    ["date('{$today}', '+1 day')", "date('{$today}', 'start of month')"],
+    ["DATE_ADD(CURDATE(), INTERVAL 1 DAY)", "DATE_FORMAT(CURDATE(), '%Y-%m-01')", 'GREATEST('],
+    ["date('{$today}', '+1 day')", "date('{$today}', 'start of month')", 'MAX('],
     PostedSalesDocumentSql::currentMonthCustomerSalesCtes()
 );
 

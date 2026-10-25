@@ -6,6 +6,7 @@ namespace App\Repositories;
 
 use App\Database;
 use App\Support\CustomerLedgerCalculator;
+use App\Support\PostedSalesDocumentSql;
 use App\Support\PurchasedItemMatcher;
 use App\Support\VipStanding;
 use DateTimeImmutable;
@@ -160,6 +161,116 @@ SQL;
         return $customer;
     }
 
+    /**
+     * Resolve a Customer Ledger identity from posted sales documents when the
+     * customer master row is missing. This is read-only and tenant-scoped.
+     *
+     * @return array<string,mixed>|null
+     */
+    private function findLedgerCustomer(string $sessionId, int $mainId): ?array
+    {
+        $customer = $this->findCustomerBySession($sessionId, $mainId);
+        if ($customer !== null || $mainId <= 0) {
+            return $customer;
+        }
+
+        $invoicePosted = PostedSalesDocumentSql::invoiceIsPosted('inv');
+        $receiptPosted = PostedSalesDocumentSql::deliveryReceiptIsPosted('dr');
+        $statement = $this->db->pdo()->prepare(<<<SQL
+SELECT :session_id AS lsessionid,
+       :main_id AS lmain_id,
+       '' AS lpatient_code,
+       COALESCE(MAX(NULLIF(TRIM(documents.customer_name), '')), :fallback_name) AS lcompany,
+       '' AS lfname,
+       '' AS llname,
+       '' AS lphone,
+       '' AS lmobile,
+       '' AS lemail,
+       '' AS laddress,
+       '' AS ldelivery_address,
+       '' AS lcity,
+       '' AS lprovince,
+       '' AS lterms,
+       0 AS lcredit,
+       '' AS lprice_group,
+       '' AS price_group,
+       '' AS discount_code,
+       '' AS lsince,
+       '' AS ldealer_since,
+       0 AS ldealer_quota,
+       '' AS customer_since,
+       0 AS lsales_person,
+       '' AS lvat_type,
+       0 AS lvat_percent,
+       1 AS lstatus,
+       '' AS old_name,
+       '' AS agent_name,
+       '' AS latest_terms,
+       COALESCE((SELECT SUM(COALESCE(ledger.ldebit, 0)) - SUM(COALESCE(ledger.lcredit, 0))
+                 FROM tblledger ledger
+                 WHERE ledger.lmainid = :ledger_main_id
+                   AND ledger.lcustomerid = :ledger_customer_id), 0) AS latest_balance
+FROM (
+    SELECT inv.lcustomer_name AS customer_name
+    FROM tblinvoice_list inv
+    INNER JOIN tblinvoice_itemrec ii ON ii.linvoice_refno = inv.lrefno
+    WHERE inv.lmain_id = :invoice_main_id
+      AND inv.lcustomerid = :invoice_customer_id
+      AND {$invoicePosted}
+
+    UNION ALL
+
+    SELECT dr.lcustomer_name AS customer_name
+    FROM tbldelivery_receipt dr
+    INNER JOIN tbldelivery_receipt_items dri ON dri.lor_refno = dr.lrefno
+    WHERE dr.lmain_id = :receipt_main_id
+      AND dr.lcustomerid = :receipt_customer_id
+      AND {$receiptPosted}
+) documents
+SQL);
+        $statement->execute([
+            'session_id' => $sessionId,
+            'main_id' => $mainId,
+            'fallback_name' => $sessionId,
+            'ledger_main_id' => $mainId,
+            'ledger_customer_id' => $sessionId,
+            'invoice_main_id' => $mainId,
+            'invoice_customer_id' => $sessionId,
+            'receipt_main_id' => $mainId,
+            'receipt_customer_id' => $sessionId,
+        ]);
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        if ($row === false) {
+            return null;
+        }
+        $row['contact_persons'] = [];
+        return $row;
+    }
+
+    public function getCurrentMonthPostedSales(string $sessionId, int $mainId): float
+    {
+        $sessionId = trim($sessionId);
+        if ($sessionId === '') {
+            return 0.0;
+        }
+
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
+        $salesCtes = PostedSalesDocumentSql::currentMonthCustomerSalesCtes();
+        $statement = $this->db->pdo()->prepare(<<<SQL
+WITH {$salesCtes}
+SELECT current_month_sales
+FROM sales_report_current_month
+WHERE customer_id = :customer_id
+SQL);
+        $statement->execute([
+            'sales_report_invoice_main_id' => $mainId,
+            'sales_report_dr_main_id' => $mainId,
+            'customer_id' => $sessionId,
+        ]);
+
+        return (float) ($statement->fetchColumn() ?: 0);
+    }
+
     public function getPurchaseHistory(
         string $sessionId,
         ?string $dateFrom,
@@ -179,8 +290,8 @@ SQL;
             $params['date_from'] = $dateFrom;
         }
         if ($dateTo !== null && $dateTo !== '') {
-            $filters .= ' AND src.ldate <= :date_to';
-            $params['date_to'] = $dateTo;
+            $filters .= ' AND src.ldate < :date_to_exclusive';
+            $params['date_to_exclusive'] = $this->exclusiveDate($dateTo);
         }
 
         $paginationSql = '';
@@ -191,6 +302,9 @@ SQL;
             $params['history_limit'] = $limit;
             $params['history_offset'] = $offset;
         }
+
+        $invoicePostedCondition = PostedSalesDocumentSql::invoiceIsPosted('inv');
+        $deliveryReceiptPostedCondition = PostedSalesDocumentSql::deliveryReceiptIsPosted('dr');
 
         $sql = <<<SQL
 SELECT
@@ -229,8 +343,7 @@ FROM (
     FROM tblinvoice_list inv
     INNER JOIN tblinvoice_itemrec item ON item.linvoice_refno = inv.lrefno
     WHERE inv.lcustomerid = :customer_id_invoice
-      AND COALESCE(inv.lcancel, 0) = 0
-      AND COALESCE(inv.lcancel_invoice, 0) = 0
+      AND {$invoicePostedCondition}
 
     UNION ALL
 
@@ -250,7 +363,7 @@ FROM (
     FROM tbldelivery_receipt dr
     INNER JOIN tbldelivery_receipt_items dri ON dri.lor_refno = dr.lrefno
     WHERE dr.lcustomerid = :customer_id_or
-      AND COALESCE(dr.lcancel, 0) = 0
+      AND {$deliveryReceiptPostedCondition}
 ) src
 WHERE 1=1
 {$filters}
@@ -456,9 +569,12 @@ SQL;
         string $reportType,
         string $dateType,
         ?string $dateFrom,
-        ?string $dateTo
+        ?string $dateTo,
+        int $mainId = 0
     ): array {
-        $customer = $this->findCustomerBySession($sessionId);
+        $customer = $mainId > 0
+            ? $this->findLedgerCustomer($sessionId, $mainId)
+            : $this->findCustomerBySession($sessionId);
         if ($customer === null) {
             throw new RuntimeException('Customer not found');
         }
@@ -476,13 +592,18 @@ SQL;
         };
 
         $params = ['customer_id' => $sessionId];
+        $tenantSql = '';
+        if ($mainId > 0) {
+            $tenantSql = ' AND CAST(COALESCE(l.lmainid, 0) AS SIGNED) = :main_id';
+            $params['main_id'] = $mainId;
+        }
         $dateSql = '';
         if ($fromDate !== null && $toDate !== null) {
             // Keep the datetime column bare so MySQL can use the existing
             // (lcustomerid, ..., ldatetime) index for date-filtered reports.
-            $dateSql = ' AND l.ldatetime >= :date_from AND l.ldatetime < DATE_ADD(:date_to, INTERVAL 1 DAY)';
+            $dateSql = ' AND l.ldatetime >= :date_from AND l.ldatetime < :date_to_exclusive';
             $params['date_from'] = $fromDate . ' 00:00:00';
-            $params['date_to'] = $toDate . ' 00:00:00';
+            $params['date_to_exclusive'] = $this->exclusiveDate($toDate) . ' 00:00:00';
         }
 
         $baseSql = <<<SQL
@@ -509,6 +630,7 @@ SELECT
     l.promisetopay
 FROM tblledger l
 WHERE l.lcustomerid = :customer_id
+{$tenantSql}
 {$dateSql}
 SQL;
 
@@ -527,7 +649,7 @@ SQL;
         // Compute opening balance when a date filter is active.
         $openingBalance = 0.0;
         if ($fromDate !== null) {
-            $openingBalance = $this->computeBalanceBefore($sessionId, $fromDate);
+            $openingBalance = $this->computeBalanceBefore($sessionId, $fromDate, $mainId);
         }
 
         if ($normalizedReportType === 'yearly') {
@@ -538,6 +660,7 @@ SELECT
     SUM(COALESCE(l.ldebit, 0)) AS debit
 FROM tblledger l
 WHERE l.lcustomerid = :customer_id
+{$tenantSql}
   AND LOWER(TRIM(COALESCE(l.ltype, ''))) = 'debit'
   AND LOWER(TRIM(COALESCE(l.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
   AND COALESCE(l.ldebit, 0) > 0
@@ -583,6 +706,7 @@ SELECT
     SUM(COALESCE(l.lcredit, 0)) AS credit
 FROM tblledger l
 WHERE l.lcustomerid = :customer_id
+{$tenantSql}
 {$dateSql}
 GROUP BY YEAR(l.ldatetime), MONTH(l.ldatetime)
 ORDER BY YEAR(l.ldatetime) ASC, MONTH(l.ldatetime) ASC
@@ -598,6 +722,9 @@ SQL;
             $stmt = $this->db->pdo()->prepare($baseSql . ' ORDER BY l.ldatetime ASC, l.ltype DESC, l.lid ASC');
             $stmt->execute($params);
             $rawLedgerRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            if ($mainId > 0 && $rawLedgerRows !== []) {
+                $rawLedgerRows = $this->attachUnpostedSalesOrderLinks($rawLedgerRows, $mainId);
+            }
 
             $detailedReport = CustomerLedgerCalculator::buildDetailedReport(
                 $rawLedgerRows,
@@ -635,12 +762,92 @@ SQL;
     }
 
     /**
+     * Map invoice-referenced ledger rows to their originating Sales Order when
+     * the order has no posted invoice or delivery receipt yet. This explains
+     * ledger debits that remain in the account balance but are not posted sales.
+     *
+     * @param list<array<string,mixed>> $rows
+     * @return list<array<string,mixed>>
+     */
+    private function attachUnpostedSalesOrderLinks(array $rows, int $mainId): array
+    {
+        $references = [];
+        foreach ($rows as $row) {
+            if (strtolower(trim((string) ($row['ltype'] ?? ''))) !== 'debit'
+                || strtolower(trim((string) ($row['lref_name'] ?? ''))) !== 'invoice') {
+                continue;
+            }
+            $reference = trim((string) ($row['lrefno'] ?? ''));
+            if ($reference !== '') {
+                $references[$reference] = true;
+            }
+        }
+        if ($references === []) {
+            return $rows;
+        }
+
+        $bindings = ['main_id' => $mainId];
+        $placeholders = [];
+        foreach (array_keys($references) as $index => $reference) {
+            $key = 'invoice_ref_' . $index;
+            $placeholders[] = ':' . $key;
+            $bindings[$key] = $reference;
+        }
+        $invoicePosted = PostedSalesDocumentSql::invoiceIsPosted('posted_invoice');
+        $receiptPosted = PostedSalesDocumentSql::deliveryReceiptIsPosted('posted_receipt');
+        $referencePlaceholders = implode(', ', $placeholders);
+        $statement = $this->db->pdo()->prepare(<<<SQL
+SELECT transaction.invoice_refno,
+       transaction.lrefno AS sales_order_id,
+       transaction.lsaleno AS sales_order_no
+FROM tbltransaction transaction
+WHERE transaction.lmain_id = :main_id
+  AND COALESCE(transaction.lcancel, 0) = 0
+  AND LOWER(COALESCE(transaction.lsubmitstat, '')) IN ('submitted', 'approved', 'posted')
+  AND COALESCE(TRIM(transaction.invoice_refno), '') <> ''
+  AND transaction.invoice_refno IN ({$referencePlaceholders})
+  AND NOT EXISTS (
+      SELECT 1 FROM tblinvoice_list posted_invoice
+      WHERE posted_invoice.lmain_id = transaction.lmain_id
+        AND posted_invoice.lsales_refno = transaction.lrefno
+        AND {$invoicePosted}
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM tbldelivery_receipt posted_receipt
+      WHERE posted_receipt.lmain_id = transaction.lmain_id
+        AND posted_receipt.lsales_refno = transaction.lrefno
+        AND {$receiptPosted}
+  )
+ORDER BY transaction.lid DESC
+SQL);
+        $statement->execute($bindings);
+        $orderByInvoiceReference = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $order) {
+            $reference = trim((string) ($order['invoice_refno'] ?? ''));
+            if ($reference !== '' && !isset($orderByInvoiceReference[$reference])) {
+                $orderByInvoiceReference[$reference] = $order;
+            }
+        }
+
+        foreach ($rows as &$row) {
+            $order = $orderByInvoiceReference[trim((string) ($row['lrefno'] ?? ''))] ?? null;
+            $row['unposted_sales_order_id'] = (string) ($order['sales_order_id'] ?? '');
+            $row['unposted_sales_order_no'] = (string) ($order['sales_order_no'] ?? '');
+        }
+        unset($row);
+        return $rows;
+    }
+
+    /**
      * Compute the net ledger balance for a customer before a given date,
      * using the same PDC / future-check logic as mapDetailedLedgerRow.
      */
-    private function computeBalanceBefore(string $sessionId, string $beforeDate): float
+    private function computeBalanceBefore(string $sessionId, string $beforeDate, int $mainId = 0): float
     {
-        $sql = <<<'SQL'
+        $tenantSql = $mainId > 0
+            ? ' AND CAST(COALESCE(l.lmainid, 0) AS SIGNED) = :main_id'
+            : '';
+        $sql = <<<SQL
 SELECT
     l.ltype,
     l.lcredit,
@@ -649,14 +856,19 @@ SELECT
     l.lcheckdate
 FROM tblledger l
 WHERE l.lcustomerid = :customer_id
+{$tenantSql}
   AND l.ldatetime < :before_date
 ORDER BY l.ldatetime ASC, l.ltype DESC, l.lid ASC
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute([
+        $params = [
             'customer_id' => $sessionId,
             'before_date' => $beforeDate . ' 00:00:00',
-        ]);
+        ];
+        if ($mainId > 0) {
+            $params['main_id'] = $mainId;
+        }
+        $stmt->execute($params);
         $rawRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         $report = CustomerLedgerCalculator::buildDetailedReport($rawRows, date('Y-m-d'));
@@ -670,13 +882,15 @@ SQL;
         ?array $detailedReport = null
     ): array
     {
-        $salesTotals = $this->loadCustomerSalesTotals($sessionId);
+        $mainId = (int) ($customer['lmain_id'] ?? 0);
+        $salesTotals = $this->loadCustomerSalesTotals($sessionId, $mainId);
         $monthlySales = (float) ($salesTotals['monthly_sales'] ?? 0);
+        $ledgerMonthlySales = (float) ($salesTotals['ledger_monthly_sales'] ?? 0);
         $lastMonthSales = (float) ($salesTotals['last_month_sales'] ?? 0);
         $dealershipSales = (float) ($salesTotals['dealership_sales'] ?? 0);
         $ishinomotoSales = (float) ($salesTotals['ishinomoto_sales'] ?? 0);
 
-        $ledgerRows = $rawLedgerRows ?? $this->loadLedgerRows($sessionId);
+        $ledgerRows = $rawLedgerRows ?? $this->loadLedgerRows($sessionId, $mainId);
         $ledgerReport = $detailedReport ?? CustomerLedgerCalculator::buildDetailedReport($ledgerRows, date('Y-m-d'));
         $balance = (float) $ledgerReport['totals']['balance'];
 
@@ -723,6 +937,7 @@ SQL;
             'ishinomoto_sales' => $ishinomotoSales,
             'dealership_quota' => (float) ($customer['ldealer_quota'] ?? 0),
             'monthly_sales' => $monthlySales,
+            'ledger_monthly_sales' => $ledgerMonthlySales,
             'last_month_sales' => $lastMonthSales,
             'customer_since' => $customerSince,
             'credit_limit' => (float) ($customer['lcredit'] ?? 0),
@@ -751,11 +966,11 @@ SQL;
     }
 
     /**
-     * @return array{dealership_sales:float,ishinomoto_sales:float,monthly_sales:float,last_month_sales:float}
+     * @return array{dealership_sales:float,ishinomoto_sales:float,monthly_sales:float,ledger_monthly_sales:float,last_month_sales:float}
      */
-    public function getCustomerSalesTotals(string $sessionId): array
+    public function getCustomerSalesTotals(string $sessionId, int $mainId): array
     {
-        return $this->loadCustomerSalesTotals($sessionId);
+        return $this->loadCustomerSalesTotals($sessionId, $mainId);
     }
 
     /**
@@ -844,59 +1059,104 @@ SQL;
     }
 
     /** @return list<array<string,mixed>> */
-    private function loadLedgerRows(string $sessionId): array
+    private function loadLedgerRows(string $sessionId, int $mainId = 0): array
     {
+        $tenantSql = $mainId > 0
+            ? ' AND CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id'
+            : '';
         $stmt = $this->db->pdo()->prepare(
             'SELECT lid, lrefno, lmesssage, ldatetime, ltype, lcredit, ldebit,
                     lcheckdate, lcheck_no, ldcr, lpdc, lremarks, lref_name, promisetopay
              FROM tblledger
              WHERE lcustomerid = :customer_id
+             ' . $tenantSql . '
              ORDER BY ldatetime ASC, ltype DESC, lid ASC'
         );
-        $stmt->execute(['customer_id' => $sessionId]);
+        $params = ['customer_id' => $sessionId];
+        if ($mainId > 0) {
+            $params['main_id'] = $mainId;
+        }
+        $stmt->execute($params);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
-     * @return array{dealership_sales:float,ishinomoto_sales:float,monthly_sales:float,last_month_sales:float}
+     * @return array{dealership_sales:float,ishinomoto_sales:float,monthly_sales:float,ledger_monthly_sales:float,last_month_sales:float}
      */
-    private function loadCustomerSalesTotals(string $sessionId): array
+    private function loadCustomerSalesTotals(string $sessionId, int $mainId): array
     {
-        $sql = <<<'SQL'
+        $invoicePosted = PostedSalesDocumentSql::invoiceIsPosted('posted_invoice');
+        $receiptPosted = PostedSalesDocumentSql::deliveryReceiptIsPosted('posted_receipt');
+        $sql = <<<SQL
 SELECT
     COALESCE(SUM(COALESCE(l.ldebit, 0)), 0) AS dealership_sales,
     COALESCE(SUM(COALESCE(l.ldebit, 0)), 0) AS ishinomoto_sales,
     COALESCE(SUM(
         CASE
             WHEN DATE_FORMAT(l.ldatetime, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m')
+             AND (
+                (LOWER(TRIM(COALESCE(l.lref_name, ''))) = 'invoice' AND EXISTS (
+                    SELECT 1 FROM tblinvoice_list posted_invoice
+                    WHERE posted_invoice.lmain_id = l.lmainid
+                      AND posted_invoice.lrefno = l.lrefno
+                      AND {$invoicePosted}
+                ))
+                OR (LOWER(TRIM(COALESCE(l.lref_name, ''))) IN ('order slip', 'order_slip') AND EXISTS (
+                    SELECT 1 FROM tbldelivery_receipt posted_receipt
+                    WHERE posted_receipt.lmain_id = l.lmainid
+                      AND posted_receipt.lrefno = l.lrefno
+                      AND {$receiptPosted}
+                ))
+             )
             THEN COALESCE(l.ldebit, 0)
             ELSE 0
         END
-    ), 0) AS monthly_sales,
+    ), 0) AS ledger_monthly_sales,
     COALESCE(SUM(
         CASE
             WHEN DATE_FORMAT(l.ldatetime, '%Y-%m') = DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH), '%Y-%m')
+             AND (
+                (LOWER(TRIM(COALESCE(l.lref_name, ''))) = 'invoice' AND EXISTS (
+                    SELECT 1 FROM tblinvoice_list posted_invoice
+                    WHERE posted_invoice.lmain_id = l.lmainid
+                      AND posted_invoice.lrefno = l.lrefno
+                      AND {$invoicePosted}
+                ))
+                OR (LOWER(TRIM(COALESCE(l.lref_name, ''))) IN ('order slip', 'order_slip') AND EXISTS (
+                    SELECT 1 FROM tbldelivery_receipt posted_receipt
+                    WHERE posted_receipt.lmain_id = l.lmainid
+                      AND posted_receipt.lrefno = l.lrefno
+                      AND {$receiptPosted}
+                ))
+             )
             THEN COALESCE(l.ldebit, 0)
             ELSE 0
         END
     ), 0) AS last_month_sales
 FROM tblledger l
 WHERE l.lcustomerid = :customer_id
+  AND l.lmainid = :main_id
   AND LOWER(TRIM(COALESCE(l.ltype, ''))) = 'debit'
   AND LOWER(TRIM(COALESCE(l.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
 SQL;
 
         $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute(['customer_id' => $sessionId]);
+        $stmt->execute(['customer_id' => $sessionId, 'main_id' => $mainId]);
 
         $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
         return [
             'dealership_sales' => (float) ($row['dealership_sales'] ?? 0),
             'ishinomoto_sales' => (float) ($row['ishinomoto_sales'] ?? 0),
-            'monthly_sales' => (float) ($row['monthly_sales'] ?? 0),
+            'monthly_sales' => $this->getCurrentMonthPostedSales($sessionId, $mainId),
+            'ledger_monthly_sales' => (float) ($row['ledger_monthly_sales'] ?? 0),
             'last_month_sales' => (float) ($row['last_month_sales'] ?? 0),
         ];
+    }
+
+    private function exclusiveDate(string $date): string
+    {
+        return (new DateTimeImmutable($date))->modify('+1 day')->format('Y-m-d');
     }
 
     private function getContactPersons(string $sessionId): array
