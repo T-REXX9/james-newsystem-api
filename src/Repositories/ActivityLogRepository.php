@@ -18,6 +18,7 @@ final class ActivityLogRepository
         string $search = '',
         string $userId = '',
         string $action = '',
+        string $module = '',
         string $dateFrom = '',
         string $dateTo = '',
         int $page = 1,
@@ -62,6 +63,12 @@ final class ActivityLogRepository
         if ($trimmedAction !== '' && strtolower($trimmedAction) !== 'all') {
             $params['action'] = $trimmedAction;
             $where[] = 'log.laction = :action';
+        }
+
+        $trimmedModule = trim($module);
+        if ($trimmedModule !== '' && strtolower($trimmedModule) !== 'all') {
+            $params['module'] = $trimmedModule;
+            $where[] = $this->pageModuleSql() . ' = :module';
         }
 
         $dateFromNormalized = $this->normalizeDate($dateFrom);
@@ -157,6 +164,7 @@ SQL;
                     'search' => $trimmedSearch,
                     'user_id' => $trimmedUser,
                     'action' => $trimmedAction,
+                    'module' => $trimmedModule,
                     'date_from' => $dateFromNormalized,
                     'date_to' => $dateToNormalized,
                 ],
@@ -174,15 +182,61 @@ SELECT
 FROM tblaudit_trail log
 INNER JOIN tblaccount acc ON acc.lid = log.luser_id
 WHERE log.lmain_id = :main_id
+  AND acc.lmother_id = :main_id_staff
+  AND COALESCE(acc.lstatus, 0) = 1
+  AND acc.ltype <> 1
 GROUP BY acc.lid, acc.lfname, acc.llname
 ORDER BY acc.lfname ASC, acc.llname ASC
 SQL;
 
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        $stmt->bindValue('main_id_staff', $mainId, PDO::PARAM_INT);
         $stmt->execute();
 
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public function modules(int $mainId): array
+    {
+        $moduleSql = $this->pageModuleSql();
+        $stmt = $this->db->pdo()->prepare(<<<SQL
+SELECT DISTINCT {$moduleSql} AS module
+FROM tblaudit_trail log
+WHERE log.lmain_id = :main_id AND TRIM(COALESCE(log.lpage, '')) <> ''
+ORDER BY module ASC
+SQL);
+        $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
+        $stmt->execute();
+
+        return array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'module');
+    }
+
+    private function pageModuleSql(): string
+    {
+        $page = "LOWER(TRIM(COALESCE(log.lpage, '')))";
+        return "CASE
+            WHEN {$page} LIKE '%accounting%' OR {$page} LIKE '%collection%' OR {$page} LIKE '%ledger%'
+              OR {$page} LIKE '%receivable%' OR {$page} LIKE '%statement of account%' OR {$page} LIKE '%adjustment%'
+              OR {$page} LIKE '%freight charge%' OR {$page} LIKE '%sales return%' OR {$page} LIKE '%aging report%'
+                THEN 'Accounting'
+            WHEN {$page} LIKE '%warehouse%' OR {$page} LIKE '%inventory%' OR {$page} LIKE '%stock%'
+              OR {$page} LIKE '%purchase%' OR {$page} LIKE '%supplier%' OR {$page} LIKE '%receiving%'
+                THEN 'Warehouse'
+            WHEN {$page} LIKE '%sales%' OR {$page} LIKE '%inquiry%' OR {$page} LIKE '%prospect%'
+              OR {$page} LIKE '%customer%' OR {$page} LIKE '%invoice%' OR {$page} LIKE '%order slip%'
+              OR {$page} LIKE '%daily call%' OR {$page} LIKE '%promotion%'
+                THEN 'Sales'
+            WHEN {$page} LIKE '%task%' OR {$page} LIKE '%calendar%' OR {$page} LIKE '%message%'
+              OR {$page} LIKE '%notification%' OR {$page} LIKE '%communication%'
+                THEN 'Communication'
+            WHEN {$page} LIKE '%maintenance%' OR {$page} LIKE '%profile%' OR {$page} LIKE '%staff%'
+              OR {$page} LIKE '%permission%' OR {$page} LIKE '%activity log%' OR {$page} LIKE '%setting%'
+                THEN 'Maintenance'
+            WHEN {$page} LIKE '%dashboard%' OR {$page} = 'home'
+                THEN 'Dashboards'
+            ELSE 'Other'
+        END";
     }
 
     public function deletionDetail(int $mainId, int $auditId): ?array

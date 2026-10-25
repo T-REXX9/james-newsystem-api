@@ -25,6 +25,7 @@ final class ActivityLogController
             trim((string) ($query['search'] ?? '')),
             trim((string) ($query['user_id'] ?? '')),
             trim((string) ($query['action'] ?? '')),
+            trim((string) ($query['module'] ?? '')),
             trim((string) ($query['date_from'] ?? '')),
             trim((string) ($query['date_to'] ?? '')),
             max(1, (int) ($query['page'] ?? 1)),
@@ -43,6 +44,16 @@ final class ActivityLogController
         return [
             'items' => $this->repo->users($mainId),
         ];
+    }
+
+    public function modules(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        return ['items' => $this->repo->modules($mainId)];
     }
 
     public function deletionDetail(array $params = [], array $query = [], array $body = []): array

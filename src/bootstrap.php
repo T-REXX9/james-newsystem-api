@@ -64,6 +64,7 @@ use App\Controllers\PromotionController;
 use App\Controllers\LoyaltyDiscountController;
 use App\Controllers\ProfitProtectionController;
 use App\Controllers\VipTierSettingsController;
+use App\Controllers\DailyCallTargetController;
 use App\Controllers\ServerMaintenanceController;
 use App\Controllers\RolePermissionController;
 use App\Services\DatabaseBackupService;
@@ -238,6 +239,7 @@ require __DIR__ . '/Controllers/PromotionController.php';
 require __DIR__ . '/Controllers/LoyaltyDiscountController.php';
 require __DIR__ . '/Controllers/ProfitProtectionController.php';
 require __DIR__ . '/Controllers/VipTierSettingsController.php';
+require __DIR__ . '/Controllers/DailyCallTargetController.php';
 require __DIR__ . '/Controllers/ServerMaintenanceController.php';
 require __DIR__ . '/Controllers/RolePermissionController.php';
 require __DIR__ . '/Controllers/CustomerDuplicateRequestController.php';
@@ -406,6 +408,7 @@ function app_router(): Router
     $loyaltyDiscountController = new LoyaltyDiscountController(new App\Repositories\LoyaltyDiscountRepository($db), $mergeRedirects);
     $profitProtectionController = new ProfitProtectionController(new App\Repositories\ProfitProtectionRepository($db));
     $vipTierSettingsController = new VipTierSettingsController(new App\Repositories\VipTierSettingsRepository($db));
+    $dailyCallTargetController = new DailyCallTargetController(new App\Repositories\DailyCallTargetRepository($db));
     $customerMergeService = new App\Services\CustomerMergeService($db);
     $customerDuplicateRequestController = new CustomerDuplicateRequestController($db, $customerMergeService);
     $customerMergeController = new CustomerMergeController($customerMergeService);
@@ -867,6 +870,7 @@ function app_router(): Router
     $router->post('/api/v1/adjustment-entries/{refno}/actions/{action}', $requireApproverAction([$adjustmentEntryController, 'action'], ['Adjustment Entry', 'Adjustment']));
     $router->get('/api/v1/activity-logs', [$activityLogController, 'list']);
     $router->get('/api/v1/activity-logs/users', [$activityLogController, 'users']);
+    $router->get('/api/v1/activity-logs/modules', [$activityLogController, 'modules']);
     $router->get('/api/v1/activity-logs/deletions/{auditId}', [$activityLogController, 'deletionDetail']);
     $router->get('/api/v1/customer-database', $requireViewAuth([$customerDatabaseController, 'list'], 'Customer Database'));
     $router->get('/api/v1/customer-stars', $requireBearerAuthWithClaims([$customerDatabaseController, 'starredIds']));
@@ -1418,6 +1422,9 @@ function app_router(): Router
     // VIP Tier Settings
     $router->get('/api/v1/vip-tier-settings', $requireBearerAuthWithClaims([$vipTierSettingsController, 'index']));
     $router->patch('/api/v1/vip-tier-settings', $requireMasterUser([$vipTierSettingsController, 'update']));
+    // Daily Call Monitoring company target
+    $router->get('/api/v1/daily-call-monitoring/monthly-target', $requireBearerAuthWithClaims([$dailyCallTargetController, 'index']));
+    $router->patch('/api/v1/daily-call-monitoring/monthly-target', $requireMasterUser([$dailyCallTargetController, 'update']));
     // Server Maintenance (Master User only)
     $router->get('/api/v1/server-maintenance/status', $requireBearerAuthWithClaims([$serverMaintenanceController, 'status']));
     $router->get('/api/v1/server-maintenance/database-backup', $requireBearerAuthWithClaims([$serverMaintenanceController, 'downloadDatabaseBackup']));
