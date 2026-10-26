@@ -29,7 +29,7 @@ $assert(
     'bulk request rejects non-Master-User claims before repository writes'
 );
 $assert(
-    str_contains($bulkMethod, 'Only a Master User can update Blacklisted/Rejected flags')
+    str_contains($bulkMethod, 'Only a Master User can update Do Not Call flags')
         && str_contains($bulkMethod, "\$claims['main_userid'] ?? 0")
         && str_contains($bulkMethod, 'assertCustomerViewAccess($mainId, $contactId, $userId)'),
     'bulk endpoint enforces master role, tenant scope, and access to each selected customer'
@@ -89,4 +89,4 @@ try {
     $assert($error->statusCode() === 422, 'non-string bulk dropdown payload is denied without PHP coercion warnings');
 }
 
-echo "Daily Call Blacklisted/Rejected bulk authorization contract passed\n";
+echo "Daily Call Do Not Call bulk authorization contract passed\n";

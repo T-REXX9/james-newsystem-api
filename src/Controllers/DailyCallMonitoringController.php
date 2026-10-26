@@ -37,7 +37,7 @@ final class DailyCallMonitoringController
     {
         $rawReasonOption = $body['reason_option'] ?? null;
         if (!is_string($rawReasonOption)) {
-            throw new HttpException(422, 'Select a valid Blacklisted/Rejected reason');
+            throw new HttpException(422, 'Select a valid Do Not Call reason');
         }
         $reasonOption = trim($rawReasonOption);
         $allowed = [
@@ -47,22 +47,22 @@ final class DailyCallMonitoringController
             'Other reasons',
         ];
         if (!in_array($reasonOption, $allowed, true)) {
-            throw new HttpException(422, 'Select a valid Blacklisted/Rejected reason');
+            throw new HttpException(422, 'Select a valid Do Not Call reason');
         }
         $rawReason = $body['reason'] ?? null;
         if (!is_string($rawReason)) {
-            throw new HttpException(422, 'A reason is required for Blacklisted/Rejected');
+            throw new HttpException(422, 'A reason is required for Do Not Call');
         }
         $reason = trim($rawReason);
         if ($reasonOption !== 'Other reasons' && $reason !== $reasonOption) {
-            throw new HttpException(422, 'The selected Blacklisted/Rejected reason is invalid');
+            throw new HttpException(422, 'The selected Do Not Call reason is invalid');
         }
         if ($reason === '') {
-            throw new HttpException(422, 'A reason is required for Blacklisted/Rejected');
+            throw new HttpException(422, 'A reason is required for Do Not Call');
         }
         $reasonLength = function_exists('mb_strlen') ? mb_strlen($reason, 'UTF-8') : strlen($reason);
         if ($reasonLength > 500) {
-            throw new HttpException(422, 'Blacklisted/Rejected reason must be 500 characters or fewer');
+            throw new HttpException(422, 'Do Not Call reason must be 500 characters or fewer');
         }
         return $reason;
     }
@@ -189,7 +189,7 @@ final class DailyCallMonitoringController
     {
         $claims = (array) ($body['__auth_claims'] ?? []);
         if ((string) ($claims['user_type'] ?? '') !== '1') {
-            throw new HttpException(403, 'Only a Master User can update the Blacklisted/Rejected flag');
+            throw new HttpException(403, 'Only a Master User can update the Do Not Call flag');
         }
         $userId = (int) ($claims['sub'] ?? 0);
         $mainId = (int) ($body['main_id'] ?? 0);
@@ -209,7 +209,7 @@ final class DailyCallMonitoringController
     {
         $claims = (array) ($body['__auth_claims'] ?? []);
         if ((string) ($claims['user_type'] ?? '') !== '1') {
-            throw new HttpException(403, 'Only a Master User can update Blacklisted/Rejected flags');
+            throw new HttpException(403, 'Only a Master User can update Do Not Call flags');
         }
         $userId = (int) ($claims['sub'] ?? 0);
         $mainId = (int) ($body['main_id'] ?? 0);
@@ -237,7 +237,7 @@ final class DailyCallMonitoringController
         }
         $contactIds = array_values(array_unique($contactIds));
         if (!is_string($body['reason'] ?? null)) {
-            throw new HttpException(422, 'A shared reason is required to mark customers Blacklisted/Rejected');
+            throw new HttpException(422, 'A shared reason is required to mark customers Do Not Call');
         }
         $reason = $this->validatedDoNotContactReason($body);
 

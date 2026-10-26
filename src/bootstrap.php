@@ -1318,7 +1318,9 @@ function app_router(): Router
     $router->post('/api/v1/teams', $requireActionAuth([$teamController, 'create'], 'Team', 'add'));
     $router->patch('/api/v1/teams/{teamId}', $requireActionAuth([$teamController, 'update'], 'Team', 'edit'));
     $router->delete('/api/v1/teams/{teamId}', $requireActionAuth([$teamController, 'delete'], 'Team', 'delete'));
-    $router->get('/api/v1/couriers', $requireViewAuth([$courierController, 'list'], 'Courier Management'));
+    // Sales Inquiry consumes these shared options. Reading the list follows
+    // Sales Inquiry access; management writes remain separately protected.
+    $router->get('/api/v1/couriers', $requireViewAuth([$courierController, 'list'], 'Sales Inquiry'));
     $router->get('/api/v1/couriers/{courierId}', $requireViewAuth([$courierController, 'show'], 'Courier Management'));
     $router->post('/api/v1/couriers', $requireActionAuth([$courierController, 'create'], 'Courier', 'add'));
     $router->patch('/api/v1/couriers/{courierId}', $requireActionAuth([$courierController, 'update'], 'Courier', 'edit'));
@@ -1328,7 +1330,9 @@ function app_router(): Router
     $router->post('/api/v1/categories', $requireActionAuth([$categoryController, 'create'], 'Category', 'add'));
     $router->patch('/api/v1/categories/{categoryId}', $requireActionAuth([$categoryController, 'update'], 'Category', 'edit'));
     $router->delete('/api/v1/categories/{categoryId}', $requireActionAuth([$categoryController, 'delete'], 'Category', 'delete'));
-    $router->get('/api/v1/remark-templates', $requireViewAuth([$remarkTemplateController, 'list'], 'Remark Templates'));
+    // Sales Inquiry consumes these shared options. Reading the list follows
+    // Sales Inquiry access; management writes remain separately protected.
+    $router->get('/api/v1/remark-templates', $requireViewAuth([$remarkTemplateController, 'list'], 'Sales Inquiry'));
     $router->get('/api/v1/remark-templates/{remarkTemplateId}', $requireViewAuth([$remarkTemplateController, 'show'], 'Remark Templates'));
     $router->post('/api/v1/remark-templates', $requireActionAuth([$remarkTemplateController, 'create'], 'Remark Templates', 'add'));
     $router->patch('/api/v1/remark-templates/{remarkTemplateId}', $requireActionAuth([$remarkTemplateController, 'update'], 'Remark Templates', 'edit'));
