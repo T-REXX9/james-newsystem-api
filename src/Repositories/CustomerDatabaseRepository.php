@@ -1242,7 +1242,9 @@ SQL;
     private function syncDeliveryAddresses(PDO $pdo, int $mainId, string $sessionId, array $addresses): void
     {
         if (!$this->hasCustomerDeliveryAddressesTable()) {
-            return;
+            throw new RuntimeException(
+                'Customer delivery addresses are not available yet. Apply migrations/051_create_customer_delivery_addresses.sql and try again.'
+            );
         }
 
         $delete = $pdo->prepare('DELETE FROM tblpatient_delivery_address WHERE lmain_id = :main_id AND lsessionid = :session_id');

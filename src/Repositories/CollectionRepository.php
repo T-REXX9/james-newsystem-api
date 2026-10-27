@@ -474,7 +474,7 @@ SQL,
 
     public function addCollectionPayment(string $collectionRefno, array $payload): int
     {
-        $customer = $this->getCustomerBySession($payload['customer_id']);
+        $customer = $this->getCustomerBySession((string) $payload['customer_id'], (int) $payload['main_id']);
         if ($customer === null) {
             throw new RuntimeException('Customer not found');
         }
@@ -896,8 +896,20 @@ SQL;
         $checkDate = $this->toDate((string) ($payload['check_date'] ?? $item['lchk_date']));
         $amount = isset($payload['amount']) ? (float) $payload['amount'] : (float) $item['lamt'];
         $remarks = (string) ($payload['remarks'] ?? $item['lremarks']);
-        $userId = (string) ($payload['user_id'] ?? $item['luserid']);
         $mainId = (string) ($payload['main_id'] ?? $item['lmainid']);
+        $customerId = trim((string) ($payload['customer_id'] ?? $item['lcustomer']));
+        $customer = $customerId === (string) $item['lcustomer']
+            ? null
+            : $this->getCustomerBySession($customerId, (int) $mainId);
+        if ($customerId === '') {
+            throw new RuntimeException('Customer is required');
+        }
+        if ($customerId !== (string) $item['lcustomer'] && $customer === null) {
+            throw new RuntimeException('Customer not found');
+        }
+        $customerCompany = $customer['lcompany'] ?? $item['lcustomer_fname'];
+        $customerCode = $customer['lpatient_code'] ?? $item['lcustomer_lname'];
+        $userId = (string) ($payload['user_id'] ?? $item['luserid']);
         $hasTransactionsPayload = array_key_exists('transactions', $payload);
         $transactions = $hasTransactionsPayload
             ? (is_array($payload['transactions'] ?? null) ? $payload['transactions'] : [])
@@ -908,13 +920,17 @@ SQL;
         try {
             $stmtUpdate = $pdo->prepare(
                 'UPDATE tblcollection_item
-                 SET lmainid = :lmainid, luserid = :luserid, ltype = :ltype, lbank = :lbank,
+                 SET lmainid = :lmainid, luserid = :luserid, lcustomer = :lcustomer,
+                     lcustomer_fname = :lcustomer_fname, lcustomer_lname = :lcustomer_lname, ltype = :ltype, lbank = :lbank,
                      lchk_no = :lchk_no, lchk_date = :lchk_date, lamt = :lamt, lstatus = :lstatus, lremarks = :lremarks
                  WHERE lid = :lid'
             );
             $stmtUpdate->execute([
                 'lmainid' => $mainId,
                 'luserid' => $userId,
+                'lcustomer' => $customerId,
+                'lcustomer_fname' => $customerCompany,
+                'lcustomer_lname' => $customerCode,
                 'ltype' => $type,
                 'lbank' => $bank,
                 'lchk_no' => $checkNo,
@@ -927,10 +943,11 @@ SQL;
 
             $stmtLedger = $pdo->prepare(
                 'UPDATE tblledger
-                 SET lmesssage = :lmesssage, lcheck_no = :lcheck_no, lcheckdate = :lcheckdate, lremarks = :lremarks
+                 SET lcustomerid = :lcustomerid, lmesssage = :lmesssage, lcheck_no = :lcheck_no, lcheckdate = :lcheckdate, lremarks = :lremarks
                  WHERE lcollection_id = :lcollection_id'
             );
             $stmtLedger->execute([
+                'lcustomerid' => $customerId,
                 'lmesssage' => strtoupper($type),
                 'lcheck_no' => strtoupper(trim($bank . ' ' . $checkNo)),
                 'lcheckdate' => $checkDate,
@@ -1121,12 +1138,13 @@ SQL;
         return ((int) $row['lmax_no']) + 1;
     }
 
-    private function getCustomerBySession(string $sessionId): ?array
+    private function getCustomerBySession(string $sessionId, int $mainId): ?array
     {
         $stmt = $this->db->pdo()->prepare(
-            'SELECT lsessionid, lcompany, lpatient_code FROM tblpatient WHERE lsessionid = :session_id LIMIT 1'
+            'SELECT lsessionid, lcompany, lpatient_code FROM tblpatient
+             WHERE lsessionid = :session_id AND lmain_id = :main_id LIMIT 1'
         );
-        $stmt->execute(['session_id' => $sessionId]);
+        $stmt->execute(['session_id' => $sessionId, 'main_id' => $mainId]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         return $row ?: null;
     }

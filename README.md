@@ -37,6 +37,8 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
    - `mysql -u root topnotch < migrations/032_backfill_product_created_suggested_stock.sql`
    - `mysql -u root topnotch < migrations/047_repair_customer_sales_agent_ids.sql`
      *(Repairs legacy customer-agent assignments that stored a unique staff display name instead of its account ID.)*
+   - `mysql -u root topnotch < migrations/051_create_customer_delivery_addresses.sql`
+     *(Required to save multiple delivery addresses in Customer Data.)*
    - `mysql -u root topnotch < migrations/063_optimize_customer_database_contact_lookup.sql`
      *(Adds the customer-reference index used by batched Daily Call contact lookups.)*
    - `mysql -u root topnotch < migrations/064_add_customer_stars.sql`
