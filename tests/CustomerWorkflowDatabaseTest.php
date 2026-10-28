@@ -28,7 +28,7 @@ foreach (['customer_requests','tblpatient','tblcontact_person','tblpatient_terms
     $pdo->exec(preg_replace('/^CREATE TABLE/', 'CREATE TEMPORARY TABLE', $ddl));
 }
 $pdo->exec('CREATE TEMPORARY TABLE tblpatient_created_at (lmain_id INT NOT NULL, lsessionid VARCHAR(64) NOT NULL, created_at DATETIME NULL DEFAULT NULL, PRIMARY KEY (lmain_id, lsessionid))');
-$pdo->exec('CREATE TEMPORARY TABLE call_report_threads (id INT AUTO_INCREMENT PRIMARY KEY, main_id INT NOT NULL, contact_id VARCHAR(100) NOT NULL, call_log_entry_id INT NOT NULL, call_log_refno VARCHAR(100) NOT NULL, agent_user_id INT NOT NULL, agent_name VARCHAR(100) NOT NULL, outcome VARCHAR(40) NOT NULL, report_body TEXT NOT NULL, concern TEXT NULL, `action` TEXT NULL, report_deleted_at DATETIME NULL, created_at DATETIME NOT NULL, call_started_at DATETIME NULL, call_ended_at DATETIME NULL, duration_seconds INT NOT NULL DEFAULT 0)');
+$pdo->exec('CREATE TEMPORARY TABLE call_report_threads (id INT AUTO_INCREMENT PRIMARY KEY, main_id INT NOT NULL, contact_id VARCHAR(100) NOT NULL, is_direct TINYINT NOT NULL DEFAULT 0, call_log_entry_id INT NULL, call_log_refno VARCHAR(100) NOT NULL, agent_user_id INT NOT NULL, agent_name VARCHAR(100) NOT NULL, outcome VARCHAR(40) NOT NULL, report_body TEXT NOT NULL, concern TEXT NULL, `action` TEXT NULL, report_deleted_at DATETIME NULL, created_at DATETIME NOT NULL, call_started_at DATETIME NULL, call_ended_at DATETIME NULL, duration_seconds INT NOT NULL DEFAULT 0)');
 $pdo->exec('CREATE TEMPORARY TABLE call_report_messages (id INT AUTO_INCREMENT PRIMARY KEY, thread_id INT NOT NULL, sender_user_id INT NOT NULL, sender_name VARCHAR(100) NOT NULL, sender_role VARCHAR(20) NOT NULL, body TEXT NOT NULL, attachment_url TEXT NULL, attachment_mime VARCHAR(100) NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, deleted_at DATETIME NULL)');
 $pdo->exec('CREATE TEMPORARY TABLE call_report_read_states (thread_id INT NOT NULL, user_id INT NOT NULL, last_read_at DATETIME NULL, PRIMARY KEY (thread_id, user_id))');
 $pdo->exec("ALTER TABLE customer_requests MODIFY kind ENUM('customer_update','discount','duplicate_prospect') NOT NULL");
@@ -63,6 +63,8 @@ $insert('tblpatient_terms', ['lid'=>920002,'lpatient'=>$customer]);
 $insert('tblpatient_image', ['lid'=>920003,'lrefno'=>$customer]);
 $claims = static fn(int $user, int $tenant) => ['__auth_claims'=>['sub'=>$user,'main_userid'=>$tenant]];
 $ownerClaims = $claims($main, $main); $agentClaims = $claims($agent, $main);
+$masterUserClaims = $ownerClaims;
+$masterUserClaims['__auth_claims']['user_type'] = '1';
 $repo = new CustomerRequestRepository($db);
 $controller = new CustomerWorkflowController($db, new AuthRepository($db));
 $customerController = new CustomerDatabaseController(new CustomerDatabaseRepository($db), $db);
@@ -107,6 +109,10 @@ $dailyCallController = new DailyCallMonitoringController(
     new CustomerRepository($db)
 );
 $reject(fn() => $dailyCallController->createSalesReportMessage($params, [], $agentClaims + ['main_id'=>$main, 'body'=>'Should be blocked']), 409, 'sales report message endpoint blocks blacklisted customers');
+$reject(fn() => $dailyCallController->createSalesReportMessage($params, [], $agentClaims + ['main_id'=>$main, 'body'=>'Do Not Contact' . "\n" . 'Reason: Customer requested no calls', 'status_note'=>true]), 403, 'only Master User can record a Do Not Contact status note');
+$statusNote = $dailyCallController->createSalesReportMessage($params, [], $masterUserClaims + ['main_id'=>$main, 'body'=>'Do Not Contact' . "\n" . 'Reason: Customer requested no calls', 'status_note'=>true]);
+$assert(($statusNote['body'] ?? '') === 'Do Not Contact' . "\n" . 'Reason: Customer requested no calls', 'Master User can add a Do Not Contact reason to Agent Sales Report after blocking the customer');
+$reject(fn() => $dailyCallController->createSalesReportMessage($params, [], $masterUserClaims + ['main_id'=>$main, 'body'=>'Ordinary message', 'status_note'=>true]), 422, 'Do Not Contact status note requires a valid status/reason body');
 $pdo->prepare('INSERT INTO call_report_threads (main_id, contact_id, call_log_entry_id, call_log_refno, agent_user_id, agent_name, outcome, report_body, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())')->execute([$main, $customer, 990001, 'QA-DNC-REPORT', $agent, 'Test Agent', 'note', 'Existing call report']);
 $reject(fn() => $dailyCallController->createCallReportReply(['threadId'=>'1'], [], $agentClaims + ['main_id'=>$main, 'body'=>'Should be blocked']), 409, 'call report thread reply endpoint blocks blacklisted customers');
 

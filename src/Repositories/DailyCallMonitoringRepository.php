@@ -1773,6 +1773,24 @@ SQL);
         }
     }
 
+    public function assertCustomerIsDoNotContact(int $mainId, string $contactId): void
+    {
+        $statement = $this->db->pdo()->prepare(
+            'SELECT lstatus, ldebt_type
+             FROM tblpatient
+             WHERE lmain_id = :main_id AND lsessionid = :contact_id AND COALESCE(ldeleted, 0) = 0
+             LIMIT 1'
+        );
+        $statement->execute(['main_id' => $mainId, 'contact_id' => $contactId]);
+        $customer = $statement->fetch(PDO::FETCH_ASSOC);
+        if (!$customer) {
+            throw new HttpException(404, 'Customer not found');
+        }
+        if ((int) ($customer['lstatus'] ?? 0) !== 4 && strtolower(trim((string) ($customer['ldebt_type'] ?? ''))) !== 'bad') {
+            throw new HttpException(409, 'Customer must be marked Do Not Contact before recording its status reason.');
+        }
+    }
+
     public function createCallLog(int $mainId, array $data): array
     {
         $occurredAt = (string) ($data['occurred_at'] ?? date('Y-m-d H:i:s'));

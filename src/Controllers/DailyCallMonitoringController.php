@@ -736,7 +736,18 @@ final class DailyCallMonitoringController
             throw new HttpException(403, 'Invalid account scope');
         }
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $senderUserId);
-        $this->repo->assertCustomerCanBeContacted($mainId, $contactId);
+        $isDoNotContactStatusNote = ($body['status_note'] ?? false) === true;
+        if ($isDoNotContactStatusNote) {
+            if ((string) ($claims['user_type'] ?? '') !== '1') {
+                throw new HttpException(403, 'Only the Master User can record a Do Not Contact status note.');
+            }
+            if (!preg_match('/^Do Not Contact\\nReason: .{1,500}$/s', trim((string) ($body['body'] ?? '')))) {
+                throw new HttpException(422, 'A valid Do Not Contact reason is required.');
+            }
+            $this->repo->assertCustomerIsDoNotContact($mainId, $contactId);
+        } else {
+            $this->repo->assertCustomerCanBeContacted($mainId, $contactId);
+        }
 
         $senderName = $this->callReportRepo->resolveAccountDisplayName($senderUserId) ?: 'Staff';
         $messageBody = trim((string) ($body['body'] ?? ''));

@@ -105,10 +105,11 @@ SELECT
     COALESCE(iq.ltime, '') AS sales_time,
     COALESCE(iq.lcustomerid, '') AS contact_id,
     COALESCE(iq.lcompany, '') AS customer_company,
-    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(assigned_agent.lfname, ''), ' ', COALESCE(assigned_agent.llname, ''))), ''), '') AS sales_person,
-    COALESCE(CAST(assigned_agent.lid AS CHAR), '') AS sales_person_id,
+    '' AS sales_person,
+    '' AS sales_person_id,
     COALESCE(iq.luser, '') AS created_by,
-    TRIM(CONCAT(COALESCE(creator.lfname, ''), ' ', COALESCE(creator.llname, ''))) AS created_by_name,
+    COALESCE(CAST(assigned_customer.lsales_person AS CHAR), '') AS assigned_agent_id,
+    '' AS created_by_name,
     COALESCE(iq.lsales_address, '') AS delivery_address,
     COALESCE(iq.linqno, '') AS reference_no,
     COALESCE(iq.lyour_refno, '') AS customer_reference,
@@ -146,14 +147,10 @@ SELECT
         ELSE 1
     END AS is_editable
 FROM tblinquiry iq
-LEFT JOIN tblaccount creator ON creator.lid = CAST(iq.luser AS UNSIGNED)
 LEFT JOIN tblpatient assigned_customer
     ON assigned_customer.lmain_id = iq.lmain_id
    AND assigned_customer.lsessionid = iq.lcustomerid
    AND COALESCE(assigned_customer.ldeleted, 0) = 0
-LEFT JOIN tblaccount assigned_agent
-    ON assigned_agent.lid = assigned_customer.lsales_person
-   AND COALESCE(assigned_agent.lstatus, 0) = 1
 WHERE {$whereSql}
 ORDER BY iq.lid DESC
 LIMIT :limit OFFSET :offset
@@ -161,7 +158,7 @@ SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $this->bindParams($stmt, $params, true);
         $stmt->execute();
-        $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $items = $this->attachInquiryAccountAttribution($stmt->fetchAll(PDO::FETCH_ASSOC));
 
         $refnos = array_values(array_filter(array_map(
             static fn(array $row): string => (string) ($row['inquiry_refno'] ?? ''),
@@ -259,10 +256,11 @@ SELECT
     COALESCE(iq.ltime, '') AS sales_time,
     COALESCE(iq.lcustomerid, '') AS contact_id,
     COALESCE(iq.lcompany, '') AS customer_company,
-    COALESCE(NULLIF(TRIM(CONCAT(COALESCE(assigned_agent.lfname, ''), ' ', COALESCE(assigned_agent.llname, ''))), ''), '') AS sales_person,
-    COALESCE(CAST(assigned_agent.lid AS CHAR), '') AS sales_person_id,
+    '' AS sales_person,
+    '' AS sales_person_id,
     COALESCE(iq.luser, '') AS created_by,
-    TRIM(CONCAT(COALESCE(creator.lfname, ''), ' ', COALESCE(creator.llname, ''))) AS created_by_name,
+    COALESCE(CAST(assigned_customer.lsales_person AS CHAR), '') AS assigned_agent_id,
+    '' AS created_by_name,
     COALESCE(iq.lsales_address, '') AS delivery_address,
     COALESCE(iq.linqno, '') AS reference_no,
     COALESCE(iq.lyour_refno, '') AS customer_reference,
@@ -303,14 +301,10 @@ SELECT
         ELSE 1
     END AS is_editable
 FROM tblinquiry iq
-LEFT JOIN tblaccount creator ON creator.lid = CAST(iq.luser AS UNSIGNED)
 LEFT JOIN tblpatient assigned_customer
     ON assigned_customer.lmain_id = iq.lmain_id
    AND assigned_customer.lsessionid = iq.lcustomerid
    AND COALESCE(assigned_customer.ldeleted, 0) = 0
-LEFT JOIN tblaccount assigned_agent
-    ON assigned_agent.lid = assigned_customer.lsales_person
-   AND COALESCE(assigned_agent.lstatus, 0) = 1
 WHERE iq.lmain_id = :main_id
   AND iq.lrefno = :inquiry_refno
 LIMIT 1
@@ -323,6 +317,7 @@ SQL;
         if ($record === false) {
             return null;
         }
+        $record = $this->attachInquiryAccountAttribution([$record])[0];
 
         $record['items'] = $this->listItems($inquiryRefno);
         $record['item_count'] = count($record['items']);
@@ -338,6 +333,62 @@ SQL;
             $inquiryRefno,
             (float) $record['grand_total']
         );
+    }
+
+    /**
+     * Resolve creator and current assigned-agent names with one account-table read.
+     * MySQL cannot reopen a connection-local TEMPORARY TABLE under multiple aliases
+     * in one statement, so hydrate both attributions from the already-fetched rows.
+     *
+     * @param array<int, array<string, mixed>> $rows
+     * @return array<int, array<string, mixed>>
+     */
+    private function attachInquiryAccountAttribution(array $rows): array
+    {
+        $accountIds = [];
+        foreach ($rows as $row) {
+            foreach ([$row['created_by'] ?? '', $row['assigned_agent_id'] ?? ''] as $rawId) {
+                $id = (int) $rawId;
+                if ($id > 0) {
+                    $accountIds[$id] = $id;
+                }
+            }
+        }
+
+        $accountsById = [];
+        if ($accountIds !== []) {
+            $placeholders = implode(', ', array_fill(0, count($accountIds), '?'));
+            $statement = $this->db->pdo()->prepare(
+                "SELECT CAST(lid AS CHAR) AS id,
+                        TRIM(CONCAT(COALESCE(lfname, ''), ' ', COALESCE(llname, ''))) AS full_name,
+                        COALESCE(lstatus, 0) AS status
+                 FROM tblaccount
+                 WHERE lid IN ({$placeholders})"
+            );
+            $statement->execute(array_values($accountIds));
+            foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $account) {
+                $accountsById[(int) ($account['id'] ?? 0)] = $account;
+            }
+        }
+
+        foreach ($rows as &$row) {
+            $creator = $accountsById[(int) ($row['created_by'] ?? 0)] ?? null;
+            $assignedAgentId = (int) ($row['assigned_agent_id'] ?? 0);
+            $assignedAgent = $accountsById[$assignedAgentId] ?? null;
+            $row['created_by_name'] = trim((string) ($creator['full_name'] ?? ''));
+
+            if ($assignedAgent !== null && (int) ($assignedAgent['status'] ?? 0) === 1) {
+                $row['sales_person'] = trim((string) ($assignedAgent['full_name'] ?? ''));
+                $row['sales_person_id'] = (string) $assignedAgentId;
+            } else {
+                $row['sales_person'] = '';
+                $row['sales_person_id'] = '';
+            }
+            unset($row['assigned_agent_id']);
+        }
+        unset($row);
+
+        return $rows;
     }
 
     public function createInquiry(int $mainId, int $userId, array $payload): array
