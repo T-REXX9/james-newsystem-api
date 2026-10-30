@@ -874,6 +874,7 @@ function app_router(): Router
     $router->get('/api/v1/activity-logs/deletions/{auditId}', [$activityLogController, 'deletionDetail']);
     $router->get('/api/v1/customer-database', $requireViewAuth([$customerDatabaseController, 'list'], 'Customer Database'));
     $router->get('/api/v1/customer-stars', $requireBearerAuthWithClaims([$customerDatabaseController, 'starredIds']));
+    $router->get('/api/v1/customer-identifiers', $requireBearerAuthWithClaims([$customerDatabaseController, 'customerIdentifiers']));
     $router->get('/api/v1/customer-database/name-check', $requireViewAuth([$customerDatabaseController, 'nameCheck'], 'Customer Database'));
     $router->get('/api/v1/customer-database/duplicate-groups', $requireViewAuth([$customerDatabaseController, 'duplicateGroups'], 'Customer Database'));
     $router->get('/api/v1/customer-database/province-summary', $requireViewAuth([$customerDatabaseController, 'provinceSummary'], 'Customer Database'));
@@ -1083,6 +1084,7 @@ function app_router(): Router
     $router->get('/api/v1/suggested-stock-report/purchase-orders', [$suggestedStockReportController, 'purchaseOrders']);
     $router->post('/api/v1/suggested-stock-report/purchase-orders', $requireActionAuth([$suggestedStockReportController, 'createPurchaseOrder'], 'Purchase Order', 'add'));
     $router->post('/api/v1/suggested-stock-report/purchase-orders/{purchaseRefno}/items', $requireActionAuth([$suggestedStockReportController, 'addPurchaseOrderItem'], 'Purchase Order', 'add'));
+    $router->get('/api/v1/products/create-options', $requireViewAuth([$productController, 'createOptions'], 'Product Database'));
     $router->get('/api/v1/products', $requireViewAuth([$productController, 'list'], 'Product Database'));
     $router->get('/api/v1/products/{productSession}', $requireViewAuth([$productController, 'show'], 'Product Database'));
     $router->get('/api/v1/sales-inquiry-products', $requireViewAuth([$productController, 'listForSalesInquiry'], 'Sales Inquiry'));

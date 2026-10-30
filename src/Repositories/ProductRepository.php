@@ -141,7 +141,7 @@ SELECT
         LIMIT 1
     ), '') AS location,
     COALESCE(itm.lcylinder, '') AS no_of_cylinder,
-    CAST(COALESCE(itm.lcost, 0) AS DECIMAL(15,2)) AS cost,
+    CAST(COALESCE(NULLIF(itm.lcog, 0), itm.lcost, 0) AS DECIMAL(15,2)) AS cost,
     CAST(COALESCE((
         SELECT ip.lprice_amt
         FROM tblinventory_price ip
@@ -384,7 +384,7 @@ SELECT
         LIMIT 1
     ), '') AS location,
     COALESCE(itm.lcylinder, '') AS no_of_cylinder,
-    CAST(COALESCE(itm.lcost, 0) AS DECIMAL(15,2)) AS cost,
+    CAST(COALESCE(NULLIF(itm.lcog, 0), itm.lcost, 0) AS DECIMAL(15,2)) AS cost,
     CAST(COALESCE((
         SELECT ip.lprice_amt
         FROM tblinventory_price ip
@@ -548,23 +548,74 @@ SQL;
     {
         $session = $this->generateSessionId();
         $status = $this->mapStatusToLegacy($payload['status'] ?? 'Active');
-        $itemCode = trim((string) ($payload['item_code'] ?? ''));
-        if ($itemCode === '') {
-            throw new InvalidArgumentException('item_code is required when creating a product');
+        $partNo = $this->strVal($payload['part_no'] ?? '');
+        $category = $this->strVal($payload['category'] ?? '');
+        $pdo = $this->db->pdo();
+        $prefix = $this->strVal($payload['product_code_prefix'] ?? '');
+        $lockName = null;
+
+        // Reserve the prefix before opening a transaction. With MySQL's default
+        // REPEATABLE READ isolation, a transaction that waits for GET_LOCK after
+        // its first SELECT can retain a stale snapshot and reuse the last number.
+        if ($prefix !== '') {
+            $lockName = 'product-code:' . sha1($prefix);
+            $lock = $pdo->prepare('SELECT GET_LOCK(:lock_name, 10)');
+            $lock->execute(['lock_name' => $lockName]);
+            if ((int) $lock->fetchColumn() !== 1) {
+                throw new InvalidArgumentException('Could not reserve the next item code. Please try again.');
+            }
         }
 
-        $partNo = $this->strVal($payload['part_no'] ?? '');
-        $this->assertNoDuplicateCatalogProduct($mainId, $itemCode, $partNo);
+        try {
+        $pdo->beginTransaction();
+        if (!empty($payload['create_category'])) {
+            if ($category === '') {
+                throw new InvalidArgumentException('Enter a category name');
+            }
+            $insertCategory = $pdo->prepare('INSERT INTO tblproduct_group (lname, lstatus) VALUES (:name, 1)');
+            $insertCategory->execute(['name' => $category]);
+        }
+
+        if ($prefix !== '') {
+            if (!empty($payload['create_product_code_prefix'])) {
+                $createPrefix = $pdo->prepare('INSERT INTO tblproduct_code (lname) VALUES (:name)');
+                $createPrefix->execute(['name' => $prefix]);
+            } else {
+                $findPrefix = $pdo->prepare('SELECT lid FROM tblproduct_code WHERE lname = :name LIMIT 1');
+                $findPrefix->execute(['name' => $prefix]);
+                if ($findPrefix->fetchColumn() === false) {
+                    throw new InvalidArgumentException('Select a valid item code prefix');
+                }
+            }
+
+        }
+
+            if ($prefix !== '') {
+                $counterStmt = $pdo->prepare('SELECT COALESCE(MAX(lctr), 0) + 1 FROM tblproduct_code_generator WHERE lcode = :code');
+                $counterStmt->execute(['code' => $prefix]);
+                $counter = (int) $counterStmt->fetchColumn();
+                $itemCode = $prefix . $counter;
+                $insertCounter = $pdo->prepare('INSERT INTO tblproduct_code_generator (lcode, lctr) VALUES (:code, :counter)');
+                $insertCounter->execute(['code' => $prefix, 'counter' => $counter]);
+            } else {
+                // Keep compatibility for existing API clients that still send a complete item code.
+                $itemCode = trim((string) ($payload['item_code'] ?? ''));
+                if ($itemCode === '') {
+                    throw new InvalidArgumentException('Select an item code prefix');
+                }
+            }
+
+            $this->assertNoDuplicateCatalogProduct($mainId, $itemCode, $partNo);
 
         $sql = <<<SQL
 INSERT INTO tblinventory_item (
-    lsession, lmain_id, litemcode, ldescription, lpartno, loem_number, lbrand, lbarcode,
+    lsession, lmain_id, litemcode, lproduct_code, ldescription, lpartno, loem_number, lbrand, lbarcode,
     lpcsperbox, lsize, lreorder_amt, lstatus, lproduct_group, lnickname, lholes, lreplenish,
-    lopn_number, lapplication, lcylinder, lcost, lrecord_image, lrecord_image_position, lnot_inventory, linv_stat, ltrackable, ldateadded, laddedby
+    lopn_number, lapplication, lcylinder, lcog, lrecord_image, lrecord_image_position, lnot_inventory, linv_stat, ltrackable, ldateadded, laddedby
 ) VALUES (
-    :lsession, :lmain_id, :litemcode, :ldescription, :lpartno, :loem_number, :lbrand, :lbarcode,
+    :lsession, :lmain_id, :litemcode, :lproduct_code, :ldescription, :lpartno, :loem_number, :lbrand, :lbarcode,
     :lpcsperbox, :lsize, :lreorder_amt, :lstatus, :lproduct_group, :lnickname, :lholes, :lreplenish,
-    :lopn_number, :lapplication, :lcylinder, :lcost, :lrecord_image, :lrecord_image_position, 0, '', 'Yes', CURDATE(), :laddedby
+    :lopn_number, :lapplication, :lcylinder, :lcog, :lrecord_image, :lrecord_image_position, 0, 'On Stock', 'Yes', CURDATE(), :laddedby
 )
 SQL;
         $stmt = $this->db->pdo()->prepare($sql);
@@ -572,6 +623,7 @@ SQL;
             'lsession' => $session,
             'lmain_id' => $mainId,
             'litemcode' => $itemCode,
+            'lproduct_code' => $prefix !== '' ? $prefix : $this->strVal($payload['product_code'] ?? ''),
             'ldescription' => $this->strVal($payload['description'] ?? ''),
             'lpartno' => $partNo,
             'loem_number' => $this->strVal($payload['oem_no'] ?? ''),
@@ -581,26 +633,91 @@ SQL;
             'lsize' => $this->strVal($payload['size'] ?? ''),
             'lreorder_amt' => (int) ($payload['reorder_quantity'] ?? 0),
             'lstatus' => $status,
-            'lproduct_group' => $this->strVal($payload['category'] ?? ''),
+            'lproduct_group' => $category,
             'lnickname' => $this->strVal($payload['descriptive_inquiry'] ?? ''),
             'lholes' => $this->strVal($payload['no_of_holes'] ?? ''),
-            // Replenishment is retired; reorder quantity is the only stocking control.
-            'lreplenish' => 0,
+            'lreplenish' => (int) ($payload['replenish_quantity'] ?? 0),
             'lopn_number' => $this->strVal($payload['original_pn_no'] ?? ''),
             'lapplication' => $this->strVal($payload['application'] ?? ''),
             'lcylinder' => $this->strVal($payload['no_of_cylinder'] ?? ''),
-            'lcost' => (float) ($payload['cost'] ?? 0),
+            'lcog' => (float) ($payload['cost'] ?? 0),
             'lrecord_image' => RecordImageValidator::normalize((string) ($payload['record_image'] ?? '')),
             'lrecord_image_position' => (string) ($payload['record_image_position'] ?? '50,50'),
             'laddedby' => $userId > 0 ? $userId : null,
         ]);
 
-        $this->syncPrices($mainId, $session, $payload, $userId);
-        $this->syncSupplierCosts($mainId, $session, $itemCode, $partNo, $payload, $userId);
+            $this->insertLegacyConfiguredPrices($mainId, $session, $payload);
+
+            $suggestedItemId = (int) ($payload['suggested_inquiry_item_id'] ?? 0);
+            $suggestedPartNo = $this->strVal($payload['suggested_part_no'] ?? '');
+            if ($suggestedItemId > 0) {
+                $linkInquiry = $pdo->prepare(<<<SQL
+UPDATE tblinquiry_item i
+INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
+SET i.lpartno = :part_no
+WHERE i.lid = :item_id AND tr.lmain_id = :main_id
+SQL);
+                $linkInquiry->execute(['part_no' => $partNo, 'item_id' => $suggestedItemId, 'main_id' => $mainId]);
+            } elseif ($suggestedPartNo !== '') {
+                $linkInquiry = $pdo->prepare(<<<SQL
+UPDATE tblinquiry_item i
+INNER JOIN tblinquiry tr ON tr.lrefno = i.linq_refno
+SET i.lpartno = :part_no
+WHERE i.lpartno = :suggested_part_no AND tr.lmain_id = :main_id
+SQL);
+                $linkInquiry->execute(['part_no' => $partNo, 'suggested_part_no' => $suggestedPartNo, 'main_id' => $mainId]);
+            }
+
         $this->syncWarehouseStocks($mainId, $session, $payload, $userId);
+
+            $pdo->commit();
+            // tblsupplier_cost is a legacy MyISAM table in production. GTID
+            // consistency rejects writes to it while this transaction has
+            // already changed InnoDB tables, so persist supplier costs after
+            // the transactional product row has committed.
+            $this->syncSupplierCosts($mainId, $session, $itemCode, $partNo, $payload, $userId);
+        } catch (\Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        } finally {
+            if ($lockName !== null) {
+                $release = $pdo->prepare('SELECT RELEASE_LOCK(:lock_name)');
+                $release->execute(['lock_name' => $lockName]);
+            }
+        }
+
+        (new AuditTrailWriter($pdo))->write(
+            $mainId,
+            $userId,
+            'Product Database',
+            'Added product in inventory: Part No. ' . $partNo . ' Item Code ' . $itemCode,
+            $session
+        );
 
         $item = $this->getProductBySession($mainId, $session);
         return $item ?? ['id' => $session];
+    }
+
+    /** @return array{code_prefixes: array<int, array{id: int, name: string}>, price_groups: array<int, array{name: string, type: string}>} */
+    public function getProductCreateOptions(int $mainId): array
+    {
+        $stmt = $this->db->pdo()->query(
+            "SELECT lid AS id, COALESCE(lname, '') AS name FROM tblproduct_code WHERE COALESCE(lname, '') <> '' ORDER BY lname ASC, lid ASC"
+        );
+        $groups = $this->db->pdo()->prepare(<<<'SQL'
+SELECT lname AS name, COALESCE(ltype, 'Regular') AS type
+FROM tblinv_pricegroup
+WHERE lmainid = :main_id
+ORDER BY lid ASC
+SQL);
+        $groups->execute(['main_id' => $mainId]);
+
+        return [
+            'code_prefixes' => $stmt->fetchAll(PDO::FETCH_ASSOC),
+            'price_groups' => $groups->fetchAll(PDO::FETCH_ASSOC),
+        ];
     }
 
     /**
@@ -673,13 +790,14 @@ SQL;
             'description' => 'ldescription',
             'size' => 'lsize',
             'reorder_quantity' => 'lreorder_amt',
+            'replenish_quantity' => 'lreplenish',
             'category' => 'lproduct_group',
             'descriptive_inquiry' => 'lnickname',
             'no_of_holes' => 'lholes',
             'original_pn_no' => 'lopn_number',
             'application' => 'lapplication',
             'no_of_cylinder' => 'lcylinder',
-            'cost' => 'lcost',
+            'cost' => 'lcog',
             'record_image' => 'lrecord_image',
             'record_image_position' => 'lrecord_image_position',
         ];
@@ -690,7 +808,7 @@ SQL;
             }
             $paramName = 'p_' . $dbField;
             $sets[] = "{$dbField} = :{$paramName}";
-            if (in_array($apiField, ['no_of_pieces_per_box', 'reorder_quantity'], true)) {
+            if (in_array($apiField, ['no_of_pieces_per_box', 'reorder_quantity', 'replenish_quantity'], true)) {
                 $params[$paramName] = (int) $payload[$apiField];
             } elseif ($apiField === 'cost') {
                 $params[$paramName] = (float) $payload[$apiField];
@@ -1109,17 +1227,68 @@ SQL;
             'price_bb' => 'ABB',
             'price_cc' => 'ACC',
             'price_dd' => 'ADD',
+            'price_baa' => 'BAA',
+            'price_bbb' => 'BBB',
+            'price_bcc' => 'BCC',
+            'price_bdd' => 'BDD',
             'price_vip1' => 'VIP 1',
             'price_vip2' => 'VIP2',
             'price_vip3' => 'VIP3',
         ];
 
-        foreach ($mapping as $field => $groupName) {
-            if (!array_key_exists($field, $payload)) {
-                continue;
+        if (!array_key_exists('price_group_amounts', $payload)) {
+            foreach ($mapping as $field => $groupName) {
+                if (!array_key_exists($field, $payload)) {
+                    continue;
+                }
+                $amount = (float) ($payload[$field] ?? 0);
+                $this->upsertPriceGroup($mainId, $productSession, $groupName, $amount, $userId);
             }
-            $amount = (float) ($payload[$field] ?? 0);
-            $this->upsertPriceGroup($mainId, $productSession, $groupName, $amount, $userId);
+        }
+
+        $customPrices = is_array($payload['price_group_amounts'] ?? null) ? $payload['price_group_amounts'] : [];
+        if ($customPrices !== []) {
+            $configured = $this->db->pdo()->prepare(
+                'SELECT lname FROM tblinv_pricegroup WHERE lmainid = :main_id'
+            );
+            $configured->execute(['main_id' => $mainId]);
+            $allowedNames = array_fill_keys(array_map('strval', $configured->fetchAll(PDO::FETCH_COLUMN)), true);
+            foreach ($customPrices as $name => $amount) {
+                $groupName = trim((string) $name);
+                if ($groupName === '' || !isset($allowedNames[$groupName])) {
+                    continue;
+                }
+                $this->upsertPriceGroup($mainId, $productSession, $groupName, (float) $amount, $userId);
+            }
+        }
+    }
+
+    /** Insert configured prices with the same columns and row shape as legacy new_add_inventory(). */
+    private function insertLegacyConfiguredPrices(int $mainId, string $productSession, array $payload): void
+    {
+        $groups = $this->db->pdo()->prepare(
+            'SELECT lname FROM tblinv_pricegroup WHERE lmainid = :main_id ORDER BY lid ASC'
+        );
+        $groups->execute(['main_id' => $mainId]);
+        $amounts = is_array($payload['price_group_amounts'] ?? null) ? $payload['price_group_amounts'] : [];
+        if ($amounts === []) {
+            foreach ([
+                'price_aa' => 'AAA', 'price_bb' => 'ABB', 'price_cc' => 'ACC', 'price_dd' => 'ADD',
+                'price_baa' => 'BAA', 'price_bbb' => 'BBB', 'price_bcc' => 'BCC', 'price_bdd' => 'BDD',
+                'price_vip1' => 'VIP 1', 'price_vip2' => 'VIP2', 'price_vip3' => 'VIP3',
+            ] as $field => $name) {
+                if (array_key_exists($field, $payload)) $amounts[$name] = $payload[$field];
+            }
+        }
+        $insert = $this->db->pdo()->prepare(
+            'INSERT INTO tblinventory_price (linv_refno, lprice_name, lprice_amt) VALUES (:session, :name, :amount)'
+        );
+        foreach ($groups->fetchAll(PDO::FETCH_COLUMN) as $groupName) {
+            $name = trim((string) $groupName);
+            if ($name !== '') {
+                $amount = (float) ($amounts[$name] ?? 0);
+                $insert->execute(['session' => $productSession, 'name' => $name, 'amount' => $amount]);
+            }
         }
     }
 

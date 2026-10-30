@@ -54,6 +54,131 @@ final class CustomerDatabaseRepository
         return array_map('strval', $stmt->fetchAll(PDO::FETCH_COLUMN));
     }
 
+    /** @return array<int, array{customer_id: string, identifiers: list<string>}> */
+    public function listCustomerIdentifiers(int $mainId): array
+    {
+        $stmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT
+    p.lsessionid AS customer_id,
+    COALESCE(p.lstatus, 1) AS customer_status,
+    COALESCE(p.lprofile_type, '') AS profile_type,
+    COALESCE(p.lverification, '') AS verification,
+    COALESCE(p.ldebt_type, 'Good') AS debt_type,
+    NULLIF(GREATEST(
+        COALESCE(ledger.last_purchase_date, '1000-01-01'),
+        COALESCE(transaction_sales.last_purchase_date, '1000-01-01'),
+        COALESCE(sales_report.last_purchase_date, '1000-01-01')
+    ), '1000-01-01') AS last_purchase_date,
+    CASE
+        WHEN GREATEST(
+            COALESCE(ledger.last_purchase_date, '1000-01-01'),
+            COALESCE(transaction_sales.last_purchase_date, '1000-01-01'),
+            COALESCE(sales_report.last_purchase_date, '1000-01-01')
+        ) >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH) THEN 1
+        ELSE 0
+    END AS is_new_customer,
+    EXISTS (
+        SELECT 1 FROM daily_call_do_not_contact_flags dnc
+        WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid
+    ) AS do_not_call
+FROM tblpatient p
+LEFT JOIN (
+    SELECT lmainid, lcustomerid, MAX(DATE(ldatetime)) AS last_purchase_date
+    FROM tblledger
+    WHERE lmainid = :ledger_main_id
+      AND LOWER(TRIM(COALESCE(ltype, ''))) = 'debit'
+      AND LOWER(TRIM(COALESCE(lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+      AND COALESCE(ldebit, 0) > 0
+      AND ldatetime < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+    GROUP BY lmainid, lcustomerid
+) ledger ON ledger.lmainid = p.lmain_id AND ledger.lcustomerid = p.lsessionid
+LEFT JOIN (
+    SELECT lmain_id, lcustomerid, MAX(DATE(ldate)) AS last_purchase_date
+    FROM tbltransaction
+    WHERE lmain_id = :transaction_main_id
+      AND ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+      AND COALESCE(lcancel, 0) = 0
+      AND COALESCE(lsubmitstat, '') IN ('Approved', 'Posted', 'Submitted')
+      AND COALESCE(invoice_refno, '') = ''
+      AND COALESCE(ldr_refno, '') = ''
+      AND COALESCE(NULLIF(lamount, 0), 0) > 0
+    GROUP BY lmain_id, lcustomerid
+) transaction_sales ON transaction_sales.lmain_id = p.lmain_id AND transaction_sales.lcustomerid = p.lsessionid
+LEFT JOIN (
+    SELECT lmain_id, customer_id, MAX(sale_date) AS last_purchase_date
+    FROM (
+        SELECT lmain_id, lcustomerid AS customer_id, DATE(ldate) AS sale_date
+        FROM tblinvoice_list
+        WHERE lmain_id = :invoice_main_id
+          AND COALESCE(NULLIF(TRIM(lcancel), ''), '0') = '0'
+          AND COALESCE(lcancel_invoice, 0) = 0
+          AND LOWER(COALESCE(lstatus, '')) <> 'cancelled'
+          AND ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+          AND COALESCE(lcustomerid, '') <> ''
+        UNION ALL
+        SELECT lmain_id, lcustomerid AS customer_id, DATE(ldate) AS sale_date
+        FROM tbldelivery_receipt
+        WHERE lmain_id = :delivery_receipt_main_id
+          AND COALESCE(NULLIF(TRIM(lcancel), ''), '0') = '0'
+          AND ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+          AND COALESCE(lcustomerid, '') <> ''
+    ) posted_sales
+    GROUP BY lmain_id, customer_id
+) sales_report ON sales_report.lmain_id = p.lmain_id AND sales_report.customer_id = p.lsessionid
+WHERE p.lmain_id = :main_id AND COALESCE(p.ldeleted, 0) = 0
+SQL);
+        $stmt->execute([
+            'main_id' => $mainId,
+            'ledger_main_id' => $mainId,
+            'transaction_main_id' => $mainId,
+            'invoice_main_id' => $mainId,
+            'delivery_receipt_main_id' => $mainId,
+        ]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $identifiers = [];
+        foreach ($rows as $row) {
+            $customerId = trim((string) ($row['customer_id'] ?? ''));
+            if ($customerId === '') {
+                continue;
+            }
+            $identifiers[] = [
+                'customer_id' => $customerId,
+                'identifiers' => self::resolveCustomerIdentifierLabels($row),
+            ];
+        }
+        return $identifiers;
+    }
+
+    /** @return list<string> */
+    public static function resolveCustomerIdentifierLabels(array $row): array
+    {
+        $profileType = strtolower(trim((string) ($row['profile_type'] ?? '')));
+        $isProspect = str_contains($profileType, 'prospect') || (int) ($row['customer_status'] ?? 1) === 3;
+        $isBlacklisted = (int) ($row['customer_status'] ?? 1) === 4
+            || strtolower(trim((string) ($row['debt_type'] ?? ''))) === 'bad';
+        $identifiers = [];
+
+        if ($isBlacklisted) {
+            $identifiers[] = 'Blacklisted';
+        }
+        if ((bool) ($row['do_not_call'] ?? false)) {
+            $identifiers[] = 'Do Not Call';
+        }
+        if ($identifiers !== []) {
+            return $identifiers;
+        }
+
+        if ($isProspect) {
+            return [strtolower(trim((string) ($row['verification'] ?? ''))) === 'verified'
+                ? 'Verified Prospective'
+                : 'Unverified Prospective'];
+        }
+
+        return [(bool) ($row['is_new_customer'] ?? false) ? 'New Customer' : 'Existing Customer'];
+    }
+
     public function __construct(private readonly Database $db)
     {
     }

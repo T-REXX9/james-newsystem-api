@@ -120,8 +120,8 @@ final class ProductController
         if ($mainId <= 0) {
             throw new HttpException(422, 'main_id is required');
         }
-        if (trim((string) ($body['item_code'] ?? '')) === '') {
-            throw new HttpException(422, 'item_code is required when creating a product');
+        if (trim((string) ($body['product_code_prefix'] ?? $body['item_code'] ?? '')) === '') {
+            throw new HttpException(422, 'product_code_prefix is required when creating a product');
         }
         $userId = (int) ($body['user_id'] ?? 0);
 
@@ -130,6 +130,16 @@ final class ProductController
         } catch (\InvalidArgumentException $e) {
             throw new HttpException(422, $e->getMessage());
         }
+    }
+
+    public function createOptions(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($query['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        return $this->repo->getProductCreateOptions($mainId);
     }
 
     public function update(array $params = [], array $query = [], array $body = []): array

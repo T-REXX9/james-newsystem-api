@@ -93,6 +93,18 @@ final class CustomerDatabaseController
         return ['items' => $this->repo->listStarredCustomerIds($mainId)];
     }
 
+    public function customerIdentifiers(array $params = [], array $query = [], array $body = []): array
+    {
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+        header('Pragma: no-cache');
+        header('Expires: 0');
+        $mainId = (int) ($body['__auth_claims']['main_userid'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+        return ['items' => $this->repo->listCustomerIdentifiers($mainId)];
+    }
+
     public function nameCheck(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($query['main_id'] ?? 0);

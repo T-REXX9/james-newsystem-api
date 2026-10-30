@@ -485,6 +485,22 @@ SQL,
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
+            // Use the first payment's collection date as the DCR business date;
+            // keep the creation timestamp separately in created_at for audit.
+            $stmtHeaderDate = $pdo->prepare(
+                'UPDATE tblcollection
+                 SET ldatetime = :business_date
+                 WHERE lrefno = :refno
+                   AND NOT EXISTS (
+                       SELECT 1 FROM tblcollection_item WHERE lrefno = :existing_refno
+                   )'
+            );
+            $stmtHeaderDate->execute([
+                'business_date' => $collectDate,
+                'refno' => $collectionRefno,
+                'existing_refno' => $collectionRefno,
+            ]);
+
             $stmt = $pdo->prepare(
                 'INSERT INTO tblcollection_item
                  (lrefno, lmainid, luserid, lcustomer, lcustomer_fname, lcustomer_lname, ltype, lbank, lchk_no, lchk_date, lamt, lstatus, lremarks, lcollect_date, lpost, created_at)
