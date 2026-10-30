@@ -1329,6 +1329,8 @@ SQL;
             return [
                 'id' => (string) ($row['id'] ?? ''),
                 'shopName' => (string) ($row['shop_name'] ?? 'Unnamed Shop'),
+                'isStarred' => (bool) ($row['is_starred'] ?? false),
+                'is_starred' => (bool) ($row['is_starred'] ?? false),
                 'doNotContact' => (bool) ($row['do_not_contact'] ?? false),
                 'doNotContactReason' => $this->cleanDisplayText($row['do_not_contact_reason'] ?? '', ''),
                 'pastName' => $this->cleanDisplayText($row['past_name'] ?? '', ''),

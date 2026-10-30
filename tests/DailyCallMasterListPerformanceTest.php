@@ -23,6 +23,15 @@ if (!is_array($result['items'] ?? null)) {
     exit(1);
 }
 
+$missingStarStateRows = array_filter(
+    $result['items'],
+    static fn(array $row): bool => !array_key_exists('isStarred', $row) || !is_bool($row['isStarred'])
+);
+if ($missingStarStateRows !== []) {
+    fwrite(STDERR, "FAIL: Master List rows must preserve their boolean isStarred value\n");
+    exit(1);
+}
+
 // This formerly exceeded 30 seconds because each purchase row executed two
 // correlated scans to count later active months. Allow modest CI/database
 // variance while catching any return to a multi-second dashboard load.
