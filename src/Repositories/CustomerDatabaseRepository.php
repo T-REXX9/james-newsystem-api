@@ -9,6 +9,7 @@ use App\Support\AuditTrailWriter;
 use App\Support\CustomerLedgerCalculator;
 use App\Support\PhoneNumberNormalizer;
 use App\Support\RecordImageValidator;
+use DateTimeImmutable;
 use PDO;
 use RuntimeException;
 
@@ -64,26 +65,18 @@ SELECT
     COALESCE(p.lprofile_type, '') AS profile_type,
     COALESCE(p.lverification, '') AS verification,
     COALESCE(p.ldebt_type, 'Good') AS debt_type,
-    NULLIF(GREATEST(
-        COALESCE(ledger.last_purchase_date, '1000-01-01'),
-        COALESCE(transaction_sales.last_purchase_date, '1000-01-01'),
-        COALESCE(sales_report.last_purchase_date, '1000-01-01')
-    ), '1000-01-01') AS last_purchase_date,
-    CASE
-        WHEN GREATEST(
-            COALESCE(ledger.last_purchase_date, '1000-01-01'),
-            COALESCE(transaction_sales.last_purchase_date, '1000-01-01'),
-            COALESCE(sales_report.last_purchase_date, '1000-01-01')
-        ) >= DATE_SUB(CURDATE(), INTERVAL 1 MONTH) THEN 1
-        ELSE 0
-    END AS is_new_customer,
+    NULLIF(LEAST(
+        COALESCE(ledger.first_purchase_date, '9999-12-31'),
+        COALESCE(transaction_sales.first_purchase_date, '9999-12-31'),
+        COALESCE(sales_report.first_purchase_date, '9999-12-31')
+    ), '9999-12-31') AS first_purchase_date,
     EXISTS (
         SELECT 1 FROM daily_call_do_not_contact_flags dnc
         WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid
     ) AS do_not_call
 FROM tblpatient p
 LEFT JOIN (
-    SELECT lmainid, lcustomerid, MAX(DATE(ldatetime)) AS last_purchase_date
+    SELECT lmainid, lcustomerid, MIN(DATE(ldatetime)) AS first_purchase_date
     FROM tblledger
     WHERE lmainid = :ledger_main_id
       AND LOWER(TRIM(COALESCE(ltype, ''))) = 'debit'
@@ -93,7 +86,7 @@ LEFT JOIN (
     GROUP BY lmainid, lcustomerid
 ) ledger ON ledger.lmainid = p.lmain_id AND ledger.lcustomerid = p.lsessionid
 LEFT JOIN (
-    SELECT lmain_id, lcustomerid, MAX(DATE(ldate)) AS last_purchase_date
+    SELECT lmain_id, lcustomerid, MIN(DATE(ldate)) AS first_purchase_date
     FROM tbltransaction
     WHERE lmain_id = :transaction_main_id
       AND ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
@@ -105,7 +98,7 @@ LEFT JOIN (
     GROUP BY lmain_id, lcustomerid
 ) transaction_sales ON transaction_sales.lmain_id = p.lmain_id AND transaction_sales.lcustomerid = p.lsessionid
 LEFT JOIN (
-    SELECT lmain_id, customer_id, MAX(sale_date) AS last_purchase_date
+    SELECT lmain_id, customer_id, MIN(sale_date) AS first_purchase_date
     FROM (
         SELECT lmain_id, lcustomerid AS customer_id, DATE(ldate) AS sale_date
         FROM tblinvoice_list
@@ -113,7 +106,6 @@ LEFT JOIN (
           AND COALESCE(NULLIF(TRIM(lcancel), ''), '0') = '0'
           AND COALESCE(lcancel_invoice, 0) = 0
           AND LOWER(COALESCE(lstatus, '')) <> 'cancelled'
-          AND ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
           AND ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
           AND COALESCE(lcustomerid, '') <> ''
         UNION ALL
@@ -121,7 +113,6 @@ LEFT JOIN (
         FROM tbldelivery_receipt
         WHERE lmain_id = :delivery_receipt_main_id
           AND COALESCE(NULLIF(TRIM(lcancel), ''), '0') = '0'
-          AND ldate >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
           AND ldate < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
           AND COALESCE(lcustomerid, '') <> ''
     ) posted_sales
@@ -176,7 +167,29 @@ SQL);
                 : 'Unverified Prospective'];
         }
 
-        return [(bool) ($row['is_new_customer'] ?? false) ? 'New Customer' : 'Existing Customer'];
+        return [self::isNewCustomerFromFirstPurchase(
+            $row['first_purchase_date'] ?? null,
+            $row['as_of_date'] ?? null
+        ) ? 'New Customer' : 'Existing Customer'];
+    }
+
+    public static function isNewCustomerFromFirstPurchase(?string $firstPurchaseDate, ?string $asOfDate = null): bool
+    {
+        $firstPurchase = DateTimeImmutable::createFromFormat('!Y-m-d', substr(trim((string) $firstPurchaseDate), 0, 10));
+        if (!$firstPurchase) {
+            return false;
+        }
+        $today = DateTimeImmutable::createFromFormat('!Y-m-d', substr(trim((string) ($asOfDate ?: date('Y-m-d'))), 0, 10));
+        if (!$today) {
+            return false;
+        }
+        $previousMonth = $today->modify('first day of previous month');
+        $cutoff = $previousMonth->setDate(
+            (int) $previousMonth->format('Y'),
+            (int) $previousMonth->format('m'),
+            min((int) $today->format('d'), (int) $previousMonth->format('t'))
+        );
+        return $firstPurchase >= $cutoff && $firstPurchase <= $today;
     }
 
     public function __construct(private readonly Database $db)
