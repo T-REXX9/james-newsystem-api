@@ -14,6 +14,13 @@ final class SalesDocumentNumberReuse
             return '';
         }
 
+        // Never bless a mismatched visible number just because the caller knows
+        // which document table it came from. Historical cross-type leaks can
+        // otherwise be tagged as valid and reused again after unposting.
+        if (!self::matchesTypeFormat($number, $type)) {
+            return '';
+        }
+
         return $type . '|' . $number;
     }
 
@@ -27,7 +34,10 @@ final class SalesDocumentNumberReuse
 
         if (str_contains($storedNumber, '|')) {
             [$storedType, $number] = explode('|', $storedNumber, 2);
-            return self::normalizeType($storedType) === $targetType ? trim($number) : '';
+            $number = trim($number);
+            return self::normalizeType($storedType) === $targetType && self::matchesTypeFormat($number, $targetType)
+                ? $number
+                : '';
         }
 
         // Older rows stored only the visible number. N-D is the legacy Order Slip
@@ -49,5 +59,11 @@ final class SalesDocumentNumberReuse
             'invoice', 'inv' => 'INV',
             default => '',
         };
+    }
+
+    private static function matchesTypeFormat(string $number, string $type): bool
+    {
+        $isOrderSlipNumber = preg_match('/^N-D\d+$/i', $number) === 1;
+        return $type === 'OS' ? $isOrderSlipNumber : ($type === 'INV' && !$isOrderSlipNumber);
     }
 }
