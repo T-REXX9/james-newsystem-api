@@ -997,6 +997,7 @@ SQL);
                 [
                     'user_id' => (int) ($payload['user_id'] ?? 0),
                     'last_document_no' => (string) ($record['invoice']['invoice_no'] ?? ''),
+                    'last_document_type' => 'Invoice',
                 ]
             );
             if ($result === null) {

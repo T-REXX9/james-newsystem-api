@@ -7,6 +7,7 @@ namespace App\Repositories;
 use App\Database;
 use App\Repositories\NotificationsRepository;
 use App\Support\AuditTrailWriter;
+use App\Support\SalesDocumentNumberReuse;
 use App\Support\VipDocumentDiscount;
 use PDO;
 use RuntimeException;
@@ -781,12 +782,22 @@ SQL;
             $set[] = 'lcancel = 0';
         } elseif ($normalizedAction === 'unpost') {
             $lastLinkedDocumentNo = trim((string) ($payload['last_document_no'] ?? ''));
+            $lastLinkedDocumentType = trim((string) ($payload['last_document_type'] ?? ''));
             if ($lastLinkedDocumentNo === '') {
                 $lastLinkedDocumentNo = trim((string) ($existing['order']['order_slip_no'] ?? ''));
+                if ($lastLinkedDocumentNo !== '') {
+                    $lastLinkedDocumentType = 'Order Slip';
+                }
             }
             if ($lastLinkedDocumentNo === '') {
                 $lastLinkedDocumentNo = trim((string) ($existing['order']['invoice_no'] ?? ''));
+                if ($lastLinkedDocumentNo !== '') {
+                    $lastLinkedDocumentType = 'Invoice';
+                }
             }
+            $lastLinkedDocumentType = $lastLinkedDocumentType !== ''
+                ? $lastLinkedDocumentType
+                : SalesDocumentNumberReuse::inferLegacyType($lastLinkedDocumentNo);
 
             $this->cleanupLinkedDocumentsForSalesOrder($salesRefno);
             $set[] = "lsubmitstat = 'Pending'";
@@ -797,7 +808,9 @@ SQL;
             $set[] = 'ldr_refno = NULL';
             $set[] = 'ldr_no = NULL';
             $set[] = 'llast_refno = :last_refno';
-            $params['last_refno'] = $lastLinkedDocumentNo !== '' ? $lastLinkedDocumentNo : null;
+            $params['last_refno'] = $lastLinkedDocumentNo !== ''
+                ? SalesDocumentNumberReuse::remember($lastLinkedDocumentNo, $lastLinkedDocumentType)
+                : null;
             $this->syncInquiryOnSalesUnpost($mainId, $salesRefno);
         } elseif ($normalizedAction === 'cancel' || $normalizedAction === 'cancel_so' || $normalizedAction === 'cancelled' || $normalizedAction === 'canceled') {
             $this->cleanupLinkedDocumentsForSalesOrder($salesRefno);
@@ -988,7 +1001,10 @@ SQL;
             'po_number' => (string) ($order['po_number'] ?? ''),
             'remarks' => (string) ($order['remarks'] ?? ''),
             'status' => 'Posted',
-            'slip_no' => trim((string) ($order['last_document_no'] ?? '')),
+            'slip_no' => SalesDocumentNumberReuse::forTarget(
+                (string) ($order['last_document_no'] ?? ''),
+                'Order Slip'
+            ),
             'items' => array_map(
                 static fn(array $item): array => [
                     'item_id' => (string) ($item['item_refno'] ?? $item['item_id'] ?? ''),
@@ -1100,7 +1116,10 @@ SQL;
             'po_number' => (string) ($order['po_number'] ?? ''),
             'remarks' => (string) ($order['remarks'] ?? ''),
             'status' => 'Posted',
-            'invoice_no' => trim((string) ($order['last_document_no'] ?? '')),
+            'invoice_no' => SalesDocumentNumberReuse::forTarget(
+                (string) ($order['last_document_no'] ?? ''),
+                'Invoice'
+            ),
             'tax_type' => (string) ($payload['tax_type'] ?? ''),
             'items' => array_map(
                 static fn(array $item): array => [
