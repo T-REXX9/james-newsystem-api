@@ -355,7 +355,7 @@ SQL;
             return null;
         }
 
-        $items = $this->listItems($invoiceRefno);
+        $items = $this->listItems($mainId, $invoiceRefno);
         $summary = [
             'item_count' => count($items),
             'total_qty' => 0,
@@ -649,10 +649,10 @@ SQL;
         $stmt = $pdo->prepare(
             'INSERT INTO tblinvoice_itemrec (
                 lrefno, linvoice_refno, litemid, litem_refno, linv_refno,
-                litemcode, lpartno, ldesc, llocation, lqty, lprice, lremark, luser
+                litemcode, lpartno, lbrand, ldesc, llocation, lqty, lprice, lremark, luser
              ) VALUES (
                 :lrefno, :linvoice_refno, :litemid, :litem_refno, :linv_refno,
-                :litemcode, :lpartno, :ldesc, :llocation, :lqty, :lprice, :lremark, :luser
+                :litemcode, :lpartno, :lbrand, :ldesc, :llocation, :lqty, :lprice, :lremark, :luser
              )'
         );
         $stmt->execute([
@@ -663,6 +663,7 @@ SQL;
             'linv_refno' => $data['inv_refno'],
             'litemcode' => $data['item_code'],
             'lpartno' => $data['part_no'],
+            'lbrand' => $data['brand'],
             'ldesc' => $data['description'],
             'llocation' => $data['location'],
             'lqty' => $data['qty'],
@@ -706,6 +707,7 @@ SQL;
         $map = [
             'item_code' => 'litemcode',
             'part_no' => 'lpartno',
+            'brand' => 'lbrand',
             'description' => 'ldesc',
             'location' => 'llocation',
             'qty' => 'lqty',
@@ -1047,7 +1049,7 @@ SQL);
     /**
      * @return array<int, array<string, mixed>>
      */
-    private function listItems(string $invoiceRefno): array
+    private function listItems(int $mainId, string $invoiceRefno): array
     {
         $stmt = $this->db->pdo()->prepare(
             'SELECT
@@ -1058,6 +1060,29 @@ SQL);
                 COALESCE(ii.linv_refno, \'\') AS inv_refno,
                 COALESCE(ii.litemcode, \'\') AS item_code,
                 COALESCE(ii.lpartno, \'\') AS part_no,
+                COALESCE(
+                    NULLIF(TRIM(ii.lbrand), \'\'),
+                    (
+                        SELECT soi.lbrand
+                        FROM tbltransaction_item soi
+                        WHERE soi.lrefno = so.lrefno
+                          AND NULLIF(TRIM(soi.lbrand), \'\') IS NOT NULL
+                          AND (
+                              (NULLIF(ii.litem_refno, \'\') IS NOT NULL AND (soi.linv_refno = ii.litem_refno OR soi.litem_refno = ii.litem_refno))
+                              OR (NULLIF(ii.linv_refno, \'\') IS NOT NULL AND (soi.linv_refno = ii.linv_refno OR soi.litem_refno = ii.linv_refno))
+                              OR (NULLIF(ii.litemid, \'\') IS NOT NULL AND soi.litemid = ii.litemid)
+                              OR (NULLIF(ii.litemcode, \'\') IS NOT NULL AND NULLIF(ii.lpartno, \'\') IS NOT NULL AND soi.litemcode = ii.litemcode AND soi.lpartno = ii.lpartno)
+                          )
+                        ORDER BY CASE
+                            WHEN NULLIF(ii.litem_refno, \'\') IS NOT NULL AND (soi.linv_refno = ii.litem_refno OR soi.litem_refno = ii.litem_refno) THEN 0
+                            WHEN NULLIF(ii.linv_refno, \'\') IS NOT NULL AND (soi.linv_refno = ii.linv_refno OR soi.litem_refno = ii.linv_refno) THEN 0
+                            WHEN NULLIF(ii.litemid, \'\') IS NOT NULL AND soi.litemid = ii.litemid THEN 1
+                            ELSE 2
+                        END, soi.lid ASC
+                        LIMIT 1
+                    ),
+                    \'\'
+                ) AS brand,
                 COALESCE(ii.ldesc, \'\') AS description,
                 COALESCE(ii.llocation, \'\') AS location,
                 COALESCE(ii.lqty, 0) AS qty,
@@ -1065,10 +1090,16 @@ SQL);
                 (COALESCE(ii.lqty, 0) * COALESCE(ii.lprice, 0)) AS amount,
                 COALESCE(ii.lremark, \'\') AS remark
              FROM tblinvoice_itemrec ii
-             WHERE ii.linvoice_refno = :invoice_refno
+             INNER JOIN tblinvoice_list inv
+                 ON inv.lrefno = ii.linvoice_refno
+             LEFT JOIN tbltransaction so
+                 ON so.lrefno = inv.lsales_refno
+                AND so.lmain_id = inv.lmain_id
+             WHERE inv.lmain_id = :main_id
+               AND inv.lrefno = :invoice_refno
              ORDER BY ii.lid ASC'
         );
-        $stmt->execute(['invoice_refno' => $invoiceRefno]);
+        $stmt->execute(['main_id' => $mainId, 'invoice_refno' => $invoiceRefno]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
@@ -1202,6 +1233,29 @@ SQL);
                 COALESCE(ii.linv_refno, \'\') AS inv_refno,
                 COALESCE(ii.litemcode, \'\') AS item_code,
                 COALESCE(ii.lpartno, \'\') AS part_no,
+                COALESCE(
+                    NULLIF(TRIM(ii.lbrand), \'\'),
+                    (
+                        SELECT soi.lbrand
+                        FROM tbltransaction_item soi
+                        WHERE soi.lrefno = so.lrefno
+                          AND NULLIF(TRIM(soi.lbrand), \'\') IS NOT NULL
+                          AND (
+                              (NULLIF(ii.litem_refno, \'\') IS NOT NULL AND (soi.linv_refno = ii.litem_refno OR soi.litem_refno = ii.litem_refno))
+                              OR (NULLIF(ii.linv_refno, \'\') IS NOT NULL AND (soi.linv_refno = ii.linv_refno OR soi.litem_refno = ii.linv_refno))
+                              OR (NULLIF(ii.litemid, \'\') IS NOT NULL AND soi.litemid = ii.litemid)
+                              OR (NULLIF(ii.litemcode, \'\') IS NOT NULL AND NULLIF(ii.lpartno, \'\') IS NOT NULL AND soi.litemcode = ii.litemcode AND soi.lpartno = ii.lpartno)
+                          )
+                        ORDER BY CASE
+                            WHEN NULLIF(ii.litem_refno, \'\') IS NOT NULL AND (soi.linv_refno = ii.litem_refno OR soi.litem_refno = ii.litem_refno) THEN 0
+                            WHEN NULLIF(ii.linv_refno, \'\') IS NOT NULL AND (soi.linv_refno = ii.linv_refno OR soi.litem_refno = ii.linv_refno) THEN 0
+                            WHEN NULLIF(ii.litemid, \'\') IS NOT NULL AND soi.litemid = ii.litemid THEN 1
+                            ELSE 2
+                        END, soi.lid ASC
+                        LIMIT 1
+                    ),
+                    \'\'
+                ) AS brand,
                 COALESCE(ii.ldesc, \'\') AS description,
                 COALESCE(ii.llocation, \'\') AS location,
                 COALESCE(ii.lqty, 0) AS qty,
@@ -1211,6 +1265,9 @@ SQL);
              FROM tblinvoice_itemrec ii
              INNER JOIN tblinvoice_list inv
                  ON inv.lrefno = ii.linvoice_refno
+             LEFT JOIN tbltransaction so
+                 ON so.lrefno = inv.lsales_refno
+                AND so.lmain_id = inv.lmain_id
              WHERE ii.lid = :item_id
                AND inv.lmain_id = :main_id
              LIMIT 1'
@@ -1238,10 +1295,10 @@ SQL);
         $insert = $this->db->pdo()->prepare(
             'INSERT INTO tblinvoice_itemrec (
                 lrefno, linvoice_refno, litemid, litem_refno, linv_refno,
-                litemcode, lpartno, ldesc, llocation, lqty, lprice, lremark, luser
+                litemcode, lpartno, lbrand, ldesc, llocation, lqty, lprice, lremark, luser
              ) VALUES (
                 :lrefno, :linvoice_refno, :litemid, :litem_refno, :linv_refno,
-                :litemcode, :lpartno, :ldesc, :llocation, :lqty, :lprice, :lremark, :luser
+                :litemcode, :lpartno, :lbrand, :ldesc, :llocation, :lqty, :lprice, :lremark, :luser
              )'
         );
         foreach ($items as $row) {
@@ -1257,6 +1314,7 @@ SQL);
                 'linv_refno' => $data['inv_refno'],
                 'litemcode' => $data['item_code'],
                 'lpartno' => $data['part_no'],
+                'lbrand' => $data['brand'],
                 'ldesc' => $data['description'],
                 'llocation' => $data['location'],
                 'lqty' => $data['qty'],
@@ -1352,7 +1410,7 @@ SQL);
     }
 
     /**
-     * @return array{item_id:string,item_refno:string,inv_refno:string,item_code:string,part_no:string,description:string,location:string,qty:int,unit_price:float,remark:string}
+     * @return array{item_id:string,item_refno:string,inv_refno:string,item_code:string,part_no:string,brand:string,description:string,location:string,qty:int,unit_price:float,remark:string}
      */
     private function normalizeItemPayload(array $payload): array
     {
@@ -1370,6 +1428,7 @@ SQL);
             'inv_refno' => $invRefno,
             'item_code' => trim((string) ($payload['item_code'] ?? '')),
             'part_no' => trim((string) ($payload['part_no'] ?? '')),
+            'brand' => trim((string) ($payload['brand'] ?? '')),
             'description' => trim((string) ($payload['description'] ?? '')),
             'location' => trim((string) ($payload['location'] ?? '')),
             'qty' => max(0, (int) ($payload['qty'] ?? 0)),

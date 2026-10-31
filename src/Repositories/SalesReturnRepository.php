@@ -44,6 +44,28 @@ final class SalesReturnRepository
         return (string) ($stmt->fetchColumn() ?: 'Unknown Customer');
     }
 
+    private function getCustomerTaxType(\PDO $pdo, int $mainId, string $customerId): string
+    {
+        if (trim($customerId) === '') {
+            throw new RuntimeException('Select a valid customer to determine tax type.');
+        }
+        $stmt = $pdo->prepare('SELECT COALESCE(lvat_type, "") FROM tblpatient WHERE lsessionid = :sid AND CAST(COALESCE(lmain_id, 0) AS SIGNED) = :main_id LIMIT 1');
+        $stmt->execute(['sid' => $customerId, 'main_id' => $mainId]);
+        $storedVatType = $stmt->fetchColumn();
+        if ($storedVatType === false) {
+            throw new RuntimeException('Select a valid customer to determine tax type.');
+        }
+        $vatType = strtolower(trim((string) $storedVatType));
+        return match ($vatType) {
+            'exclusive' => 'Exclusive',
+            'inclusive' => 'Inclusive',
+            'zero-rated', 'zero rated', 'zerorated' => 'None',
+            // Customer records without a recognized VAT value use the
+            // customer database default, Zero-Rated.
+            default => 'None',
+        };
+    }
+
     /**
      * @return array{type:string,refno:string,doc_no:string,sales_refno:string,is_cancelled:bool,status:string}|null
      */
@@ -334,7 +356,7 @@ SQL;
             $type = trim((string) ($payload['type'] ?? ''));
             $transactionRefno = trim((string) ($payload['transaction_refno'] ?? ''));
             $discountAmt = (float) ($payload['discount_amt'] ?? 0);
-            $taxType = trim((string) ($payload['tax_type'] ?? 'Exclusive'));
+            $taxType = $this->getCustomerTaxType($pdo, $mainId, $customerId);
 
             // If a source document refno is provided, resolve its display number and linked sales refno.
             if ($invoiceRefno !== '') {
@@ -428,7 +450,6 @@ SQL);
             'type' => 'ltype',
             'transaction_refno' => 'ltransaction_refno',
             'discount_amt' => 'ldiscount_amt',
-            'tax_type' => 'ltax_type',
         ];
 
         foreach ($fieldMap as $payloadKey => $dbCol) {
@@ -444,9 +465,12 @@ SQL);
         // If customer_id changed, also update clname
         if (array_key_exists('customer_id', $payload)) {
             $pdo = $this->db->pdo();
-            $newName = $this->getCustomerName($pdo, trim((string) $payload['customer_id']));
+            $newCustomerId = trim((string) $payload['customer_id']);
+            $newName = $this->getCustomerName($pdo, $newCustomerId);
             $sets[] = 'clname = :set_clname';
             $params['set_clname'] = $newName;
+            $sets[] = 'ltax_type = :set_tax_type';
+            $params['set_tax_type'] = $this->getCustomerTaxType($pdo, $mainId, $newCustomerId);
         }
 
         if ($sets === []) {

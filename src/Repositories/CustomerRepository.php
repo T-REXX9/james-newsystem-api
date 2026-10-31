@@ -908,7 +908,12 @@ SQL;
         $rawPriceGroup = (string) ($customer['lprice_group'] ?? '');
         $customerSince = CustomerLedgerCalculator::normalizeDate((string) ($customer['lsince'] ?? ''));
         $mainId = (int) ($customer['lmain_id'] ?? 0);
-        $vipStatus = $this->resolveVipStandingLevel($mainId, $lastMonthSales);
+        $vipConfig = $this->vipTierConfig($mainId);
+        $vipStatus = VipStanding::resolveLevel(
+            $lastMonthSales,
+            (float) $vipConfig['one_time_discount_threshold'],
+            (float) $vipConfig['unlimited_discount_threshold']
+        );
         $discountCode = $this->recordQualifiedDiscountCode(
             $mainId,
             $sessionId,
@@ -947,6 +952,8 @@ SQL;
             'price_code' => $rawPriceGroup !== '' ? $rawPriceGroup : null,
             'discount_code' => $discountCode,
             'vip_status' => $vipStatus,
+            'vip_one_time_discount_threshold' => (float) $vipConfig['one_time_discount_threshold'],
+            'vip_unlimited_discount_threshold' => (float) $vipConfig['unlimited_discount_threshold'],
             'aging' => $aging,
         ];
     }

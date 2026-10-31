@@ -1009,6 +1009,7 @@ SQL;
                 static fn(array $item): array => [
                     'item_id' => (string) ($item['item_refno'] ?? $item['item_id'] ?? ''),
                     'part_no' => (string) ($item['part_no'] ?? ''),
+                    'brand' => (string) ($item['brand'] ?? ''),
                     'item_code' => (string) ($item['item_code'] ?? ''),
                     'description' => (string) ($item['description'] ?? ''),
                     'location' => (string) ($item['location'] ?? ''),
@@ -1125,6 +1126,7 @@ SQL;
                 static fn(array $item): array => [
                     'item_id' => (string) ($item['item_refno'] ?? $item['item_id'] ?? ''),
                     'part_no' => (string) ($item['part_no'] ?? ''),
+                    'brand' => (string) ($item['brand'] ?? ''),
                     'item_code' => (string) ($item['item_code'] ?? ''),
                     'description' => (string) ($item['description'] ?? ''),
                     'location' => (string) ($item['location'] ?? ''),
