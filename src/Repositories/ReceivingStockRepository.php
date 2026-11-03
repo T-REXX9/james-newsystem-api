@@ -696,17 +696,19 @@ SQL;
         }
 
         $wasDelivered = in_array(strtolower((string) ($record['record']['status'] ?? '')), ['delivered', 'posted'], true);
+        $receiveDate = $this->normalizeDate((string) ($record['record']['receive_date'] ?? date('Y-m-d')));
         $incompleteDeliveryReason = trim($incompleteDeliveryReason);
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
             $update = $pdo->prepare(
                 'UPDATE tblpurchase_order
-                 SET ltransaction_status = :status, ldate_recieved = CURDATE()
+                 SET ltransaction_status = :status, ldate_recieved = :posted_date
                  WHERE lmain_id = :main_id AND lrefno = :refno'
             );
             $update->execute([
                 'status' => $status === '' ? 'Delivered' : $status,
+                'posted_date' => $receiveDate,
                 'main_id' => (string) $mainId,
                 'refno' => $receivingRefno,
             ]);
@@ -727,7 +729,7 @@ SQL;
                 'INSERT INTO tblinventory_logs
                 (linvent_id, lin, lout, ltotal, ldateadded, lprocess_by, lnote, lsupplier_id, linventory_id, lstatus_logs, ltransaction_item_id, lpurchase_item_id, lrefno, llocation, lwarehouse, ltransaction_type, litemcode, lpartno)
                 VALUES
-                (:invent_id, :lin, 0, :ltotal, NOW(), :process_by, :note, :supplier_id, :inventory_id, "+", "Purchase Order", :purchase_item_id, :refno, :location_id, :warehouse_id, "Receiving", :item_code, :part_no)'
+                (:invent_id, :lin, 0, :ltotal, TIMESTAMP(:inventory_date, CURTIME()), :process_by, :note, :supplier_id, :inventory_id, "+", "Purchase Order", :purchase_item_id, :refno, :location_id, :warehouse_id, "Receiving", :item_code, :part_no)'
             );
 
             foreach ($details['items'] as $item) {
@@ -740,6 +742,7 @@ SQL;
                     'invent_id' => (string) ($item['product_session'] ?? ''),
                     'lin' => $qty,
                     'ltotal' => $qty,
+                    'inventory_date' => $receiveDate,
                     'process_by' => $rrNumber,
                     'note' => $supplierName,
                     'supplier_id' => $supplierId,
