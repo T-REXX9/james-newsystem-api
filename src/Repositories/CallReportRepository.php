@@ -1433,7 +1433,7 @@ SQL;
     }
 
     /**
-     * Agents may contribute when they own the thread, are permanently assigned,
+     * Agents may contribute when they own the thread, are directly or team-assigned,
      * or claimed/called this contact today (Daily Call Monitoring), even after the
      * short claim TTL expires or the claim is marked completed.
      */
@@ -1452,8 +1452,49 @@ SQL;
         if ($this->resolveAssignedAgentId($mainId, $contactId) === $senderUserId) {
             return true;
         }
+        if ($this->agentIsAssignedToContactTeam($mainId, $contactId, $senderUserId)) {
+            return true;
+        }
 
         return $this->hasTodaysCallClaim($mainId, $contactId, $senderUserId);
+    }
+
+    private function agentIsAssignedToContactTeam(int $mainId, string $contactId, int $agentUserId): bool
+    {
+        if ($mainId <= 0 || $contactId === '' || $agentUserId <= 0) {
+            return false;
+        }
+
+        $stmt = $this->db->pdo()->prepare(<<<'SQL'
+            SELECT 1
+             FROM tblpatient p
+             INNER JOIN tblaccount a
+                ON a.lid = :agent_user_id
+               AND CAST(COALESCE(a.lmother_id, 0) AS SIGNED) = :account_main_id
+               AND COALESCE(a.lstatus, 0) = 1
+               AND COALESCE(a.larchieve, 0) = 0
+             INNER JOIN tblusertype agent_type
+                ON agent_type.lid = a.ltype
+               AND LOWER(TRIM(REGEXP_REPLACE(COALESCE(agent_type.ltype_name, ''), '[[:space:]]+', ' '))) IN ('sales agent', 'sales person', 'salesperson')
+             INNER JOIN tblteamstaff team
+                ON team.lid = CAST(COALESCE(a.lteam, 0) AS SIGNED)
+               AND team.lmain_id = p.lmain_id
+               AND COALESCE(team.lstatus, 1) = 1
+             WHERE p.lmain_id = :main_id
+               AND (CAST(p.lid AS CHAR) = :contact_id OR CAST(p.lsessionid AS CHAR) = :contact_session)
+               AND COALESCE(p.ldeleted, 0) = 0
+               AND CAST(COALESCE(p.lsales_team, 0) AS SIGNED) = CAST(COALESCE(a.lteam, 0) AS SIGNED)
+             LIMIT 1
+            SQL);
+        $stmt->execute([
+            'agent_user_id' => $agentUserId,
+            'account_main_id' => $mainId,
+            'main_id' => $mainId,
+            'contact_id' => $contactId,
+            'contact_session' => $contactId,
+        ]);
+
+        return (bool) $stmt->fetchColumn();
     }
 
     private function hasTodaysCallClaim(int $mainId, string $contactId, int $agentUserId): bool
