@@ -122,7 +122,25 @@ function pc_assert(bool $condition, string $message, int &$passed, int &$failed,
 
 try {
     $pdo->prepare('INSERT INTO tblproduct_code (lname) VALUES (:name)')->execute(['name' => $prefix]);
-    $pdo->prepare('INSERT INTO tblproduct_code_generator (lcode, lctr) VALUES (:code, 122)')->execute(['code' => $prefix]);
+    // Simulate a legacy prefix whose catalog already contains item codes but
+    // which has never been used by the new-system generator table.
+    $seedSession = 'legacy-seed-' . bin2hex(random_bytes(5));
+    $sessions[] = $seedSession;
+    $pdo->prepare(<<<'SQL'
+INSERT INTO tblinventory_item
+    (lsession, lmain_id, litemcode, lproduct_code, ldescription, lpartno, lstatus, linv_stat, ltrackable, lnot_inventory, ldeleted)
+VALUES
+    (:session, :main_id, :item_code, :prefix, 'Legacy sequence fixture', :part_no, 1, 'On Stock', 'Yes', 0, 0)
+SQL)->execute([
+        'session' => $seedSession,
+        'main_id' => $mainId,
+        'item_code' => $prefix . '122',
+        'prefix' => $prefix,
+        'part_no' => $prefix . 'LEGACY-SEED',
+    ]);
+    $emptyGenerator = $pdo->prepare('SELECT COUNT(*) FROM tblproduct_code_generator WHERE lcode = :code');
+    $emptyGenerator->execute(['code' => $prefix]);
+    pc_assert((int) $emptyGenerator->fetchColumn() === 0, 'legacy sequence fixture starts without a generator row', $passed, $failed, $errors);
 
     $options = pc_request('GET', "{$API_BASE}/api/v1/products/create-options?main_id={$mainId}");
     pc_assert($options['http_code'] === 200, 'create-options returns HTTP 200', $passed, $failed, $errors);

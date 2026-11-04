@@ -91,6 +91,20 @@ final class CollectionController
         return $record;
     }
 
+    public function updateHeader(array $params, array $query = [], array $body = []): array
+    {
+        $refno = (string) ($params['collectionRefno'] ?? '');
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $userId = (int) ($body['user_id'] ?? 0);
+        $collectionNo = trim((string) ($body['collection_no'] ?? ''));
+        $date = (string) ($body['date'] ?? '');
+        if ($refno === '' || $mainId <= 0 || $userId <= 0 || $collectionNo === '' || $date === '') {
+            throw new HttpException(422, 'collectionRefno, main_id, user_id, collection_no and date are required');
+        }
+
+        return $this->repo->updateCollectionHeader($refno, $mainId, $userId, $collectionNo, $date);
+    }
+
     public function items(array $params, array $query = [], array $body = []): array
     {
         $refno = (string) ($params['collectionRefno'] ?? '');

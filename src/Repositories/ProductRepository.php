@@ -591,8 +591,23 @@ SQL;
         }
 
             if ($prefix !== '') {
-                $counterStmt = $pdo->prepare('SELECT COALESCE(MAX(lctr), 0) + 1 FROM tblproduct_code_generator WHERE lcode = :code');
-                $counterStmt->execute(['code' => $prefix]);
+                // The generator table was added by the new system, so legacy
+                // prefixes may already have item codes without any counter
+                // rows. Start after the larger of the saved counter and the
+                // highest numeric suffix already present in the legacy catalog.
+                $counterStmt = $pdo->prepare(<<<'SQL'
+SELECT GREATEST(
+    COALESCE((SELECT MAX(lctr) FROM tblproduct_code_generator WHERE lcode = :generator_code), 0),
+    COALESCE((
+        SELECT MAX(CAST(SUBSTRING(litemcode, CHAR_LENGTH(lproduct_code) + 1) AS UNSIGNED))
+        FROM tblinventory_item
+        WHERE lproduct_code = :item_prefix
+          AND LEFT(litemcode, CHAR_LENGTH(lproduct_code)) = lproduct_code
+          AND SUBSTRING(litemcode, CHAR_LENGTH(lproduct_code) + 1) REGEXP '^[0-9]+$'
+    ), 0)
+) + 1
+SQL);
+                $counterStmt->execute(['generator_code' => $prefix, 'item_prefix' => $prefix]);
                 $counter = (int) $counterStmt->fetchColumn();
                 $itemCode = $prefix . $counter;
                 $insertCounter = $pdo->prepare('INSERT INTO tblproduct_code_generator (lcode, lctr) VALUES (:code, :counter)');

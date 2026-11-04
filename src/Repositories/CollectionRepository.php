@@ -124,6 +124,73 @@ SQL;
         return $row ?: null;
     }
 
+    public function updateCollectionHeader(string $refno, int $mainId, int $userId, string $collectionNo, string $date): array
+    {
+        $businessDate = $this->toDate($date);
+        if ($businessDate === null) {
+            throw new RuntimeException('A valid collection date is required');
+        }
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmtHeader = $pdo->prepare(
+                'SELECT lstatus FROM tblcollection WHERE lrefno = :refno AND lmain_id = :main_id FOR UPDATE'
+            );
+            $stmtHeader->execute(['refno' => $refno, 'main_id' => $mainId]);
+            $header = $stmtHeader->fetch(PDO::FETCH_ASSOC);
+            if ($header === false) {
+                throw new RuntimeException('Collection record not found');
+            }
+
+            $stmtUpdate = $pdo->prepare(
+                'UPDATE tblcollection SET lcolection_no = :collection_no, ldatetime = :business_date WHERE lrefno = :refno'
+            );
+            $stmtUpdate->execute([
+                'collection_no' => $collectionNo,
+                'business_date' => $businessDate,
+                'refno' => $refno,
+            ]);
+
+            $stmtItems = $pdo->prepare('UPDATE tblcollection_item SET lcollect_date = :business_date WHERE lrefno = :refno');
+            $stmtItems->execute(['business_date' => $businessDate, 'refno' => $refno]);
+
+            $stmtLedger = $pdo->prepare(
+                'UPDATE tblledger SET ldatetime = :business_date, ldcr = :collection_no WHERE lrefno = :refno AND lref_name = :ref_name'
+            );
+            $stmtLedger->execute([
+                'business_date' => $businessDate,
+                'collection_no' => $collectionNo,
+                'refno' => $refno,
+                'ref_name' => 'DCR',
+            ]);
+
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+
+        (new AuditTrailWriter($pdo))->write(
+            $mainId,
+            $userId,
+            'Daily Collection Entry',
+            'Edit Collection Entry',
+            $refno,
+            $collectionNo . ' | ' . $businessDate,
+            (string) ($header['lstatus'] ?? ''),
+            (string) ($header['lstatus'] ?? '')
+        );
+
+        return [
+            'collection_refno' => $refno,
+            'collection_no' => $collectionNo,
+            'date' => $businessDate,
+            'status' => (string) ($header['lstatus'] ?? ''),
+            'updated' => true,
+        ];
+    }
+
     public function getCollectionItems(string $refno): array
     {
         $stmt = $this->db->pdo()->prepare(
@@ -744,12 +811,22 @@ SQL,
     {
         $pdo = $this->db->pdo();
         $collection = $this->getCollection($refno);
+        $dateStmt = $pdo->prepare(
+            'SELECT lcollect_date
+             FROM tblcollection_item
+             WHERE lrefno = :refno AND lcollect_date IS NOT NULL
+             ORDER BY lid ASC
+             LIMIT 1'
+        );
+        $dateStmt->execute(['refno' => $refno]);
+        $businessDate = $this->toDate((string) $dateStmt->fetchColumn());
         $stmt = $pdo->prepare(
             'UPDATE tblcollection
-             SET lstatus = :status, ldate_approved = NOW()
+             SET lstatus = :status, ldate_approved = NOW(),
+                 ldatetime = COALESCE(:business_date, ldatetime)
              WHERE lrefno = :refno'
         );
-        $stmt->execute(['status' => 'Posted', 'refno' => $refno]);
+        $stmt->execute(['status' => 'Posted', 'business_date' => $businessDate, 'refno' => $refno]);
         (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Daily Collection Entry', 'Post Collection Entry', $refno, '', (string) ($collection['lstatus'] ?? 'Pending'), 'Posted');
 
         return [
@@ -838,6 +915,16 @@ SQL;
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
+            $stmtCheck = $pdo->prepare('SELECT lstatus FROM tblcollection WHERE lrefno = :refno FOR UPDATE');
+            $stmtCheck->execute(['refno' => $refno]);
+            $collection = $stmtCheck->fetch(PDO::FETCH_ASSOC);
+            if ($collection === false) {
+                throw new RuntimeException('Collection record not found');
+            }
+            if ((string) ($collection['lstatus'] ?? '') !== 'Pending') {
+                throw new RuntimeException('Only pending collection reports can be deleted');
+            }
+
             // Delete collection item transactions linked to items of this collection
             $stmtTx = $pdo->prepare(
                 'DELETE cit FROM tblcollection_item_transactions cit
@@ -874,6 +961,21 @@ SQL;
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
+            $stmtCheck = $pdo->prepare(
+                'SELECT lcollection_status, lpost
+                 FROM tblcollection_item
+                 WHERE lid = :item_id
+                 FOR UPDATE'
+            );
+            $stmtCheck->execute(['item_id' => $itemId]);
+            $item = $stmtCheck->fetch(PDO::FETCH_ASSOC);
+            if ($item === false) {
+                throw new RuntimeException('Collection item not found');
+            }
+            if ((int) ($item['lpost'] ?? 0) === 1 || (string) ($item['lcollection_status'] ?? '') !== 'Pending') {
+                throw new RuntimeException('Only pending collection items can be deleted');
+            }
+
             $stmtTx = $pdo->prepare('DELETE FROM tblcollection_item_transactions WHERE lcollection_itemid = :item_id');
             $stmtTx->execute(['item_id' => $itemId]);
 
@@ -889,51 +991,94 @@ SQL;
 
     public function updateCollectionPaymentLine(int $itemId, array $payload): array
     {
-        $item = $this->getCollectionItem($itemId);
-        if ($item === null) {
-            throw new RuntimeException('Collection item not found');
-        }
-
-        $collection = $this->getCollection((string) $item['lrefno']);
-        if ($collection === null) {
-            throw new RuntimeException('Collection record not found');
-        }
-        if ((int) ($item['lpost'] ?? 0) === 1 || (string) ($item['lcollection_status'] ?? '') === 'Posted') {
-            throw new RuntimeException('Posted collection items cannot be edited');
-        }
-        if ((string) ($collection['lstatus'] ?? '') !== 'Pending') {
-            throw new RuntimeException('Only payment lines in a pending collection can be edited');
-        }
-
-        $status = (string) ($payload['status'] ?? $item['lstatus']);
-        $type = (string) ($payload['type'] ?? $item['ltype']);
-        $bank = (string) ($payload['bank'] ?? $item['lbank']);
-        $checkNo = (string) ($payload['check_no'] ?? $item['lchk_no']);
-        $checkDate = $this->toDate((string) ($payload['check_date'] ?? $item['lchk_date']));
-        $amount = isset($payload['amount']) ? (float) $payload['amount'] : (float) $item['lamt'];
-        $remarks = (string) ($payload['remarks'] ?? $item['lremarks']);
-        $mainId = (string) ($payload['main_id'] ?? $item['lmainid']);
-        $customerId = trim((string) ($payload['customer_id'] ?? $item['lcustomer']));
-        $customer = $customerId === (string) $item['lcustomer']
-            ? null
-            : $this->getCustomerBySession($customerId, (int) $mainId);
-        if ($customerId === '') {
-            throw new RuntimeException('Customer is required');
-        }
-        if ($customerId !== (string) $item['lcustomer'] && $customer === null) {
-            throw new RuntimeException('Customer not found');
-        }
-        $customerCompany = $customer['lcompany'] ?? $item['lcustomer_fname'];
-        $customerCode = $customer['lpatient_code'] ?? $item['lcustomer_lname'];
-        $userId = (string) ($payload['user_id'] ?? $item['luserid']);
-        $hasTransactionsPayload = array_key_exists('transactions', $payload);
-        $transactions = $hasTransactionsPayload
-            ? (is_array($payload['transactions'] ?? null) ? $payload['transactions'] : [])
-            : $this->getCollectionItemTransactions($itemId);
-
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
+            // Serialize edits to a payment line before checking its status. A stale
+            // pre-transaction read could let concurrent cancellation requests each
+            // create a reversal entry for the same posted payment.
+            $lockClause = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
+            $stmtCurrentItem = $pdo->prepare('SELECT * FROM tblcollection_item WHERE lid = :item_id' . $lockClause);
+            $stmtCurrentItem->execute(['item_id' => $itemId]);
+            $item = $stmtCurrentItem->fetch(PDO::FETCH_ASSOC);
+            if ($item === false) {
+                throw new RuntimeException('Collection item not found');
+            }
+
+            $collection = $this->getCollection((string) $item['lrefno']);
+            if ($collection === null) {
+                throw new RuntimeException('Collection record not found');
+            }
+            $status = (string) ($payload['status'] ?? $item['lstatus']);
+            $isPostedItem = (int) ($item['lpost'] ?? 0) === 1 || (string) ($item['lcollection_status'] ?? '') === 'Posted';
+            $wasCancelled = strcasecmp((string) ($item['lstatus'] ?? ''), 'Cancelled') === 0;
+            if ($isPostedItem && $wasCancelled && strcasecmp($status, 'Cancelled') !== 0) {
+                throw new RuntimeException('A cancelled posted payment cannot be restored');
+            }
+            $type = (string) ($payload['type'] ?? $item['ltype']);
+            $bank = (string) ($payload['bank'] ?? $item['lbank']);
+            $checkNo = (string) ($payload['check_no'] ?? $item['lchk_no']);
+            $checkDate = $this->toDate((string) ($payload['check_date'] ?? $item['lchk_date']));
+            $amount = isset($payload['amount']) ? (float) $payload['amount'] : (float) $item['lamt'];
+            $remarks = (string) ($payload['remarks'] ?? $item['lremarks']);
+            $mainId = (string) ($payload['main_id'] ?? $item['lmainid']);
+            $customerId = trim((string) ($payload['customer_id'] ?? $item['lcustomer']));
+            $customer = $customerId === (string) $item['lcustomer']
+                ? null
+                : $this->getCustomerBySession($customerId, (int) $mainId);
+            if ($customerId === '') {
+                throw new RuntimeException('Customer is required');
+            }
+            if ($customerId !== (string) $item['lcustomer'] && $customer === null) {
+                throw new RuntimeException('Customer not found');
+            }
+            $customerCompany = $customer['lcompany'] ?? $item['lcustomer_fname'];
+            $customerCode = $customer['lpatient_code'] ?? $item['lcustomer_lname'];
+            $userId = (string) ($payload['user_id'] ?? $item['luserid']);
+            $hasTransactionsPayload = array_key_exists('transactions', $payload);
+            $transactions = $hasTransactionsPayload
+                ? (is_array($payload['transactions'] ?? null) ? $payload['transactions'] : [])
+                : $this->getCollectionItemTransactions($itemId);
+
+            if ($isPostedItem && strcasecmp($status, 'Cancelled') === 0 && !$wasCancelled) {
+                $stmtOriginalLedger = $pdo->prepare(
+                    'SELECT * FROM tblledger WHERE lcollection_id = :item_id AND lref_name = :ref_name ORDER BY lid ASC LIMIT 1' . $lockClause
+                );
+                $stmtOriginalLedger->execute(['item_id' => $itemId, 'ref_name' => 'DCR']);
+                $originalLedger = $stmtOriginalLedger->fetch(PDO::FETCH_ASSOC);
+                if ($originalLedger !== false) {
+                    $stmtReverseLedger = $pdo->prepare(
+                        'INSERT INTO tblledger
+                         (lcustomerid, lrefno, lmesssage, lamt, ldatetime, lmainid, ltype, lcredit, ldebit, luserid,
+                          lcheckdate, lcheck_no, ldcr, lpdc, lbalance, lremarks, lref_name, lcollection_id, created_at)
+                         VALUES
+                         (:lcustomerid, :lrefno, :lmesssage, :lamt, :ldatetime, :lmainid, :ltype, :lcredit, :ldebit, :luserid,
+                          :lcheckdate, :lcheck_no, :ldcr, :lpdc, :lbalance, :lremarks, :lref_name, :lcollection_id, :created_at)'
+                    );
+                    $stmtReverseLedger->execute([
+                        'lcustomerid' => $originalLedger['lcustomerid'],
+                        'lrefno' => $originalLedger['lrefno'],
+                        'lmesssage' => $originalLedger['lmesssage'],
+                        'lamt' => -(float) ($originalLedger['lamt'] ?? 0),
+                        'ldatetime' => date('Y-m-d H:i:s'),
+                        'lmainid' => $originalLedger['lmainid'],
+                        'ltype' => $originalLedger['ltype'],
+                        'lcredit' => -(float) ($originalLedger['lcredit'] ?? 0),
+                        'ldebit' => -(float) ($originalLedger['ldebit'] ?? 0),
+                        'luserid' => $originalLedger['luserid'],
+                        'lcheckdate' => $originalLedger['lcheckdate'],
+                        'lcheck_no' => $originalLedger['lcheck_no'],
+                        'ldcr' => $originalLedger['ldcr'],
+                        'lpdc' => -(float) ($originalLedger['lpdc'] ?? 0),
+                        'lbalance' => $originalLedger['lbalance'] ?? 0,
+                        'lremarks' => 'Cancelled - ' . $remarks,
+                        'lref_name' => 'DCR',
+                        'lcollection_id' => $itemId,
+                        'created_at' => date('Y-m-d H:i:s'),
+                    ]);
+                }
+            }
+
             $stmtUpdate = $pdo->prepare(
                 'UPDATE tblcollection_item
                  SET lmainid = :lmainid, luserid = :luserid, lcustomer = :lcustomer,
@@ -957,19 +1102,32 @@ SQL;
                 'lid' => $itemId,
             ]);
 
-            $stmtLedger = $pdo->prepare(
-                'UPDATE tblledger
-                 SET lcustomerid = :lcustomerid, lmesssage = :lmesssage, lcheck_no = :lcheck_no, lcheckdate = :lcheckdate, lremarks = :lremarks
-                 WHERE lcollection_id = :lcollection_id'
-            );
-            $stmtLedger->execute([
-                'lcustomerid' => $customerId,
-                'lmesssage' => strtoupper($type),
-                'lcheck_no' => strtoupper(trim($bank . ' ' . $checkNo)),
-                'lcheckdate' => $checkDate,
-                'lremarks' => $remarks,
-                'lcollection_id' => $itemId,
-            ]);
+            if ($isPostedItem && strcasecmp($status, 'Cancelled') !== 0 && !$wasCancelled) {
+                $absoluteAmount = abs($amount);
+                $isDebit = $amount < 0;
+                $isPostDated = $checkDate !== null && $checkDate > date('Y-m-d');
+                $stmtLedger = $pdo->prepare(
+                    'UPDATE tblledger
+                     SET lcustomerid = :lcustomerid, lmesssage = :lmesssage, lamt = :lamt,
+                         ltype = :ledger_type, lcredit = :lcredit, ldebit = :ldebit, lpdc = :lpdc,
+                         lcheck_no = :lcheck_no, lcheckdate = :lcheckdate, lremarks = :lremarks
+                     WHERE lcollection_id = :lcollection_id AND lref_name = :ref_name'
+                );
+                $stmtLedger->execute([
+                    'lcustomerid' => $customerId,
+                    'lmesssage' => strtoupper($type),
+                    'lamt' => $absoluteAmount,
+                    'ledger_type' => $isDebit ? 'Debit' : 'Credit',
+                    'lcredit' => $isDebit || $isPostDated ? 0 : $absoluteAmount,
+                    'ldebit' => $isDebit ? $absoluteAmount : 0,
+                    'lpdc' => !$isDebit && $isPostDated ? $absoluteAmount : 0,
+                    'lcheck_no' => strtoupper(trim($bank . ' ' . $checkNo)),
+                    'lcheckdate' => $checkDate,
+                    'lremarks' => $remarks,
+                    'lcollection_id' => $itemId,
+                    'ref_name' => 'DCR',
+                ]);
+            }
 
             $shouldDeleteTransactions = in_array($status, ['Cancelled', '1st Bounce', '2nd Bounce'], true);
 
@@ -1033,6 +1191,19 @@ SQL;
             throw $e;
         }
 
+        if ((int) $mainId > 0 && (int) $userId > 0) {
+            (new AuditTrailWriter($pdo))->write(
+                (int) $mainId,
+                (int) $userId,
+                'Daily Collection Entry',
+                'Edit Collection Payment',
+                (string) $item['lrefno'],
+                'Payment line ' . $itemId,
+                (string) ($item['lstatus'] ?? ''),
+                $status
+            );
+        }
+
         return [
             'collection_item_id' => $itemId,
             'collection_refno' => $item['lrefno'],
@@ -1048,6 +1219,9 @@ SQL;
         if ($collection === null) {
             throw new RuntimeException('Collection not found');
         }
+        if (strcasecmp(trim((string) ($collection['lstatus'] ?? '')), 'Posted') !== 0) {
+            throw new RuntimeException('Post the DCR after approval before posting its payment lines');
+        }
 
         $count = 0;
         $pdo = $this->db->pdo();
@@ -1062,6 +1236,12 @@ SQL;
                 $item = $this->getCollectionItem($itemId);
                 if ($item === null || (string) $item['lrefno'] !== $collectionRefno) {
                     continue;
+                }
+
+                $collectionDate = $this->toDate((string) ($item['lcollect_date'] ?? ''))
+                    ?? $this->toDate((string) ($collection['ldatetime'] ?? ''));
+                if ($collectionDate === null) {
+                    throw new RuntimeException('Collection date is required before posting a payment line');
                 }
 
                 $stmtPost = $pdo->prepare(
@@ -1093,7 +1273,8 @@ SQL;
                     'ltype' => $isDebit ? 'Debit' : 'Credit',
                     'luserid' => (string) $userId,
                     'lcollection_id' => $itemId,
-                    'ldatetime' => date('Y-m-d H:i:s', strtotime((string) ($item['lcollect_date'] ?? date('Y-m-d')))),
+                    // ldatetime is the ledger business date; created_at records when posting happened.
+                    'ldatetime' => $collectionDate . ' 00:00:00',
                     'created_at' => date('Y-m-d H:i:s'),
                 ]);
 

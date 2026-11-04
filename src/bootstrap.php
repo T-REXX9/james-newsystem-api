@@ -912,6 +912,27 @@ function app_router(): Router
     $router->get('/api/v1/collections/summary', $requireViewAuth([$collectionController, 'summary'], 'Daily Collection Entry'));
     $router->delete('/api/v1/collections/{collectionRefno}', $requireActionAuth([$collectionController, 'delete'], 'Daily Collection Entry', 'delete'));
     $router->get('/api/v1/collections/{collectionRefno}', $requireViewAuth([$collectionController, 'show'], 'Daily Collection Entry'));
+    $router->patch('/api/v1/collections/{collectionRefno}', $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($collectionController, $collectionRepository, $permissionMiddleware): array {
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $mainId = (int) ($claims['main_userid'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(403, 'Invalid account scope');
+        }
+        $permissionMiddleware->assertActionPermission($claims, 'edit', 'Daily Collection Entry');
+        $refno = (string) ($params['collectionRefno'] ?? '');
+        $existing = $collectionRepository->getCollection($refno);
+        if ($existing === null || (int) ($existing['lmain_id'] ?? 0) !== $mainId) {
+            throw new HttpException(404, 'Collection record not found');
+        }
+        $date = (string) ($body['date'] ?? '');
+        if ($date !== '') {
+            $previousDate = trim((string) ($existing['ldatetime'] ?? ''));
+            $permissionMiddleware->assertDocumentDateWrite($claims, $date, $previousDate !== '' ? $previousDate : null);
+        }
+        $body['main_id'] = $mainId;
+        $body['user_id'] = (int) ($claims['sub'] ?? 0);
+        return $collectionController->updateHeader($params, $query, $body);
+    }));
     $router->get('/api/v1/collections/{collectionRefno}/items', $requireViewAuth([$collectionController, 'items'], 'Daily Collection Entry'));
     $router->get('/api/v1/collections/{collectionRefno}/approver-logs', $requireViewAuth([$collectionController, 'approverLogs'], 'Daily Collection Entry'));
     $router->post('/api/v1/collections/{collectionRefno}/items/post', $requireActionAuth([$collectionController, 'postItems'], 'Daily Collection Entry', 'post'));

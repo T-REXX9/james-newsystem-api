@@ -6,6 +6,7 @@ use App\Database;
 use App\Repositories\CollectionRepository;
 
 require_once __DIR__ . '/../src/Database.php';
+require_once __DIR__ . '/../src/Support/AuditTrailWriter.php';
 require_once __DIR__ . '/../src/Repositories/CollectionRepository.php';
 
 $pdo = class_exists(\Pdo\Sqlite::class)
@@ -34,7 +35,9 @@ $pdo->exec('CREATE TABLE tblcollection_item (
     ltransaction_no TEXT
 )');
 $pdo->exec('CREATE TABLE tblledger (
-    lcollection_id INTEGER, lcustomerid TEXT, lmesssage TEXT, lcheck_no TEXT, lcheckdate TEXT, lremarks TEXT
+    lid INTEGER PRIMARY KEY AUTOINCREMENT, lcollection_id INTEGER, lcustomerid TEXT, lmesssage TEXT, lcheck_no TEXT, lcheckdate TEXT, lremarks TEXT,
+    lrefno TEXT, lamt REAL, ldatetime TEXT, lmainid INTEGER, ltype TEXT, lcredit REAL, ldebit REAL,
+    luserid INTEGER, ldcr TEXT, lpdc REAL, lbalance REAL, lref_name TEXT, created_at TEXT
 )');
 $pdo->exec('CREATE TABLE tblcollection_item_transactions (
     lid INTEGER PRIMARY KEY AUTOINCREMENT, ldatetime TEXT, lcollection_refno TEXT,
@@ -44,8 +47,8 @@ $pdo->exec('CREATE TABLE tblcollection_item_transactions (
 $pdo->exec("INSERT INTO tblcollection VALUES ('DCR-REF-1', 1, 10, 'Pending', 'DCR-1001', 100, '2026-09-26')");
 $pdo->exec("INSERT INTO tblaccount VALUES (10, 'Test', 'User')");
 $pdo->exec("INSERT INTO tblpatient VALUES ('customer-2', 1, 'Correct Customer', 'C-2')");
-$pdo->exec("INSERT INTO tblcollection_item VALUES (101, 'DCR-REF-1', 1, 10, 'customer-1', 'Customer One', '', 'Cash', '', '', '2026-09-26', 100, 'Pending', '', '2026-09-26', 0, 'Pending', 'INV-1')");
-$pdo->exec("INSERT INTO tblledger VALUES (101, 'customer-1', 'CASH', '', '2026-09-26', '')");
+$pdo->exec("INSERT INTO tblcollection_item VALUES (101, 'DCR-REF-1', 1, 10, 'customer-1', 'Customer One', '', 'Cash', '', '', '2026-09-26', 100, 'Pending', '', '2026-09-26', 1, 'Posted', 'INV-1')");
+$pdo->exec("INSERT INTO tblledger (lcollection_id, lcustomerid, lmesssage, lcheck_no, lcheckdate, lremarks, lref_name) VALUES (101, 'customer-1', 'CASH', '', '2026-09-26', '', 'DCR')");
 $pdo->exec("INSERT INTO tblcollection_item_transactions (ldatetime, lcollection_refno, lcollection_itemid, ltransaction_type, ltransaction_refno, ltransaction_no, ltransaction_amount, lpaid_amt) VALUES ('2026-09-26', 'DCR-REF-1', 101, 'Invoice', 'INV-REF-1', 'INV-1', 200, 100)");
 if ($pdo->query('SELECT COUNT(*) FROM tblcollection_item_transactions WHERE lcollection_itemid = 101')->fetchColumn() != 1) {
     throw new RuntimeException('FAIL: payment-line transaction fixture was not created');
@@ -117,6 +120,22 @@ if ($ledgerCustomer !== 'customer-2') {
 $transaction = $pdo->query('SELECT ltransaction_refno, ltransaction_no, lpaid_amt FROM tblcollection_item_transactions WHERE lcollection_itemid = 101')->fetch(PDO::FETCH_ASSOC);
 if ($transaction === false || $transaction['ltransaction_no'] !== 'INV-2' || $transaction['ltransaction_refno'] !== 'INV-REF-2' || (float) $transaction['lpaid_amt'] !== 150.5) {
     throw new RuntimeException('FAIL: linked transaction reference was not replaced');
+}
+
+$pdo->exec("UPDATE tblcollection SET lstatus = 'Posted' WHERE lrefno = 'DCR-REF-1'");
+$pdo->exec("UPDATE tblcollection_item SET lstatus = 'Received', lcollection_status = 'Posted', lpost = 1 WHERE lid = 101");
+$pdo->exec("UPDATE tblledger SET lrefno = 'DCR-REF-1', lamt = 150.5, ldatetime = '2026-09-26', lmainid = 1, ltype = 'Credit', lcredit = 150.5, ldebit = 0, luserid = 20, ldcr = 'DCR-1001', lpdc = 0, lbalance = 0, lref_name = 'DCR', created_at = '2026-09-26' WHERE lcollection_id = 101");
+$cancelPayload = [
+    'main_id' => 1,
+    'user_id' => 20,
+    'status' => 'Cancelled',
+    'remarks' => 'Cancelled posted payment',
+];
+$repository->updateCollectionPaymentLine(101, $cancelPayload);
+$repository->updateCollectionPaymentLine(101, $cancelPayload);
+$reversalCount = (int) $pdo->query("SELECT COUNT(*) FROM tblledger WHERE lcollection_id = 101 AND lremarks LIKE 'Cancelled - %'")->fetchColumn();
+if ($reversalCount !== 1) {
+    throw new RuntimeException('FAIL: repeated cancellation created more than one ledger reversal');
 }
 
 echo "PASS: collection payment line edits persist customer and payment changes\n";
