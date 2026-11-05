@@ -16,8 +16,27 @@ final class VipDocumentDiscountRepository
 
     public function ensureTable(): void
     {
+        $pdo = $this->db->pdo();
+        $exists = $pdo->prepare(
+            'SELECT 1
+             FROM information_schema.TABLES
+             WHERE TABLE_SCHEMA = DATABASE()
+               AND TABLE_NAME = :table_name
+             LIMIT 1'
+        );
+        $exists->execute(['table_name' => 'tblvip_document_discount']);
+        if ($exists->fetchColumn()) {
+            return;
+        }
+
+        if ($pdo->inTransaction()) {
+            throw new \RuntimeException(
+                'VIP document discount storage is missing; apply the API database migrations before creating sales documents.'
+            );
+        }
+
         try {
-            $this->db->pdo()->exec(
+            $pdo->exec(
                 'CREATE TABLE IF NOT EXISTS tblvip_document_discount (
                     lid INT AUTO_INCREMENT PRIMARY KEY,
                     lmain_id INT NOT NULL,

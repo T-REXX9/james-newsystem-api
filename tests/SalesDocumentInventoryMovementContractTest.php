@@ -5,6 +5,7 @@ declare(strict_types=1);
 $orderSlip = file_get_contents(__DIR__ . '/../src/Repositories/OrderSlipRepository.php');
 $invoice = file_get_contents(__DIR__ . '/../src/Repositories/InvoiceRepository.php');
 $salesOrder = file_get_contents(__DIR__ . '/../src/Repositories/SalesOrderRepository.php');
+$vipDiscount = file_get_contents(__DIR__ . '/../src/Repositories/VipDocumentDiscountRepository.php');
 
 $checks = [
     'order slip generation synchronizes stock movements' => str_contains($orderSlip, "\$this->syncInventoryStockLogs(\n                    \$pdo,")
@@ -22,6 +23,13 @@ $checks = [
         && substr_count($invoice, "'lstatus_logs' => '+'") > 0,
     'unposting removes linked document stock movements' => str_contains($salesOrder, 'DELETE FROM tblinventory_logs WHERE lrefno = :refno')
         && str_contains($salesOrder, '$this->cleanupLinkedDocumentsForSalesOrder($salesRefno)'),
+    'VIP storage checks avoid implicit DDL commits inside document transactions' => str_contains($vipDiscount, 'FROM information_schema.TABLES')
+        && str_contains($vipDiscount, 'if ($exists->fetchColumn())')
+        && str_contains($vipDiscount, 'if ($pdo->inTransaction())')
+        && strpos($orderSlip, '->ensureTable();') < strpos($orderSlip, '$pdo->beginTransaction();')
+        && strpos($invoice, '->ensureTable();') < strpos($invoice, '$pdo->beginTransaction();'),
+    'legacy number generator writes happen before document transactions' => strpos($orderSlip, 'insertNumberGenerator(\'Order Slip\', $nextNo);') < strpos($orderSlip, '$pdo->beginTransaction();')
+        && strpos($invoice, '$this->allocateNextInvoiceNumber($mainId)') < strpos($invoice, '$pdo->beginTransaction();'),
 ];
 
 $failed = 0;

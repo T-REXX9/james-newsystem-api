@@ -389,18 +389,22 @@ SQL;
         }
 
         $pdo = $this->db->pdo();
+        $invoiceRefno = trim((string) ($payload['invoice_refno'] ?? ''));
+        if ($invoiceRefno === '') {
+            $invoiceRefno = date('YmdHis') . random_int(10000, 99999);
+        }
+
+        $invoiceNo = trim((string) ($payload['invoice_no'] ?? ''));
+        if ($invoiceNo === '') {
+            // Keep the legacy MyISAM number-generator write outside the
+            // document transaction so it cannot implicitly commit the invoice.
+            $allocated = $this->allocateNextInvoiceNumber($mainId);
+            $invoiceNo = $allocated['invoice_no'];
+        }
+
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
-            $invoiceRefno = trim((string) ($payload['invoice_refno'] ?? ''));
-            if ($invoiceRefno === '') {
-                $invoiceRefno = date('YmdHis') . random_int(10000, 99999);
-            }
-
-            $invoiceNo = trim((string) ($payload['invoice_no'] ?? ''));
-            if ($invoiceNo === '') {
-                $allocated = $this->allocateNextInvoiceNumber($mainId);
-                $invoiceNo = $allocated['invoice_no'];
-            }
 
             $salesRefno = trim((string) ($payload['order_id'] ?? $payload['sales_refno'] ?? ''));
             $salesNo = trim((string) ($payload['sales_no'] ?? ''));
@@ -491,7 +495,9 @@ SQL;
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Invoice', 'Create', $invoiceRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $e;
         }
 
@@ -509,6 +515,7 @@ SQL;
         }
 
         $pdo = $this->db->pdo();
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
             $fields = [];
@@ -587,7 +594,9 @@ SQL;
             (new AuditTrailWriter($pdo))->write($mainId, $auditUserId, 'Invoice', 'Update', $invoiceRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $e;
         }
 
@@ -607,6 +616,7 @@ SQL;
         }
 
         $pdo = $this->db->pdo();
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
             $stmt = $pdo->prepare(
@@ -632,7 +642,9 @@ SQL;
             $pdo->commit();
             return true;
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $e;
         }
     }
@@ -651,6 +663,7 @@ SQL;
         $salesRefno = trim((string) ($payload['sales_refno'] ?? ''));
 
         $pdo = $this->db->pdo();
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
         $stmt = $pdo->prepare(
@@ -711,6 +724,7 @@ SQL;
 
         $invoiceRefno = trim((string) ($existing['invoice_refno'] ?? ''));
         $pdo = $this->db->pdo();
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
         $set = [];
@@ -790,6 +804,7 @@ SQL;
             return false;
         }
 
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
         $stmt = $pdo->prepare(
@@ -952,6 +967,7 @@ SQL);
 
         if ($normalized === 'post' || $normalized === 'send' || $normalized === 'record_payment' || $normalized === 'mark_overdue') {
             $pdo = $this->db->pdo();
+            (new VipDocumentDiscountRepository($this->db))->ensureTable();
             $pdo->beginTransaction();
             try {
                 $stmt = $pdo->prepare(
@@ -1638,6 +1654,7 @@ SQL);
         $userId = (int) ($payload['user_id'] ?? 0);
 
         $pdo = $this->db->pdo();
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
             $fields = ['linvoice_no = :invoice_no'];
@@ -1712,7 +1729,9 @@ SQL);
 
             $pdo->commit();
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $e;
         }
 

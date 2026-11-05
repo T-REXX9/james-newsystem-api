@@ -415,19 +415,24 @@ SQL;
         }
 
         $pdo = $this->db->pdo();
+        $orderSlipRefno = trim((string) ($payload['order_slip_refno'] ?? ''));
+        if ($orderSlipRefno === '') {
+            $orderSlipRefno = date('YmdHis') . random_int(10000, 99999);
+        }
+
+        $slipNo = trim((string) ($payload['slip_no'] ?? ''));
+        if ($slipNo === '') {
+            // tblnumber_generator is MyISAM on legacy installations. Write its
+            // sequence before starting the document transaction because a
+            // MyISAM write implicitly commits any active InnoDB transaction.
+            $nextNo = $this->nextNumber('Order Slip');
+            $slipNo = 'N-D' . $nextNo;
+            $this->insertNumberGenerator('Order Slip', $nextNo);
+        }
+
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
-            $orderSlipRefno = trim((string) ($payload['order_slip_refno'] ?? ''));
-            if ($orderSlipRefno === '') {
-                $orderSlipRefno = date('YmdHis') . random_int(10000, 99999);
-            }
-
-            $slipNo = trim((string) ($payload['slip_no'] ?? ''));
-            if ($slipNo === '') {
-                $nextNo = $this->nextNumber('Order Slip');
-                $slipNo = 'N-D' . $nextNo;
-                $this->insertNumberGenerator('Order Slip', $nextNo);
-            }
 
             $salesRefno = trim((string) ($payload['order_id'] ?? $payload['sales_refno'] ?? ''));
             $salesNo = trim((string) ($payload['sales_no'] ?? ''));
@@ -494,7 +499,9 @@ SQL;
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Order Slip', 'Create', $orderSlipRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $e;
         }
 
@@ -543,6 +550,7 @@ SQL;
         }
 
         $pdo = $this->db->pdo();
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
             $fields = [];
@@ -618,7 +626,9 @@ SQL;
             (new AuditTrailWriter($pdo))->write($mainId, $auditUserId, 'Order Slip', 'Update', $orderSlipRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $e;
         }
 
@@ -638,6 +648,7 @@ SQL;
         }
 
         $pdo = $this->db->pdo();
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
             $stmt = $pdo->prepare(
@@ -663,7 +674,9 @@ SQL;
             $pdo->commit();
             return true;
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             throw $e;
         }
     }
@@ -681,6 +694,7 @@ SQL;
         $data = $this->normalizeItemPayload($payload);
         $salesRefno = trim((string) ($payload['sales_refno'] ?? ''));
         $pdo = $this->db->pdo();
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
         $stmt = $pdo->prepare(
@@ -740,6 +754,7 @@ SQL;
         }
 
         $pdo = $this->db->pdo();
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
         $set = [];
@@ -811,6 +826,7 @@ SQL;
         }
         $orderSlipRefno = trim((string) ($item['order_slip_refno'] ?? ''));
         $pdo = $this->db->pdo();
+        (new VipDocumentDiscountRepository($this->db))->ensureTable();
         $pdo->beginTransaction();
         try {
         $stmt = $pdo->prepare(
@@ -855,6 +871,7 @@ SQL;
 
         if ($normalized === 'post' || $normalized === 'finalize') {
             $pdo = $this->db->pdo();
+            (new VipDocumentDiscountRepository($this->db))->ensureTable();
             $pdo->beginTransaction();
             try {
                 $stmt = $pdo->prepare(
