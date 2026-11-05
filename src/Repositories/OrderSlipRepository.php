@@ -483,6 +483,14 @@ SQL;
             ]);
 
             $this->replaceItems($orderSlipRefno, $userId, $salesRefno, $payload['items'] ?? []);
+            $createdSlip = $this->getOrderSlip($mainId, $orderSlipRefno);
+            if ($createdSlip !== null) {
+                $this->syncInventoryStockLogs(
+                    $pdo,
+                    $createdSlip['order_slip'],
+                    $createdSlip['items']
+                );
+            }
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Order Slip', 'Create', $orderSlipRefno);
             $pdo->commit();
         } catch (\Throwable $e) {
@@ -598,6 +606,14 @@ SQL;
                 $userId = (int) ($payload['user_id'] ?? 1);
                 $this->replaceItems($orderSlipRefno, $userId, $salesRefno, $payload['items']);
             }
+            $updatedSlip = $this->getOrderSlip($mainId, $orderSlipRefno);
+            if ($updatedSlip !== null) {
+                $this->syncInventoryStockLogs(
+                    $pdo,
+                    $updatedSlip['order_slip'],
+                    $updatedSlip['items']
+                );
+            }
             $auditUserId = isset($payload['user_id']) ? (int) $payload['user_id'] : 0;
             (new AuditTrailWriter($pdo))->write($mainId, $auditUserId, 'Order Slip', 'Update', $orderSlipRefno);
             $pdo->commit();
@@ -642,6 +658,7 @@ SQL;
                 return false;
             }
 
+            $this->insertCancellationInventoryRestoreLogs($pdo, $orderSlip, $existing['items'], $reason);
             $this->syncLinkedSalesCancellation($pdo, $mainId, (string) ($orderSlip['order_id'] ?? ''), trim($reason));
             $pdo->commit();
             return true;
@@ -656,14 +673,17 @@ SQL;
      */
     public function addItem(int $mainId, int $userId, string $orderSlipRefno, array $payload): array
     {
-        if ($this->getOrderSlip($mainId, $orderSlipRefno) === null) {
+        $orderSlip = $this->getOrderSlip($mainId, $orderSlipRefno);
+        if ($orderSlip === null) {
             throw new RuntimeException('Order slip not found');
         }
 
         $data = $this->normalizeItemPayload($payload);
         $salesRefno = trim((string) ($payload['sales_refno'] ?? ''));
-
-        $stmt = $this->db->pdo()->prepare(
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+        $stmt = $pdo->prepare(
             'INSERT INTO tbldelivery_receipt_items (
                 lrefno, lor_refno, lsales_refno, litemid, litem_refno, linv_refno,
                 litemcode, lpartno, lbrand, ldesc, llocation, lqty, lprice, lremark, luser
@@ -690,12 +710,23 @@ SQL;
             'luser' => (string) $userId,
         ]);
 
-        $itemId = (int) $this->db->pdo()->lastInsertId();
+        $itemId = (int) $pdo->lastInsertId();
         $item = $this->findItem($mainId, $itemId);
         if ($item === null) {
             throw new RuntimeException('Failed to load created order slip item');
         }
+        $updatedSlip = $this->getOrderSlip($mainId, $orderSlipRefno);
+        if ($updatedSlip !== null) {
+            $this->syncInventoryStockLogs($pdo, $updatedSlip['order_slip'], $updatedSlip['items']);
+        }
+        $pdo->commit();
         return $item;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -708,6 +739,9 @@ SQL;
             return null;
         }
 
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
         $set = [];
         $params = ['item_id' => $itemId, 'main_id' => (string) $mainId];
         $map = [
@@ -747,16 +781,39 @@ SET %s
 WHERE dri.lid = :item_id
   AND dr.lmain_id = :main_id
 SQL;
-            $stmt = $this->db->pdo()->prepare(sprintf($sql, implode(', ', $set)));
+            $stmt = $pdo->prepare(sprintf($sql, implode(', ', $set)));
             $stmt->execute($params);
         }
 
-        return $this->findItem($mainId, $itemId);
+        $item = $this->findItem($mainId, $itemId);
+        $orderSlipRefno = trim((string) ($existing['order_slip_refno'] ?? ''));
+        if ($orderSlipRefno !== '') {
+            $updatedSlip = $this->getOrderSlip($mainId, $orderSlipRefno);
+            if ($updatedSlip !== null) {
+                $this->syncInventoryStockLogs($pdo, $updatedSlip['order_slip'], $updatedSlip['items']);
+            }
+        }
+        $pdo->commit();
+        return $item;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
     }
 
     public function deleteItem(int $mainId, int $itemId): bool
     {
-        $stmt = $this->db->pdo()->prepare(
+        $item = $this->findItem($mainId, $itemId);
+        if ($item === null) {
+            return false;
+        }
+        $orderSlipRefno = trim((string) ($item['order_slip_refno'] ?? ''));
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+        $stmt = $pdo->prepare(
             'DELETE dri
              FROM tbldelivery_receipt_items dri
              INNER JOIN tbldelivery_receipt dr
@@ -768,7 +825,21 @@ SQL;
             'item_id' => $itemId,
             'main_id' => (string) $mainId,
         ]);
-        return $stmt->rowCount() > 0;
+        $deleted = $stmt->rowCount() > 0;
+        if ($deleted && $orderSlipRefno !== '') {
+            $updatedSlip = $this->getOrderSlip($mainId, $orderSlipRefno);
+            if ($updatedSlip !== null) {
+                $this->syncInventoryStockLogs($pdo, $updatedSlip['order_slip'], $updatedSlip['items']);
+            }
+        }
+        $pdo->commit();
+        return $deleted;
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
     }
 
     /**
@@ -783,22 +854,35 @@ SQL;
         }
 
         if ($normalized === 'post' || $normalized === 'finalize') {
-            $stmt = $this->db->pdo()->prepare(
-                'UPDATE tbldelivery_receipt
-                 SET lstatus = :status, lcancel = 0
-                 WHERE lmain_id = :main_id AND lrefno = :order_slip_refno
-                 LIMIT 1'
-            );
-            $stmt->execute([
-                'status' => 'Posted',
-                'main_id' => (string) $mainId,
-                'order_slip_refno' => $orderSlipRefno,
-            ]);
-            if ($stmt->rowCount() === 0) {
-                return null;
+            $pdo = $this->db->pdo();
+            $pdo->beginTransaction();
+            try {
+                $stmt = $pdo->prepare(
+                    'UPDATE tbldelivery_receipt
+                     SET lstatus = :status, lcancel = 0
+                     WHERE lmain_id = :main_id AND lrefno = :order_slip_refno
+                     LIMIT 1'
+                );
+                $stmt->execute([
+                    'status' => 'Posted',
+                    'main_id' => (string) $mainId,
+                    'order_slip_refno' => $orderSlipRefno,
+                ]);
+                $postedSlip = $this->getOrderSlip($mainId, $orderSlipRefno);
+                if ($postedSlip === null) {
+                    $pdo->rollBack();
+                    return null;
+                }
+                $this->syncInventoryStockLogs($pdo, $postedSlip['order_slip'], $postedSlip['items']);
+                (new AuditTrailWriter($pdo))->write($mainId, (int) ($payload['user_id'] ?? 0), 'Order Slip', 'Post Order Slip', $orderSlipRefno, '', 'Pending', 'Posted');
+                $pdo->commit();
+                return $this->getOrderSlip($mainId, $orderSlipRefno);
+            } catch (\Throwable $e) {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                }
+                throw $e;
             }
-            (new AuditTrailWriter($this->db->pdo()))->write($mainId, (int) ($payload['user_id'] ?? 0), 'Order Slip', 'Post Order Slip', $orderSlipRefno, '', 'Pending', 'Posted');
-            return $this->getOrderSlip($mainId, $orderSlipRefno);
         }
 
         if ($normalized === 'unpost') {
@@ -937,6 +1021,21 @@ SQL;
             return;
         }
 
+        $outgoing = $pdo->prepare(
+            'SELECT COUNT(*) FROM tblinventory_logs
+             WHERE lrefno = :refno
+               AND ltransaction_type = :transaction_type
+               AND lstatus_logs = "-"
+               AND lout > 0'
+        );
+        $outgoing->execute([
+            'refno' => $orderSlipRefno,
+            'transaction_type' => 'Order Slip',
+        ]);
+        if ((int) ($outgoing->fetchColumn() ?: 0) === 0) {
+            return;
+        }
+
         $note = trim($reason) !== '' ? 'CANCELLED ' . trim($reason) : (string) ($orderSlip['customer_name'] ?? '');
         $createdAt = trim((string) ($orderSlip['created_at'] ?? ''));
         if ($createdAt === '') {
@@ -951,6 +1050,9 @@ SQL;
         );
 
         foreach ($items as $item) {
+            if (strcasecmp(trim((string) ($item['remark'] ?? '')), 'OnStock') !== 0) {
+                continue;
+            }
             $inventoryLogRef = trim((string) ($item['inv_refno'] ?? ''));
             if ($inventoryLogRef === '') {
                 $inventoryLogRef = trim((string) ($item['item_refno'] ?? ''));
@@ -1152,16 +1254,27 @@ SQL;
             'transaction_type' => 'Order Slip',
         ]);
 
-        if ($items === []) {
-            return;
-        }
-
         if ((int) ($orderSlip['is_cancelled'] ?? 0) === 1) {
             return;
         }
 
         $status = strtolower(trim((string) ($orderSlip['status'] ?? 'Posted')));
         if ($status === 'cancelled' || $status === 'canceled') {
+            return;
+        }
+
+        $pdo->prepare(
+            'DELETE FROM tblinventory_logs
+             WHERE lrefno = :refno
+               AND ltransaction_type = :transaction_type
+               AND lstatus_logs = "+"
+               AND lout = 0'
+        )->execute([
+            'refno' => $orderSlipRefno,
+            'transaction_type' => 'Order Slip',
+        ]);
+
+        if ($items === []) {
             return;
         }
 
@@ -1184,6 +1297,9 @@ SQL;
         );
 
         foreach ($items as $item) {
+            if (strcasecmp(trim((string) ($item['remark'] ?? '')), 'OnStock') !== 0) {
+                continue;
+            }
             $inventoryLogRef = trim((string) ($item['inv_refno'] ?? ''));
             if ($inventoryLogRef === '') {
                 $inventoryLogRef = trim((string) ($item['item_refno'] ?? ''));

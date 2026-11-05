@@ -460,6 +460,7 @@ SQL;
             if ($created === null) {
                 throw new RuntimeException('Failed to load created invoice');
             }
+            $this->syncInventoryStockLogs($pdo, $created['invoice'], $created['items']);
 
             $grandTotal = (float) ($created['summary']['grand_total'] ?? 0);
             $orderId = trim((string) ($payload['order_id'] ?? $payload['sales_refno'] ?? ''));
@@ -571,6 +572,11 @@ SQL;
                 $this->replaceItems($invoiceRefno, $userId, $salesRefno, $payload['items']);
             }
 
+            $updatedInvoice = $this->getInvoice($mainId, $invoiceRefno);
+            if ($updatedInvoice !== null) {
+                $this->syncInventoryStockLogs($pdo, $updatedInvoice['invoice'], $updatedInvoice['items']);
+            }
+
             $this->syncPostedInvoiceLedgerDebit(
                 $mainId,
                 $invoiceRefno,
@@ -621,6 +627,7 @@ SQL;
                 return false;
             }
 
+            $this->insertCancellationInventoryRestoreLogs($pdo, $invoice, $existing['items'], $reason);
             $this->syncLinkedSalesCancellation($pdo, $mainId, (string) ($invoice['order_id'] ?? ''), trim($reason));
             $pdo->commit();
             return true;
@@ -676,6 +683,10 @@ SQL;
         $item = $this->findItem($mainId, $itemId);
         if ($item === null) {
             throw new RuntimeException('Failed to load created invoice item');
+        }
+        $invoice = $this->getInvoice($mainId, $invoiceRefno);
+        if ($invoice !== null) {
+            $this->syncInventoryStockLogs($pdo, $invoice['invoice'], $invoice['items']);
         }
         $this->syncPostedInvoiceLedgerDebit($mainId, $invoiceRefno, $userId);
         $pdo->commit();
@@ -747,6 +758,10 @@ SQL;
 
         $item = $this->findItem($mainId, $itemId);
         if ($invoiceRefno !== '') {
+            $invoice = $this->getInvoice($mainId, $invoiceRefno);
+            if ($invoice !== null) {
+                $this->syncInventoryStockLogs($pdo, $invoice['invoice'], $invoice['items']);
+            }
             $this->syncPostedInvoiceLedgerDebit($mainId, $invoiceRefno);
         }
         $pdo->commit();
@@ -791,6 +806,10 @@ SQL;
         ]);
         $deleted = $stmt->rowCount() > 0;
         if ($deleted) {
+            $invoice = $this->getInvoice($mainId, $invoiceRefno);
+            if ($invoice !== null) {
+                $this->syncInventoryStockLogs($pdo, $invoice['invoice'], $invoice['items']);
+            }
             $this->syncPostedInvoiceLedgerDebit($mainId, $invoiceRefno);
         }
         $pdo->commit();
@@ -946,10 +965,12 @@ SQL);
                     'main_id' => (string) $mainId,
                     'invoice_refno' => $invoiceRefno,
                 ]);
-                if ($stmt->rowCount() === 0) {
+                $postedInvoice = $this->getInvoice($mainId, $invoiceRefno);
+                if ($postedInvoice === null) {
                     $pdo->rollBack();
                     return null;
                 }
+                $this->syncInventoryStockLogs($pdo, $postedInvoice['invoice'], $postedInvoice['items']);
                 $this->syncPostedInvoiceLedgerDebit(
                     $mainId,
                     $invoiceRefno,
@@ -1133,6 +1154,21 @@ SQL);
             return;
         }
 
+        $outgoing = $pdo->prepare(
+            'SELECT COUNT(*) FROM tblinventory_logs
+             WHERE lrefno = :refno
+               AND ltransaction_type = :transaction_type
+               AND lstatus_logs = "-"
+               AND lout > 0'
+        );
+        $outgoing->execute([
+            'refno' => $invoiceRefno,
+            'transaction_type' => 'Invoice',
+        ]);
+        if ((int) ($outgoing->fetchColumn() ?: 0) === 0) {
+            return;
+        }
+
         $note = trim($reason) !== '' ? 'CANCELLED ' . trim($reason) : (string) ($invoice['customer_name'] ?? '');
         $createdAt = trim((string) ($invoice['created_at'] ?? ''));
         if ($createdAt === '') {
@@ -1147,6 +1183,9 @@ SQL);
         );
 
         foreach ($items as $item) {
+            if (strcasecmp(trim((string) ($item['remark'] ?? '')), 'OnStock') !== 0) {
+                continue;
+            }
             $inventoryLogRef = trim((string) ($item['inv_refno'] ?? ''));
             if ($inventoryLogRef === '') {
                 $inventoryLogRef = trim((string) ($item['item_refno'] ?? ''));
@@ -1347,16 +1386,27 @@ SQL);
             'transaction_type' => 'Invoice',
         ]);
 
-        if ($items === []) {
-            return;
-        }
-
         if ((int) ($invoice['is_cancelled'] ?? 0) === 1) {
             return;
         }
 
         $status = strtolower(trim((string) ($invoice['status'] ?? 'Posted')));
         if ($status === 'cancelled' || $status === 'canceled') {
+            return;
+        }
+
+        $pdo->prepare(
+            'DELETE FROM tblinventory_logs
+             WHERE lrefno = :refno
+               AND ltransaction_type = :transaction_type
+               AND lstatus_logs = "+"
+               AND lout = 0'
+        )->execute([
+            'refno' => $invoiceRefno,
+            'transaction_type' => 'Invoice',
+        ]);
+
+        if ($items === []) {
             return;
         }
 
@@ -1379,6 +1429,9 @@ SQL);
         );
 
         foreach ($items as $item) {
+            if (strcasecmp(trim((string) ($item['remark'] ?? '')), 'OnStock') !== 0) {
+                continue;
+            }
             $inventoryLogRef = trim((string) ($item['inv_refno'] ?? ''));
             if ($inventoryLogRef === '') {
                 $inventoryLogRef = trim((string) ($item['item_refno'] ?? ''));
