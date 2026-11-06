@@ -1050,17 +1050,46 @@ SQL;
 
     private function nextReceivingNumber(PDO $pdo): string
     {
-        $stmt = $pdo->query(
-            "SELECT COALESCE(MAX(lmax_no), 0) AS max_no FROM tblnumber_generator WHERE ltransaction_type = 'Receiving'"
+        $year = date('y');
+        // Prefer the actual RR numbers. Older code stored the
+        // whole numeric suffix (including the year) in lmax_no, which made
+        // each subsequent RR repeat the year and grow exponentially.
+        $reports = $pdo->query(
+            "SELECT lpurchaseno FROM tblpurchase_order WHERE lpurchaseno LIKE 'RR-%'"
         );
-        $maxNo = (int) (($stmt->fetch(PDO::FETCH_ASSOC)['max_no'] ?? 0));
+        $maxNo = 0;
+        foreach ($reports->fetchAll(PDO::FETCH_COLUMN) as $number) {
+            if (preg_match('/^RR-(\d{2})(\d+)$/', (string) $number, $matches)) {
+                $sequence = $matches[2];
+                // Recover values written by the faulty generator, which
+                // repeatedly prepended the year to the previous sequence.
+                while (str_starts_with($sequence, $matches[1]) && strlen($sequence) > strlen($matches[1])) {
+                    $sequence = substr($sequence, strlen($matches[1]));
+                }
+                $maxNo = max($maxNo, (int) $sequence);
+            }
+        }
+
+        // Preserve the legacy generator behavior when no parseable RR numbers
+        // are available.
+        if ($maxNo === 0) {
+            $stmt = $pdo->query(
+                "SELECT COALESCE(MAX(lmax_no), 0) AS max_no FROM tblnumber_generator WHERE ltransaction_type = 'Receiving'"
+            );
+            $maxNo = (int) (($stmt->fetch(PDO::FETCH_ASSOC)['max_no'] ?? 0));
+        }
         $next = $maxNo + 1;
-        return 'RR-' . date('y') . str_pad((string) $next, 2, '0', STR_PAD_LEFT);
+        return 'RR-' . $year . str_pad((string) $next, 2, '0', STR_PAD_LEFT);
     }
 
     private function recordNumberGenerator(PDO $pdo, string $type, string $number): void
     {
-        if (!preg_match('/(\d+)$/', $number, $matches)) {
+        if ($type === 'Receiving') {
+            $year = date('y');
+            if (!preg_match('/^RR-' . preg_quote($year, '/') . '(\d+)$/', $number, $matches)) {
+                return;
+            }
+        } elseif (!preg_match('/(\d+)$/', $number, $matches)) {
             return;
         }
         $maxNo = (int) $matches[1];

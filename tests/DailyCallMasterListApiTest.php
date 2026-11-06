@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require_once __DIR__ . '/../src/bootstrap.php';
+
 /**
  * Daily Call Master List API regression test.
  *
@@ -9,7 +11,34 @@ declare(strict_types=1);
  */
 
 $API_BASE = rtrim(getenv('API_BASE_URL') ?: 'http://127.0.0.1:8081', '/');
-$MAIN_ID = 1;
+$ROOT = dirname(__DIR__);
+$vars = [];
+foreach (file($ROOT . '/.env', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+    if (str_starts_with(trim($line), '#') || !str_contains($line, '=')) continue;
+    [$key, $value] = explode('=', $line, 2);
+    $vars[trim($key)] = trim($value);
+}
+$MAIN_ID = (int) (getenv('DAILY_CALL_TEST_MAIN_ID') ?: 1);
+$USER_ID = (int) (getenv('DAILY_CALL_TEST_USER_ID') ?: 1);
+$pdo = new PDO(
+    sprintf('mysql:host=%s;port=%s;dbname=%s;charset=utf8mb4', $vars['DB_HOST'] ?? '127.0.0.1', $vars['DB_PORT'] ?? '3306', $vars['DB_NAME'] ?? 'topnotch_migrate'),
+    $vars['DB_USER'] ?? 'root',
+    $vars['DB_PASS'] ?? '',
+    [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
+);
+$accountQuery = $pdo->prepare('SELECT ltype, lsession_version FROM tblaccount WHERE lid = :id AND COALESCE(lstatus, 0) = 1 LIMIT 1');
+$accountQuery->execute(['id' => $USER_ID]);
+$account = $accountQuery->fetch(PDO::FETCH_ASSOC);
+if (!$account) {
+    fwrite(STDERR, "DAILY_CALL_TEST_USER_ID must identify an active API user.\n");
+    exit(2);
+}
+$AUTH_TOKEN = (new App\Security\TokenService((string) ($vars['AUTH_SECRET'] ?? $vars['APP_KEY'] ?? 'change-me-in-env')))->issue([
+    'sub' => $USER_ID,
+    'main_userid' => $MAIN_ID,
+    'user_type' => (string) ($account['ltype'] ?? '1'),
+    'session_version' => (int) ($account['lsession_version'] ?? 0),
+]);
 
 $passed = 0;
 $failed = 0;
@@ -17,10 +46,11 @@ $errors = [];
 
 function request(string $url): array
 {
+    global $AUTH_TOKEN;
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => ['Accept: application/json'],
+        CURLOPT_HTTPHEADER => ['Accept: application/json', 'Authorization: Bearer ' . $AUTH_TOKEN],
         CURLOPT_TIMEOUT => 20,
     ]);
 
@@ -64,6 +94,13 @@ $rows = is_array($res['body']['data']['items'] ?? null) ? $res['body']['data']['
 $meta = is_array($res['body']['data']['meta'] ?? null) ? $res['body']['data']['meta'] : [];
 
 assert_true(($meta['from_date'] ?? '') === '2025-10-01', 'Master list uses October 2025 start date', $passed, $failed, $errors);
+assert_true(
+    count(array_filter($rows, static fn (array $row): bool => array_key_exists('is_overridden', $row) && array_key_exists('override_reason', $row))) === count($rows),
+    'Master list rows include Priority List override state and reason',
+    $passed,
+    $failed,
+    $errors
+);
 
 $badCategoryRows = array_values(array_filter($rows, static function (array $row): bool {
     $category = (string) ($row['list_category'] ?? '');

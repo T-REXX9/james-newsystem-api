@@ -736,6 +736,18 @@ final class DailyCallMonitoringController
             throw new HttpException(403, 'Invalid account scope');
         }
         $this->repo->assertCustomerViewAccess($mainId, $contactId, $senderUserId);
+        $messageBody = trim((string) ($body['body'] ?? ''));
+        $isPriorityListOverrideEntry = str_starts_with($messageBody, 'Priority List Override:');
+        if ($isPriorityListOverrideEntry) {
+            if ((string) ($claims['user_type'] ?? '') !== '1') {
+                throw new HttpException(403, 'Only the Master User can change a Priority List override.');
+            }
+            $isEnabledEntry = preg_match('/^Priority List Override: Enabled\nReason: .{1,500}$/sD', $messageBody) === 1;
+            $isRemovedEntry = $messageBody === 'Priority List Override: Removed';
+            if (!$isEnabledEntry && !$isRemovedEntry) {
+                throw new HttpException(422, 'A valid Priority List override action and reason are required.');
+            }
+        }
         $isDoNotContactStatusNote = ($body['status_note'] ?? false) === true;
         if ($isDoNotContactStatusNote) {
             if ((string) ($claims['user_type'] ?? '') !== '1') {
@@ -750,7 +762,6 @@ final class DailyCallMonitoringController
         }
 
         $senderName = $this->callReportRepo->resolveAccountDisplayName($senderUserId) ?: 'Staff';
-        $messageBody = trim((string) ($body['body'] ?? ''));
         $attachmentUrl = trim((string) ($body['attachment_url'] ?? ''));
         $attachmentMime = trim((string) ($body['attachment_mime'] ?? ''));
         $userType = (string) ($claims['user_type'] ?? '');

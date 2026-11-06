@@ -653,6 +653,7 @@ SQL;
             'customer_universe_live_main_id' => $mainId,
             'sales_report_thread_main_id' => $mainId,
             'sales_report_message_main_id' => $mainId,
+            'override_message_main_id' => $mainId,
             'verification_main_id' => $mainId,
         ];
 
@@ -920,9 +921,43 @@ latest_sales_report AS (
         FROM sales_report_activity
     ) ranked_sales_report_activity
     WHERE activity_rank = 1
+),
+priority_list_override_activity AS (
+    SELECT
+        t.main_id,
+        t.contact_id,
+        m.body,
+        ROW_NUMBER() OVER (
+            PARTITION BY t.main_id, t.contact_id
+            ORDER BY m.created_at DESC, m.id DESC
+        ) AS action_rank
+    FROM call_report_messages m
+    INNER JOIN call_report_threads t ON t.id = m.thread_id
+    WHERE t.main_id = :override_message_main_id
+      AND m.deleted_at IS NULL
+      AND m.sender_role = 'master'
+      AND (
+          m.body LIKE 'Priority List Override: Enabled\nReason: %'
+          OR m.body = 'Priority List Override: Removed'
+      )
+),
+latest_priority_list_override AS (
+    SELECT
+        main_id,
+        contact_id,
+        CASE WHEN body LIKE 'Priority List Override: Enabled\nReason: %' THEN 1 ELSE 0 END AS is_overridden,
+        CASE
+            WHEN body LIKE 'Priority List Override: Enabled\nReason: %'
+            THEN TRIM(SUBSTRING_INDEX(body, '\nReason: ', -1))
+            ELSE ''
+        END AS override_reason
+    FROM priority_list_override_activity
+    WHERE action_rank = 1
 )
 SELECT
     p.lsessionid AS id,
+    COALESCE(priority_override.is_overridden, 0) AS is_overridden,
+    COALESCE(priority_override.override_reason, '') AS override_reason,
     EXISTS (SELECT 1 FROM daily_call_do_not_contact_flags dnc WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid) AS do_not_contact,
     COALESCE((SELECT dnc.reason FROM daily_call_do_not_contact_flags dnc WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid LIMIT 1), '') AS do_not_contact_reason,
     COALESCE((SELECT s.lis_starred FROM tblpatient_stars s WHERE s.lmain_id = p.lmain_id AND s.lsessionid = p.lsessionid), 0) AS is_starred,
@@ -1092,6 +1127,8 @@ LEFT JOIN (
     FROM tblpatient_duplicate_request
     WHERE lstatus = 'pending'
 ) duplicate_req ON duplicate_req.lnew_prospect_id = p.lsessionid
+LEFT JOIN latest_priority_list_override priority_override
+    ON priority_override.main_id = p.lmain_id AND priority_override.contact_id = p.lsessionid
 /* Replaced by the set-based ledger_summary CTE above.
 LEFT JOIN (
     SELECT
@@ -1328,6 +1365,10 @@ SQL;
                 : ($recentThreeMonthSales > 0 ? 100 : 0);
             return [
                 'id' => (string) ($row['id'] ?? ''),
+                'isOverridden' => (bool) ($row['is_overridden'] ?? false),
+                'is_overridden' => (bool) ($row['is_overridden'] ?? false),
+                'overrideReason' => $this->cleanDisplayText($row['override_reason'] ?? '', ''),
+                'override_reason' => $this->cleanDisplayText($row['override_reason'] ?? '', ''),
                 'shopName' => (string) ($row['shop_name'] ?? 'Unnamed Shop'),
                 'isStarred' => (bool) ($row['is_starred'] ?? false),
                 'is_starred' => (bool) ($row['is_starred'] ?? false),

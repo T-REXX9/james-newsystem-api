@@ -492,6 +492,10 @@ final class CallReportRepository
                 if (!is_array($record)) {
                     throw new HttpException(404, 'Persisted Agent Sales Report message was not found.');
                 }
+                if ((string) ($record['sender_role'] ?? '') === 'master'
+                    && str_starts_with(trim((string) ($record['body'] ?? '')), 'Priority List Override:')) {
+                    throw new HttpException(403, 'Priority List override history cannot be edited.');
+                }
                 if ((string) ($record['sender_role'] ?? '') !== 'agent' || (int) ($record['sender_user_id'] ?? 0) !== $userId) {
                     throw new HttpException(403, 'You can only edit your own agent messages.');
                 }
@@ -604,6 +608,11 @@ final class CallReportRepository
             $record = $select->fetch(PDO::FETCH_ASSOC);
             if (!is_array($record)) {
                 throw new HttpException(404, 'Agent Sales Report message was not found or was already deleted.');
+            }
+            if (!$isReport
+                && (string) ($record['sender_role'] ?? '') === 'master'
+                && str_starts_with(trim((string) ($record['body'] ?? '')), 'Priority List Override:')) {
+                throw new HttpException(403, 'Priority List override history cannot be deleted.');
             }
 
             $threadId = $isReport ? (int) $record['id'] : (int) $record['thread_id'];
