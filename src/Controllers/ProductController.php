@@ -164,6 +164,39 @@ final class ProductController
         return $updated;
     }
 
+    public function regenerateItemCode(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
+
+        $session = trim((string) ($params['productSession'] ?? ''));
+        if ($session === '') {
+            throw new HttpException(422, 'productSession is required');
+        }
+
+        $prefix = trim((string) ($body['product_code_prefix'] ?? ''));
+        if ($prefix === '') {
+            throw new HttpException(422, 'product_code_prefix is required');
+        }
+
+        try {
+            $result = $this->repo->regenerateProductItemCode(
+                $mainId,
+                $session,
+                $prefix,
+                (int) ($body['user_id'] ?? 0)
+            );
+        } catch (\InvalidArgumentException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
+        if ($result === null) {
+            throw new HttpException(404, 'Product not found');
+        }
+        return $result;
+    }
+
     public function bulkUpdate(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($body['main_id'] ?? 0);

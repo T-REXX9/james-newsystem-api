@@ -591,24 +591,7 @@ SQL;
         }
 
             if ($prefix !== '') {
-                // The generator table was added by the new system, so legacy
-                // prefixes may already have item codes without any counter
-                // rows. Start after the larger of the saved counter and the
-                // highest numeric suffix already present in the legacy catalog.
-                $counterStmt = $pdo->prepare(<<<'SQL'
-SELECT GREATEST(
-    COALESCE((SELECT MAX(lctr) FROM tblproduct_code_generator WHERE lcode = :generator_code), 0),
-    COALESCE((
-        SELECT MAX(CAST(SUBSTRING(litemcode, CHAR_LENGTH(lproduct_code) + 1) AS UNSIGNED))
-        FROM tblinventory_item
-        WHERE lproduct_code = :item_prefix
-          AND LEFT(litemcode, CHAR_LENGTH(lproduct_code)) = lproduct_code
-          AND SUBSTRING(litemcode, CHAR_LENGTH(lproduct_code) + 1) REGEXP '^[0-9]+$'
-    ), 0)
-) + 1
-SQL);
-                $counterStmt->execute(['generator_code' => $prefix, 'item_prefix' => $prefix]);
-                $counter = (int) $counterStmt->fetchColumn();
+                $counter = $this->nextProductCodeNumber($pdo, $prefix);
                 $itemCode = $prefix . $counter;
                 $insertCounter = $pdo->prepare('INSERT INTO tblproduct_code_generator (lcode, lctr) VALUES (:code, :counter)');
                 $insertCounter->execute(['code' => $prefix, 'counter' => $counter]);
@@ -715,6 +698,25 @@ SQL);
         return $item ?? ['id' => $session];
     }
 
+    private function nextProductCodeNumber(PDO $pdo, string $prefix): int
+    {
+        // Legacy prefixes may have item codes before the generator table had rows.
+        $counterStmt = $pdo->prepare(<<<'SQL'
+SELECT GREATEST(
+    COALESCE((SELECT MAX(lctr) FROM tblproduct_code_generator WHERE lcode = :generator_code), 0),
+    COALESCE((
+        SELECT MAX(CAST(SUBSTRING(litemcode, CHAR_LENGTH(lproduct_code) + 1) AS UNSIGNED))
+        FROM tblinventory_item
+        WHERE lproduct_code = :item_prefix
+          AND LEFT(litemcode, CHAR_LENGTH(lproduct_code)) = lproduct_code
+          AND SUBSTRING(litemcode, CHAR_LENGTH(lproduct_code) + 1) REGEXP '^[0-9]+$'
+    ), 0)
+) + 1
+SQL);
+        $counterStmt->execute(['generator_code' => $prefix, 'item_prefix' => $prefix]);
+        return (int) $counterStmt->fetchColumn();
+    }
+
     /** @return array{code_prefixes: array<int, array{id: int, name: string}>, price_groups: array<int, array{name: string, type: string}>} */
     public function getProductCreateOptions(int $mainId): array
     {
@@ -781,6 +783,115 @@ SQL;
         throw new InvalidArgumentException(
             sprintf('A product with part number "%s" is already listed. Open the existing product instead of creating a duplicate.', $partNo !== '' ? $partNo : $existingPart)
         );
+    }
+
+    /**
+     * @return array{item_code: string, product_code_prefix: string}|null
+     */
+    public function regenerateProductItemCode(int $mainId, string $productSession, string $prefix, int $userId): ?array
+    {
+        $prefix = trim($prefix);
+        if ($prefix === '') {
+            throw new InvalidArgumentException('Select an item code prefix');
+        }
+
+        $pdo = $this->db->pdo();
+        $lockName = 'product-code:' . sha1($prefix);
+        $lock = $pdo->prepare('SELECT GET_LOCK(:lock_name, 10)');
+        $lock->execute(['lock_name' => $lockName]);
+        if ((int) $lock->fetchColumn() !== 1) {
+            throw new InvalidArgumentException('Could not reserve the next item code. Please try again.');
+        }
+
+        try {
+            $pdo->beginTransaction();
+
+            $prefixStmt = $pdo->prepare('SELECT lid FROM tblproduct_code WHERE lname = :name LIMIT 1');
+            $prefixStmt->execute(['name' => $prefix]);
+            if ($prefixStmt->fetchColumn() === false) {
+                throw new InvalidArgumentException('Select a valid item code prefix');
+            }
+
+            $productStmt = $pdo->prepare(<<<'SQL'
+SELECT litemcode
+FROM tblinventory_item
+WHERE lmain_id = :main_id
+  AND lsession = :session
+  AND COALESCE(lnot_inventory, 0) = 0
+  AND COALESCE(ldeleted, 0) = 0
+LIMIT 1
+FOR UPDATE
+SQL);
+            $productStmt->execute(['main_id' => $mainId, 'session' => $productSession]);
+            $currentItemCode = $productStmt->fetchColumn();
+            if ($currentItemCode === false) {
+                $pdo->rollBack();
+                return null;
+            }
+
+            $counter = $this->nextProductCodeNumber($pdo, $prefix);
+            $itemCode = $prefix . $counter;
+            $duplicateStmt = $pdo->prepare(<<<'SQL'
+SELECT 1
+FROM tblinventory_item
+WHERE lmain_id = :main_id
+  AND lsession <> :session
+  AND COALESCE(lnot_inventory, 0) = 0
+  AND COALESCE(ldeleted, 0) = 0
+  AND litemcode = :item_code
+LIMIT 1
+SQL);
+            $duplicateStmt->execute([
+                'main_id' => $mainId,
+                'session' => $productSession,
+                'item_code' => $itemCode,
+            ]);
+            if ($duplicateStmt->fetchColumn() !== false) {
+                throw new InvalidArgumentException(sprintf('The generated item code "%s" is already in use. Please try again.', $itemCode));
+            }
+
+            $counterStmt = $pdo->prepare('INSERT INTO tblproduct_code_generator (lcode, lctr) VALUES (:code, :counter)');
+            $counterStmt->execute(['code' => $prefix, 'counter' => $counter]);
+            $update = $pdo->prepare(<<<'SQL'
+UPDATE tblinventory_item
+SET litemcode = :item_code,
+    lproduct_code = :product_code
+WHERE lmain_id = :main_id
+  AND lsession = :session
+  AND COALESCE(lnot_inventory, 0) = 0
+  AND COALESCE(ldeleted, 0) = 0
+LIMIT 1
+SQL);
+            $update->execute([
+                'item_code' => $itemCode,
+                'product_code' => $prefix,
+                'main_id' => $mainId,
+                'session' => $productSession,
+            ]);
+            if ($update->rowCount() !== 1) {
+                throw new InvalidArgumentException('Product could not be updated. Please refresh and try again.');
+            }
+
+            $pdo->commit();
+        } catch (\Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        } finally {
+            $release = $pdo->prepare('SELECT RELEASE_LOCK(:lock_name)');
+            $release->execute(['lock_name' => $lockName]);
+        }
+
+        (new AuditTrailWriter($pdo))->write(
+            $mainId,
+            $userId,
+            'Product Database',
+            'Regenerated item code from ' . (string) $currentItemCode . ' to ' . $itemCode,
+            $productSession
+        );
+
+        return ['item_code' => $itemCode, 'product_code_prefix' => $prefix];
     }
 
     public function updateProduct(int $mainId, string $productSession, array $payload): ?array

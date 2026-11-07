@@ -56,6 +56,7 @@ $prefix = 'UT-QK-' . bin2hex(random_bytes(4)) . '-';
 $newPrefix = 'UT-NEW-' . bin2hex(random_bytes(4)) . '-';
 $partNos = [$prefix . 'PN-1', $prefix . 'PN-2'];
 $sessions = [];
+$regenerationSession = '';
 $passed = 0;
 $failed = 0;
 $errors = [];
@@ -167,6 +168,7 @@ SQL)->execute([
         $product = $created['body']['data'] ?? [];
         $session = (string) ($product['id'] ?? '');
         if ($session !== '') $sessions[] = $session;
+        if ($index === 0) $regenerationSession = $session;
         pc_assert(($product['item_code'] ?? null) === $prefix . (123 + $index), 'generated item code advances to ' . $prefix . (123 + $index), $passed, $failed, $errors);
         pc_assert(($product['part_no'] ?? null) === $partNo, 'created item retains its submitted part number', $passed, $failed, $errors);
 
@@ -236,6 +238,25 @@ SQL)->execute([
     $counter->execute(['code' => $prefix]);
     $concurrentCounter = (int) $counter->fetchColumn();
     pc_assert($concurrentCounter === 126, 'generator table preserves the concurrent latest number (actual ' . $concurrentCounter . ')', $passed, $failed, $errors);
+
+    $regenerated = pc_request('POST', "{$API_BASE}/api/v1/products/" . rawurlencode($regenerationSession) . '/regenerate-item-code', [
+        'main_id' => $mainId,
+        'user_id' => $userId,
+        'product_code_prefix' => $prefix,
+    ]);
+    pc_assert($regenerated['http_code'] === 200, 'existing product item-code regeneration succeeds', $passed, $failed, $errors);
+    pc_assert(($regenerated['body']['data']['item_code'] ?? null) === $prefix . '127', 'regeneration assigns the next running number', $passed, $failed, $errors);
+    $regeneratedRow = $pdo->prepare('SELECT litemcode, lproduct_code FROM tblinventory_item WHERE lsession = :session AND lmain_id = :main_id');
+    $regeneratedRow->execute(['session' => $regenerationSession, 'main_id' => $mainId]);
+    $regeneratedSaved = $regeneratedRow->fetch(PDO::FETCH_ASSOC) ?: [];
+    pc_assert(($regeneratedSaved['litemcode'] ?? null) === $prefix . '127', 'regeneration writes the exact legacy item-code column', $passed, $failed, $errors);
+    pc_assert(($regeneratedSaved['lproduct_code'] ?? null) === $prefix, 'regeneration retains the selected legacy prefix column', $passed, $failed, $errors);
+    $regeneratedAgain = pc_request('POST', "{$API_BASE}/api/v1/products/" . rawurlencode($regenerationSession) . '/regenerate-item-code', [
+        'main_id' => $mainId,
+        'user_id' => $userId,
+        'product_code_prefix' => $prefix,
+    ]);
+    pc_assert(($regeneratedAgain['body']['data']['item_code'] ?? null) === $prefix . '128', 'repeated regeneration advances again without reusing the prior code', $passed, $failed, $errors);
 
     $newPartNo = $newPrefix . 'PN-1';
     $newCreated = pc_request('POST', "{$API_BASE}/api/v1/products", [

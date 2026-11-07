@@ -1111,6 +1111,7 @@ function app_router(): Router
     $router->get('/api/v1/sales-inquiry-products', $requireViewAuth([$productController, 'listForSalesInquiry'], 'Sales Inquiry'));
     $router->get('/api/v1/sales-inquiry-products/{productSession}', $requireViewAuth([$productController, 'showForSalesInquiry'], 'Sales Inquiry'));
     $router->post('/api/v1/products', $requireActionAuth([$productController, 'create'], 'Product Database', 'add'));
+    $router->post('/api/v1/products/{productSession}/regenerate-item-code', $requireActionAuth([$productController, 'regenerateItemCode'], 'Product Database', 'edit'));
     $router->patch('/api/v1/products/{productSession}', $requireActionAuth([$productController, 'update'], 'Product Database', 'edit'));
     $router->post('/api/v1/products/bulk-update', $requireActionAuth([$productController, 'bulkUpdate'], 'Product Database', 'edit'));
     $router->delete('/api/v1/products/{productSession}', $requireActionAuth([$productController, 'delete'], 'Product Database', 'delete'));
