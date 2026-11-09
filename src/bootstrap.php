@@ -949,9 +949,6 @@ function app_router(): Router
         if (isset($body['collect_date']) && $body['collect_date'] !== '') {
             $permissionMiddleware->assertDocumentDateWrite($claims, (string) $body['collect_date'], null);
         }
-        if (isset($body['check_date']) && $body['check_date'] !== '') {
-            $permissionMiddleware->assertDocumentDateWrite($claims, (string) $body['check_date'], null);
-        }
         return $collectionController->addPayment($params, $query, $body);
     }));
     $router->post('/api/v1/collections/{collectionRefno}/actions/{action}', $requireApproverAction([$collectionController, 'action'], ['Daily Collection Entry', 'Collection']));
@@ -976,15 +973,6 @@ function app_router(): Router
         if ($existing === null) {
             throw new HttpException(404, 'Collection item not found');
         }
-        if (isset($body['check_date']) && $body['check_date'] !== '') {
-            $previousCheckDate = trim((string) ($existing['lchk_date'] ?? ''));
-            $permissionMiddleware->assertDocumentDateWrite(
-                $claims,
-                (string) $body['check_date'],
-                $previousCheckDate !== '' ? $previousCheckDate : null
-            );
-        }
-
         return $collectionController->updateItem($params, $query, $body);
     }));
     $router->delete('/api/v1/collection-items/{itemId}', $requireActionAuth([$collectionController, 'deleteItem'], 'Daily Collection Entry', 'delete'));
