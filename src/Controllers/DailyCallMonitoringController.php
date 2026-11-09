@@ -757,7 +757,7 @@ final class DailyCallMonitoringController
                 throw new HttpException(422, 'A valid Do Not Contact reason is required.');
             }
             $this->repo->assertCustomerIsDoNotContact($mainId, $contactId);
-        } else {
+        } elseif (!$isPriorityListOverrideEntry) {
             $this->repo->assertCustomerCanBeContacted($mainId, $contactId);
         }
 
