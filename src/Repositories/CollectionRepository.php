@@ -811,22 +811,12 @@ SQL,
     {
         $pdo = $this->db->pdo();
         $collection = $this->getCollection($refno);
-        $dateStmt = $pdo->prepare(
-            'SELECT lcollect_date
-             FROM tblcollection_item
-             WHERE lrefno = :refno AND lcollect_date IS NOT NULL
-             ORDER BY lid ASC
-             LIMIT 1'
-        );
-        $dateStmt->execute(['refno' => $refno]);
-        $businessDate = $this->toDate((string) $dateStmt->fetchColumn());
         $stmt = $pdo->prepare(
             'UPDATE tblcollection
-             SET lstatus = :status, ldate_approved = NOW(),
-                 ldatetime = COALESCE(:business_date, ldatetime)
+             SET lstatus = :status, ldate_approved = NOW()
              WHERE lrefno = :refno'
         );
-        $stmt->execute(['status' => 'Posted', 'business_date' => $businessDate, 'refno' => $refno]);
+        $stmt->execute(['status' => 'Posted', 'refno' => $refno]);
         (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Daily Collection Entry', 'Post Collection Entry', $refno, '', (string) ($collection['lstatus'] ?? 'Pending'), 'Posted');
 
         return [
@@ -910,26 +900,28 @@ SQL;
         }
     }
 
-    public function deleteCollection(string $refno): void
+    public function deleteCollection(string $refno, int $mainId, int $userId): void
     {
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
-            $stmtCheck = $pdo->prepare('SELECT lstatus FROM tblcollection WHERE lrefno = :refno FOR UPDATE');
+            $lockClause = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? ' FOR UPDATE' : '';
+            $stmtCheck = $pdo->prepare('SELECT lstatus, lmain_id FROM tblcollection WHERE lrefno = :refno' . $lockClause);
             $stmtCheck->execute(['refno' => $refno]);
             $collection = $stmtCheck->fetch(PDO::FETCH_ASSOC);
             if ($collection === false) {
                 throw new RuntimeException('Collection record not found');
             }
-            if ((string) ($collection['lstatus'] ?? '') !== 'Pending') {
-                throw new RuntimeException('Only pending collection reports can be deleted');
+            if ((int) ($collection['lmain_id'] ?? 0) !== $mainId) {
+                throw new RuntimeException('Collection record not found');
             }
 
             // Delete collection item transactions linked to items of this collection
             $stmtTx = $pdo->prepare(
-                'DELETE cit FROM tblcollection_item_transactions cit
-                 INNER JOIN tblcollection_item ci ON ci.lid = cit.lcollection_itemid
-                 WHERE ci.lrefno = :refno'
+                'DELETE FROM tblcollection_item_transactions
+                 WHERE lcollection_itemid IN (
+                     SELECT lid FROM tblcollection_item WHERE lrefno = :refno
+                 )'
             );
             $stmtTx->execute(['refno' => $refno]);
 
@@ -948,6 +940,17 @@ SQL;
             // Delete the collection header
             $stmtHeader = $pdo->prepare('DELETE FROM tblcollection WHERE lrefno = :refno');
             $stmtHeader->execute(['refno' => $refno]);
+
+            (new AuditTrailWriter($pdo))->write(
+                $mainId,
+                $userId,
+                'Daily Collection Entry',
+                'Delete Collection Report',
+                $refno,
+                '',
+                (string) ($collection['lstatus'] ?? ''),
+                'Deleted'
+            );
 
             $pdo->commit();
         } catch (\Throwable $e) {
@@ -1219,10 +1222,6 @@ SQL;
         if ($collection === null) {
             throw new RuntimeException('Collection not found');
         }
-        if (strcasecmp(trim((string) ($collection['lstatus'] ?? '')), 'Posted') !== 0) {
-            throw new RuntimeException('Post the DCR after approval before posting its payment lines');
-        }
-
         $count = 0;
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -1236,12 +1235,6 @@ SQL;
                 $item = $this->getCollectionItem($itemId);
                 if ($item === null || (string) $item['lrefno'] !== $collectionRefno) {
                     continue;
-                }
-
-                $collectionDate = $this->toDate((string) ($item['lcollect_date'] ?? ''))
-                    ?? $this->toDate((string) ($collection['ldatetime'] ?? ''));
-                if ($collectionDate === null) {
-                    throw new RuntimeException('Collection date is required before posting a payment line');
                 }
 
                 $stmtPost = $pdo->prepare(
@@ -1273,8 +1266,7 @@ SQL;
                     'ltype' => $isDebit ? 'Debit' : 'Credit',
                     'luserid' => (string) $userId,
                     'lcollection_id' => $itemId,
-                    // ldatetime is the ledger business date; created_at records when posting happened.
-                    'ldatetime' => $collectionDate . ' 00:00:00',
+                    'ldatetime' => date('Y-m-d H:i:s', strtotime((string) ($item['lcollect_date'] ?? date('Y-m-d')))),
                     'created_at' => date('Y-m-d H:i:s'),
                 ]);
 

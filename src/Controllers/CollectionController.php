@@ -202,8 +202,13 @@ final class CollectionController
     public function delete(array $params, array $query = [], array $body = []): array
     {
         $refno = (string) ($params['collectionRefno'] ?? '');
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $userId = (int) ($body['user_id'] ?? 0);
         if ($refno === '') {
             throw new HttpException(422, 'collectionRefno is required');
+        }
+        if ($mainId <= 0 || $userId <= 0) {
+            throw new HttpException(422, 'Authenticated account details are required');
         }
 
         $record = $this->repo->getCollection($refno);
@@ -211,7 +216,7 @@ final class CollectionController
             throw new HttpException(404, 'Collection record not found');
         }
 
-        $this->repo->deleteCollection($refno);
+        $this->repo->deleteCollection($refno, $mainId, $userId);
         return ['deleted' => true, 'collection_refno' => $refno];
     }
 
