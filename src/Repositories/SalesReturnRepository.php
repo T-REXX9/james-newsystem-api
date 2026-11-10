@@ -1112,6 +1112,9 @@ SELECT
     COALESCE(cm.linvoice_no, '') AS linvoice_no,
     COALESCE(cm.linvoice_refno, '') AS linvoice_refno,
     COALESCE(cm.ldate, '') AS ldate,
+    COALESCE(cm.ldaterec, '') AS ldaterec,
+    COALESCE(cm.lmy_refno, '') AS lmy_refno,
+    COALESCE(cm.lsales_address, '') AS lsales_address,
     COALESCE(cm.created_at, '') AS created_at,
     COALESCE(cm.lstatus, 'Pending') AS lstatus,
     COALESCE(cm.ltype, '') AS ltype,
@@ -1142,7 +1145,7 @@ LEFT JOIN tblcredit_return_item itm ON itm.lrefno = cm.lrefno
 WHERE CAST(COALESCE(cm.lmainid, 0) AS SIGNED) = :main_id
   AND cm.lrefno = :refno
 GROUP BY
-    cm.lrefno, cm.lcredit_no, cm.linvoice_no, cm.linvoice_refno, cm.ldate, cm.created_at, cm.lstatus, cm.ltype,
+    cm.lrefno, cm.lcredit_no, cm.linvoice_no, cm.linvoice_refno, cm.ldate, cm.ldaterec, cm.lmy_refno, cm.lsales_address, cm.created_at, cm.lstatus, cm.ltype,
     cm.lcustomer, cm.clname, pt.lcompany, current_agent.lid, current_agent.lfname, current_agent.llname, cm.ltrackno, cm.lshipvia, cm.lremark, cm.lsalesman, cm.lnote, cm.lcomplaintnote, cm.ltransaction_refno, cm.ldiscount_amt, cm.ltax_type, cm.lmy_remarks
 LIMIT 1
 SQL;
@@ -1167,6 +1170,7 @@ SELECT
     COALESCE(itm.llocation, '') AS location,
     COALESCE(itm.ldesc, '') AS description,
     CAST(COALESCE(itm.lqty, 0) AS DECIMAL(15,2)) AS qty,
+    CAST(COALESCE(itm.loriginal_qty, itm.lqty, 0) AS DECIMAL(15,2)) AS original_qty,
     CAST(COALESCE(itm.lprice, 0) AS DECIMAL(15,2)) AS unit_price,
     CAST(COALESCE(itm.lqty, 0) * COALESCE(itm.lprice, 0) AS DECIMAL(15,2)) AS amount,
     COALESCE(itm.lremark, '') AS remark,

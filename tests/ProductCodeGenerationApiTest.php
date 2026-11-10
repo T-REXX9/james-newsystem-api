@@ -146,9 +146,20 @@ SQL)->execute([
     $options = pc_request('GET', "{$API_BASE}/api/v1/products/create-options?main_id={$mainId}");
     pc_assert($options['http_code'] === 200, 'create-options returns HTTP 200', $passed, $failed, $errors);
     $prefixRows = $options['body']['data']['code_prefixes'] ?? [];
+    $prefixOption = array_values(array_filter(
+        $prefixRows,
+        static fn (array $row): bool => (string) ($row['name'] ?? '') === $prefix
+    ))[0] ?? [];
     pc_assert(
         in_array($prefix, array_map(static fn(array $row): string => (string) ($row['name'] ?? ''), $prefixRows), true),
         'dropdown options include the existing legacy prefix', $passed, $failed, $errors
+    );
+    pc_assert(
+        ($prefixOption['next_item_code'] ?? null) === $prefix . '123',
+        'dropdown options preview the next code after the highest existing legacy number',
+        $passed,
+        $failed,
+        $errors
     );
 
     foreach ($partNos as $index => $partNo) {

@@ -146,7 +146,14 @@ SQL);
     public static function resolveCustomerIdentifierLabels(array $row): array
     {
         $profileType = strtolower(trim((string) ($row['profile_type'] ?? '')));
-        $isProspect = str_contains($profileType, 'prospect') || (int) ($row['customer_status'] ?? 1) === 3;
+        $firstPurchaseDate = trim((string) ($row['first_purchase_date'] ?? ''));
+        $parsedFirstPurchaseDate = $firstPurchaseDate === ''
+            ? false
+            : DateTimeImmutable::createFromFormat('!Y-m-d', substr($firstPurchaseDate, 0, 10));
+        $hasPurchaseHistory = $parsedFirstPurchaseDate instanceof DateTimeImmutable
+            && $parsedFirstPurchaseDate->format('Y-m-d') === substr($firstPurchaseDate, 0, 10);
+        $isProspect = !$hasPurchaseHistory
+            && (str_contains($profileType, 'prospect') || (int) ($row['customer_status'] ?? 1) === 3);
         $isBlacklisted = (int) ($row['customer_status'] ?? 1) === 4
             || strtolower(trim((string) ($row['debt_type'] ?? ''))) === 'bad';
         $identifiers = [];

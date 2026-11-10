@@ -59,6 +59,7 @@ identifierAssert(
     $failed
 );
 identifierAssert(['Verified Prospective'], ['profile_type' => 'Prospective', 'verification' => 'Verified'], 'verified prospect gets the verified label', $passed, $failed);
+identifierAssert(['Existing Customer'], ['profile_type' => 'Prospective', 'verification' => 'Verified', 'first_purchase_date' => '2025-04-10'], 'purchase history overrides stale verified prospect classification', $passed, $failed);
 identifierAssert(['Unverified Prospective'], ['customer_status' => 3, 'verification' => 'Pending'], 'unverified prospect gets the unverified label', $passed, $failed);
 identifierAssert(['Blacklisted'], ['customer_status' => 4, 'is_new_customer' => 1], 'blacklist overrides purchase recency', $passed, $failed);
 identifierAssert(['Do Not Call'], ['do_not_call' => 1, 'is_new_customer' => 1], 'do-not-call overrides purchase recency', $passed, $failed);

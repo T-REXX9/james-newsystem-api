@@ -717,12 +717,31 @@ SQL);
         return (int) $counterStmt->fetchColumn();
     }
 
-    /** @return array{code_prefixes: array<int, array{id: int, name: string}>, price_groups: array<int, array{name: string, type: string}>} */
+    /** @return array{code_prefixes: array<int, array{id: int, name: string, next_item_code: string}>, price_groups: array<int, array{name: string, type: string}>} */
     public function getProductCreateOptions(int $mainId): array
     {
-        $stmt = $this->db->pdo()->query(
-            "SELECT lid AS id, COALESCE(lname, '') AS name FROM tblproduct_code WHERE COALESCE(lname, '') <> '' ORDER BY lname ASC, lid ASC"
-        );
+        $stmt = $this->db->pdo()->query(<<<'SQL'
+SELECT
+    codes.lid AS id,
+    COALESCE(codes.lname, '') AS name,
+    CONCAT(codes.lname, GREATEST(
+        COALESCE((
+            SELECT MAX(generator.lctr)
+            FROM tblproduct_code_generator generator
+            WHERE generator.lcode = codes.lname
+        ), 0),
+        COALESCE((
+            SELECT MAX(CAST(SUBSTRING(item.litemcode, CHAR_LENGTH(item.lproduct_code) + 1) AS UNSIGNED))
+            FROM tblinventory_item item
+            WHERE item.lproduct_code = codes.lname
+              AND LEFT(item.litemcode, CHAR_LENGTH(item.lproduct_code)) = item.lproduct_code
+              AND SUBSTRING(item.litemcode, CHAR_LENGTH(item.lproduct_code) + 1) REGEXP '^[0-9]+$'
+        ), 0)
+    ) + 1) AS next_item_code
+FROM tblproduct_code codes
+WHERE COALESCE(codes.lname, '') <> ''
+ORDER BY codes.lname ASC, codes.lid ASC
+SQL);
         $groups = $this->db->pdo()->prepare(<<<'SQL'
 SELECT lname AS name, COALESCE(ltype, 'Regular') AS type
 FROM tblinv_pricegroup
