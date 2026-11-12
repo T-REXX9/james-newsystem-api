@@ -56,6 +56,7 @@ $expected = [
     '/api/v1/server-maintenance/automatic-backup' => '$requireMasterUser',
     '/api/v1/sales-inquiries' => '$requireSalesInquiryWriteAuth',
     '/api/v1/sales-inquiries/{inquiryRefno}' => '$requireSalesInquiryWriteAuth',
+    '/api/v1/sales-inquiries/{inquiryRefno}/confirm' => '$requireSalesInquiryConfirmAuth',
     '/api/v1/sales-inquiries/{inquiryRefno}/items' => '$requireSalesInquiryWriteAuth',
     '/api/v1/sales-inquiry-items/{itemId}' => '$requireSalesInquiryWriteAuth',
     '/api/v1/sales-returns/{refno}' => '$requireActionAuth',
@@ -72,6 +73,15 @@ foreach ($expected as $route => $wrapper) {
 
     if ($line === null || !str_contains($line, $wrapper)) {
         throw new RuntimeException("FAIL: {$route} is not protected by {$wrapper}");
+    }
+}
+
+foreach ([
+    "in_array(\$permissionAction, ['add', 'edit'], true)",
+    '$requireSalesInquiryWriteAuth',
+] as $requiredConfirmationGuard) {
+    if (!str_contains($source, $requiredConfirmationGuard)) {
+        throw new RuntimeException("FAIL: Sales Inquiry confirmation is missing {$requiredConfirmationGuard}");
     }
 }
 

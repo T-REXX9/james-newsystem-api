@@ -77,7 +77,16 @@ final class SalesInquiryController
         }
 
         try {
-            $record = $this->repo->updateInquiry($mainId, $inquiryRefno, $body);
+            $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+            $record = $this->repo->updateInquiry(
+                $mainId,
+                $inquiryRefno,
+                $body,
+                (int) ($body['user_id'] ?? 0),
+                (string) ($claims['user_type'] ?? '') === '1'
+            );
+        } catch (HttpException $e) {
+            throw $e;
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());
         }
@@ -101,7 +110,13 @@ final class SalesInquiryController
             throw new HttpException(422, 'inquiryRefno is required');
         }
 
-        $deleted = $this->repo->cancelInquiry($mainId, $inquiryRefno);
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $deleted = $this->repo->cancelInquiry(
+            $mainId,
+            $inquiryRefno,
+            (int) ($body['user_id'] ?? 0),
+            (string) ($claims['user_type'] ?? '') === '1'
+        );
         if (!$deleted) {
             throw new HttpException(404, 'Sales inquiry not found');
         }
@@ -126,7 +141,10 @@ final class SalesInquiryController
         }
 
         try {
-            return $this->repo->addItem($mainId, $inquiryRefno, $body);
+            $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+            return $this->repo->addItem($mainId, $inquiryRefno, $body, (int) ($body['user_id'] ?? 0), (string) ($claims['user_type'] ?? '') === '1');
+        } catch (HttpException $e) {
+            throw $e;
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());
         }
@@ -145,7 +163,10 @@ final class SalesInquiryController
         }
 
         try {
-            $item = $this->repo->updateItem($mainId, $itemId, $body);
+            $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+            $item = $this->repo->updateItem($mainId, $itemId, $body, (int) ($body['user_id'] ?? 0), (string) ($claims['user_type'] ?? '') === '1');
+        } catch (HttpException $e) {
+            throw $e;
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());
         }
@@ -169,7 +190,8 @@ final class SalesInquiryController
             throw new HttpException(422, 'itemId is required');
         }
 
-        $deleted = $this->repo->deleteItem($mainId, $itemId);
+        $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];
+        $deleted = $this->repo->deleteItem($mainId, $itemId, (int) ($body['user_id'] ?? 0), (string) ($claims['user_type'] ?? '') === '1');
         if (!$deleted) {
             throw new HttpException(404, 'Sales inquiry item not found');
         }
@@ -201,7 +223,7 @@ final class SalesInquiryController
         try {
             $normalized = strtolower($action);
             if (in_array($normalized, ['approve', 'approved', 'approverecord', 'submitted'], true)) {
-                $record = $this->repo->updateInquiry($mainId, $inquiryRefno, ['status' => 'Submitted']);
+                $record = $this->repo->submitInquiryForConversion($mainId, $inquiryRefno, $userId);
                 if ($record === null) {
                     throw new HttpException(404, 'Sales inquiry not found');
                 }
@@ -210,6 +232,8 @@ final class SalesInquiryController
             if (in_array($normalized, ['convert', 'convert-to-order', 'convertsales'], true)) {
                 return $this->repo->convertToSalesOrder($mainId, $userId, $inquiryRefno);
             }
+        } catch (HttpException $e) {
+            throw $e;
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());
         }

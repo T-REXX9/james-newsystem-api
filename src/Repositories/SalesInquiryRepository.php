@@ -8,6 +8,8 @@ use App\Database;
 use App\Repositories\NotificationsRepository;
 use App\Support\AuditTrailWriter;
 use App\Support\SalesDocumentDateCascade;
+use App\Support\Exceptions\HttpException;
+use App\Support\SalesInquiryEditGuard;
 use PDO;
 use RuntimeException;
 
@@ -103,6 +105,7 @@ SELECT
     COALESCE(iq.lrefno, '') AS inquiry_refno,
     COALESCE(iq.ldate, '') AS sales_date,
     COALESCE(iq.ltime, '') AS sales_time,
+    COALESCE(sic.confirmed_at, '') AS confirmed_at,
     COALESCE(iq.lcustomerid, '') AS contact_id,
     COALESCE(iq.lcompany, '') AS customer_company,
     '' AS sales_person,
@@ -134,7 +137,20 @@ SELECT
             SELECT 1
             FROM tbltransaction t
             WHERE t.lmain_id = iq.lmain_id
-              AND (t.linquiry_refno = iq.lrefno OR t.lrefno = iq.lso_refno)
+              AND t.linquiry_refno = iq.lrefno
+              AND COALESCE(t.lcancel, 0) = 0
+              AND (
+                  COALESCE(t.invoice_refno, '') <> ''
+                  OR COALESCE(t.invoice_no, '') <> ''
+                  OR COALESCE(t.ldr_refno, '') <> ''
+                  OR COALESCE(t.ldr_no, '') <> ''
+              )
+            LIMIT 1
+        ) OR EXISTS (
+            SELECT 1
+            FROM tbltransaction t
+            WHERE t.lmain_id = iq.lmain_id
+              AND t.lrefno = iq.lso_refno
               AND COALESCE(t.lcancel, 0) = 0
               AND (
                   COALESCE(t.invoice_refno, '') <> ''
@@ -147,6 +163,9 @@ SELECT
         ELSE 1
     END AS is_editable
 FROM tblinquiry iq
+LEFT JOIN sales_inquiry_confirmations sic
+    ON sic.main_id = iq.lmain_id
+   AND sic.inquiry_refno = iq.lrefno
 LEFT JOIN tblpatient assigned_customer
     ON assigned_customer.lmain_id = iq.lmain_id
    AND assigned_customer.lsessionid = iq.lcustomerid
@@ -254,6 +273,7 @@ SELECT
     COALESCE(iq.lrefno, '') AS inquiry_refno,
     COALESCE(iq.ldate, '') AS sales_date,
     COALESCE(iq.ltime, '') AS sales_time,
+    COALESCE(sic.confirmed_at, '') AS confirmed_at,
     COALESCE(iq.lcustomerid, '') AS contact_id,
     COALESCE(iq.lcompany, '') AS customer_company,
     '' AS sales_person,
@@ -288,7 +308,20 @@ SELECT
             SELECT 1
             FROM tbltransaction t
             WHERE t.lmain_id = iq.lmain_id
-              AND (t.linquiry_refno = iq.lrefno OR t.lrefno = iq.lso_refno)
+              AND t.linquiry_refno = iq.lrefno
+              AND COALESCE(t.lcancel, 0) = 0
+              AND (
+                  COALESCE(t.invoice_refno, '') <> ''
+                  OR COALESCE(t.invoice_no, '') <> ''
+                  OR COALESCE(t.ldr_refno, '') <> ''
+                  OR COALESCE(t.ldr_no, '') <> ''
+              )
+            LIMIT 1
+        ) OR EXISTS (
+            SELECT 1
+            FROM tbltransaction t
+            WHERE t.lmain_id = iq.lmain_id
+              AND t.lrefno = iq.lso_refno
               AND COALESCE(t.lcancel, 0) = 0
               AND (
                   COALESCE(t.invoice_refno, '') <> ''
@@ -301,6 +334,9 @@ SELECT
         ELSE 1
     END AS is_editable
 FROM tblinquiry iq
+LEFT JOIN sales_inquiry_confirmations sic
+    ON sic.main_id = iq.lmain_id
+   AND sic.inquiry_refno = iq.lrefno
 LEFT JOIN tblpatient assigned_customer
     ON assigned_customer.lmain_id = iq.lmain_id
    AND assigned_customer.lsessionid = iq.lcustomerid
@@ -484,12 +520,65 @@ SQL;
     /**
      * @return array<string, mixed>|null
      */
-    public function updateInquiry(int $mainId, string $inquiryRefno, array $payload): ?array
+    public function submitInquiryForConversion(int $mainId, string $inquiryRefno, int $actorId): ?array
     {
         $existing = $this->getInquiry($mainId, $inquiryRefno);
         if ($existing === null) {
             return null;
         }
+
+        $currentStatus = strtolower(trim((string) ($existing['status'] ?? '')));
+        if (in_array($currentStatus, ['submitted', 'approved'], true)) {
+            return $existing;
+        }
+        if (!in_array($currentStatus, ['pending', 'draft'], true)) {
+            throw new RuntimeException('Only a draft inquiry can be submitted for conversion');
+        }
+
+        $this->assertInquiryEditable($mainId, $inquiryRefno);
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare(
+                "UPDATE tblinquiry
+                 SET lsubmitstat = 'Submitted'
+                 WHERE lmain_id = :main_id
+                   AND lrefno = :refno
+                   AND LOWER(TRIM(COALESCE(lsubmitstat, 'Pending'))) IN ('draft', 'pending')"
+            );
+            $stmt->execute([
+                'main_id' => (string) $mainId,
+                'refno' => $inquiryRefno,
+            ]);
+
+            if ($stmt->rowCount() !== 1) {
+                $current = $this->getInquiry($mainId, $inquiryRefno);
+                if (strtolower(trim((string) ($current['status'] ?? ''))) !== 'submitted') {
+                    throw new RuntimeException('Sales inquiry status changed before it could be submitted');
+                }
+                $pdo->commit();
+                return $current;
+            }
+
+            (new AuditTrailWriter($pdo))->write($mainId, $actorId, 'Sales Inquiry', 'Approve', $inquiryRefno, '', (string) ($existing['status'] ?? ''), 'Submitted');
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+
+        return $this->getInquiry($mainId, $inquiryRefno);
+    }
+
+    public function updateInquiry(int $mainId, string $inquiryRefno, array $payload, int $actorId = 0, bool $isMasterUser = false): ?array
+    {
+        $existing = $this->getInquiry($mainId, $inquiryRefno);
+        if ($existing === null) {
+            return null;
+        }
+        $this->assertConfirmedInquiryEditAllowed($mainId, $inquiryRefno, $actorId, $isMasterUser);
         $this->assertInquiryEditable($mainId, $inquiryRefno);
 
         $contactId = (string) ($payload['contact_id'] ?? $existing['contact_id'] ?? '');
@@ -635,8 +724,9 @@ SQL;
         return array_merge($row, $vip);
     }
 
-    public function cancelInquiry(int $mainId, string $inquiryRefno): bool
+    public function cancelInquiry(int $mainId, string $inquiryRefno, int $actorId = 0, bool $isMasterUser = false): bool
     {
+        $this->assertConfirmedInquiryEditAllowed($mainId, $inquiryRefno, $actorId, $isMasterUser);
         $linkedSalesOrder = $this->getLinkedSalesOrderRow($this->db->pdo(), $mainId, $inquiryRefno);
         if ($linkedSalesOrder !== null && !$this->canSyncLinkedSalesOrder($linkedSalesOrder)) {
             return false;
@@ -685,12 +775,13 @@ SQL;
         }
     }
 
-    public function addItem(int $mainId, string $inquiryRefno, array $payload): array
+    public function addItem(int $mainId, string $inquiryRefno, array $payload, int $actorId = 0, bool $isMasterUser = false): array
     {
         $inquiry = $this->getInquiry($mainId, $inquiryRefno);
         if ($inquiry === null) {
             throw new RuntimeException('Sales inquiry not found');
         }
+        $this->assertConfirmedInquiryEditAllowed($mainId, $inquiryRefno, $actorId, $isMasterUser);
         $this->assertInquiryEditable($mainId, $inquiryRefno);
 
         $customer = $this->getCustomerSnapshot($mainId, (string) ($inquiry['contact_id'] ?? ''));
@@ -730,12 +821,13 @@ SQL;
     /**
      * @return array<string, mixed>|null
      */
-    public function updateItem(int $mainId, int $itemId, array $payload): ?array
+    public function updateItem(int $mainId, int $itemId, array $payload, int $actorId = 0, bool $isMasterUser = false): ?array
     {
         $existing = $this->getItemById($itemId);
         if ($existing === null || !$this->itemBelongsToMain($mainId, $itemId)) {
             return null;
         }
+        $this->assertConfirmedInquiryEditAllowed($mainId, (string) ($existing['inquiry_refno'] ?? ''), $actorId, $isMasterUser);
         $this->assertInquiryEditable($mainId, (string) ($existing['inquiry_refno'] ?? ''));
 
         $fields = [];
@@ -813,12 +905,13 @@ SQL;
         return $this->getItemById($itemId);
     }
 
-    public function deleteItem(int $mainId, int $itemId): bool
+    public function deleteItem(int $mainId, int $itemId, int $actorId = 0, bool $isMasterUser = false): bool
     {
         $existing = $this->getItemById($itemId);
         if ($existing === null || !$this->itemBelongsToMain($mainId, $itemId)) {
             return false;
         }
+        $this->assertConfirmedInquiryEditAllowed($mainId, (string) ($existing['inquiry_refno'] ?? ''), $actorId, $isMasterUser);
         $this->assertInquiryEditable($mainId, (string) ($existing['inquiry_refno'] ?? ''));
 
         $pdo = $this->db->pdo();
@@ -887,6 +980,8 @@ SQL;
         if ($approvedItems === []) {
             throw new RuntimeException('Inquiry has no approved items to convert');
         }
+
+        $this->assertApprovedItemsHaveSufficientStock($mainId, $approvedItems);
 
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
@@ -1042,6 +1137,68 @@ SQL;
         return $finalConverted;
     }
 
+    /**
+     * @param array<int, mixed> $items
+     */
+    private function assertApprovedItemsHaveSufficientStock(int $mainId, array $items): void
+    {
+        $requiredByItem = [];
+        foreach ($items as $item) {
+            if (!is_array($item) || strcasecmp(trim((string) ($item['remark'] ?? '')), 'NotListed') === 0) {
+                continue;
+            }
+            $itemId = trim((string) ($item['item_id'] ?? ''));
+            if ($itemId === '') {
+                $itemId = trim((string) ($item['item_refno'] ?? ''));
+            }
+            if ($itemId === '') {
+                throw new RuntimeException('Insufficient stock: an approved inventory item has no product reference. Transfer stock before generating the sales order.');
+            }
+            $requiredByItem[$itemId] = ($requiredByItem[$itemId] ?? 0.0) + max(0.0, (float) ($item['qty'] ?? 0));
+        }
+        if ($requiredByItem === []) {
+            return;
+        }
+
+        $placeholders = [];
+        $params = ['main_id' => $mainId];
+        foreach (array_keys($requiredByItem) as $index => $itemId) {
+            $key = 'item_' . $index;
+            $placeholders[] = ':' . $key;
+            $params[$key] = $itemId;
+        }
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT CAST(itm.lsession AS CHAR) AS item_id,
+                    CASE WHEN COALESCE(SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0)), 0) > 0
+                         THEN COALESCE(SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0)), 0)
+                         ELSE 0 END AS available_stock
+             FROM tblinventory_item itm
+             LEFT JOIN tblinventory_logs lg ON lg.linvent_id = itm.lsession
+             WHERE itm.lmain_id = :main_id
+               AND itm.lsession IN (' . implode(', ', $placeholders) . ')
+             GROUP BY itm.lsession'
+        );
+        $stmt->execute($params);
+        $availableByItem = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $availableByItem[(string) $row['item_id']] = (float) $row['available_stock'];
+        }
+
+        $shortages = [];
+        foreach ($requiredByItem as $itemId => $required) {
+            $available = $availableByItem[$itemId] ?? 0.0;
+            if ($required > $available) {
+                $shortages[] = sprintf('%s (available %s, requested %s)', $itemId, $available, $required);
+            }
+        }
+        if ($shortages !== []) {
+            throw new RuntimeException(
+                'Insufficient stock for ' . implode('; ', $shortages)
+                . '. Transfer stock to the required warehouse before generating the sales order.'
+            );
+        }
+    }
+
     private function findLinkedSalesRefno(int $mainId, string $inquiryRefno): string
     {
         $stmt = $this->db->pdo()->prepare(
@@ -1170,6 +1327,11 @@ SQL;
         }
 
         return $this->canSyncLinkedSalesOrder($salesOrder);
+    }
+
+    private function assertConfirmedInquiryEditAllowed(int $mainId, string $inquiryRefno, int $actorId, bool $isMasterUser): void
+    {
+        SalesInquiryEditGuard::assertCanEdit($this->db->pdo(), $mainId, $inquiryRefno, $actorId, $isMasterUser);
     }
 
     private function assertInquiryEditable(int $mainId, string $inquiryRefno): void

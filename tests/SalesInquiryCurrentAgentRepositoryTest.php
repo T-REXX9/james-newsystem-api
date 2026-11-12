@@ -7,6 +7,7 @@ require_once __DIR__ . '/../src/bootstrap.php';
 use App\Config;
 use App\Database;
 use App\Repositories\SalesInquiryRepository;
+use App\Support\SalesInquiryEditGuard;
 
 function current_agent_expect(bool $condition, string $message): void
 {
@@ -27,9 +28,11 @@ $pdo->exec('CREATE TABLE tblinquiry (
     lurgency_date TEXT, lsubmitstat TEXT, IsCancel INTEGER, lso_no TEXT, lso_refno TEXT,
     ltransaction_status TEXT, lvat_type TEXT, lvat_percent REAL
 )');
+$pdo->exec('CREATE TABLE sales_inquiry_confirmations (main_id INTEGER, inquiry_refno TEXT, confirmed_at TEXT, PRIMARY KEY (main_id, inquiry_refno))');
+$pdo->exec("CREATE TABLE sales_inquiry_edit_requests (id INTEGER PRIMARY KEY, main_id INTEGER, inquiry_refno TEXT, requested_by INTEGER, status TEXT)");
 $pdo->exec('CREATE TABLE tblpatient (lid INTEGER PRIMARY KEY, lmain_id INTEGER, lsessionid TEXT, lsales_person TEXT, ldeleted INTEGER)');
 $pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT, lstatus INTEGER)');
-$pdo->exec('CREATE TABLE tbltransaction (lmain_id INTEGER, lrefno TEXT, lcancel INTEGER, linquiry_refno TEXT, invoice_refno TEXT, invoice_no TEXT, ldr_refno TEXT, ldr_no TEXT)');
+$pdo->exec('CREATE TABLE tbltransaction (lid INTEGER PRIMARY KEY, lmain_id INTEGER, lrefno TEXT, luser INTEGER, lcancel INTEGER, linquiry_refno TEXT, invoice_refno TEXT, invoice_no TEXT, ldr_refno TEXT, ldr_no TEXT)');
 $pdo->exec('CREATE TABLE tblinquiry_item (
     lid INTEGER PRIMARY KEY, linq_refno TEXT, linq_no TEXT, litem_id TEXT, litem_refno TEXT,
     lpartno TEXT, litem_code TEXT, lbrand TEXT, ldesc TEXT, llocation TEXT, lqty REAL,
@@ -43,20 +46,52 @@ $pdo->exec('CREATE TABLE tblvip_document_discount (
 $pdo->exec("INSERT INTO tblaccount VALUES (1, 'Creator', 'User', 1), (19, 'Apostol', 'Ella', 0), (20, 'Jane', 'Agent', 1)");
 $pdo->exec("INSERT INTO tblpatient VALUES (1, 7, 'customer-1', '20', 0)");
 $pdo->exec("INSERT INTO tblinquiry (lid, linqno, lrefno, ldate, ltime, lcustomerid, lmain_id, lcompany, lsalesperson, lsales_person_id, luser, IsCancel) VALUES (1, 'INQ-1', 'ref-1', '2026-10-01', '09:00:00', 'customer-1', 7, 'Example', 'Apostol Ella', '19', '1', 0)");
+$pdo->exec("INSERT INTO sales_inquiry_confirmations VALUES (7, 'ref-1', '2026-11-12 18:00:00')");
 
 $property = (new ReflectionClass($db))->getProperty('pdo');
 $property->setValue($db, $pdo);
 $repository = new SalesInquiryRepository($db);
 
+$assertEditDenied = static function (int $actorId) use ($pdo): bool {
+    try {
+        SalesInquiryEditGuard::assertCanEdit($pdo, 7, 'ref-1', $actorId, false);
+        return false;
+    } catch (\App\Support\Exceptions\HttpException $exception) {
+        return $exception->statusCode() === 403;
+    }
+};
+current_agent_expect($assertEditDenied(20), 'staff without an inquiry-specific approval cannot edit a confirmed inquiry');
+$pdo->exec("INSERT INTO sales_inquiry_edit_requests VALUES (1, 7, 'ref-1', 20, 'approved')");
+SalesInquiryEditGuard::assertCanEdit($pdo, 7, 'ref-1', 20, false);
+current_agent_expect(true, 'only the staff member named in the approved request receives edit access');
+current_agent_expect($assertEditDenied(21), 'another staff member cannot use someone else’s approval');
+SalesInquiryEditGuard::assertCanEdit($pdo, 7, 'ref-1', 20, true);
+current_agent_expect(true, 'Master User can edit a confirmed inquiry without a staff approval');
+
 $detail = $repository->getInquiry(7, 'ref-1');
 current_agent_expect(($detail['sales_person'] ?? null) === 'Jane Agent', 'detail returns the current active assigned agent, not the saved inquiry name');
 current_agent_expect(($detail['sales_person_id'] ?? null) === '20', 'detail returns the current assigned agent ID');
+current_agent_expect(($detail['confirmed_at'] ?? null) === '2026-11-12 18:00:00', 'detail returns the sidecar confirmation timestamp');
 
 $list = $repository->listInquiries(7);
 current_agent_expect(($list['items'][0]['sales_person'] ?? null) === 'Jane Agent', 'list returns the current active assigned agent, not the saved inquiry name');
 current_agent_expect(($list['items'][0]['sales_person_id'] ?? null) === '20', 'list returns the current assigned agent ID');
+current_agent_expect(($list['items'][0]['confirmed_at'] ?? null) === '2026-11-12 18:00:00', 'list returns the sidecar confirmation timestamp');
 
 $search = $repository->listInquiries(7, 'Jane Agent');
 current_agent_expect(($search['meta']['total'] ?? 0) === 1, 'search matches the current assigned agent name');
+
+$submitted = $repository->submitInquiryForConversion(7, 'ref-1', 20);
+current_agent_expect(($submitted['status'] ?? null) === 'Submitted', 'confirmed draft can be submitted through the authorized conversion workflow');
+current_agent_expect(($submitted['customer_company'] ?? null) === 'Example', 'workflow submission preserves inquiry content');
+current_agent_expect(($submitted['confirmed_at'] ?? null) === '2026-11-12 18:00:00', 'workflow submission preserves confirmation state');
+
+$editDenied = false;
+try {
+    $repository->updateInquiry(7, 'ref-1', ['remarks' => 'Unauthorized edit'], 21, false);
+} catch (\App\Support\Exceptions\HttpException $exception) {
+    $editDenied = $exception->statusCode() === 403;
+}
+current_agent_expect($editDenied, 'confirmed inquiry remains protected from unauthorized content edits after workflow submission');
 
 echo "PASS: Sales Inquiry detail, list, and search use the active customer's assigned Sales Agent\n";
