@@ -103,7 +103,7 @@ SELECT
     COALESCE(iq.lrefno, '') AS inquiry_refno,
     COALESCE(iq.ldate, '') AS sales_date,
     COALESCE(iq.ltime, '') AS sales_time,
-    COALESCE(DATE_FORMAT(iq.lconfirmed_at, '%Y-%m-%d %H:%i:%s'), '') AS confirmed_at,
+    COALESCE(sic.confirmed_at, '') AS confirmed_at,
     COALESCE(iq.lcustomerid, '') AS contact_id,
     COALESCE(iq.lcompany, '') AS customer_company,
     '' AS sales_person,
@@ -148,6 +148,9 @@ SELECT
         ELSE 1
     END AS is_editable
 FROM tblinquiry iq
+LEFT JOIN sales_inquiry_confirmations sic
+    ON sic.main_id = iq.lmain_id
+   AND sic.inquiry_refno = iq.lrefno
 LEFT JOIN tblpatient assigned_customer
     ON assigned_customer.lmain_id = iq.lmain_id
    AND assigned_customer.lsessionid = iq.lcustomerid
@@ -255,7 +258,7 @@ SELECT
     COALESCE(iq.lrefno, '') AS inquiry_refno,
     COALESCE(iq.ldate, '') AS sales_date,
     COALESCE(iq.ltime, '') AS sales_time,
-    COALESCE(DATE_FORMAT(iq.lconfirmed_at, '%Y-%m-%d %H:%i:%s'), '') AS confirmed_at,
+    COALESCE(sic.confirmed_at, '') AS confirmed_at,
     COALESCE(iq.lcustomerid, '') AS contact_id,
     COALESCE(iq.lcompany, '') AS customer_company,
     '' AS sales_person,
@@ -303,6 +306,9 @@ SELECT
         ELSE 1
     END AS is_editable
 FROM tblinquiry iq
+LEFT JOIN sales_inquiry_confirmations sic
+    ON sic.main_id = iq.lmain_id
+   AND sic.inquiry_refno = iq.lrefno
 LEFT JOIN tblpatient assigned_customer
     ON assigned_customer.lmain_id = iq.lmain_id
    AND assigned_customer.lsessionid = iq.lcustomerid
