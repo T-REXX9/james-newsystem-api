@@ -36,6 +36,9 @@ $checks = [
     'item edits refresh the reorder report cache' => str_contains($source, 'function updateReceivingStockItem')
         && substr_count($source, '$this->clearReorderReportCache();') >= 4,
     'RR unpost ignores canceled or deleted return-to-supplier records' => 'NOT IN ("cancelled", "canceled", "deleted")',
+    'posted RR movement uses its stored receive date at midnight' => str_contains($source, 'TIMESTAMP(:inventory_date')
+            && str_contains($source, '00:00:00')
+            && str_contains($source, "'inventory_date' => " . '$receiveDate'),
     'RR list allows all months and years' => str_contains($source, '?int $month = null')
         && str_contains($source, '?int $year = null')
         && str_contains($controller, 'strtolower($monthParam) === \'all\'')

@@ -729,7 +729,7 @@ SQL;
                 'INSERT INTO tblinventory_logs
                 (linvent_id, lin, lout, ltotal, ldateadded, lprocess_by, lnote, lsupplier_id, linventory_id, lstatus_logs, ltransaction_item_id, lpurchase_item_id, lrefno, llocation, lwarehouse, ltransaction_type, litemcode, lpartno)
                 VALUES
-                (:invent_id, :lin, 0, :ltotal, TIMESTAMP(:inventory_date, CURTIME()), :process_by, :note, :supplier_id, :inventory_id, "+", "Purchase Order", :purchase_item_id, :refno, :location_id, :warehouse_id, "Receiving", :item_code, :part_no)'
+                (:invent_id, :lin, 0, :ltotal, TIMESTAMP(:inventory_date, \'00:00:00\'), :process_by, :note, :supplier_id, :inventory_id, "+", "Purchase Order", :purchase_item_id, :refno, :location_id, :warehouse_id, "Receiving", :item_code, :part_no)'
             );
 
             foreach ($details['items'] as $item) {
