@@ -415,6 +415,8 @@ SQL;
         }
 
         $record = $existing['record'];
+        $wasPosted = in_array(strtolower((string) ($record['status'] ?? '')), ['delivered', 'posted'], true);
+        $receiveDate = $this->normalizeDate((string) ($payload['receive_date'] ?? ($record['receive_date'] ?? date('Y-m-d'))));
         $supplierId = (string) ($payload['supplier_id'] ?? ($record['supplier_id'] ?? ''));
         $supplier = $this->resolveSupplier($supplierId);
 
@@ -436,23 +438,43 @@ SET
 WHERE lmain_id = :main_id
   AND lrefno = :refno
 SQL;
-        $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute([
-            'receive_date' => $this->normalizeDate((string) ($payload['receive_date'] ?? ($record['receive_date'] ?? date('Y-m-d')))),
-            'status' => (string) ($payload['status'] ?? ($record['status'] ?? 'Pending')),
-            'supplier_id' => $supplier['id'],
-            'supplier_name' => $supplier['name'],
-            'supplier_code' => $supplier['code'],
-            'shipped_name' => (string) ($payload['shipped_name'] ?? ($record['shipped_name'] ?? '')),
-            'reference' => (string) ($payload['reference'] ?? ($record['reference'] ?? '')),
-            'terms' => (string) ($payload['terms'] ?? ($record['terms'] ?? '')),
-            'address' => (string) ($payload['address'] ?? ($record['address'] ?? '')),
-            'po_refno' => (string) ($payload['po_refno'] ?? ($record['po_refno'] ?? '')),
-            'po_number' => (string) ($payload['po_number'] ?? ($record['po_number'] ?? '')),
-            'eta_date' => $this->normalizeDateNullable((string) ($payload['eta_date'] ?? ($record['eta_date'] ?? ''))),
-            'main_id' => (string) $mainId,
-            'refno' => $receivingRefno,
-        ]);
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([
+                'receive_date' => $receiveDate,
+                'status' => (string) ($payload['status'] ?? ($record['status'] ?? 'Pending')),
+                'supplier_id' => $supplier['id'],
+                'supplier_name' => $supplier['name'],
+                'supplier_code' => $supplier['code'],
+                'shipped_name' => (string) ($payload['shipped_name'] ?? ($record['shipped_name'] ?? '')),
+                'reference' => (string) ($payload['reference'] ?? ($record['reference'] ?? '')),
+                'terms' => (string) ($payload['terms'] ?? ($record['terms'] ?? '')),
+                'address' => (string) ($payload['address'] ?? ($record['address'] ?? '')),
+                'po_refno' => (string) ($payload['po_refno'] ?? ($record['po_refno'] ?? '')),
+                'po_number' => (string) ($payload['po_number'] ?? ($record['po_number'] ?? '')),
+                'eta_date' => $this->normalizeDateNullable((string) ($payload['eta_date'] ?? ($record['eta_date'] ?? ''))),
+                'main_id' => (string) $mainId,
+                'refno' => $receivingRefno,
+            ]);
+
+            if ($wasPosted && array_key_exists('receive_date', $payload)) {
+                $updateMovementDate = $pdo->prepare(
+                    'UPDATE tblinventory_logs
+                     SET ldateadded = TIMESTAMP(:movement_date, \'00:00:00\')
+                     WHERE lrefno = :refno AND ltransaction_type = "Receiving"'
+                );
+                $updateMovementDate->execute([
+                    'movement_date' => $receiveDate,
+                    'refno' => $receivingRefno,
+                ]);
+            }
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
 
         return $this->getReceivingStock($mainId, $receivingRefno);
     }

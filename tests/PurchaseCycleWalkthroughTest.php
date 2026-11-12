@@ -236,19 +236,24 @@ try {
     ]);
 
     cycle_assert_refused(
-        fn () => $rrRepo->finalizeReceivingStock($mainId, $firstRrRefno),
+        fn () => $rrRepo->finalizeReceivingStock($mainId, $userId, $firstRrRefno),
         'reason',
         'a short delivery must say why before it can be received'
     );
 
     $firstReceived = $rrRepo->finalizeReceivingStock(
         $mainId,
+        $userId,
         $firstRrRefno,
         'Delivered',
         false,
         'Partial delivery — remaining quantity to follow'
     );
     cycle_assert_eq('Delivered', $firstReceived['record']['status'] ?? null, 'a partial delivery can be received');
+    $rrRepo->updateReceivingStock($mainId, $firstRrRefno, ['receive_date' => '2024-02-14']);
+    $movementDate = $pdo->prepare('SELECT DATE(ldateadded) FROM tblinventory_logs WHERE lrefno = :refno AND ltransaction_type = "Receiving" LIMIT 1');
+    $movementDate->execute(['refno' => $firstRrRefno]);
+    cycle_assert_eq('2024-02-14', $movementDate->fetchColumn(), 'backdating a posted RR also backdates its stock movement');
     cycle_assert_eq('Posted', $poRepo->getPurchaseOrder($mainId, $poRefno)['order']['status'] ?? null, 'the purchase order stays open while quantity is outstanding');
     cycle_assert_eq('Partially Fulfilled', $prRepo->getPurchaseRequest($mainId, $prRefno)['request']['cycle_status'] ?? null, 'the request reports itself partially fulfilled');
 
@@ -281,7 +286,7 @@ try {
         'qty' => 6,
         'unit_cost' => 50,
     ]);
-    $secondReceived = $rrRepo->finalizeReceivingStock($mainId, $secondRrRefno);
+    $secondReceived = $rrRepo->finalizeReceivingStock($mainId, $userId, $secondRrRefno);
     cycle_assert_eq('Delivered', $secondReceived['record']['status'] ?? null, 'the balancing delivery can be received');
     cycle_assert_eq('Completed', $poRepo->getPurchaseOrder($mainId, $poRefno)['order']['status'] ?? null, 'the purchase order completes once everything is received');
     cycle_assert_eq('Completed', $prRepo->getPurchaseRequest($mainId, $prRefno)['request']['cycle_status'] ?? null, 'the request reports the cycle complete');
@@ -314,13 +319,14 @@ try {
     // Still a short delivery on its own, so it needs the same reason as before.
     $rereceived = $rrRepo->finalizeReceivingStock(
         $mainId,
+        $userId,
         $firstRrRefno,
         'Delivered',
         false,
         'Partial delivery — remaining quantity to follow'
     );
     cycle_assert_eq('Delivered', $rereceived['record']['status'] ?? null, 'an Unposted receiving report can be received again');
-    $rereceivedSecond = $rrRepo->finalizeReceivingStock($mainId, $secondRrRefno);
+    $rereceivedSecond = $rrRepo->finalizeReceivingStock($mainId, $userId, $secondRrRefno);
     cycle_assert_eq('Delivered', $rereceivedSecond['record']['status'] ?? null, 'the second receiving report can be received again');
     cycle_assert_eq('Completed', $poRepo->getPurchaseOrder($mainId, $poRefno)['order']['status'] ?? null, 'the purchase order completes again');
 
@@ -422,7 +428,7 @@ try {
         'qty' => 5,
         'unit_cost' => 40,
     ]);
-    $rrRepo->finalizeReceivingStock($mainId, $binRrRefno);
+    $rrRepo->finalizeReceivingStock($mainId, $userId, $binRrRefno);
 
     $prRepo->unpostPurchaseRequest($mainId, $userId, $binPrRefno, 'Ordered the wrong part');
 
