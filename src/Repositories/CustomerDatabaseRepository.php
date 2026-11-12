@@ -164,20 +164,19 @@ SQL);
         if ((bool) ($row['do_not_call'] ?? false)) {
             $identifiers[] = 'Do Not Call';
         }
-        if ($identifiers !== []) {
+
+        if ($isProspect) {
+            $identifiers[] = strtolower(trim((string) ($row['verification'] ?? ''))) === 'verified'
+                ? 'Verified Prospective'
+                : 'Unverified Prospective';
             return $identifiers;
         }
 
-        if ($isProspect) {
-            return [strtolower(trim((string) ($row['verification'] ?? ''))) === 'verified'
-                ? 'Verified Prospective'
-                : 'Unverified Prospective'];
-        }
-
-        return [self::isNewCustomerFromFirstPurchase(
+        $identifiers[] = self::isNewCustomerFromFirstPurchase(
             $row['first_purchase_date'] ?? null,
             $row['as_of_date'] ?? null
-        ) ? 'New Customer' : 'Existing Customer'];
+        ) ? 'New Customer' : 'Existing Customer';
+        return $identifiers;
     }
 
     public static function isNewCustomerFromFirstPurchase(?string $firstPurchaseDate, ?string $asOfDate = null): bool
