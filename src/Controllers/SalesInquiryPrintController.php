@@ -18,26 +18,18 @@ final class SalesInquiryPrintController
         [$mainId] = $this->context($body);
         $ref = trim((string) ($params['inquiryRefno'] ?? ''));
         if ($ref === '') throw new HttpException(422, 'inquiryRefno is required');
-        $pdo = $this->db->pdo();
-        $pdo->beginTransaction();
-        try {
-            $check = $pdo->prepare('SELECT COALESCE(IsCancel, 0) AS is_cancelled FROM tblinquiry WHERE lmain_id = :main_id AND lrefno = :ref FOR UPDATE');
+        $stmt = $this->db->pdo()->prepare('UPDATE tblinquiry SET lconfirmed_at = COALESCE(lconfirmed_at, NOW()) WHERE lmain_id = :main_id AND lrefno = :ref AND COALESCE(IsCancel, 0) = 0');
+        $stmt->execute(['main_id' => $mainId, 'ref' => $ref]);
+        if ($stmt->rowCount() === 0) {
+            $check = $this->db->pdo()->prepare('SELECT lconfirmed_at, COALESCE(IsCancel, 0) AS is_cancelled FROM tblinquiry WHERE lmain_id = :main_id AND lrefno = :ref');
             $check->execute(['main_id' => $mainId, 'ref' => $ref]);
             $existing = $check->fetch(PDO::FETCH_ASSOC);
             if ($existing === false) throw new HttpException(404, 'Sales inquiry not found');
             if ((int) $existing['is_cancelled'] > 0) throw new HttpException(409, 'A cancelled inquiry cannot be confirmed');
-
-            $insert = $pdo->prepare('INSERT IGNORE INTO sales_inquiry_confirmations (main_id, inquiry_refno, confirmed_at) VALUES (:main_id, :ref, NOW())');
-            $insert->execute(['main_id' => $mainId, 'ref' => $ref]);
-            $read = $pdo->prepare('SELECT confirmed_at FROM sales_inquiry_confirmations WHERE main_id = :main_id AND inquiry_refno = :ref');
-            $read->execute(['main_id' => $mainId, 'ref' => $ref]);
-            $confirmedAt = (string) $read->fetchColumn();
-            $pdo->commit();
-            return ['confirmed' => true, 'confirmed_at' => $confirmedAt];
-        } catch (\Throwable $error) {
-            if ($pdo->inTransaction()) $pdo->rollBack();
-            throw $error;
         }
+        $read = $this->db->pdo()->prepare("SELECT DATE_FORMAT(lconfirmed_at, '%Y-%m-%d %H:%i:%s') FROM tblinquiry WHERE lmain_id = :main_id AND lrefno = :ref");
+        $read->execute(['main_id' => $mainId, 'ref' => $ref]);
+        return ['confirmed' => true, 'confirmed_at' => (string) $read->fetchColumn()];
     }
 
     public function printStatus(array $params, array $query, array $body): array
