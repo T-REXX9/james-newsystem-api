@@ -46,7 +46,6 @@ use App\Controllers\SalesReturnController;
 use App\Controllers\SalesReportController;
 use App\Controllers\SalesReturnReportController;
 use App\Controllers\SalesInquiryController;
-use App\Controllers\SalesInquiryPrintController;
 use App\Controllers\SalesDocumentDateController;
 use App\Controllers\SalesOrderController;
 use App\Controllers\StockMovementController;
@@ -224,7 +223,6 @@ require __DIR__ . '/Controllers/SalesReturnController.php';
 require __DIR__ . '/Controllers/SalesReportController.php';
 require __DIR__ . '/Controllers/SalesReturnReportController.php';
 require __DIR__ . '/Controllers/SalesInquiryController.php';
-require __DIR__ . '/Controllers/SalesInquiryPrintController.php';
 require __DIR__ . '/Controllers/SalesDocumentDateController.php';
 require __DIR__ . '/Controllers/SalesOrderController.php';
 require __DIR__ . '/Controllers/StockMovementController.php';
@@ -381,7 +379,6 @@ function app_router(): Router
     $salesReturnReportController = new SalesReturnReportController(new App\Repositories\SalesReturnReportRepository($db));
     $salesInquiryRepository = new App\Repositories\SalesInquiryRepository($db);
     $salesInquiryController = new SalesInquiryController($salesInquiryRepository);
-    $salesInquiryPrintController = new SalesInquiryPrintController($db);
     $salesDocumentDateController = new SalesDocumentDateController($db);
     $salesOrderController = new SalesOrderController(new App\Repositories\SalesOrderRepository($db));
     $stockMovementController = new StockMovementController(new App\Repositories\StockMovementRepository($db));
@@ -1246,13 +1243,6 @@ function app_router(): Router
     $router->post('/api/v1/sales-returns/{refno}/actions/unpost', $requireActionAuth([$salesReturnController, 'unpostAction'], 'Sales Return', 'unpost'));
     $router->get('/api/v1/sales-inquiries', $requireViewAuth([$salesInquiryController, 'list'], 'Sales Inquiry'));
     $router->get('/api/v1/sales-inquiries/{inquiryRefno}', $requireViewAuth([$salesInquiryController, 'show'], 'Sales Inquiry'));
-    $router->get('/api/v1/sales-inquiries/{inquiryRefno}/print-status', $requireViewAuth([$salesInquiryPrintController, 'printStatus'], 'Sales Inquiry'));
-    // Confirmation only writes the confirmation timestamp, so all Sales Inquiry viewers may auto-confirm on exit.
-    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/confirm', $requireViewAuth([$salesInquiryPrintController, 'confirmInquiry'], 'Sales Inquiry'));
-    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/print', $requireViewAuth([$salesInquiryPrintController, 'recordPrint'], 'Sales Inquiry'));
-    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/print-request', $requireViewAuth([$salesInquiryPrintController, 'requestReprint'], 'Sales Inquiry'));
-    $router->get('/api/v1/sales-inquiry-print-requests', $requireMasterUser([$salesInquiryPrintController, 'listRequests']));
-    $router->post('/api/v1/sales-inquiry-print-requests/{requestId}/review', $requireMasterUser([$salesInquiryPrintController, 'reviewRequest']));
     $router->post('/api/v1/sales-inquiries', $requireSalesInquiryWriteAuth([$salesInquiryController, 'create'], 'add'));
     $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', $requireSalesInquiryWriteAuth([$salesInquiryController, 'update'], 'edit'));
     $router->post('/api/v1/sales-documents/cascade-date', $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($salesDocumentDateController, $permissionMiddleware, $db): array {

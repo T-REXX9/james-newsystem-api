@@ -67,14 +67,11 @@ $pdo->exec('CREATE TABLE tblvip_document_discount (
     lcustomerid TEXT, lsales_date TEXT, lapplied INTEGER DEFAULT 0, ltier TEXT DEFAULT \'regular\',
     lpercentage REAL DEFAULT 0, ldiscount_amount REAL DEFAULT 0, ltotal_to_pay REAL DEFAULT 0
 )');
-$pdo->exec('CREATE TABLE tblinventory_item (lsession TEXT, lmain_id INTEGER)');
-$pdo->exec('CREATE TABLE tblinventory_logs (lid INTEGER PRIMARY KEY AUTOINCREMENT, linvent_id TEXT, lin REAL, lout REAL, lrefno TEXT, ltransaction_type TEXT)');
+$pdo->exec('CREATE TABLE tblinventory_logs (lid INTEGER PRIMARY KEY AUTOINCREMENT, lrefno TEXT, ltransaction_type TEXT)');
 
 // Seed test data
 $pdo->exec("INSERT INTO tblpatient VALUES (1, 1, 'cust-1', 'Jane', 'Doe', 'Acme Corp', '123 Main St', 'Standard', '10000', 'NET30', '12', 'Metro', 'Regular', '', 0, 0)");
 $pdo->exec("INSERT INTO tblaccount VALUES (12, 'Alice', 'Agent', 1)");
-$pdo->exec("INSERT INTO tblinventory_item VALUES ('item-1', 1)");
-$pdo->exec("INSERT INTO tblinventory_logs (linvent_id, lin, lout) VALUES ('item-1', 10, 0)");
 
 $reflection = new ReflectionClass($db);
 $property = $reflection->getProperty('pdo');
@@ -175,28 +172,6 @@ $soFromInquiryFetched = $soRepo->getSalesOrder(1, $soRefno2);
 test_expect(($soFromInquiryFetched['order']['send_by'] ?? null) === 'Fedex Express', 'SO gets send_by from inquiry on creation');
 test_expect(($soFromInquiryFetched['order']['po_number'] ?? null) === 'PO-SI-001', 'SO gets po_number from inquiry');
 test_expect(($soFromInquiryFetched['order']['remarks'] ?? null) === 'Inquiry remark', 'SO gets remarks from inquiry');
-
-echo "\nTest 6: Insufficient stock must block inquiry conversion\n";
-$overstockInquiry = $siRepo->createInquiry(1, 12, [
-    'contact_id' => 'cust-1',
-    'sales_date' => '2026-09-28',
-    'status' => 'Submitted',
-    'items' => [[
-        'item_id' => 'item-1',
-        'item_refno' => 'item-1',
-        'description' => 'Overstock item',
-        'qty' => 11,
-        'unit_price' => 100,
-        'approved' => 1,
-    ]],
-]);
-$blockedForInsufficientStock = false;
-try {
-    $siRepo->convertToSalesOrder(1, 12, (string) $overstockInquiry['inquiry_refno']);
-} catch (RuntimeException $exception) {
-    $blockedForInsufficientStock = str_contains($exception->getMessage(), 'Insufficient stock');
-}
-test_expect($blockedForInsufficientStock, 'Conversion is rejected when requested quantity exceeds current stock');
 
 // Now update the inquiry's send_by and sync back to SO
 $inquiryUpdated = $siRepo->updateInquiry(1, $inquiryRefno, [

@@ -103,7 +103,6 @@ SELECT
     COALESCE(iq.lrefno, '') AS inquiry_refno,
     COALESCE(iq.ldate, '') AS sales_date,
     COALESCE(iq.ltime, '') AS sales_time,
-    COALESCE(DATE_FORMAT(iq.lconfirmed_at, '%Y-%m-%d %H:%i:%s'), '') AS confirmed_at,
     COALESCE(iq.lcustomerid, '') AS contact_id,
     COALESCE(iq.lcompany, '') AS customer_company,
     '' AS sales_person,
@@ -255,7 +254,6 @@ SELECT
     COALESCE(iq.lrefno, '') AS inquiry_refno,
     COALESCE(iq.ldate, '') AS sales_date,
     COALESCE(iq.ltime, '') AS sales_time,
-    COALESCE(DATE_FORMAT(iq.lconfirmed_at, '%Y-%m-%d %H:%i:%s'), '') AS confirmed_at,
     COALESCE(iq.lcustomerid, '') AS contact_id,
     COALESCE(iq.lcompany, '') AS customer_company,
     '' AS sales_person,
@@ -890,8 +888,6 @@ SQL;
             throw new RuntimeException('Inquiry has no approved items to convert');
         }
 
-        $this->assertApprovedItemsHaveSufficientStock($mainId, $approvedItems);
-
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
@@ -1044,68 +1040,6 @@ SQL;
         }
 
         return $finalConverted;
-    }
-
-    /**
-     * @param array<int, mixed> $items
-     */
-    private function assertApprovedItemsHaveSufficientStock(int $mainId, array $items): void
-    {
-        $requiredByItem = [];
-        foreach ($items as $item) {
-            if (!is_array($item) || strcasecmp(trim((string) ($item['remark'] ?? '')), 'NotListed') === 0) {
-                continue;
-            }
-            $itemId = trim((string) ($item['item_id'] ?? ''));
-            if ($itemId === '') {
-                $itemId = trim((string) ($item['item_refno'] ?? ''));
-            }
-            if ($itemId === '') {
-                throw new RuntimeException('Insufficient stock: an approved inventory item has no product reference. Transfer stock before generating the sales order.');
-            }
-            $requiredByItem[$itemId] = ($requiredByItem[$itemId] ?? 0.0) + max(0.0, (float) ($item['qty'] ?? 0));
-        }
-        if ($requiredByItem === []) {
-            return;
-        }
-
-        $placeholders = [];
-        $params = ['main_id' => $mainId];
-        foreach (array_keys($requiredByItem) as $index => $itemId) {
-            $key = 'item_' . $index;
-            $placeholders[] = ':' . $key;
-            $params[$key] = $itemId;
-        }
-        $stmt = $this->db->pdo()->prepare(
-            'SELECT CAST(itm.lsession AS CHAR) AS item_id,
-                    CASE WHEN COALESCE(SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0)), 0) > 0
-                         THEN COALESCE(SUM(COALESCE(lg.lin, 0) - COALESCE(lg.lout, 0)), 0)
-                         ELSE 0 END AS available_stock
-             FROM tblinventory_item itm
-             LEFT JOIN tblinventory_logs lg ON lg.linvent_id = itm.lsession
-             WHERE itm.lmain_id = :main_id
-               AND itm.lsession IN (' . implode(', ', $placeholders) . ')
-             GROUP BY itm.lsession'
-        );
-        $stmt->execute($params);
-        $availableByItem = [];
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $availableByItem[(string) $row['item_id']] = (float) $row['available_stock'];
-        }
-
-        $shortages = [];
-        foreach ($requiredByItem as $itemId => $required) {
-            $available = $availableByItem[$itemId] ?? 0.0;
-            if ($required > $available) {
-                $shortages[] = sprintf('%s (available %s, requested %s)', $itemId, $available, $required);
-            }
-        }
-        if ($shortages !== []) {
-            throw new RuntimeException(
-                'Insufficient stock for ' . implode('; ', $shortages)
-                . '. Transfer stock to the required warehouse before generating the sales order.'
-            );
-        }
     }
 
     private function findLinkedSalesRefno(int $mainId, string $inquiryRefno): string
