@@ -17,13 +17,14 @@ final class VipDocumentDiscountRepository
     public function ensureTable(): void
     {
         $pdo = $this->db->pdo();
-        $exists = $pdo->prepare(
-            'SELECT 1
-             FROM information_schema.TABLES
-             WHERE TABLE_SCHEMA = DATABASE()
-               AND TABLE_NAME = :table_name
-             LIMIT 1'
-        );
+        $tableExistsSql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite'
+            ? "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name LIMIT 1"
+            : 'SELECT 1
+               FROM information_schema.TABLES
+               WHERE TABLE_SCHEMA = DATABASE()
+                 AND TABLE_NAME = :table_name
+               LIMIT 1';
+        $exists = $pdo->prepare($tableExistsSql);
         $exists->execute(['table_name' => 'tblvip_document_discount']);
         if ($exists->fetchColumn()) {
             return;
