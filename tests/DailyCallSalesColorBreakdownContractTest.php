@@ -62,6 +62,12 @@ $checks = [
         && str_contains($method, "THEN 'green'")
         && strpos($method, "THEN 'red'") < strpos($method, "THEN 'green'")
         && str_contains($method, 'CASE WHEN account.lid IS NULL THEN NULL'),
+    'blacklisted/rejected totals are tenant-scoped and split into existing, verified prospective, and unverified prospective customers' => str_contains($method, "'blocked_customers' => [")
+        && str_contains($method, "'existing_client' => (int) (\$blockedBreakdown['existing_client'] ?? 0)")
+        && str_contains($method, "'verified_prospective' => (int) (\$blockedBreakdown['verified_prospective'] ?? 0)")
+        && str_contains($method, "'unverified_prospective' => (int) (\$blockedBreakdown['unverified_prospective'] ?? 0)")
+        && str_contains($method, "p.lmain_id = :main_id")
+        && str_contains($method, "LOWER(TRIM(COALESCE(p.ldebt_type, ''))) = 'bad'"),
     'all color buckets and missing posted-sales customers remain visible in group totals' => str_contains($method, "'green', 'yellow', 'purple', 'white', 'red'")
         && str_contains($method, 'missing_sales_customers AS')
         && str_contains($method, 'COALESCE(SUM(sales), 0) AS sales'),

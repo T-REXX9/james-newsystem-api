@@ -416,6 +416,22 @@ SQL);
             }
         }
 
+        $blockedBreakdownStmt = $this->db->pdo()->prepare(<<<'SQL'
+SELECT COUNT(*) AS total,
+       SUM(CASE WHEN (LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' OR COALESCE(p.lstatus, 1) = 3)
+                     AND LOWER(TRIM(COALESCE(p.lverification, ''))) = 'verified' THEN 1 ELSE 0 END) AS verified_prospective,
+       SUM(CASE WHEN (LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' OR COALESCE(p.lstatus, 1) = 3)
+                     AND LOWER(TRIM(COALESCE(p.lverification, ''))) <> 'verified' THEN 1 ELSE 0 END) AS unverified_prospective,
+       SUM(CASE WHEN NOT (LOWER(COALESCE(p.lprofile_type, '')) LIKE '%prospective%' OR COALESCE(p.lstatus, 1) = 3)
+                THEN 1 ELSE 0 END) AS existing_client
+FROM tblpatient p
+WHERE p.lmain_id = :main_id
+  AND COALESCE(p.ldeleted, 0) = 0
+  AND (COALESCE(p.lstatus, 1) = 4 OR LOWER(TRIM(COALESCE(p.ldebt_type, ''))) = 'bad')
+SQL);
+        $blockedBreakdownStmt->execute(['main_id' => $mainId]);
+        $blockedBreakdown = $blockedBreakdownStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
         $postedSalesCtes = PostedSalesDocumentSql::currentMonthCustomerSalesCtes();
         $blankCustomerSalesCte = PostedSalesDocumentSql::currentMonthBlankCustomerSalesCte();
         $sql = <<<SQL
@@ -605,6 +621,12 @@ SQL;
         return [
             'month' => date('Y-m'),
             'company_total' => $companyTotal,
+            'blocked_customers' => [
+                'total' => (int) ($blockedBreakdown['total'] ?? 0),
+                'existing_client' => (int) ($blockedBreakdown['existing_client'] ?? 0),
+                'verified_prospective' => (int) ($blockedBreakdown['verified_prospective'] ?? 0),
+                'unverified_prospective' => (int) ($blockedBreakdown['unverified_prospective'] ?? 0),
+            ],
             'agents' => $agents,
             'unassigned' => $unassigned,
         ];
