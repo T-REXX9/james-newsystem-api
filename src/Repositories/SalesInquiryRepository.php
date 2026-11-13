@@ -9,7 +9,6 @@ use App\Repositories\NotificationsRepository;
 use App\Support\AuditTrailWriter;
 use App\Support\SalesDocumentDateCascade;
 use App\Support\Exceptions\HttpException;
-use App\Support\SalesInquiryEditGuard;
 use PDO;
 use RuntimeException;
 
@@ -669,7 +668,6 @@ SQL;
         if ($existing === null) {
             return null;
         }
-        $this->assertConfirmedInquiryEditAllowed($mainId, $inquiryRefno, $actorId, $isMasterUser);
         $this->assertInquiryEditable($mainId, $inquiryRefno);
 
         $contactId = (string) ($payload['contact_id'] ?? $existing['contact_id'] ?? '');
@@ -817,7 +815,6 @@ SQL;
 
     public function cancelInquiry(int $mainId, string $inquiryRefno, int $actorId = 0, bool $isMasterUser = false): bool
     {
-        $this->assertConfirmedInquiryEditAllowed($mainId, $inquiryRefno, $actorId, $isMasterUser);
         $linkedSalesOrder = $this->getLinkedSalesOrderRow($this->db->pdo(), $mainId, $inquiryRefno);
         if ($linkedSalesOrder !== null && !$this->canSyncLinkedSalesOrder($linkedSalesOrder)) {
             return false;
@@ -872,7 +869,6 @@ SQL;
         if ($inquiry === null) {
             throw new RuntimeException('Sales inquiry not found');
         }
-        $this->assertConfirmedInquiryEditAllowed($mainId, $inquiryRefno, $actorId, $isMasterUser);
         $this->assertInquiryEditable($mainId, $inquiryRefno);
 
         $customer = $this->getCustomerSnapshot($mainId, (string) ($inquiry['contact_id'] ?? ''));
@@ -918,7 +914,6 @@ SQL;
         if ($existing === null || !$this->itemBelongsToMain($mainId, $itemId)) {
             return null;
         }
-        $this->assertConfirmedInquiryEditAllowed($mainId, (string) ($existing['inquiry_refno'] ?? ''), $actorId, $isMasterUser);
         $this->assertInquiryEditable($mainId, (string) ($existing['inquiry_refno'] ?? ''));
 
         $fields = [];
@@ -1002,7 +997,6 @@ SQL;
         if ($existing === null || !$this->itemBelongsToMain($mainId, $itemId)) {
             return false;
         }
-        $this->assertConfirmedInquiryEditAllowed($mainId, (string) ($existing['inquiry_refno'] ?? ''), $actorId, $isMasterUser);
         $this->assertInquiryEditable($mainId, (string) ($existing['inquiry_refno'] ?? ''));
 
         $pdo = $this->db->pdo();
@@ -1418,11 +1412,6 @@ SQL;
         }
 
         return $this->canSyncLinkedSalesOrder($salesOrder);
-    }
-
-    private function assertConfirmedInquiryEditAllowed(int $mainId, string $inquiryRefno, int $actorId, bool $isMasterUser): void
-    {
-        SalesInquiryEditGuard::assertCanEdit($this->db->pdo(), $mainId, $inquiryRefno, $actorId, $isMasterUser);
     }
 
     private function assertInquiryEditable(int $mainId, string $inquiryRefno): void

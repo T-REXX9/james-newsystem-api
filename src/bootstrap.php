@@ -106,8 +106,6 @@ require __DIR__ . '/Support/VipStanding.php';
 require __DIR__ . '/Support/SalesInquiryUnitPriceGate.php';
 require __DIR__ . '/Support/ActionPermissionPolicy.php';
 require __DIR__ . '/Support/DocumentDatePolicy.php';
-require __DIR__ . '/Support/SalesInquiryEditPolicy.php';
-require __DIR__ . '/Support/SalesInquiryEditGuard.php';
 require __DIR__ . '/Support/SalesDocumentDateCascade.php';
 require __DIR__ . '/Config.php';
 require __DIR__ . '/Database.php';
@@ -1260,17 +1258,8 @@ function app_router(): Router
     $router->post('/api/v1/sales-returns/{refno}/actions/unpost', $requireActionAuth([$salesReturnController, 'unpostAction'], 'Sales Return', 'unpost'));
     $router->get('/api/v1/sales-inquiries', $requireViewAuth([$salesInquiryController, 'list'], 'Sales Inquiry'));
     $router->get('/api/v1/sales-inquiries/{inquiryRefno}', $requireViewAuth([$salesInquiryController, 'show'], 'Sales Inquiry'));
-    $router->get('/api/v1/sales-inquiries/{inquiryRefno}/edit-access', $requireViewAuth([$salesInquiryPrintController, 'editAccessStatus'], 'Sales Inquiry'));
-    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/edit-request', $requireSalesInquiryWriteAuth([$salesInquiryPrintController, 'requestEditAccess'], 'edit'));
-    $router->get('/api/v1/sales-inquiries/{inquiryRefno}/print-status', $requireViewAuth([$salesInquiryPrintController, 'printStatus'], 'Sales Inquiry'));
-    // Confirmation locks later content edits, so require the caller's verified add/edit action.
+    // Confirmation records the inquiry timestamp after the caller's verified add/edit action.
     $router->post('/api/v1/sales-inquiries/{inquiryRefno}/confirm', $requireSalesInquiryConfirmAuth([$salesInquiryPrintController, 'confirmInquiry']));
-    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/print', $requireViewAuth([$salesInquiryPrintController, 'recordPrint'], 'Sales Inquiry'));
-    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/print-request', $requireViewAuth([$salesInquiryPrintController, 'requestReprint'], 'Sales Inquiry'));
-    $router->get('/api/v1/sales-inquiry-print-requests', $requireMasterUser([$salesInquiryPrintController, 'listRequests']));
-    $router->post('/api/v1/sales-inquiry-print-requests/{requestId}/review', $requireMasterUser([$salesInquiryPrintController, 'reviewRequest']));
-    $router->get('/api/v1/sales-inquiry-edit-requests', $requireMasterUser([$salesInquiryPrintController, 'listEditRequests']));
-    $router->post('/api/v1/sales-inquiry-edit-requests/{requestId}/review', $requireMasterUser([$salesInquiryPrintController, 'reviewEditRequest']));
     $router->post('/api/v1/sales-inquiries', $requireSalesInquiryWriteAuth([$salesInquiryController, 'create'], 'add'));
     $router->post('/api/v1/sales-inquiries/{inquiryRefno}/replace', $requireSalesInquiryWriteAuth([$salesInquiryController, 'replace'], 'add'));
     $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', $requireSalesInquiryWriteAuth([$salesInquiryController, 'update'], 'edit'));

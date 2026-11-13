@@ -7,7 +7,6 @@ require_once __DIR__ . '/../src/bootstrap.php';
 use App\Config;
 use App\Database;
 use App\Repositories\SalesInquiryRepository;
-use App\Support\SalesInquiryEditGuard;
 
 function current_agent_expect(bool $condition, string $message): void
 {
@@ -29,7 +28,6 @@ $pdo->exec('CREATE TABLE tblinquiry (
     ltransaction_status TEXT, lvat_type TEXT, lvat_percent REAL
 )');
 $pdo->exec('CREATE TABLE sales_inquiry_confirmations (main_id INTEGER, inquiry_refno TEXT, confirmed_at TEXT, PRIMARY KEY (main_id, inquiry_refno))');
-$pdo->exec("CREATE TABLE sales_inquiry_edit_requests (id INTEGER PRIMARY KEY, main_id INTEGER, inquiry_refno TEXT, requested_by INTEGER, status TEXT)");
 $pdo->exec('CREATE TABLE tblpatient (lid INTEGER PRIMARY KEY, lmain_id INTEGER, lsessionid TEXT, lsales_person TEXT, ldeleted INTEGER)');
 $pdo->exec('CREATE TABLE tblaccount (lid INTEGER PRIMARY KEY, lfname TEXT, llname TEXT, lstatus INTEGER)');
 $pdo->exec('CREATE TABLE tbltransaction (lid INTEGER PRIMARY KEY, lmain_id INTEGER, lrefno TEXT, luser INTEGER, lcancel INTEGER, linquiry_refno TEXT, invoice_refno TEXT, invoice_no TEXT, ldr_refno TEXT, ldr_no TEXT)');
@@ -52,22 +50,6 @@ $property = (new ReflectionClass($db))->getProperty('pdo');
 $property->setValue($db, $pdo);
 $repository = new SalesInquiryRepository($db);
 
-$assertEditDenied = static function (int $actorId) use ($pdo): bool {
-    try {
-        SalesInquiryEditGuard::assertCanEdit($pdo, 7, 'ref-1', $actorId, false);
-        return false;
-    } catch (\App\Support\Exceptions\HttpException $exception) {
-        return $exception->statusCode() === 403;
-    }
-};
-current_agent_expect($assertEditDenied(20), 'staff without an inquiry-specific approval cannot edit a confirmed inquiry');
-$pdo->exec("INSERT INTO sales_inquiry_edit_requests VALUES (1, 7, 'ref-1', 20, 'approved')");
-SalesInquiryEditGuard::assertCanEdit($pdo, 7, 'ref-1', 20, false);
-current_agent_expect(true, 'only the staff member named in the approved request receives edit access');
-current_agent_expect($assertEditDenied(21), 'another staff member cannot use someone else’s approval');
-SalesInquiryEditGuard::assertCanEdit($pdo, 7, 'ref-1', 20, true);
-current_agent_expect(true, 'Master User can edit a confirmed inquiry without a staff approval');
-
 $detail = $repository->getInquiry(7, 'ref-1');
 current_agent_expect(($detail['sales_person'] ?? null) === 'Jane Agent', 'detail returns the current active assigned agent, not the saved inquiry name');
 current_agent_expect(($detail['sales_person_id'] ?? null) === '20', 'detail returns the current assigned agent ID');
@@ -85,13 +67,5 @@ $submitted = $repository->submitInquiryForConversion(7, 'ref-1', 20);
 current_agent_expect(($submitted['status'] ?? null) === 'Submitted', 'confirmed draft can be submitted through the authorized conversion workflow');
 current_agent_expect(($submitted['customer_company'] ?? null) === 'Example', 'workflow submission preserves inquiry content');
 current_agent_expect(($submitted['confirmed_at'] ?? null) === '2026-11-12 18:00:00', 'workflow submission preserves confirmation state');
-
-$editDenied = false;
-try {
-    $repository->updateInquiry(7, 'ref-1', ['remarks' => 'Unauthorized edit'], 21, false);
-} catch (\App\Support\Exceptions\HttpException $exception) {
-    $editDenied = $exception->statusCode() === 403;
-}
-current_agent_expect($editDenied, 'confirmed inquiry remains protected from unauthorized content edits after workflow submission');
 
 echo "PASS: Sales Inquiry detail, list, and search use the active customer's assigned Sales Agent\n";
