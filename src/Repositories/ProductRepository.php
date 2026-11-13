@@ -644,7 +644,7 @@ SQL;
             'laddedby' => $userId > 0 ? $userId : null,
         ]);
 
-            $this->insertLegacyConfiguredPrices($mainId, $session, $payload);
+            $this->insertVipPrices($session, $payload);
 
             $suggestedItemId = (int) ($payload['suggested_inquiry_item_id'] ?? 0);
             $suggestedPartNo = $this->strVal($payload['suggested_part_no'] ?? '');
@@ -1408,32 +1408,22 @@ SQL;
         }
     }
 
-    /** Insert configured prices with the same columns and row shape as legacy new_add_inventory(). */
-    private function insertLegacyConfiguredPrices(int $mainId, string $productSession, array $payload): void
+    /** Store the three supported VIP prices for a newly created catalog product. */
+    private function insertVipPrices(string $productSession, array $payload): void
     {
-        $groups = $this->db->pdo()->prepare(
-            'SELECT lname FROM tblinv_pricegroup WHERE lmainid = :main_id ORDER BY lid ASC'
-        );
-        $groups->execute(['main_id' => $mainId]);
-        $amounts = is_array($payload['price_group_amounts'] ?? null) ? $payload['price_group_amounts'] : [];
-        if ($amounts === []) {
-            foreach ([
-                'price_aa' => 'AAA', 'price_bb' => 'ABB', 'price_cc' => 'ACC', 'price_dd' => 'ADD',
-                'price_baa' => 'BAA', 'price_bbb' => 'BBB', 'price_bcc' => 'BCC', 'price_bdd' => 'BDD',
-                'price_vip1' => 'VIP 1', 'price_vip2' => 'VIP2', 'price_vip3' => 'VIP3',
-            ] as $field => $name) {
-                if (array_key_exists($field, $payload)) $amounts[$name] = $payload[$field];
-            }
-        }
         $insert = $this->db->pdo()->prepare(
             'INSERT INTO tblinventory_price (linv_refno, lprice_name, lprice_amt) VALUES (:session, :name, :amount)'
         );
-        foreach ($groups->fetchAll(PDO::FETCH_COLUMN) as $groupName) {
-            $name = trim((string) $groupName);
-            if ($name !== '') {
-                $amount = (float) ($amounts[$name] ?? 0);
-                $insert->execute(['session' => $productSession, 'name' => $name, 'amount' => $amount]);
-            }
+        foreach ([
+            'price_vip1' => 'VIP 1',
+            'price_vip2' => 'VIP2',
+            'price_vip3' => 'VIP3',
+        ] as $field => $groupName) {
+            $insert->execute([
+                'session' => $productSession,
+                'name' => $groupName,
+                'amount' => (float) ($payload[$field] ?? 0),
+            ]);
         }
     }
 
