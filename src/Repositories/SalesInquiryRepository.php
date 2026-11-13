@@ -128,10 +128,10 @@ SELECT
     COALESCE(iq.lurgency_date, NULL) AS urgency_date,
     COALESCE(iq.lsubmitstat, 'Pending') AS status,
     COALESCE(iq.IsCancel, 0) AS is_cancelled,
-    COALESCE(iq.lreplacement_of_refno, '') AS replacement_of_refno,
-    COALESCE(iq.lreplaced_by_refno, '') AS replaced_by_refno,
-    COALESCE((SELECT child.linqno FROM tblinquiry child WHERE child.lmain_id = iq.lmain_id AND child.lrefno = iq.lreplaced_by_refno LIMIT 1), '') AS replaced_by_inquiry_no,
-    COALESCE((SELECT parent.linqno FROM tblinquiry parent WHERE parent.lmain_id = iq.lmain_id AND parent.lrefno = iq.lreplacement_of_refno LIMIT 1), '') AS replacement_of_inquiry_no,
+    COALESCE((SELECT link.replacement_refno FROM sales_inquiry_replacement_links link WHERE link.main_id = iq.lmain_id AND link.source_refno = iq.lrefno LIMIT 1), '') AS replaced_by_refno,
+    COALESCE((SELECT link.source_refno FROM sales_inquiry_replacement_links link WHERE link.main_id = iq.lmain_id AND link.replacement_refno = iq.lrefno LIMIT 1), '') AS replacement_of_refno,
+    COALESCE((SELECT child.linqno FROM sales_inquiry_replacement_links link JOIN tblinquiry child ON child.lmain_id = link.main_id AND child.lrefno = link.replacement_refno WHERE link.main_id = iq.lmain_id AND link.source_refno = iq.lrefno LIMIT 1), '') AS replaced_by_inquiry_no,
+    COALESCE((SELECT parent.linqno FROM sales_inquiry_replacement_links link JOIN tblinquiry parent ON parent.lmain_id = link.main_id AND parent.lrefno = link.source_refno WHERE link.main_id = iq.lmain_id AND link.replacement_refno = iq.lrefno LIMIT 1), '') AS replacement_of_inquiry_no,
     COALESCE(iq.lso_no, '') AS so_no,
     COALESCE(iq.lso_refno, '') AS so_refno,
     (SELECT COALESCE(t.invoice_no, '') FROM tbltransaction t WHERE t.lrefno = iq.lso_refno LIMIT 1) AS invoice_no,
@@ -300,10 +300,10 @@ SELECT
     COALESCE(iq.lurgency_date, NULL) AS urgency_date,
     COALESCE(iq.lsubmitstat, 'Pending') AS status,
     COALESCE(iq.IsCancel, 0) AS is_cancelled,
-    COALESCE(iq.lreplacement_of_refno, '') AS replacement_of_refno,
-    COALESCE(iq.lreplaced_by_refno, '') AS replaced_by_refno,
-    COALESCE((SELECT child.linqno FROM tblinquiry child WHERE child.lmain_id = iq.lmain_id AND child.lrefno = iq.lreplaced_by_refno LIMIT 1), '') AS replaced_by_inquiry_no,
-    COALESCE((SELECT parent.linqno FROM tblinquiry parent WHERE parent.lmain_id = iq.lmain_id AND parent.lrefno = iq.lreplacement_of_refno LIMIT 1), '') AS replacement_of_inquiry_no,
+    COALESCE((SELECT link.replacement_refno FROM sales_inquiry_replacement_links link WHERE link.main_id = iq.lmain_id AND link.source_refno = iq.lrefno LIMIT 1), '') AS replaced_by_refno,
+    COALESCE((SELECT link.source_refno FROM sales_inquiry_replacement_links link WHERE link.main_id = iq.lmain_id AND link.replacement_refno = iq.lrefno LIMIT 1), '') AS replacement_of_refno,
+    COALESCE((SELECT child.linqno FROM sales_inquiry_replacement_links link JOIN tblinquiry child ON child.lmain_id = link.main_id AND child.lrefno = link.replacement_refno WHERE link.main_id = iq.lmain_id AND link.source_refno = iq.lrefno LIMIT 1), '') AS replaced_by_inquiry_no,
+    COALESCE((SELECT parent.linqno FROM sales_inquiry_replacement_links link JOIN tblinquiry parent ON parent.lmain_id = link.main_id AND parent.lrefno = link.source_refno WHERE link.main_id = iq.lmain_id AND link.replacement_refno = iq.lrefno LIMIT 1), '') AS replacement_of_inquiry_no,
     COALESCE(iq.ltransaction_status, '') AS transaction_status,
     COALESCE(iq.lvat_type, '') AS vat_type,
     COALESCE(iq.lvat_percent, 0) AS vat_percent,
@@ -552,7 +552,9 @@ SQL;
             }
             if (trim((string) ($source['lso_refno'] ?? '')) !== '') throw new RuntimeException('An inquiry linked to a sales order cannot be replaced');
             if (trim((string) ($source['lcustomerid'] ?? '')) !== $customerId) throw new RuntimeException('Replacement must keep the same customer');
-            if (trim((string) ($source['lreplaced_by_refno'] ?? '')) !== '') throw new RuntimeException('This inquiry has already been replaced');
+            $existingLink = $pdo->prepare('SELECT replacement_refno FROM sales_inquiry_replacement_links WHERE main_id = :main_id AND source_refno = :source_ref LIMIT 1');
+            $existingLink->execute(['main_id' => $mainId, 'source_ref' => $sourceRefno]);
+            if ($existingLink->fetchColumn()) throw new RuntimeException('This inquiry has already been replaced');
             $confirmation = $pdo->prepare('SELECT 1 FROM sales_inquiry_confirmations WHERE main_id = :main_id AND inquiry_refno = :refno LIMIT 1');
             $confirmation->execute(['main_id' => $mainId, 'refno' => $sourceRefno]);
             if (!$confirmation->fetchColumn()) throw new RuntimeException('Only a confirmed inquiry can be replaced');
@@ -563,8 +565,8 @@ SQL;
             $salesTime = $this->normalizeTime((string) ($payload['sales_time'] ?? date('H:i:s')));
             $salesAttribution = $this->resolveCustomerSalesAttribution($customer);
             $insert = $pdo->prepare('INSERT INTO tblinquiry
-                (linqno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lcompany, lsalesperson, lsales_person_id, lsales_address, lterms, lterms_condition, lmy_refno, lyour_refno, lprice_group, lcredit_limit, lpromissory_note, lpo_no, lnote, lsource, lsubmitstat, IsCancel, ltransaction_status, lurgency, lurgency_date, lvat_type, lvat_percent, lcity, lshipped, lreplacement_of_refno)
-                VALUES (:no, :date, :time, :customer, :main_id, :user_id, :refno, :company, :salesperson, :salesperson_id, :address, :terms, :terms_condition, :my_ref, :your_ref, :price_group, :credit_limit, :promise, :po_no, :note, :source, :status, 0, "Unposted", :urgency, :urgency_date, :vat_type, :vat_percent, :city, :shipped, :replacement_of)');
+                (linqno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lcompany, lsalesperson, lsales_person_id, lsales_address, lterms, lterms_condition, lmy_refno, lyour_refno, lprice_group, lcredit_limit, lpromissory_note, lpo_no, lnote, lsource, lsubmitstat, IsCancel, ltransaction_status, lurgency, lurgency_date, lvat_type, lvat_percent, lcity, lshipped)
+                VALUES (:no, :date, :time, :customer, :main_id, :user_id, :refno, :company, :salesperson, :salesperson_id, :address, :terms, :terms_condition, :my_ref, :your_ref, :price_group, :credit_limit, :promise, :po_no, :note, :source, :status, 0, "Unposted", :urgency, :urgency_date, :vat_type, :vat_percent, :city, :shipped)');
             $insert->execute([
                 'no' => $inquiryNo, 'date' => $salesDate, 'time' => $salesTime, 'customer' => $customerId,
                 'main_id' => (string) $mainId, 'user_id' => (string) $userId, 'refno' => $inquiryRefno,
@@ -579,13 +581,11 @@ SQL;
                 'urgency_date' => $this->normalizeNullableDate((string) ($payload['urgency_date'] ?? '')),
                 'vat_type' => (string) ($customer['lvat_type'] ?? ''), 'vat_percent' => (float) ($customer['lvat_percent'] ?? 0),
                 'city' => (string) ($customer['lcity'] ?? ''), 'shipped' => (string) ($payload['send_by'] ?? ''),
-                'replacement_of' => $sourceRefno,
             ]);
             foreach ($items as $item) if (is_array($item)) $this->insertItem($pdo, $inquiryRefno, $inquiryNo, $salesDate, $item);
 
-            $link = $pdo->prepare('UPDATE tblinquiry SET lreplaced_by_refno = :new_ref WHERE lmain_id = :main_id AND lrefno = :source_ref AND COALESCE(IsCancel, 0) = 0 AND (lreplaced_by_refno IS NULL OR lreplaced_by_refno = "")');
-            $link->execute(['new_ref' => $inquiryRefno, 'main_id' => (string) $mainId, 'source_ref' => $sourceRefno]);
-            if ($link->rowCount() !== 1) throw new RuntimeException('Source inquiry changed; refresh and try again');
+            $link = $pdo->prepare('INSERT INTO sales_inquiry_replacement_links (main_id, source_refno, replacement_refno) VALUES (:main_id, :source_ref, :replacement_ref)');
+            $link->execute(['main_id' => $mainId, 'source_ref' => $sourceRefno, 'replacement_ref' => $inquiryRefno]);
             $pdo->prepare('INSERT INTO sales_inquiry_confirmations (main_id, inquiry_refno, confirmed_at) VALUES (:main_id, :refno, NOW())')->execute(['main_id' => $mainId, 'refno' => $inquiryRefno]);
             $this->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
             $replacementTotal = array_reduce($items, static fn(float $sum, array $item): float => $sum + ((float) ($item['qty'] ?? 0) * (float) ($item['unit_price'] ?? 0)), 0.0);
