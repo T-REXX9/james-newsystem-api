@@ -1272,6 +1272,7 @@ function app_router(): Router
     $router->get('/api/v1/sales-inquiry-edit-requests', $requireMasterUser([$salesInquiryPrintController, 'listEditRequests']));
     $router->post('/api/v1/sales-inquiry-edit-requests/{requestId}/review', $requireMasterUser([$salesInquiryPrintController, 'reviewEditRequest']));
     $router->post('/api/v1/sales-inquiries', $requireSalesInquiryWriteAuth([$salesInquiryController, 'create'], 'add'));
+    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/replace', $requireSalesInquiryWriteAuth([$salesInquiryController, 'replace'], 'add'));
     $router->patch('/api/v1/sales-inquiries/{inquiryRefno}', $requireSalesInquiryWriteAuth([$salesInquiryController, 'update'], 'edit'));
     $router->post('/api/v1/sales-documents/cascade-date', $requireBearerAuthWithClaims(static function (array $params = [], array $query = [], array $body = []) use ($salesDocumentDateController, $permissionMiddleware, $db): array {
         $claims = is_array($body['__auth_claims'] ?? null) ? $body['__auth_claims'] : [];

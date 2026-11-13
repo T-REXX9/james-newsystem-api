@@ -55,6 +55,10 @@ Minimal framework-free API to replace Supabase reads/writes with direct MySQL ac
      *(Required for Agent Sales Report message editing and Master User edit history.)*
    - `mysql -u root topnotch < migrations/071_add_daily_call_do_not_contact_reason.sql`
      *(Required to save and display the reason for a Do Not Call mark.)*
+   - `mysql -u root topnotch < migrations/073_sales_inquiry_confirmation_and_print_approval.sql`
+   - `mysql -u root topnotch < migrations/074_sales_inquiry_edit_approval.sql`
+   - `mysql -u root topnotch < migrations/075_sales_inquiry_replacement_links.sql`
+     *(Required for atomic Sales Inquiry replacement and its original/replacement link.)*
   - Apply `migrations/017_create_customer_requests.sql`,
     `migrations/019_add_procurement_recovery_columns.sql`, and
     `migrations/023_add_customer_product_soft_delete_columns.sql` to your configured

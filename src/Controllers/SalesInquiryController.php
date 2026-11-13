@@ -64,6 +64,21 @@ final class SalesInquiryController
         }
     }
 
+    public function replace(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $userId = (int) ($body['user_id'] ?? 0);
+        $sourceRefno = trim((string) ($params['inquiryRefno'] ?? ''));
+        if ($mainId <= 0 || $userId <= 0 || $sourceRefno === '') {
+            throw new HttpException(422, 'main_id, user_id and inquiryRefno are required');
+        }
+        try {
+            return $this->repo->replaceInquiry($mainId, $userId, $sourceRefno, $body);
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
+    }
+
     public function update(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($body['main_id'] ?? 0);

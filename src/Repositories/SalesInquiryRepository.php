@@ -128,6 +128,10 @@ SELECT
     COALESCE(iq.lurgency_date, NULL) AS urgency_date,
     COALESCE(iq.lsubmitstat, 'Pending') AS status,
     COALESCE(iq.IsCancel, 0) AS is_cancelled,
+    COALESCE(iq.lreplacement_of_refno, '') AS replacement_of_refno,
+    COALESCE(iq.lreplaced_by_refno, '') AS replaced_by_refno,
+    COALESCE((SELECT child.linqno FROM tblinquiry child WHERE child.lmain_id = iq.lmain_id AND child.lrefno = iq.lreplaced_by_refno LIMIT 1), '') AS replaced_by_inquiry_no,
+    COALESCE((SELECT parent.linqno FROM tblinquiry parent WHERE parent.lmain_id = iq.lmain_id AND parent.lrefno = iq.lreplacement_of_refno LIMIT 1), '') AS replacement_of_inquiry_no,
     COALESCE(iq.lso_no, '') AS so_no,
     COALESCE(iq.lso_refno, '') AS so_refno,
     (SELECT COALESCE(t.invoice_no, '') FROM tbltransaction t WHERE t.lrefno = iq.lso_refno LIMIT 1) AS invoice_no,
@@ -296,6 +300,10 @@ SELECT
     COALESCE(iq.lurgency_date, NULL) AS urgency_date,
     COALESCE(iq.lsubmitstat, 'Pending') AS status,
     COALESCE(iq.IsCancel, 0) AS is_cancelled,
+    COALESCE(iq.lreplacement_of_refno, '') AS replacement_of_refno,
+    COALESCE(iq.lreplaced_by_refno, '') AS replaced_by_refno,
+    COALESCE((SELECT child.linqno FROM tblinquiry child WHERE child.lmain_id = iq.lmain_id AND child.lrefno = iq.lreplaced_by_refno LIMIT 1), '') AS replaced_by_inquiry_no,
+    COALESCE((SELECT parent.linqno FROM tblinquiry parent WHERE parent.lmain_id = iq.lmain_id AND parent.lrefno = iq.lreplacement_of_refno LIMIT 1), '') AS replacement_of_inquiry_no,
     COALESCE(iq.ltransaction_status, '') AS transaction_status,
     COALESCE(iq.lvat_type, '') AS vat_type,
     COALESCE(iq.lvat_percent, 0) AS vat_percent,
@@ -515,6 +523,89 @@ SQL;
             }
             throw $e;
         }
+    }
+
+    /** Create a confirmed copy and link it to its source without cancelling the source. */
+    public function replaceInquiry(int $mainId, int $userId, string $sourceRefno, array $payload): array
+    {
+        $pdo = $this->db->pdo();
+        $customerId = trim((string) ($payload['contact_id'] ?? ''));
+        $customer = $this->getCustomerSnapshot($mainId, $customerId);
+        if ($customerId === '' || $customer === null) {
+            throw new RuntimeException('A valid customer is required');
+        }
+        $items = is_array($payload['items'] ?? null) ? $payload['items'] : [];
+        if ($items === []) throw new RuntimeException('At least one inquiry item is required');
+        $this->assertInvoiceItemLimit($customer, $items);
+        $vipRepository = new VipDocumentDiscountRepository($this->db);
+        $vipRepository->ensureTable();
+
+        $pdo->beginTransaction();
+        try {
+            $lockSuffix = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite' ? '' : ' FOR UPDATE';
+            $sourceStmt = $pdo->prepare('SELECT * FROM tblinquiry WHERE lmain_id = :main_id AND lrefno = :refno' . $lockSuffix);
+            $sourceStmt->execute(['main_id' => (string) $mainId, 'refno' => $sourceRefno]);
+            $source = $sourceStmt->fetch(PDO::FETCH_ASSOC);
+            if (!$source) throw new RuntimeException('Source inquiry was not found');
+            if ((int) ($source['IsCancel'] ?? 0) === 1 || strtolower((string) ($source['lsubmitstat'] ?? '')) === 'cancelled') {
+                throw new RuntimeException('Only an active inquiry can be replaced');
+            }
+            if (trim((string) ($source['lso_refno'] ?? '')) !== '') throw new RuntimeException('An inquiry linked to a sales order cannot be replaced');
+            if (trim((string) ($source['lcustomerid'] ?? '')) !== $customerId) throw new RuntimeException('Replacement must keep the same customer');
+            if (trim((string) ($source['lreplaced_by_refno'] ?? '')) !== '') throw new RuntimeException('This inquiry has already been replaced');
+            $confirmation = $pdo->prepare('SELECT 1 FROM sales_inquiry_confirmations WHERE main_id = :main_id AND inquiry_refno = :refno LIMIT 1');
+            $confirmation->execute(['main_id' => $mainId, 'refno' => $sourceRefno]);
+            if (!$confirmation->fetchColumn()) throw new RuntimeException('Only a confirmed inquiry can be replaced');
+
+            $inquiryRefno = trim((string) ($payload['inquiry_refno'] ?? '')) ?: $this->generateInquiryRefno();
+            $inquiryNo = $this->generateInquiryNumber($pdo);
+            $salesDate = $this->normalizeDate((string) ($payload['sales_date'] ?? date('Y-m-d')));
+            $salesTime = $this->normalizeTime((string) ($payload['sales_time'] ?? date('H:i:s')));
+            $salesAttribution = $this->resolveCustomerSalesAttribution($customer);
+            $insert = $pdo->prepare('INSERT INTO tblinquiry
+                (linqno, ldate, ltime, lcustomerid, lmain_id, luser, lrefno, lcompany, lsalesperson, lsales_person_id, lsales_address, lterms, lterms_condition, lmy_refno, lyour_refno, lprice_group, lcredit_limit, lpromissory_note, lpo_no, lnote, lsource, lsubmitstat, IsCancel, ltransaction_status, lurgency, lurgency_date, lvat_type, lvat_percent, lcity, lshipped, lreplacement_of_refno)
+                VALUES (:no, :date, :time, :customer, :main_id, :user_id, :refno, :company, :salesperson, :salesperson_id, :address, :terms, :terms_condition, :my_ref, :your_ref, :price_group, :credit_limit, :promise, :po_no, :note, :source, :status, 0, "Unposted", :urgency, :urgency_date, :vat_type, :vat_percent, :city, :shipped, :replacement_of)');
+            $insert->execute([
+                'no' => $inquiryNo, 'date' => $salesDate, 'time' => $salesTime, 'customer' => $customerId,
+                'main_id' => (string) $mainId, 'user_id' => (string) $userId, 'refno' => $inquiryRefno,
+                'company' => (string) ($customer['lcompany'] ?? ''), 'salesperson' => $salesAttribution['name'],
+                'salesperson_id' => $salesAttribution['id'], 'address' => (string) ($payload['delivery_address'] ?? ''),
+                'terms' => (string) ($payload['terms'] ?? ''), 'terms_condition' => (string) ($payload['terms'] ?? ''),
+                'my_ref' => $inquiryNo, 'your_ref' => (string) ($payload['customer_reference'] ?? ''),
+                'price_group' => (string) ($payload['price_group'] ?? ''), 'credit_limit' => (float) ($payload['credit_limit'] ?? 0),
+                'promise' => (string) ($payload['promise_to_pay'] ?? ''), 'po_no' => (string) ($payload['po_number'] ?? ''),
+                'note' => (string) ($payload['remarks'] ?? ''), 'source' => (string) ($payload['inquiry_type'] ?? ''),
+                'status' => 'Pending', 'urgency' => (string) ($payload['urgency'] ?? ''),
+                'urgency_date' => $this->normalizeNullableDate((string) ($payload['urgency_date'] ?? '')),
+                'vat_type' => (string) ($customer['lvat_type'] ?? ''), 'vat_percent' => (float) ($customer['lvat_percent'] ?? 0),
+                'city' => (string) ($customer['lcity'] ?? ''), 'shipped' => (string) ($payload['send_by'] ?? ''),
+                'replacement_of' => $sourceRefno,
+            ]);
+            foreach ($items as $item) if (is_array($item)) $this->insertItem($pdo, $inquiryRefno, $inquiryNo, $salesDate, $item);
+
+            $link = $pdo->prepare('UPDATE tblinquiry SET lreplaced_by_refno = :new_ref WHERE lmain_id = :main_id AND lrefno = :source_ref AND COALESCE(IsCancel, 0) = 0 AND (lreplaced_by_refno IS NULL OR lreplaced_by_refno = "")');
+            $link->execute(['new_ref' => $inquiryRefno, 'main_id' => (string) $mainId, 'source_ref' => $sourceRefno]);
+            if ($link->rowCount() !== 1) throw new RuntimeException('Source inquiry changed; refresh and try again');
+            $pdo->prepare('INSERT INTO sales_inquiry_confirmations (main_id, inquiry_refno, confirmed_at) VALUES (:main_id, :refno, NOW())')->execute(['main_id' => $mainId, 'refno' => $inquiryRefno]);
+            $this->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
+            $replacementTotal = array_reduce($items, static fn(float $sum, array $item): float => $sum + ((float) ($item['qty'] ?? 0) * (float) ($item['unit_price'] ?? 0)), 0.0);
+            $this->persistVipFromPayload($mainId, $inquiryRefno, $payload, [
+                'contact_id' => $customerId,
+                'sales_date' => $salesDate,
+                'grand_total' => $replacementTotal,
+            ]);
+            $sourceTotalStmt = $pdo->prepare('SELECT COALESCE(SUM(COALESCE(lqty, 0) * COALESCE(lprice, 0)), 0) FROM tblinquiry_item WHERE linq_refno = :source_ref');
+            $sourceTotalStmt->execute(['source_ref' => $sourceRefno]);
+            $sourceTotal = (float) $sourceTotalStmt->fetchColumn();
+            $pdo->prepare('UPDATE tblvip_document_discount SET lapplied = 0, ldiscount_amount = 0, ltotal_to_pay = :total WHERE lmain_id = :main_id AND ldocument_type = "sales_inquiry" AND ldocument_refno = :source_ref AND ltier = "silver" AND lapplied = 1')
+                ->execute(['total' => $sourceTotal, 'main_id' => $mainId, 'source_ref' => $sourceRefno]);
+            (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Sales Inquiry', 'Replace', $inquiryRefno, '', $sourceRefno, $inquiryRefno);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+        return $this->getInquiry($mainId, $inquiryRefno) ?? [];
     }
 
     /**
