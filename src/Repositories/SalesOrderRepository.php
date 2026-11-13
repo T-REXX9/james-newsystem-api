@@ -176,12 +176,20 @@ SQL;
         )));
 
         $aggregateByRef = $this->fetchListAggregatesByRefnos($refnos);
+        $vipByRef = (new VipDocumentDiscountRepository($this->db))->mapForType('sales_order', $refnos);
         $viewerIsApprover = $viewerUserId > 0 ? $this->isApprover($mainId, $viewerUserId, 'SO') : false;
         foreach ($items as &$row) {
             $ref = (string) ($row['sales_refno'] ?? '');
             $agg = $aggregateByRef[$ref] ?? ['item_count' => 0, 'grand_total' => 0.0];
             $row['item_count'] = (int) ($agg['item_count'] ?? 0);
             $row['grand_total'] = (float) ($agg['grand_total'] ?? 0);
+            $row = array_merge($row, $vipByRef[$ref] ?? [
+                'vip_applied' => 0,
+                'vip_tier' => 'regular',
+                'vip_percentage' => 0.0,
+                'vip_discount_amount' => 0.0,
+                'total_to_pay' => (float) $row['grand_total'],
+            ]);
             $row['viewer_is_approver'] = $viewerIsApprover;
         }
         unset($row);

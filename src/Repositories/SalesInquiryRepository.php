@@ -7,8 +7,10 @@ namespace App\Repositories;
 use App\Database;
 use App\Repositories\NotificationsRepository;
 use App\Support\AuditTrailWriter;
+use App\Support\PostedSalesDocumentSql;
 use App\Support\SalesDocumentDateCascade;
 use App\Support\Exceptions\HttpException;
+use App\Support\VipStanding;
 use PDO;
 use RuntimeException;
 
@@ -1046,6 +1048,21 @@ SQL;
             $salesRepo = new SalesOrderRepository($this->db);
             $existing = $salesRepo->getSalesOrder($mainId, $existingLinkedRef);
             if ($existing !== null) {
+                $vipRepository = new VipDocumentDiscountRepository($this->db);
+                if ($vipRepository->get('sales_order', $existingLinkedRef) === null) {
+                    $this->ensureInquiryVipDiscount($mainId, $inquiryRefno, $inquiry, $vipRepository);
+                    $vipRepository->copyTo(
+                        $mainId,
+                        'sales_inquiry',
+                        $inquiryRefno,
+                        'sales_order',
+                        $existingLinkedRef,
+                        (string) ($inquiry['contact_id'] ?? ''),
+                        (string) ($inquiry['sales_date'] ?? ''),
+                        (float) ($existing['summary']['grand_total'] ?? $inquiry['grand_total'] ?? 0)
+                    );
+                    $existing = $salesRepo->getSalesOrder($mainId, $existingLinkedRef) ?? $existing;
+                }
                 return $existing;
             }
         }
@@ -1158,6 +1175,25 @@ SQL;
                 'inquiry_refno' => $inquiryRefno,
             ]);
 
+            $vipRepository = new VipDocumentDiscountRepository($this->db);
+            $this->ensureInquiryVipDiscount($mainId, $inquiryRefno, $inquiry, $vipRepository);
+            $approvedGrandTotal = array_reduce(
+                $approvedItems,
+                static fn(float $total, array $item): float => $total
+                    + ((float) ($item['qty'] ?? 0) * (float) ($item['unit_price'] ?? 0)),
+                0.0
+            );
+            $vipRepository->copyTo(
+                $mainId,
+                'sales_inquiry',
+                $inquiryRefno,
+                'sales_order',
+                $salesRefno,
+                (string) ($inquiry['contact_id'] ?? ''),
+                (string) ($inquiry['sales_date'] ?? ''),
+                $approvedGrandTotal
+            );
+
             $pdo->commit();
         } catch (\Throwable $e) {
             $pdo->rollBack();
@@ -1169,19 +1205,7 @@ SQL;
         if ($converted === null) {
             throw new RuntimeException('Failed to load converted sales order');
         }
-        $summaryTotal = (float) (($converted['summary']['grand_total'] ?? $inquiry['grand_total']) ?? 0);
-        (new VipDocumentDiscountRepository($this->db))->copyTo(
-            $mainId,
-            'sales_inquiry',
-            $inquiryRefno,
-            'sales_order',
-            $salesRefno,
-            (string) ($inquiry['contact_id'] ?? ''),
-            (string) ($inquiry['sales_date'] ?? ''),
-            $summaryTotal
-        );
-
-        $finalConverted = $salesRepo->getSalesOrder($mainId, $salesRefno) ?? $converted;
+        $finalConverted = $converted;
 
         try {
             $salesPersonId = trim((string) ($inquiry['sales_person_id'] ?? ''));
@@ -1220,6 +1244,106 @@ SQL;
         }
 
         return $finalConverted;
+    }
+
+    /** @param array<string, mixed> $inquiry */
+    private function ensureInquiryVipDiscount(
+        int $mainId,
+        string $inquiryRefno,
+        array $inquiry,
+        VipDocumentDiscountRepository $vipRepository
+    ): void {
+        if ($vipRepository->get('sales_inquiry', $inquiryRefno) !== null) {
+            return;
+        }
+
+        $vipRepository->upsertFromPayload(
+            $mainId,
+            'sales_inquiry',
+            $inquiryRefno,
+            (string) ($inquiry['contact_id'] ?? ''),
+            (string) ($inquiry['sales_date'] ?? ''),
+            (float) ($inquiry['grand_total'] ?? 0),
+            $this->resolveVipPayloadForConversion($mainId, $inquiryRefno, $inquiry)
+        );
+    }
+
+    /**
+     * Resolve missing legacy inquiry VIP data from posted sales and the live
+     * inquiries in its benefit month. Conversion must not trust client data.
+     * @param array<string, mixed> $inquiry
+     * @return array{vip_applied:int,vip_tier:string,vip_percentage:float}
+     */
+    private function resolveVipPayloadForConversion(int $mainId, string $inquiryRefno, array $inquiry): array
+    {
+        $salesDate = $this->normalizeDate((string) ($inquiry['sales_date'] ?? date('Y-m-d')));
+        $salesMonth = new \DateTimeImmutable(substr($salesDate, 0, 7) . '-01');
+        $benefitMonthStart = $salesMonth->modify('-1 month')->format('Y-m-01');
+        $benefitMonthEnd = $salesMonth->format('Y-m-01');
+        $invoicePosted = PostedSalesDocumentSql::invoiceIsPosted('posted_invoice');
+        $receiptPosted = PostedSalesDocumentSql::deliveryReceiptIsPosted('posted_receipt');
+        $spend = $this->db->pdo()->prepare(
+            "SELECT COALESCE(SUM(COALESCE(l.ldebit, 0)), 0)
+             FROM tblledger l
+             WHERE l.lmainid = :main_id
+               AND l.lcustomerid = :customer_id
+               AND LOWER(TRIM(COALESCE(l.ltype, ''))) = 'debit'
+               AND LOWER(TRIM(COALESCE(l.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+               AND l.ldatetime >= :month_start AND l.ldatetime < :month_end
+               AND (
+                   (LOWER(TRIM(COALESCE(l.lref_name, ''))) = 'invoice' AND EXISTS (
+                       SELECT 1 FROM tblinvoice_list posted_invoice
+                       WHERE posted_invoice.lmain_id = l.lmainid AND posted_invoice.lrefno = l.lrefno
+                         AND {$invoicePosted}
+                   ))
+                   OR (LOWER(TRIM(COALESCE(l.lref_name, ''))) IN ('order slip', 'order_slip') AND EXISTS (
+                       SELECT 1 FROM tbldelivery_receipt posted_receipt
+                       WHERE posted_receipt.lmain_id = l.lmainid AND posted_receipt.lrefno = l.lrefno
+                         AND {$receiptPosted}
+                   ))
+               )"
+        );
+        $spend->execute([
+            'main_id' => $mainId,
+            'customer_id' => (string) ($inquiry['contact_id'] ?? ''),
+            'month_start' => $benefitMonthStart,
+            'month_end' => $benefitMonthEnd,
+        ]);
+
+        $config = (new VipTierSettingsRepository($this->db))->getConfig($mainId);
+        $tier = VipStanding::resolveLevel(
+            (float) $spend->fetchColumn(),
+            (float) $config['one_time_discount_threshold'],
+            (float) $config['unlimited_discount_threshold']
+        );
+        $applied = $tier === 'gold';
+        if ($tier === 'silver') {
+            $firstInquiry = $this->db->pdo()->prepare(
+                "SELECT iq.lrefno
+                 FROM tblinquiry iq
+                 WHERE iq.lmain_id = :main_id AND iq.lcustomerid = :customer_id
+                   AND COALESCE(iq.IsCancel, 0) = 0
+                   AND LOWER(TRIM(COALESCE(iq.lsubmitstat, ''))) <> 'cancelled'
+                   AND DATE_FORMAT(iq.ldate, '%Y-%m') = :benefit_month
+                   AND NOT EXISTS (
+                       SELECT 1 FROM sales_inquiry_replacement_links link
+                       WHERE link.main_id = iq.lmain_id AND link.source_refno = iq.lrefno
+                   )
+                 ORDER BY iq.ldate ASC, iq.lrefno ASC LIMIT 1"
+            );
+            $firstInquiry->execute([
+                'main_id' => $mainId,
+                'customer_id' => (string) ($inquiry['contact_id'] ?? ''),
+                'benefit_month' => $salesMonth->format('Y-m'),
+            ]);
+            $applied = (string) $firstInquiry->fetchColumn() === $inquiryRefno;
+        }
+
+        return [
+            'vip_applied' => $applied ? 1 : 0,
+            'vip_tier' => $tier,
+            'vip_percentage' => (float) $config['discount_percentage'],
+        ];
     }
 
     /**
