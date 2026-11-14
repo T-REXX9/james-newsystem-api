@@ -1200,14 +1200,28 @@ SQL;
         $pdo = $this->db->pdo();
 
         $receiveStmt = $pdo->prepare(
-            "SELECT CAST(linvent_id AS CHAR) AS item_session,
-                    CAST(COALESCE(lin, 0) AS DECIMAL(15,2)) AS receive_quantity,
-                    ldateadded AS receive_date
-             FROM tblinventory_logs
-             WHERE linvent_id IN ({$placeholders})
-               AND ltransaction_type = 'Receiving'
-               AND COALESCE(lin, 0) > 0
-             ORDER BY linvent_id ASC, ldateadded DESC, lid DESC"
+            "SELECT CAST(lg.linvent_id AS CHAR) AS item_session,
+                    CAST(COALESCE(lg.lin, 0) AS DECIMAL(15,2)) AS receive_quantity,
+                    CASE
+                        WHEN rr.ldate_recieved IS NOT NULL
+                          AND CAST(rr.ldate_recieved AS CHAR) NOT LIKE '0000-00-00%'
+                          AND rr.ldate_recieved >= '2000-01-01'
+                            THEN rr.ldate_recieved
+                        WHEN rr.ldate IS NOT NULL
+                          AND CAST(rr.ldate AS CHAR) NOT LIKE '0000-00-00%'
+                          AND rr.ldate >= '2000-01-01'
+                            THEN rr.ldate
+                        WHEN lg.ldateadded IS NOT NULL
+                          AND lg.ldateadded >= '2000-01-01'
+                            THEN lg.ldateadded
+                        ELSE NULL
+                    END AS receive_date
+             FROM tblinventory_logs lg
+             LEFT JOIN tblpurchase_order rr ON rr.lrefno = lg.lrefno
+             WHERE lg.linvent_id IN ({$placeholders})
+               AND lg.ltransaction_type = 'Receiving'
+               AND COALESCE(lg.lin, 0) > 0
+             ORDER BY lg.linvent_id ASC, receive_date IS NULL ASC, receive_date DESC, lg.lid DESC"
         );
         $receiveStmt->execute($sessions);
         $receives = [];
@@ -1310,15 +1324,36 @@ SQL;
         $sql = <<<SQL
 SELECT
     lg.linvent_id AS item_session,
-    YEAR(lg.ldateadded) AS sales_year,
+    YEAR(COALESCE(inv.ldate, dr.ldate)) AS sales_year,
     SUM(COALESCE(lg.lout, 0)) AS total_sold
 FROM tblinventory_logs lg
+LEFT JOIN tblinvoice_list inv
+  ON lg.ltransaction_type = 'Invoice'
+ AND inv.lrefno = lg.lrefno
+LEFT JOIN tbldelivery_receipt dr
+  ON lg.ltransaction_type = 'Order Slip'
+ AND dr.lrefno = lg.lrefno
 WHERE lg.linvent_id IN ({$placeholders})
-  AND lg.ltransaction_type IN ('Invoice', 'Order Slip')
   AND lg.lstatus_logs = '-'
   AND COALESCE(lg.lout, 0) > 0
-  AND lg.ldateadded IS NOT NULL
-GROUP BY lg.linvent_id, YEAR(lg.ldateadded)
+  AND (
+        (
+            lg.ltransaction_type = 'Invoice'
+            AND inv.lstatus IS NOT NULL
+            AND LOWER(inv.lstatus) NOT IN ('cancelled', 'canceled')
+            AND COALESCE(inv.lcancel_invoice, 0) = 0
+            AND COALESCE(inv.lcancel, '') = ''
+        )
+        OR (
+            lg.ltransaction_type = 'Order Slip'
+            AND dr.lstatus IS NOT NULL
+            AND LOWER(dr.lstatus) NOT IN ('cancelled', 'canceled')
+            AND COALESCE(dr.lcancel, 0) = 0
+            AND COALESCE(dr.lcustomer_name, '') NOT IN ('TRANSFER TO ITALY A', 'MISSING STOCKS', 'TRANSR')
+            AND COALESCE(dr.lcustomer_name, '') NOT LIKE '%TRANSFER%'
+        )
+    )
+GROUP BY lg.linvent_id, YEAR(COALESCE(inv.ldate, dr.ldate))
 ORDER BY sales_year DESC
 SQL;
 
