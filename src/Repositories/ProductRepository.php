@@ -603,7 +603,7 @@ SQL;
                 }
             }
 
-            $this->assertNoDuplicateCatalogProduct($mainId, $itemCode, $partNo);
+            $this->assertNoDuplicateCatalogProduct($mainId, $itemCode);
 
         $sql = <<<SQL
 INSERT INTO tblinventory_item (
@@ -757,9 +757,9 @@ SQL);
     }
 
     /**
-     * Prevent duplicate catalog rows for the same item code or part number.
+     * Item codes identify catalog rows; part numbers may be shared by variants.
      */
-    private function assertNoDuplicateCatalogProduct(int $mainId, string $itemCode, string $partNo): void
+    private function assertNoDuplicateCatalogProduct(int $mainId, string $itemCode): void
     {
         $conditions = [];
         $params = ['main_id' => $mainId];
@@ -767,17 +767,13 @@ SQL);
             $conditions[] = 'litemcode = :item_code';
             $params['item_code'] = $itemCode;
         }
-        if ($partNo !== '') {
-            $conditions[] = 'lpartno = :part_no';
-            $params['part_no'] = $partNo;
-        }
         if ($conditions === []) {
             return;
         }
 
         $matchSql = implode(' OR ', $conditions);
         $sql = <<<SQL
-SELECT litemcode, lpartno
+SELECT litemcode
 FROM tblinventory_item
 WHERE lmain_id = :main_id
   AND COALESCE(lnot_inventory, 0) = 0
@@ -793,15 +789,11 @@ SQL;
         }
 
         $existingCode = trim((string) ($existing['litemcode'] ?? ''));
-        $existingPart = trim((string) ($existing['lpartno'] ?? ''));
         if ($itemCode !== '' && strcasecmp($existingCode, $itemCode) === 0) {
             throw new InvalidArgumentException(
                 sprintf('A product with item code "%s" is already listed. Open the existing product instead of creating a duplicate.', $itemCode)
             );
         }
-        throw new InvalidArgumentException(
-            sprintf('A product with part number "%s" is already listed. Open the existing product instead of creating a duplicate.', $partNo !== '' ? $partNo : $existingPart)
-        );
     }
 
     /**

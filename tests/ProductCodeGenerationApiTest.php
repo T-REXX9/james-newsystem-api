@@ -54,8 +54,9 @@ $mainId = (int) (getenv('PRODUCT_TEST_MAIN_ID') ?: 1);
 $userId = (int) (getenv('PRODUCT_TEST_USER_ID') ?: 1);
 $prefix = 'UT-QK-' . bin2hex(random_bytes(4)) . '-';
 $newPrefix = 'UT-NEW-' . bin2hex(random_bytes(4)) . '-';
-$partNos = [$prefix . 'PN-1', $prefix . 'PN-2'];
+$partNos = [$prefix . 'PN-1', $prefix . 'PN-1'];
 $sessions = [];
+$createdProducts = [];
 $regenerationSession = '';
 $passed = 0;
 $failed = 0;
@@ -177,6 +178,7 @@ SQL)->execute([
         ]);
         pc_assert($created['http_code'] === 200, 'product create request succeeds (' . ($index + 1) . ')', $passed, $failed, $errors);
         $product = $created['body']['data'] ?? [];
+        $createdProducts[] = $product;
         $session = (string) ($product['id'] ?? '');
         if ($session !== '') $sessions[] = $session;
         if ($index === 0) $regenerationSession = $session;
@@ -223,6 +225,20 @@ SQL)->execute([
             pc_assert(($priceRow['lrefno'] ?? null) === null && ($priceRow['lprice_amt_old'] ?? null) === null, 'new price rows only populate columns used by the legacy insert', $passed, $failed, $errors);
         }
     }
+    pc_assert(
+        count(array_unique(array_map(static fn(array $product): string => (string) ($product['part_no'] ?? ''), $createdProducts))) === 1,
+        'two products can share the same part number',
+        $passed,
+        $failed,
+        $errors
+    );
+    pc_assert(
+        count(array_unique(array_map(static fn(array $product): string => (string) ($product['item_code'] ?? ''), $createdProducts))) === 2,
+        'products sharing a part number retain distinct item codes',
+        $passed,
+        $failed,
+        $errors
+    );
 
     $counter = $pdo->prepare('SELECT MAX(lctr) FROM tblproduct_code_generator WHERE lcode = :code');
     $counter->execute(['code' => $prefix]);
