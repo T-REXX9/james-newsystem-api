@@ -189,12 +189,7 @@ SQL);
         if (!$today) {
             return false;
         }
-        $previousMonth = $today->modify('first day of previous month');
-        $cutoff = $previousMonth->setDate(
-            (int) $previousMonth->format('Y'),
-            (int) $previousMonth->format('m'),
-            min((int) $today->format('d'), (int) $previousMonth->format('t'))
-        );
+        $cutoff = $today->modify('-30 days');
         return $firstPurchase >= $cutoff && $firstPurchase <= $today;
     }
 

@@ -39,15 +39,15 @@ identifierAssert(
 );
 identifierAssert(
     ['Existing Customer'],
-    ['first_purchase_date' => '2026-09-29', 'as_of_date' => '2026-10-31'],
-    'first purchase outside the one-month window is existing',
+    ['first_purchase_date' => '2026-10-06', 'as_of_date' => '2026-11-06'],
+    'first purchase 31 days ago is existing',
     $passed,
     $failed
 );
 identifierAssert(
     ['New Customer'],
-    ['first_purchase_date' => '2026-09-30', 'as_of_date' => '2026-10-31'],
-    'one-month cutoff clamps to the last valid day of the previous month',
+    ['first_purchase_date' => '2026-10-07', 'as_of_date' => '2026-11-06'],
+    'first purchase exactly 30 days ago is new',
     $passed,
     $failed
 );
