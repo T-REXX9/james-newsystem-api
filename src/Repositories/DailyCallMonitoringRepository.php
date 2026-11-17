@@ -1347,7 +1347,7 @@ SQL;
         $stmt = $this->db->pdo()->prepare($sql);
         $stmt->execute($params);
 
-        $items = array_map(function (array $row): array {
+        $items = array_map(function (array $row) use ($normalizedFromDate): array {
             $firstPurchaseDate = (string) ($row['first_purchase_date_raw'] ?? '');
             $rawDate = (string) ($row['last_purchase_date_raw'] ?? '');
             $daysSinceLastPurchase = max(0, (int) ($row['days_since_last_purchase'] ?? 0));
@@ -1360,7 +1360,8 @@ SQL;
             $priorityTransactionCount = (int) ($row['priority_transaction_count'] ?? 0);
             $ledgerTransactionCount = (int) ($row['ledger_transaction_count'] ?? 0);
             $historicalTransactionCount = (int) ($row['historical_transaction_count'] ?? 0);
-            $listCategory = $priorityTransactionCount > 0
+            $hasPriorityPurchaseDate = $rawDate !== '' && $rawDate >= $normalizedFromDate;
+            $listCategory = ($priorityTransactionCount > 0 || $hasPriorityPurchaseDate)
                 ? 'priority'
                 : ($ledgerTransactionCount > 0 ? 'recovery' : 'no_purchase');
             $isBlocked = ((int) ($row['customer_status'] ?? 1) === 4)
