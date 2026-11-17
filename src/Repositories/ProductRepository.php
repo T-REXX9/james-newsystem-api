@@ -1301,7 +1301,7 @@ SQL;
             return [];
         }
 
-        $years = $this->getFiveYearWindow();
+        $years = $this->getProductDatabaseSalesYears();
         $emptyYearMap = array_fill_keys($years, 0);
         $map = [];
         foreach ($itemSessions as $session) {
@@ -1315,42 +1315,91 @@ SQL;
         $placeholders = implode(',', array_fill(0, count($itemSessions), '?'));
         $sql = <<<SQL
 SELECT
-    lg.linvent_id AS item_session,
-    YEAR(COALESCE(inv.ldate, dr.ldate)) AS sales_year,
-    SUM(COALESCE(lg.lout, 0)) AS total_sold
-FROM tblinventory_logs lg
-LEFT JOIN tblinvoice_list inv
-  ON lg.ltransaction_type = 'Invoice'
- AND inv.lrefno = lg.lrefno
-LEFT JOIN tbldelivery_receipt dr
-  ON lg.ltransaction_type = 'Order Slip'
- AND dr.lrefno = lg.lrefno
-WHERE lg.linvent_id IN ({$placeholders})
-  AND lg.lstatus_logs = '-'
-  AND COALESCE(lg.lout, 0) > 0
-  AND (
-        (
-            lg.ltransaction_type = 'Invoice'
-            AND inv.lstatus IS NOT NULL
-            AND LOWER(inv.lstatus) NOT IN ('cancelled', 'canceled')
-            AND COALESCE(inv.lcancel_invoice, 0) = 0
-            AND COALESCE(inv.lcancel, '') = ''
-        )
-        OR (
-            lg.ltransaction_type = 'Order Slip'
-            AND dr.lstatus IS NOT NULL
-            AND LOWER(dr.lstatus) NOT IN ('cancelled', 'canceled')
-            AND COALESCE(dr.lcancel, 0) = 0
-            AND COALESCE(dr.lcustomer_name, '') NOT IN ('TRANSFER TO ITALY A', 'MISSING STOCKS', 'TRANSR')
-            AND COALESCE(dr.lcustomer_name, '') NOT LIKE '%TRANSFER%'
-        )
-    )
-GROUP BY lg.linvent_id, YEAR(COALESCE(inv.ldate, dr.ldate))
-ORDER BY sales_year DESC
+    sales.item_session,
+    sales.sales_year,
+    SUM(sales.sold_quantity) AS total_sold
+FROM (
+    SELECT
+        COALESCE(inv_session.lsession, inv_item_ref.lsession, inv_item_id.lsession, inv_code.lsession) AS item_session,
+        YEAR(inv.ldate) AS sales_year,
+        SUM(COALESCE(ii.lqty, 0)) AS sold_quantity
+    FROM tblinvoice_list inv
+    INNER JOIN tblinvoice_itemrec ii
+      ON ii.linvoice_refno = inv.lrefno
+    LEFT JOIN tblinventory_item inv_session
+      ON inv_session.lmain_id = inv.lmain_id
+     AND COALESCE(ii.linv_refno, '') <> ''
+     AND ii.linv_refno = CAST(inv_session.lsession AS CHAR)
+    LEFT JOIN tblinventory_item inv_item_ref
+      ON inv_session.lsession IS NULL
+     AND inv_item_ref.lmain_id = inv.lmain_id
+     AND COALESCE(ii.litem_refno, '') <> ''
+     AND ii.litem_refno = CAST(inv_item_ref.lsession AS CHAR)
+    LEFT JOIN tblinventory_item inv_item_id
+      ON inv_session.lsession IS NULL
+     AND inv_item_ref.lsession IS NULL
+     AND inv_item_id.lmain_id = inv.lmain_id
+     AND COALESCE(ii.litemid, '') <> ''
+     AND ii.litemid = CAST(inv_item_id.lid AS CHAR)
+    LEFT JOIN tblinventory_item inv_code
+      ON inv_session.lsession IS NULL
+     AND inv_item_ref.lsession IS NULL
+     AND inv_item_id.lsession IS NULL
+     AND inv_code.lmain_id = inv.lmain_id
+     AND COALESCE(TRIM(ii.litemcode), '') <> ''
+     AND ii.litemcode = inv_code.litemcode
+    WHERE inv.lstatus IS NOT NULL
+      AND LOWER(inv.lstatus) NOT IN ('cancelled', 'canceled')
+      AND YEAR(inv.ldate) BETWEEN 2018 AND YEAR(CURRENT_DATE())
+      AND COALESCE(inv_session.lsession, inv_item_ref.lsession, inv_item_id.lsession, inv_code.lsession) IN ({$placeholders})
+    GROUP BY item_session, YEAR(inv.ldate)
+
+    UNION ALL
+
+    SELECT
+        COALESCE(dr_session.lsession, dr_item_ref.lsession, dr_item_id.lsession, dr_code.lsession) AS item_session,
+        YEAR(dr.ldate) AS sales_year,
+        SUM(COALESCE(dri.lqty, 0)) AS sold_quantity
+    FROM tbldelivery_receipt dr
+    INNER JOIN tbldelivery_receipt_items dri
+      ON dri.lor_refno = dr.lrefno
+    LEFT JOIN tblinventory_item dr_session
+      ON dr_session.lmain_id = dr.lmain_id
+     AND COALESCE(dri.linv_refno, '') <> ''
+     AND dri.linv_refno = CAST(dr_session.lsession AS CHAR)
+    LEFT JOIN tblinventory_item dr_item_ref
+      ON dr_session.lsession IS NULL
+     AND dr_item_ref.lmain_id = dr.lmain_id
+     AND COALESCE(dri.litem_refno, '') <> ''
+     AND dri.litem_refno = CAST(dr_item_ref.lsession AS CHAR)
+    LEFT JOIN tblinventory_item dr_item_id
+      ON dr_session.lsession IS NULL
+     AND dr_item_ref.lsession IS NULL
+     AND dr_item_id.lmain_id = dr.lmain_id
+     AND COALESCE(dri.litemid, '') <> ''
+     AND dri.litemid = CAST(dr_item_id.lid AS CHAR)
+    LEFT JOIN tblinventory_item dr_code
+      ON dr_session.lsession IS NULL
+     AND dr_item_ref.lsession IS NULL
+     AND dr_item_id.lsession IS NULL
+     AND dr_code.lmain_id = dr.lmain_id
+     AND COALESCE(TRIM(dri.litemcode), '') <> ''
+     AND dri.litemcode = dr_code.litemcode
+    WHERE dr.lstatus IS NOT NULL
+      AND LOWER(dr.lstatus) NOT IN ('cancelled', 'canceled')
+      AND YEAR(dr.ldate) BETWEEN 2018 AND YEAR(CURRENT_DATE())
+      AND COALESCE(dr.lcustomer_name, '') NOT IN ('TRANSFER TO ITALY A', 'MISSING STOCKS', 'TRANSR')
+      AND COALESCE(dr.lcustomer_name, '') NOT LIKE '%TRANSFER%'
+      AND COALESCE(dr_session.lsession, dr_item_ref.lsession, dr_item_id.lsession, dr_code.lsession) IN ({$placeholders})
+    GROUP BY item_session, YEAR(dr.ldate)
+) sales
+GROUP BY sales.item_session, sales.sales_year
+ORDER BY sales.sales_year DESC
 SQL;
 
+        $sessions = array_values($itemSessions);
         $stmt = $this->db->pdo()->prepare($sql);
-        $stmt->execute(array_values($itemSessions));
+        $stmt->execute(array_merge($sessions, $sessions));
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
         foreach ($rows as $row) {
@@ -1369,13 +1418,13 @@ SQL;
     /**
      * @return array<int, string>
      */
-    private function getFiveYearWindow(): array
+    private function getProductDatabaseSalesYears(): array
     {
         $currentYear = (int) date('Y');
         $years = [];
 
-        for ($offset = 0; $offset < 5; $offset++) {
-            $years[] = (string) ($currentYear - $offset);
+        for ($year = $currentYear; $year >= 2018; $year--) {
+            $years[] = (string) $year;
         }
 
         return $years;
