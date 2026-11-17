@@ -46,7 +46,9 @@ $pdo->exec('CREATE TABLE tblpatient (lsessionid TEXT, lcompany TEXT)');
 $pdo->exec('CREATE TABLE tblsupplier (lrefno TEXT, lname TEXT)');
 $pdo->exec('CREATE TABLE tbldelivery_receipt (lrefno TEXT, lcustomer_name TEXT, linvoice_no TEXT)');
 $pdo->exec('CREATE TABLE tblinvoice_list (lrefno TEXT, lcustomer_name TEXT, linvoice_no TEXT)');
-$pdo->exec('CREATE TABLE tblpurchase_order (lrefno TEXT, lpurchaseno TEXT)');
+$pdo->exec('CREATE TABLE tblpurchase_order (
+    lrefno TEXT, lpurchaseno TEXT, lmain_id INTEGER, ldate TEXT, ldate_recieved TEXT
+)');
 $pdo->exec('CREATE TABLE tblbranchinventory_transferlist (lrefno TEXT, ltransfer_no TEXT)');
 $pdo->exec('CREATE TABLE tblcredit_memo (lrefno TEXT, clname TEXT, lcredit_no TEXT)');
 $pdo->exec('CREATE TABLE tblstock_adjustment (lrefno TEXT, ladjustment_number TEXT)');

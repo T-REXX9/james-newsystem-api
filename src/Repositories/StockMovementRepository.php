@@ -59,6 +59,7 @@ final class StockMovementRepository
             'itm.lmain_id = :main_id',
             'inv.linvent_id = :item_id',
         ];
+        $effectiveDateSql = $this->effectiveMovementDateSql();
 
         if ($warehouse !== '' && strtolower($warehouse) !== 'all') {
             $where[] = 'inv.lwarehouse = :warehouse';
@@ -69,11 +70,11 @@ final class StockMovementRepository
             $baseParams['transaction_type'] = $transactionType;
         }
         if ($dateFrom !== '') {
-            $where[] = 'inv.ldateadded >= :date_from';
+            $where[] = "({$effectiveDateSql}) >= :date_from";
             $baseParams['date_from'] = $this->normalizeDateStart($dateFrom);
         }
         if ($dateTo !== '') {
-            $where[] = 'inv.ldateadded <= :date_to';
+            $where[] = "({$effectiveDateSql}) <= :date_to";
             $baseParams['date_to'] = $this->normalizeDateEnd($dateTo);
         }
         if ($search !== '') {
@@ -135,6 +136,7 @@ FROM {$movementSourceSql} inv
 INNER JOIN tblinventory_item itm ON itm.lsession = inv.linvent_id
 LEFT JOIN tblpatient p ON p.lsessionid = inv.lcustomer_id
 LEFT JOIN tblsupplier s ON s.lrefno = inv.lsupplier_id
+LEFT JOIN tblpurchase_order po ON po.lrefno = inv.lrefno AND po.lmain_id = itm.lmain_id
 LEFT JOIN tbldelivery_receipt dr ON dr.lrefno = inv.lrefno
 LEFT JOIN tblinvoice_list il ON il.lrefno = inv.lrefno
 WHERE {$whereSql}
@@ -150,7 +152,7 @@ SQL;
 SELECT
     inv.lid AS id,
     CAST(inv.linvent_id AS CHAR) AS item_id,
-    inv.ldateadded AS date,
+    {$effectiveDateSql} AS date,
     COALESCE(NULLIF(inv.ltransaction_type, ''), 'Unknown') AS transaction_type,
     COALESCE(inv.lrefno, '') AS reference_no,
     COALESCE(
@@ -182,7 +184,7 @@ SELECT
     COALESCE(inv.lprocess_by, '') AS processed_by,
     COALESCE(inv.lnote, '') AS notes,
     CAST(COALESCE(SUM(COALESCE(inv.lin, 0) - COALESCE(inv.lout, 0))
-      OVER (ORDER BY inv.ldateadded ASC, inv.lid ASC), 0) AS SIGNED) AS balance,
+      OVER (ORDER BY ({$effectiveDateSql}) IS NULL ASC, ({$effectiveDateSql}) ASC, inv.lid ASC), 0) AS SIGNED) AS balance,
     COALESCE(po.lpurchaseno, '') AS rr_no,
     COALESCE(tr.ltransfer_no, '') AS tr_no,
     COALESCE(dr.linvoice_no, '') AS or_no,
@@ -193,14 +195,14 @@ FROM {$movementSourceSql} inv
 INNER JOIN tblinventory_item itm ON itm.lsession = inv.linvent_id
 LEFT JOIN tblpatient p ON p.lsessionid = inv.lcustomer_id
 LEFT JOIN tblsupplier s ON s.lrefno = inv.lsupplier_id
-LEFT JOIN tblpurchase_order po ON po.lrefno = inv.lrefno
+LEFT JOIN tblpurchase_order po ON po.lrefno = inv.lrefno AND po.lmain_id = itm.lmain_id
 LEFT JOIN tblbranchinventory_transferlist tr ON tr.lrefno = inv.lrefno
 LEFT JOIN tbldelivery_receipt dr ON dr.lrefno = inv.lrefno
 LEFT JOIN tblinvoice_list il ON il.lrefno = inv.lrefno
 LEFT JOIN tblcredit_memo cm ON cm.lrefno = inv.lrefno
 LEFT JOIN tblstock_adjustment sa ON sa.lrefno = inv.lrefno
 WHERE {$whereSql}
-ORDER BY inv.ldateadded ASC, inv.lid ASC
+ORDER BY ({$effectiveDateSql}) IS NULL ASC, ({$effectiveDateSql}) ASC, inv.lid ASC
 LIMIT :limit OFFSET :offset
 SQL;
 
@@ -227,11 +229,12 @@ SQL;
 
     public function getLog(int $mainId, int $logId): ?array
     {
+        $effectiveDateSql = $this->effectiveMovementDateSql();
         $sql = <<<SQL
 SELECT
     inv.lid AS id,
     CAST(inv.linvent_id AS CHAR) AS item_id,
-    inv.ldateadded AS date,
+    {$effectiveDateSql} AS date,
     COALESCE(NULLIF(inv.ltransaction_type, ''), 'Unknown') AS transaction_type,
     COALESCE(inv.lrefno, '') AS reference_no,
     COALESCE(inv.lwarehouse, '') AS warehouse_id,
@@ -248,6 +251,7 @@ SELECT
     COALESCE(inv.lnote, '') AS notes
 FROM tblinventory_logs inv
 INNER JOIN tblinventory_item itm ON itm.lsession = inv.linvent_id
+LEFT JOIN tblpurchase_order po ON po.lrefno = inv.lrefno AND po.lmain_id = itm.lmain_id
 WHERE itm.lmain_id = :main_id
   AND inv.lid = :log_id
 LIMIT 1
@@ -409,6 +413,30 @@ SQL;
         $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
         $stmt->execute();
         return $stmt->rowCount() > 0;
+    }
+
+    private function effectiveMovementDateSql(string $logAlias = 'inv', string $receivingAlias = 'po'): string
+    {
+        return <<<SQL
+CASE
+    WHEN {$logAlias}.ltransaction_type = 'Receiving' THEN
+        CASE
+            WHEN {$receivingAlias}.ldate_recieved IS NOT NULL
+              AND CAST({$receivingAlias}.ldate_recieved AS CHAR) NOT LIKE '0000-00-00%'
+              AND {$receivingAlias}.ldate_recieved >= '2000-01-01'
+                THEN {$receivingAlias}.ldate_recieved
+            WHEN {$receivingAlias}.ldate IS NOT NULL
+              AND CAST({$receivingAlias}.ldate AS CHAR) NOT LIKE '0000-00-00%'
+              AND {$receivingAlias}.ldate >= '2000-01-01'
+                THEN {$receivingAlias}.ldate
+            WHEN {$logAlias}.ldateadded IS NOT NULL
+              AND {$logAlias}.ldateadded >= '2000-01-01'
+                THEN {$logAlias}.ldateadded
+            ELSE NULL
+        END
+    ELSE {$logAlias}.ldateadded
+END
+SQL;
     }
 
     private function getItem(int $mainId, string $itemId): ?array
