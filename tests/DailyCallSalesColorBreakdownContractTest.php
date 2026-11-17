@@ -66,8 +66,10 @@ $checks = [
         && str_contains($method, "'existing_client' => (int) (\$blockedBreakdown['existing_client'] ?? 0)")
         && str_contains($method, "'verified_prospective' => (int) (\$blockedBreakdown['verified_prospective'] ?? 0)")
         && str_contains($method, "'unverified_prospective' => (int) (\$blockedBreakdown['unverified_prospective'] ?? 0)")
-        && str_contains($method, "p.lmain_id = :main_id")
-        && str_contains($method, "LOWER(TRIM(COALESCE(p.ldebt_type, ''))) = 'bad'"),
+        && str_contains($method, 'listCustomerIdentifiers($mainId)')
+        && str_contains($method, "in_array('Blacklisted', \$identifiers, true)")
+        && str_contains($method, "in_array('Verified Prospective', \$identifiers, true)")
+        && str_contains($method, "in_array('Unverified Prospective', \$identifiers, true)"),
     'all color buckets and missing posted-sales customers remain visible in group totals' => str_contains($method, "'green', 'yellow', 'purple', 'white', 'red'")
         && str_contains($method, 'missing_sales_customers AS')
         && str_contains($method, 'COALESCE(SUM(sales), 0) AS sales'),
