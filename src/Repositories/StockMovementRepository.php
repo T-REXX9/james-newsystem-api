@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use App\Database;
+use App\Support\ReceivingDateSql;
+use App\Support\ReferenceDateSql;
 use PDO;
 
 final class StockMovementRepository
@@ -60,6 +62,54 @@ final class StockMovementRepository
             'inv.linvent_id = :item_id',
         ];
         $effectiveDateSql = $this->effectiveMovementDateSql();
+        $referenceCreatedAtSql = ReferenceDateSql::createdAt('inv.lrefno');
+        $documentDateSql = <<<SQL
+CASE
+    WHEN inv.ltransaction_type = 'Receiving' THEN ({{RECEIVING_DATE}})
+    WHEN inv.ltransaction_type = 'Invoice' THEN ({{INVOICE_DATE}})
+    WHEN inv.ltransaction_type = 'Order Slip' THEN ({{ORDER_SLIP_DATE}})
+    WHEN inv.ltransaction_type = 'Credit Memo' THEN ({{CREDIT_MEMO_DATE}})
+    WHEN inv.ltransaction_type IN ('Transfer Product', 'Transfer Receipt') THEN ({{TRANSFER_DATE}})
+    WHEN inv.ltransaction_type = 'Stock Adjustment' THEN ({{ADJUSTMENT_DATE}})
+    ELSE NULL
+END
+SQL;
+        $documentDateSql = strtr($documentDateSql, [
+            '{{RECEIVING_DATE}}' => ReceivingDateSql::documentDate('po'),
+            '{{INVOICE_DATE}}' => ReferenceDateSql::validDate('il.ldate'),
+            '{{ORDER_SLIP_DATE}}' => ReferenceDateSql::validDate('dr.ldate'),
+            '{{CREDIT_MEMO_DATE}}' => ReferenceDateSql::validDate('cm.ldate'),
+            '{{TRANSFER_DATE}}' => ReferenceDateSql::validDate('tr.ltimestamp'),
+            '{{ADJUSTMENT_DATE}}' => ReferenceDateSql::validDate('sa.ldatetime'),
+        ]);
+        $createdAtSql = <<<SQL
+CASE
+    WHEN inv.ltransaction_type = 'Invoice' THEN ({{INVOICE_CREATED}})
+    WHEN inv.ltransaction_type = 'Order Slip' THEN ({{ORDER_SLIP_CREATED}})
+    WHEN inv.ltransaction_type = 'Credit Memo' THEN ({{CREDIT_MEMO_CREATED}})
+    ELSE ({{REFERENCE_CREATED}})
+END
+SQL;
+        $createdAtSql = strtr($createdAtSql, [
+            '{{INVOICE_CREATED}}' => ReferenceDateSql::createdAt('inv.lrefno', 'il.created_at'),
+            '{{ORDER_SLIP_CREATED}}' => ReferenceDateSql::createdAt('inv.lrefno', 'dr.created_at'),
+            '{{CREDIT_MEMO_CREATED}}' => ReferenceDateSql::createdAt('inv.lrefno', 'cm.created_at'),
+            '{{REFERENCE_CREATED}}' => $referenceCreatedAtSql,
+        ]);
+        $createdAtSourceSql = <<<SQL
+CASE
+    WHEN inv.ltransaction_type = 'Invoice' THEN ({{INVOICE_SOURCE}})
+    WHEN inv.ltransaction_type = 'Order Slip' THEN ({{ORDER_SLIP_SOURCE}})
+    WHEN inv.ltransaction_type = 'Credit Memo' THEN ({{CREDIT_MEMO_SOURCE}})
+    ELSE ({{REFERENCE_SOURCE}})
+END
+SQL;
+        $createdAtSourceSql = strtr($createdAtSourceSql, [
+            '{{INVOICE_SOURCE}}' => ReferenceDateSql::createdAtSource('inv.lrefno', 'il.created_at'),
+            '{{ORDER_SLIP_SOURCE}}' => ReferenceDateSql::createdAtSource('inv.lrefno', 'dr.created_at'),
+            '{{CREDIT_MEMO_SOURCE}}' => ReferenceDateSql::createdAtSource('inv.lrefno', 'cm.created_at'),
+            '{{REFERENCE_SOURCE}}' => ReferenceDateSql::createdAtSource('inv.lrefno'),
+        ]);
 
         if ($warehouse !== '' && strtolower($warehouse) !== 'all') {
             $where[] = 'inv.lwarehouse = :warehouse';
@@ -137,8 +187,8 @@ INNER JOIN tblinventory_item itm ON itm.lsession = inv.linvent_id
 LEFT JOIN tblpatient p ON p.lsessionid = inv.lcustomer_id
 LEFT JOIN tblsupplier s ON s.lrefno = inv.lsupplier_id
 LEFT JOIN tblpurchase_order po ON po.lrefno = inv.lrefno AND po.lmain_id = itm.lmain_id
-LEFT JOIN tbldelivery_receipt dr ON dr.lrefno = inv.lrefno
-LEFT JOIN tblinvoice_list il ON il.lrefno = inv.lrefno
+LEFT JOIN tbldelivery_receipt dr ON dr.lrefno = inv.lrefno AND CAST(COALESCE(dr.lmain_id, 0) AS SIGNED) = itm.lmain_id
+LEFT JOIN tblinvoice_list il ON il.lrefno = inv.lrefno AND CAST(COALESCE(il.lmain_id, 0) AS SIGNED) = itm.lmain_id
 WHERE {$whereSql}
 SQL;
         $countStmt = $this->db->pdo()->prepare($countSql);
@@ -190,17 +240,40 @@ SELECT
     COALESCE(dr.linvoice_no, '') AS or_no,
     COALESCE(il.linvoice_no, '') AS inv_no,
     COALESCE(cm.lcredit_no, '') AS cm_no,
-    COALESCE(sa.ladjustment_number, '') AS adj_no
+    COALESCE(sa.ladjustment_number, '') AS adj_no,
+    COALESCE(CASE
+        WHEN inv.ltransaction_type = 'Receiving' THEN po.lpurchaseno
+        WHEN inv.ltransaction_type = 'Invoice' THEN il.linvoice_no
+        WHEN inv.ltransaction_type = 'Order Slip' THEN dr.linvoice_no
+        WHEN inv.ltransaction_type = 'Credit Memo' THEN cm.lcredit_no
+        WHEN inv.ltransaction_type IN ('Transfer Product', 'Transfer Receipt') THEN tr.ltransfer_no
+        WHEN inv.ltransaction_type = 'Stock Adjustment' THEN sa.ladjustment_number
+        ELSE inv.lrefno
+    END, '') AS document_number,
+    {$documentDateSql} AS document_date,
+    {$createdAtSql} AS reference_created_at,
+    {$createdAtSourceSql} AS reference_created_at_source,
+    CASE WHEN ({$documentDateSql}) IS NULL OR ({$createdAtSql}) IS NULL THEN NULL
+         WHEN DATE({$documentDateSql}) < DATE({$createdAtSql}) THEN 1 ELSE 0 END AS reference_is_backdated,
+    COALESCE(CASE
+        WHEN inv.ltransaction_type = 'Receiving' THEN po.ltransaction_status
+        WHEN inv.ltransaction_type = 'Invoice' THEN il.lstatus
+        WHEN inv.ltransaction_type = 'Order Slip' THEN dr.lstatus
+        WHEN inv.ltransaction_type = 'Credit Memo' THEN cm.lstatus
+        WHEN inv.ltransaction_type IN ('Transfer Product', 'Transfer Receipt') THEN tr.lstatus
+        WHEN inv.ltransaction_type = 'Stock Adjustment' THEN sa.lstatus
+        ELSE ''
+    END, '') AS document_status
 FROM {$movementSourceSql} inv
 INNER JOIN tblinventory_item itm ON itm.lsession = inv.linvent_id
 LEFT JOIN tblpatient p ON p.lsessionid = inv.lcustomer_id
 LEFT JOIN tblsupplier s ON s.lrefno = inv.lsupplier_id
 LEFT JOIN tblpurchase_order po ON po.lrefno = inv.lrefno AND po.lmain_id = itm.lmain_id
-LEFT JOIN tblbranchinventory_transferlist tr ON tr.lrefno = inv.lrefno
-LEFT JOIN tbldelivery_receipt dr ON dr.lrefno = inv.lrefno
-LEFT JOIN tblinvoice_list il ON il.lrefno = inv.lrefno
-LEFT JOIN tblcredit_memo cm ON cm.lrefno = inv.lrefno
-LEFT JOIN tblstock_adjustment sa ON sa.lrefno = inv.lrefno
+LEFT JOIN tblbranchinventory_transferlist tr ON tr.lrefno = inv.lrefno AND CAST(COALESCE(tr.lmain_id, 0) AS SIGNED) = itm.lmain_id
+LEFT JOIN tbldelivery_receipt dr ON dr.lrefno = inv.lrefno AND CAST(COALESCE(dr.lmain_id, 0) AS SIGNED) = itm.lmain_id
+LEFT JOIN tblinvoice_list il ON il.lrefno = inv.lrefno AND CAST(COALESCE(il.lmain_id, 0) AS SIGNED) = itm.lmain_id
+LEFT JOIN tblcredit_memo cm ON cm.lrefno = inv.lrefno AND CAST(COALESCE(cm.lmainid, 0) AS SIGNED) = itm.lmain_id
+LEFT JOIN tblstock_adjustment sa ON sa.lrefno = inv.lrefno AND CAST(COALESCE(sa.lmain_id, 0) AS SIGNED) = itm.lmain_id
 WHERE {$whereSql}
 ORDER BY ({$effectiveDateSql}) IS NULL ASC, ({$effectiveDateSql}) ASC, inv.lid ASC
 LIMIT :limit OFFSET :offset
@@ -417,23 +490,11 @@ SQL;
 
     private function effectiveMovementDateSql(string $logAlias = 'inv', string $receivingAlias = 'po'): string
     {
+        $receivingDate = ReceivingDateSql::effectiveDate($logAlias, $receivingAlias);
         return <<<SQL
 CASE
     WHEN {$logAlias}.ltransaction_type = 'Receiving' THEN
-        CASE
-            WHEN {$receivingAlias}.ldate_recieved IS NOT NULL
-              AND CAST({$receivingAlias}.ldate_recieved AS CHAR) NOT LIKE '0000-00-00%'
-              AND {$receivingAlias}.ldate_recieved >= '2000-01-01'
-                THEN {$receivingAlias}.ldate_recieved
-            WHEN {$receivingAlias}.ldate IS NOT NULL
-              AND CAST({$receivingAlias}.ldate AS CHAR) NOT LIKE '0000-00-00%'
-              AND {$receivingAlias}.ldate >= '2000-01-01'
-                THEN {$receivingAlias}.ldate
-            WHEN {$logAlias}.ldateadded IS NOT NULL
-              AND {$logAlias}.ldateadded >= '2000-01-01'
-                THEN {$logAlias}.ldateadded
-            ELSE NULL
-        END
+        {$receivingDate}
     ELSE {$logAlias}.ldateadded
 END
 SQL;

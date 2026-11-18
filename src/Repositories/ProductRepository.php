@@ -7,6 +7,8 @@ namespace App\Repositories;
 use App\Database;
 use App\Support\AuditTrailWriter;
 use App\Support\RecordImageValidator;
+use App\Support\ReceivingDateSql;
+use App\Support\ReferenceDateSql;
 use InvalidArgumentException;
 use PDO;
 
@@ -1190,26 +1192,26 @@ SQL;
 
         $placeholders = implode(',', array_fill(0, count($sessions), '?'));
         $pdo = $this->db->pdo();
+        $receiveCreatedAtSql = ReferenceDateSql::createdAt('lg.lrefno');
+        $receiveCreatedAtSourceSql = ReferenceDateSql::createdAtSource('lg.lrefno');
+        $receiveDocumentDateSql = ReceivingDateSql::documentDate('rr');
+        $receiveBackdatedSql = ReferenceDateSql::isBackdated($receiveDocumentDateSql, $receiveCreatedAtSql);
 
         $receiveStmt = $pdo->prepare(
             "SELECT CAST(lg.linvent_id AS CHAR) AS item_session,
                     CAST(COALESCE(lg.lin, 0) AS DECIMAL(15,2)) AS receive_quantity,
-                    CASE
-                        WHEN rr.ldate_recieved IS NOT NULL
-                          AND CAST(rr.ldate_recieved AS CHAR) NOT LIKE '0000-00-00%'
-                          AND rr.ldate_recieved >= '2000-01-01'
-                            THEN rr.ldate_recieved
-                        WHEN rr.ldate IS NOT NULL
-                          AND CAST(rr.ldate AS CHAR) NOT LIKE '0000-00-00%'
-                          AND rr.ldate >= '2000-01-01'
-                            THEN rr.ldate
-                        WHEN lg.ldateadded IS NOT NULL
-                          AND lg.ldateadded >= '2000-01-01'
-                            THEN lg.ldateadded
-                        ELSE NULL
-                    END AS receive_date
+                    " . ReceivingDateSql::effectiveDate('lg', 'rr') . " AS receive_date,
+                    COALESCE(rr.lpurchaseno, '') AS receive_reference,
+                    COALESCE(lg.lrefno, '') AS receive_reference_id,
+                    " . $receiveCreatedAtSql . " AS receive_created_at,
+                    " . $receiveCreatedAtSourceSql . " AS receive_created_at_source,
+                    " . $receiveBackdatedSql . " AS receive_is_backdated,
+                    COALESCE(rr.ltransaction_status, '') AS receive_status
              FROM tblinventory_logs lg
-             LEFT JOIN tblpurchase_order rr ON rr.lrefno = lg.lrefno
+             LEFT JOIN tblinventory_item receive_item ON receive_item.lsession = lg.linvent_id
+             LEFT JOIN tblpurchase_order rr
+               ON rr.lrefno = lg.lrefno
+              AND CAST(COALESCE(rr.lmain_id, 0) AS SIGNED) = CAST(COALESCE(receive_item.lmain_id, 0) AS SIGNED)
              WHERE lg.linvent_id IN ({$placeholders})
                AND lg.ltransaction_type = 'Receiving'
                AND COALESCE(lg.lin, 0) > 0
@@ -1225,6 +1227,12 @@ SQL;
             $receives[$session] = [
                 'quantity' => (float) ($receive['receive_quantity'] ?? 0),
                 'date' => (string) ($receive['receive_date'] ?? ''),
+                'reference' => (string) ($receive['receive_reference'] ?? ''),
+                'reference_id' => (string) ($receive['receive_reference_id'] ?? ''),
+                'created_at' => (string) ($receive['receive_created_at'] ?? ''),
+                'created_at_source' => (string) ($receive['receive_created_at_source'] ?? ''),
+                'is_backdated' => $receive['receive_is_backdated'] === null ? null : (int) $receive['receive_is_backdated'],
+                'status' => (string) ($receive['receive_status'] ?? ''),
             ];
         }
 
@@ -1282,6 +1290,12 @@ SQL;
 
             $row['last_receive_quantity'] = (float) ($lastReceive['quantity'] ?? 0);
             $row['last_receive_date'] = (string) ($lastReceive['date'] ?? '');
+            $row['last_receive_reference'] = (string) ($lastReceive['reference'] ?? '');
+            $row['last_receive_reference_id'] = (string) ($lastReceive['reference_id'] ?? '');
+            $row['last_receive_created_at'] = (string) ($lastReceive['created_at'] ?? '');
+            $row['last_receive_created_at_source'] = (string) ($lastReceive['created_at_source'] ?? '');
+            $row['last_receive_is_backdated'] = $lastReceive['is_backdated'] ?? null;
+            $row['last_receive_status'] = (string) ($lastReceive['status'] ?? '');
             $row['incident_report_count'] = $incidents[$session] ?? 0;
             $row['return_report_count'] = $returns[$session] ?? 0;
             $row['last_price_update'] = $lastPriceUpdate;
@@ -1350,7 +1364,7 @@ FROM (
      AND ii.litemcode = inv_code.litemcode
     WHERE inv.lstatus IS NOT NULL
       AND LOWER(inv.lstatus) NOT IN ('cancelled', 'canceled')
-      AND YEAR(inv.ldate) BETWEEN 2018 AND YEAR(CURRENT_DATE())
+      AND YEAR(inv.ldate) BETWEEN 2013 AND YEAR(CURRENT_DATE())
       AND COALESCE(inv_session.lsession, inv_item_ref.lsession, inv_item_id.lsession, inv_code.lsession) IN ({$placeholders})
     GROUP BY item_session, YEAR(inv.ldate)
 
@@ -1387,7 +1401,7 @@ FROM (
      AND dri.litemcode = dr_code.litemcode
     WHERE dr.lstatus IS NOT NULL
       AND LOWER(dr.lstatus) NOT IN ('cancelled', 'canceled')
-      AND YEAR(dr.ldate) BETWEEN 2018 AND YEAR(CURRENT_DATE())
+      AND YEAR(dr.ldate) BETWEEN 2013 AND YEAR(CURRENT_DATE())
       AND COALESCE(dr.lcustomer_name, '') NOT IN ('TRANSFER TO ITALY A', 'MISSING STOCKS', 'TRANSR')
       AND COALESCE(dr.lcustomer_name, '') NOT LIKE '%TRANSFER%'
       AND COALESCE(dr_session.lsession, dr_item_ref.lsession, dr_item_id.lsession, dr_code.lsession) IN ({$placeholders})
@@ -1423,7 +1437,7 @@ SQL;
         $currentYear = (int) date('Y');
         $years = [];
 
-        for ($year = $currentYear; $year >= 2018; $year--) {
+        for ($year = $currentYear; $year >= 2013; $year--) {
             $years[] = (string) $year;
         }
 

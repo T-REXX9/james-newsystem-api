@@ -101,6 +101,8 @@ require __DIR__ . '/Support/PurchasedItemMatcher.php';
 require __DIR__ . '/Support/ReturnToSupplierStockPolicy.php';
 require __DIR__ . '/Support/AuditTrailWriter.php';
 require __DIR__ . '/Support/RecordImageValidator.php';
+require __DIR__ . '/Support/ReceivingDateSql.php';
+require __DIR__ . '/Support/ReferenceDateSql.php';
 require __DIR__ . '/Support/VipDocumentDiscount.php';
 require __DIR__ . '/Support/VipStanding.php';
 require __DIR__ . '/Support/SalesInquiryUnitPriceGate.php';
