@@ -635,7 +635,7 @@ SQL;
         $pdo->beginTransaction();
         try {
             $items = is_array($payload['items'] ?? null) ? $payload['items'] : [];
-            (new PurchaseWorkflowGuard($pdo))->assertItemsAvailable($items);
+            $workflowNotice = (new PurchaseWorkflowGuard($pdo))->findActiveWorkflowNotice($items);
 
             $refno = (string) ($payload['refno'] ?? $this->generateRefno());
             $prNumber = trim((string) ($payload['pr_number'] ?? ''));
@@ -692,6 +692,7 @@ SQL;
         if ($record === null) {
             throw new RuntimeException('Failed to create purchase request');
         }
+        if ($workflowNotice !== null) $record['workflow_notice'] = $workflowNotice;
         return $record;
     }
 
@@ -803,7 +804,7 @@ SQL;
         }
 
         $pdo = $this->db->pdo();
-        (new PurchaseWorkflowGuard($pdo))->assertItemsAvailable([$payload]);
+        $workflowNotice = (new PurchaseWorkflowGuard($pdo))->findActiveWorkflowNotice([$payload]);
         $this->insertPrItem($pdo, $mainId, $prRefno, $payload);
         $this->clearReorderReportCache();
 
@@ -840,6 +841,7 @@ SQL;
         if ($row === false) {
             throw new RuntimeException('Failed to add purchase request item');
         }
+        if ($workflowNotice !== null) $row['workflow_notice'] = $workflowNotice;
         return $row;
     }
 

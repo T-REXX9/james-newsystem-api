@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Repositories;
 
 use PDO;
-use RuntimeException;
 
 final class PurchaseWorkflowGuard
 {
@@ -16,7 +15,7 @@ final class PurchaseWorkflowGuard
     /**
      * @param array<int, array<string, mixed>> $items
      */
-    public function assertItemsAvailable(array $items): void
+    public function findActiveWorkflowNotice(array $items): ?string
     {
         $itemCodes = [];
         $itemSessions = [];
@@ -26,7 +25,7 @@ final class PurchaseWorkflowGuard
             if ($code !== '') $itemCodes[$code] = true;
             if ($session !== '') $itemSessions[$session] = true;
         }
-        if ($itemCodes === [] && $itemSessions === []) return;
+        if ($itemCodes === [] && $itemSessions === []) return null;
 
         [$identifierSql, $params] = $this->buildIdentifierWhere(
             array_keys($itemCodes),
@@ -93,14 +92,12 @@ SQL;
             $conflict = $this->fetchConflict($poSql, $params);
         }
 
-        if ($conflict === null) return;
+        if ($conflict === null) return null;
 
         $item = trim((string) ($conflict['item_code'] ?: $conflict['item_session']));
         $stage = (string) ($conflict['stage'] ?? 'purchasing');
         $workflowNo = (string) ($conflict['workflow_no'] ?? $conflict['workflow_refno'] ?? '');
-        throw new RuntimeException(
-            sprintf('%s already has an active %s workflow (%s). Complete or cancel it before creating another request.', $item, $stage, $workflowNo)
-        );
+        return sprintf('%s already has an active %s workflow (%s).', $item, $stage, $workflowNo);
     }
 
     /** @return array{0:string,1:array<string,string>} */
