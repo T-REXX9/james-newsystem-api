@@ -33,6 +33,8 @@ final class FreightChargesRepository
         $params = ['main_id' => $mainId];
         $where = ['CAST(COALESCE(deb.lmain_id, 0) AS SIGNED) = :main_id'];
 
+        $trimmedSearch = trim($search);
+        $isDebitMemoSearch = preg_match('/^DM[\w-]+$/i', $trimmedSearch) === 1;
         $month = trim($month);
         $year = trim($year);
         if ($month === '') {
@@ -42,12 +44,11 @@ final class FreightChargesRepository
             $year = date('Y');
         }
 
-        if (preg_match('/^\d{2}$/', $month) === 1 && preg_match('/^\d{4}$/', $year) === 1) {
+        if (!$isDebitMemoSearch && preg_match('/^\d{2}$/', $month) === 1 && preg_match('/^\d{4}$/', $year) === 1) {
             $params['month_filter'] = sprintf('%s-%s', $year, $month);
             $where[] = 'DATE_FORMAT(COALESCE(deb.ldate, deb.ldatetime), "%Y-%m") = :month_filter';
         }
 
-        $trimmedSearch = trim($search);
         if ($trimmedSearch !== '') {
             $searchLike = '%' . $trimmedSearch . '%';
             $isReferenceLike = preg_match('/[\d-]/', $trimmedSearch) === 1;
@@ -56,9 +57,11 @@ final class FreightChargesRepository
             $params['search_tracking'] = $searchLike;
 
             $searchParts = [
+                'COALESCE(deb.lrefno, "") LIKE :search_refno',
                 'COALESCE(deb.ldm_no, "") LIKE :search_dm',
                 'COALESCE(deb.ltrackingno, "") LIKE :search_tracking',
             ];
+            $params['search_refno'] = $searchLike;
 
             // Match customer names for text-based searches.
             if (!$isReferenceLike) {
@@ -234,7 +237,7 @@ SQL;
         ];
     }
 
-    public function getByRefno(string $refno): ?array
+    public function getByRefno(string $refno, int $mainId): ?array
     {
         $transactionNumberSql = $this->linkedTransactionNumberSql();
         $sql = <<<SQL
@@ -262,12 +265,17 @@ SELECT
     COALESCE(acc.llname, '') AS userlname
 FROM tbldebit_memo deb
 LEFT JOIN tblaccount acc ON CAST(acc.lid AS CHAR) = CAST(deb.luserid AS CHAR)
-WHERE deb.lrefno = :refno
+WHERE CAST(COALESCE(deb.lmain_id, 0) AS SIGNED) = :main_id
+  AND (deb.lrefno = :refno OR deb.ldm_no = :dm_no)
+ORDER BY CASE WHEN deb.lrefno = :exact_refno THEN 0 ELSE 1 END
 LIMIT 1
 SQL;
 
         $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->bindValue('main_id', $mainId, PDO::PARAM_INT);
         $stmt->bindValue('refno', $refno, PDO::PARAM_STR);
+        $stmt->bindValue('dm_no', $refno, PDO::PARAM_STR);
+        $stmt->bindValue('exact_refno', $refno, PDO::PARAM_STR);
         $stmt->execute();
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -404,7 +412,7 @@ SQL;
             throw $e;
         }
 
-        $created = $this->getByRefno($refno);
+        $created = $this->getByRefno($refno, $mainId);
         if ($created === null) {
             throw new RuntimeException('Failed to load created freight charge record');
         }
@@ -414,7 +422,7 @@ SQL;
 
     public function update(int $mainId, string $refno, array $payload): ?array
     {
-        $existing = $this->getByRefno($refno);
+        $existing = $this->getByRefno($refno, $mainId);
         if ($existing === null) {
             return null;
         }
@@ -566,12 +574,12 @@ SQL;
             }
         }
 
-        return $this->getByRefno($refno);
+        return $this->getByRefno($refno, $mainId);
     }
 
     public function delete(int $mainId, string $refno): bool
     {
-        $existing = $this->getByRefno($refno);
+        $existing = $this->getByRefno($refno, $mainId);
         if ($existing === null) {
             return false;
         }
@@ -610,7 +618,7 @@ SQL;
 
     public function action(int $mainId, string $userId, string $refno, string $action): array
     {
-        $existing = $this->getByRefno($refno);
+        $existing = $this->getByRefno($refno, $mainId);
         if ($existing === null) {
             throw new RuntimeException('Freight charge record not found');
         }

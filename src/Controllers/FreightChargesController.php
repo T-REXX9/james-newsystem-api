@@ -58,11 +58,15 @@ final class FreightChargesController
     public function show(array $params = [], array $query = [], array $body = []): array
     {
         $refno = trim((string) ($params['refno'] ?? ''));
+        $mainId = (int) ($query['main_id'] ?? 0);
         if ($refno === '') {
             throw new HttpException(422, 'refno is required');
         }
+        if ($mainId <= 0) {
+            throw new HttpException(422, 'main_id is required');
+        }
 
-        $item = $this->repo->getByRefno($refno);
+        $item = $this->repo->getByRefno($refno, $mainId);
         if ($item === null) {
             throw new HttpException(404, 'Freight charge record not found');
         }
