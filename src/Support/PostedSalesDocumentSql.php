@@ -45,6 +45,7 @@ posted_sales_current_month_documents AS (
         invoice_sales.customer_id,
         invoice_sales.customer_name,
         invoice_sales.sale_date,
+        MAX(invoice_sales.sale_at) AS sale_at,
         SUM(invoice_sales.amount) AS amount,
         COUNT(*) AS document_count
     FROM (
@@ -53,6 +54,7 @@ posted_sales_current_month_documents AS (
             l.lcustomerid AS customer_id,
             NULLIF(TRIM(l.lcustomer_name), '') AS customer_name,
             DATE(l.ldate) AS sale_date,
+            MAX(l.ldate) AS sale_at,
             GREATEST(
                 SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)
                     * CASE WHEN LOWER(COALESCE(l.ltax_type, '')) = 'exclusive' THEN 1.12 ELSE 1 END)
@@ -80,6 +82,7 @@ posted_sales_current_month_documents AS (
         l.lcustomerid AS customer_id,
         NULLIF(TRIM(l.lcustomer_name), '') AS customer_name,
         DATE(l.ldate) AS sale_date,
+        MAX(l.ldate) AS sale_at,
         SUM(COALESCE(i.lqty, 0) * COALESCE(i.lprice, 0)) AS amount,
         COUNT(DISTINCT l.lrefno) AS document_count
     FROM tbldelivery_receipt l
@@ -97,6 +100,7 @@ sales_report_current_month AS (
         MAX(customer_name) AS customer_name,
         MIN(sale_date) AS first_sale_date,
         MAX(sale_date) AS last_sale_date,
+        MAX(sale_at) AS last_sale_at,
         SUM(amount) AS current_month_sales,
         SUM(document_count) AS document_count
     FROM posted_sales_current_month_documents

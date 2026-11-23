@@ -750,6 +750,7 @@ ledger_monthly AS (
         DATE_FORMAT(lg.ldatetime, '%Y-%m') AS purchase_month,
         DATE(MIN(lg.ldatetime)) AS first_purchase_date_raw,
         DATE(MAX(lg.ldatetime)) AS last_purchase_date_raw,
+        MAX(lg.ldatetime) AS last_purchase_at_raw,
         COUNT(DISTINCT lg.lrefno) AS purchase_count,
         COUNT(CASE WHEN lg.ldatetime >= :priority_from_date THEN lg.lid END) AS priority_transaction_count,
         COUNT(lg.lid) AS ledger_transaction_count,
@@ -783,6 +784,7 @@ ledger_summary AS (
         lcustomerid, lmainid,
         MIN(first_purchase_date_raw) AS first_purchase_date_raw,
         MAX(last_purchase_date_raw) AS last_purchase_date_raw,
+        MAX(last_purchase_at_raw) AS last_purchase_at_raw,
         SUM(purchase_count) AS purchase_count,
         SUM(priority_transaction_count) AS priority_transaction_count,
         SUM(ledger_transaction_count) AS ledger_transaction_count,
@@ -808,6 +810,7 @@ txn_monthly AS (
         DATE_FORMAT(tr.ldate, '%Y-%m') AS purchase_month,
         DATE(MIN(tr.ldate)) AS first_purchase_date_raw,
         DATE(MAX(tr.ldate)) AS last_purchase_date_raw,
+        MAX(tr.ldate) AS last_purchase_at_raw,
         COUNT(tr.lid) AS purchase_count,
         COUNT(CASE WHEN tr.ldate >= :txn_priority_from_date THEN tr.lid END) AS priority_transaction_count,
         COUNT(CASE WHEN tr.ldate < :txn_historical_before_date THEN tr.lid END) AS historical_transaction_count,
@@ -842,6 +845,7 @@ txn_summary AS (
         lcustomerid, lmainid,
         MIN(first_purchase_date_raw) AS first_purchase_date_raw,
         MAX(last_purchase_date_raw) AS last_purchase_date_raw,
+        MAX(last_purchase_at_raw) AS last_purchase_at_raw,
         SUM(purchase_count) AS purchase_count,
         SUM(priority_transaction_count) AS priority_transaction_count,
         SUM(purchase_count) AS transaction_count,
@@ -956,6 +960,7 @@ priority_list_override_activity AS (
         t.main_id,
         t.contact_id,
         m.body,
+        m.created_at,
         ROW_NUMBER() OVER (
             PARTITION BY t.main_id, t.contact_id
             ORDER BY m.created_at DESC, m.id DESC
@@ -974,6 +979,7 @@ latest_priority_list_override AS (
     SELECT
         main_id,
         contact_id,
+        created_at AS override_created_at,
         CASE WHEN body LIKE 'Priority List Override: Enabled\nReason: %' THEN 1 ELSE 0 END AS is_overridden,
         CASE
             WHEN body LIKE 'Priority List Override: Enabled\nReason: %'
@@ -986,6 +992,7 @@ latest_priority_list_override AS (
 SELECT
     p.lsessionid AS id,
     COALESCE(priority_override.is_overridden, 0) AS is_overridden,
+    priority_override.override_created_at,
     COALESCE(priority_override.override_reason, '') AS override_reason,
     EXISTS (SELECT 1 FROM daily_call_do_not_contact_flags dnc WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid) AS do_not_contact,
     COALESCE((SELECT dnc.reason FROM daily_call_do_not_contact_flags dnc WHERE dnc.main_id = p.lmain_id AND dnc.contact_id = p.lsessionid LIMIT 1), '') AS do_not_contact_reason,
@@ -1069,6 +1076,13 @@ CASE
         WHEN ledger_summary.last_purchase_date_raw >= txn_summary.last_purchase_date_raw THEN ledger_summary.last_purchase_date_raw
         ELSE txn_summary.last_purchase_date_raw
     END AS last_purchase_date_raw,
+    CASE
+        WHEN ledger_summary.last_purchase_at_raw IS NULL AND txn_summary.last_purchase_at_raw IS NULL THEN sales_report_current_month.last_sale_at
+        WHEN ledger_summary.last_purchase_at_raw IS NULL THEN txn_summary.last_purchase_at_raw
+        WHEN txn_summary.last_purchase_at_raw IS NULL THEN ledger_summary.last_purchase_at_raw
+        WHEN ledger_summary.last_purchase_at_raw >= txn_summary.last_purchase_at_raw THEN ledger_summary.last_purchase_at_raw
+        ELSE txn_summary.last_purchase_at_raw
+    END AS last_purchase_at_raw,
     COALESCE(ledger_summary.purchase_count, 0) + COALESCE(txn_summary.purchase_count, 0) + CASE WHEN COALESCE(ledger_summary.purchase_count, 0) + COALESCE(txn_summary.purchase_count, 0) = 0 THEN COALESCE(sales_report_current_month.document_count, 0) ELSE 0 END AS purchase_count,
     CASE
         WHEN COALESCE(sales_report_current_month.document_count, 0) > 0 THEN GREATEST(
@@ -1367,6 +1381,11 @@ SQL;
             $priorityTransactionCount = (int) ($row['priority_transaction_count'] ?? 0);
             $ledgerTransactionCount = (int) ($row['ledger_transaction_count'] ?? 0);
             $historicalTransactionCount = (int) ($row['historical_transaction_count'] ?? 0);
+            // A purchase after the override makes the customer Priority again.
+            $lastPurchaseAt = (string) ($row['last_purchase_at_raw'] ?? '');
+            $overrideCreatedAt = (string) ($row['override_created_at'] ?? '');
+            $isOverridden = (bool) ($row['is_overridden'] ?? false)
+                && !($lastPurchaseAt !== '' && $overrideCreatedAt !== '' && $lastPurchaseAt > $overrideCreatedAt);
             $hasPriorityPurchaseDate = $rawDate !== '' && $rawDate >= $normalizedFromDate;
             $listCategory = ($priorityTransactionCount > 0 || $hasPriorityPurchaseDate)
                 ? 'priority'
@@ -1395,10 +1414,10 @@ SQL;
                 : ($recentThreeMonthSales > 0 ? 100 : 0);
             return [
                 'id' => (string) ($row['id'] ?? ''),
-                'isOverridden' => (bool) ($row['is_overridden'] ?? false),
-                'is_overridden' => (bool) ($row['is_overridden'] ?? false),
-                'overrideReason' => $this->cleanDisplayText($row['override_reason'] ?? '', ''),
-                'override_reason' => $this->cleanDisplayText($row['override_reason'] ?? '', ''),
+                'isOverridden' => $isOverridden,
+                'is_overridden' => $isOverridden,
+                'overrideReason' => $isOverridden ? $this->cleanDisplayText($row['override_reason'] ?? '', '') : '',
+                'override_reason' => $isOverridden ? $this->cleanDisplayText($row['override_reason'] ?? '', '') : '',
                 'shopName' => (string) ($row['shop_name'] ?? 'Unnamed Shop'),
                 'isStarred' => (bool) ($row['is_starred'] ?? false),
                 'is_starred' => (bool) ($row['is_starred'] ?? false),
