@@ -28,6 +28,10 @@ $checks = [
         && str_contains($vipDiscount, 'if ($pdo->inTransaction())')
         && strpos($orderSlip, '->ensureTable();') < strpos($orderSlip, '$pdo->beginTransaction();')
         && strpos($invoice, '->ensureTable();') < strpos($invoice, '$pdo->beginTransaction();'),
+    'Order Slip VIP redemption is persisted before its creation transaction commits' => strpos($orderSlip, '$vipRepository->copyTo(') < strpos($orderSlip, '$pdo->commit();')
+        && strpos($orderSlip, '$vipRepository->upsertFromPayload(') < strpos($orderSlip, '$pdo->commit();'),
+    'Invoice VIP redemption is persisted before its creation transaction commits' => strpos($invoice, '->copyTo(') < strpos($invoice, '$pdo->commit();')
+        && strpos($invoice, '->upsertFromPayload(') < strpos($invoice, '$pdo->commit();'),
     'legacy number generator writes happen before document transactions' => strpos($orderSlip, 'insertNumberGenerator(\'Order Slip\', $nextNo);') < strpos($orderSlip, '$pdo->beginTransaction();')
         && strpos($invoice, '$this->allocateNextInvoiceNumber($mainId)') < strpos($invoice, '$pdo->beginTransaction();'),
 ];

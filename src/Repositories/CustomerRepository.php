@@ -952,6 +952,7 @@ SQL;
             'price_code' => $rawPriceGroup !== '' ? $rawPriceGroup : null,
             'discount_code' => $discountCode,
             'vip_status' => $vipStatus,
+            'vip_silver_discount_redeemed_months' => $vipSilverDiscountRedeemedMonths,
             'vip_one_time_discount_threshold' => (float) $vipConfig['one_time_discount_threshold'],
             'vip_unlimited_discount_threshold' => (float) $vipConfig['unlimited_discount_threshold'],
             'aging' => $aging,

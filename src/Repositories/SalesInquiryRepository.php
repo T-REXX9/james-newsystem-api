@@ -1253,10 +1253,6 @@ SQL;
         array $inquiry,
         VipDocumentDiscountRepository $vipRepository
     ): void {
-        if ($vipRepository->get('sales_inquiry', $inquiryRefno) !== null) {
-            return;
-        }
-
         $vipRepository->upsertFromPayload(
             $mainId,
             'sales_inquiry',
@@ -1264,17 +1260,18 @@ SQL;
             (string) ($inquiry['contact_id'] ?? ''),
             (string) ($inquiry['sales_date'] ?? ''),
             (float) ($inquiry['grand_total'] ?? 0),
-            $this->resolveVipPayloadForConversion($mainId, $inquiryRefno, $inquiry)
+            $this->resolveVipPayloadForInquiry($mainId, $inquiryRefno, $inquiry)
         );
     }
 
     /**
-     * Resolve missing legacy inquiry VIP data from posted sales and the live
-     * inquiries in its benefit month. Conversion must not trust client data.
+     * Resolve inquiry VIP data from posted sales and actual Silver redemptions.
+     * Pending inquiries never reserve the one-time benefit. Conversion must
+     * not trust client data or stale inquiry VIP data.
      * @param array<string, mixed> $inquiry
      * @return array{vip_applied:int,vip_tier:string,vip_percentage:float}
      */
-    private function resolveVipPayloadForConversion(int $mainId, string $inquiryRefno, array $inquiry): array
+    public function resolveVipPayloadForInquiry(int $mainId, string $inquiryRefno, array $inquiry): array
     {
         $salesDate = $this->normalizeDate((string) ($inquiry['sales_date'] ?? date('Y-m-d')));
         $salesMonth = new \DateTimeImmutable(substr($salesDate, 0, 7) . '-01');
@@ -1318,25 +1315,9 @@ SQL;
         );
         $applied = $tier === 'gold';
         if ($tier === 'silver') {
-            $firstInquiry = $this->db->pdo()->prepare(
-                "SELECT iq.lrefno
-                 FROM tblinquiry iq
-                 WHERE iq.lmain_id = :main_id AND iq.lcustomerid = :customer_id
-                   AND COALESCE(iq.IsCancel, 0) = 0
-                   AND LOWER(TRIM(COALESCE(iq.lsubmitstat, ''))) <> 'cancelled'
-                   AND DATE_FORMAT(iq.ldate, '%Y-%m') = :benefit_month
-                   AND NOT EXISTS (
-                       SELECT 1 FROM sales_inquiry_replacement_links link
-                       WHERE link.main_id = iq.lmain_id AND link.source_refno = iq.lrefno
-                   )
-                 ORDER BY iq.ldate ASC, iq.lrefno ASC LIMIT 1"
-            );
-            $firstInquiry->execute([
-                'main_id' => $mainId,
-                'customer_id' => (string) ($inquiry['contact_id'] ?? ''),
-                'benefit_month' => $salesMonth->format('Y-m'),
-            ]);
-            $applied = (string) $firstInquiry->fetchColumn() === $inquiryRefno;
+            $redeemedMonths = (new VipDocumentDiscountRepository($this->db))
+                ->redeemedSilverBenefitMonths($mainId, (string) ($inquiry['contact_id'] ?? ''));
+            $applied = !in_array($salesMonth->format('Y-m'), $redeemedMonths, true);
         }
 
         return [
