@@ -253,8 +253,23 @@ SQL;
             throw new RuntimeException('Only pending adjustments can be edited');
         }
 
+        if (array_key_exists('type', $payload)) {
+            $type = trim((string) $payload['type']);
+            if (!in_array($type, ['Debit', 'Credit'], true)) {
+                throw new RuntimeException('type must be Debit or Credit');
+            }
+            if ((string) ($existing['ltype'] ?? '') === 'Zero-Out') {
+                throw new RuntimeException('Zero-Out adjustments cannot change type');
+            }
+        }
+
         $fields = [];
         $params = ['refno' => $refno];
+
+        if (array_key_exists('type', $payload)) {
+            $fields[] = 'ltype = :ltype';
+            $params['ltype'] = trim((string) $payload['type']);
+        }
 
         if (array_key_exists('customer_id', $payload)) {
             $customerId = trim((string) $payload['customer_id']);
