@@ -833,11 +833,7 @@ SQL);
                 $grandPrice = 0;
             }
 
-            // 5. Apply tax (matching old system: Exclusive means add 12% VAT)
-            $taxType = strtolower(trim((string) ($cm['ltax_type'] ?? '')));
-            if ($taxType === 'exclusive') {
-                $grandPrice = $grandPrice * 1.12;
-            }
+            // Returned item prices already include VAT, so the credit memo does not add VAT.
 
             // 6. Update status to Posted
             $updateStmt = $pdo->prepare("UPDATE tblcredit_memo SET lstatus = 'Posted' WHERE lrefno = :refno");
