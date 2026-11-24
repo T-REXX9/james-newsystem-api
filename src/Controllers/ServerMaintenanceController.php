@@ -12,6 +12,7 @@ use App\Services\BackupDestinationLister;
 use App\Services\CorporateDumpImportService;
 use App\Services\CorporateDumpUploadStore;
 use App\Services\DatabaseBackupService;
+use App\Services\FreightChargesBackupService;
 use App\Support\Exceptions\HttpException;
 
 final class ServerMaintenanceController
@@ -23,7 +24,9 @@ final class ServerMaintenanceController
         private readonly BackupDestinationLister $destinationLister,
         private readonly AutomaticBackupRunner $automaticBackupRunner,
         private readonly CorporateDumpImportService $corporateDumpImportService,
-        private readonly CorporateDumpUploadStore $corporateDumpUploadStore
+        private readonly CorporateDumpUploadStore $corporateDumpUploadStore,
+        private readonly FreightChargesBackupService $freightChargesBackupService,
+        private readonly CorporateDumpUploadStore $freightChargesDumpUploadStore
     ) {
     }
 
@@ -43,7 +46,117 @@ final class ServerMaintenanceController
                 'chunk_max_bytes' => CorporateDumpUploadStore::CHUNK_MAX_BYTES,
                 'safety' => 'Never drops, truncates, or deletes live data. Inserts new rows using shared columns; local-only tables and columns stay untouched. Existing product prices are preserved unless you choose to overwrite them from the dump.',
             ],
+            'freight_charges_backup' => [
+                'supported_extension' => '.jsonl.gz',
+                'max_bytes' => CorporateDumpUploadStore::MAX_BYTES,
+                'chunk_max_bytes' => CorporateDumpUploadStore::CHUNK_MAX_BYTES,
+                'safety' => 'Exports all Freight Charges records and item rows. Restore inserts only missing rows, regenerates internal row IDs, never overwrites existing freight data, and does not modify customer ledger entries.',
+            ],
         ];
+    }
+
+    public function downloadFreightChargesBackup(array $params = [], array $query = [], array $body = []): ?array
+    {
+        $this->assertMasterUser($body);
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(0);
+        }
+        try {
+            $dump = $this->freightChargesBackupService->createDumpGzipFile($this->backupDirectory);
+        } catch (\Throwable $error) {
+            throw new HttpException(500, $error->getMessage());
+        }
+        $path = $dump['path'];
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            @unlink($path);
+            throw new HttpException(500, 'Unable to read generated Freight Charges backup');
+        }
+
+        http_response_code(200);
+        header('Content-Type: application/gzip');
+        header('Content-Length: ' . (string) $dump['bytes']);
+        header('Content-Disposition: attachment; filename="' . $dump['filename'] . '"');
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+        header('Pragma: no-cache');
+        header('X-Content-Type-Options: nosniff');
+        header('Access-Control-Allow-Origin: *');
+        header('Access-Control-Allow-Headers: Content-Type, Authorization');
+        header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
+        Response::flush();
+        try {
+            while (!feof($handle)) {
+                $chunk = fread($handle, 1024 * 64);
+                if ($chunk === false || $chunk === '') break;
+                echo $chunk;
+                Response::flush();
+            }
+        } finally {
+            fclose($handle);
+            @unlink($path);
+        }
+        return null;
+    }
+
+    public function createFreightChargesDumpUpload(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+        $filename = trim((string) ($body['filename'] ?? ''));
+        $bytes = (int) ($body['bytes'] ?? 0);
+        if ($filename === '') throw new HttpException(422, 'filename is required');
+        try {
+            return $this->freightChargesDumpUploadStore->createSession($filename, $bytes);
+        } catch (\Throwable $error) {
+            throw new HttpException(422, $error->getMessage());
+        }
+    }
+
+    public function appendFreightChargesDumpChunk(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+        $chunk = $body['__raw_body'] ?? null;
+        if (!is_string($chunk) || $chunk === '') throw new HttpException(422, 'Chunk body is required');
+        try {
+            return $this->freightChargesDumpUploadStore->appendChunk(trim((string) ($params['uploadId'] ?? '')), $chunk);
+        } catch (\Throwable $error) {
+            throw new HttpException(422, $error->getMessage());
+        }
+    }
+
+    public function restoreFreightChargesDumpUpload(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+        $uploadId = trim((string) ($params['uploadId'] ?? ''));
+        $filename = null;
+        $bytes = null;
+        if (function_exists('set_time_limit')) @set_time_limit(0);
+        try {
+            $finalized = $this->freightChargesDumpUploadStore->finalize($uploadId);
+            $filename = $finalized['filename'];
+            $bytes = $finalized['bytes'];
+            $report = $this->freightChargesBackupService->restoreDumpGzipFile($finalized['path']);
+            $this->freightChargesDumpUploadStore->deleteSession($uploadId);
+            return ['filename' => $filename, 'bytes' => $bytes, 'restore' => $report];
+        } catch (HttpException $error) {
+            throw $error;
+        } catch (\Throwable $error) {
+            error_log(json_encode([
+                'event' => 'freight_charges_restore_failed',
+                'upload_id' => $uploadId,
+                'filename' => $filename,
+                'bytes' => $bytes,
+                'error_class' => $error::class,
+                'error_message' => $error->getMessage(),
+            ], JSON_UNESCAPED_SLASHES));
+            throw new HttpException(422, $error->getMessage());
+        }
+    }
+
+    public function discardFreightChargesDumpUpload(array $params = [], array $query = [], array $body = []): array
+    {
+        $this->assertMasterUser($body);
+        $this->freightChargesDumpUploadStore->deleteSession(trim((string) ($params['uploadId'] ?? '')));
+        return ['discarded' => true];
     }
 
     public function createCorporateDumpUpload(array $params = [], array $query = [], array $body = []): array

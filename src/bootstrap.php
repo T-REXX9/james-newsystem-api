@@ -72,6 +72,7 @@ use App\Services\DatabaseBackupService;
 use App\Services\AutomaticBackupSettingsStore;
 use App\Services\CorporateDumpImportService;
 use App\Services\CorporateDumpUploadStore;
+use App\Services\FreightChargesBackupService;
 use App\Services\AutomaticBackupRunner;
 use App\Services\AutomaticBackupNotifier;
 use App\Services\BackupDestinationLister;
@@ -252,6 +253,7 @@ require __DIR__ . '/Services/DatabaseBackupService.php';
 require __DIR__ . '/Services/AutomaticBackupSettings.php';
 require __DIR__ . '/Services/CorporateDumpImportService.php';
 require __DIR__ . '/Services/CorporateDumpUploadStore.php';
+require __DIR__ . '/Services/FreightChargesBackupService.php';
 require __DIR__ . '/Services/AutomaticBackupSettingsStore.php';
 require __DIR__ . '/Services/AutomaticBackupOrganizer.php';
 require __DIR__ . '/Services/AutomaticBackupRunner.php';
@@ -419,12 +421,15 @@ function app_router(): Router
     $customerMergeController = new CustomerMergeController($customerMergeService);
     $serverMaintenanceBackupDir = dirname(__DIR__) . '/storage/database-backups';
     $corporateDumpUploadDir = dirname(__DIR__) . '/storage/corporate-dumps';
+    $freightChargesDumpUploadDir = dirname(__DIR__) . '/storage/freight-charges-dumps';
     $automaticBackupStore = new AutomaticBackupSettingsStore(
         dirname(__DIR__) . '/storage/automatic-backup-settings.json'
     );
     $databaseBackupService = new DatabaseBackupService($config);
     $corporateDumpImportService = new CorporateDumpImportService($config);
     $corporateDumpUploadStore = new CorporateDumpUploadStore($corporateDumpUploadDir);
+    $freightChargesBackupService = new FreightChargesBackupService($db);
+    $freightChargesDumpUploadStore = new CorporateDumpUploadStore($freightChargesDumpUploadDir, ['.jsonl.gz']);
     $automaticBackupNotifier = new AutomaticBackupNotifier($db);
     $automaticBackupRunner = new AutomaticBackupRunner(
         $automaticBackupStore,
@@ -442,7 +447,9 @@ function app_router(): Router
         new BackupDestinationLister(BackupDestinationLister::defaultRoots()),
         $automaticBackupRunner,
         $corporateDumpImportService,
-        $corporateDumpUploadStore
+        $corporateDumpUploadStore,
+        $freightChargesBackupService,
+        $freightChargesDumpUploadStore
     );
 
     $requireBearerAuth = static function (callable $handler) use ($tokenService, $authRepo): callable {
@@ -1464,6 +1471,7 @@ function app_router(): Router
     // Server Maintenance (Master User only)
     $router->get('/api/v1/server-maintenance/status', $requireBearerAuthWithClaims([$serverMaintenanceController, 'status']));
     $router->get('/api/v1/server-maintenance/database-backup', $requireBearerAuthWithClaims([$serverMaintenanceController, 'downloadDatabaseBackup']));
+    $router->get('/api/v1/server-maintenance/freight-charges-backup', $requireBearerAuthWithClaims([$serverMaintenanceController, 'downloadFreightChargesBackup']));
     $router->get('/api/v1/server-maintenance/automatic-backup', $requireBearerAuthWithClaims([$serverMaintenanceController, 'getAutomaticBackup']));
     $router->patch('/api/v1/server-maintenance/automatic-backup', $requireMasterUser([$serverMaintenanceController, 'updateAutomaticBackup']));
     $router->get('/api/v1/server-maintenance/backup-destinations', $requireBearerAuthWithClaims([$serverMaintenanceController, 'listBackupDestinations']));
@@ -1471,6 +1479,10 @@ function app_router(): Router
     $router->post('/api/v1/server-maintenance/corporate-dump/uploads', $requireMasterUser([$serverMaintenanceController, 'createCorporateDumpUpload']));
     $router->post('/api/v1/server-maintenance/corporate-dump/uploads/{uploadId}/chunks', $requireMasterUser([$serverMaintenanceController, 'appendCorporateDumpChunk']));
     $router->post('/api/v1/server-maintenance/corporate-dump/uploads/{uploadId}/import', $requireMasterUser([$serverMaintenanceController, 'importCorporateDumpUpload']));
+    $router->post('/api/v1/server-maintenance/freight-charges-backup/uploads', $requireMasterUser([$serverMaintenanceController, 'createFreightChargesDumpUpload']));
+    $router->post('/api/v1/server-maintenance/freight-charges-backup/uploads/{uploadId}/chunks', $requireMasterUser([$serverMaintenanceController, 'appendFreightChargesDumpChunk']));
+    $router->post('/api/v1/server-maintenance/freight-charges-backup/uploads/{uploadId}/restore', $requireMasterUser([$serverMaintenanceController, 'restoreFreightChargesDumpUpload']));
+    $router->delete('/api/v1/server-maintenance/freight-charges-backup/uploads/{uploadId}', $requireMasterUser([$serverMaintenanceController, 'discardFreightChargesDumpUpload']));
     $router->post('/api/v1/profit-protection/validate-items', $requireBearerAuthWithClaims([$profitProtectionController, 'validateItems']));
     $router->post('/api/v1/profit-protection/overrides', $requireActionAuth([$profitProtectionController, 'createOverride'], 'Profit Protection', 'add'));
     $router->get('/api/v1/profit-protection/overrides', [$profitProtectionController, 'listOverrides']);

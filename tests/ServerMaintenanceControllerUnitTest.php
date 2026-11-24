@@ -14,6 +14,8 @@ require __DIR__ . '/../src/Services/AutomaticBackupRunner.php';
 require __DIR__ . '/../src/Services/BackupDestinationLister.php';
 require __DIR__ . '/../src/Services/CorporateDumpImportService.php';
 require __DIR__ . '/../src/Services/CorporateDumpUploadStore.php';
+require __DIR__ . '/../src/Services/FreightChargesBackupService.php';
+require __DIR__ . '/../src/Database.php';
 require __DIR__ . '/../src/Controllers/ServerMaintenanceController.php';
 
 use App\Config;
@@ -24,6 +26,8 @@ use App\Services\BackupDestinationLister;
 use App\Services\CorporateDumpImportService;
 use App\Services\CorporateDumpUploadStore;
 use App\Services\DatabaseBackupService;
+use App\Services\FreightChargesBackupService;
+use App\Database;
 use App\Support\Exceptions\HttpException;
 
 $config = new Config('test', true, '*', 'secret', 3600, '127.0.0.1', 3306, 'demo_db', 'user', 'pass');
@@ -44,7 +48,9 @@ $controller = new ServerMaintenanceController(
     new BackupDestinationLister([]),
     $runner,
     new CorporateDumpImportService($config),
-    new CorporateDumpUploadStore(sys_get_temp_dir() . '/sm-corporate-import-' . bin2hex(random_bytes(3)))
+    new CorporateDumpUploadStore(sys_get_temp_dir() . '/sm-corporate-import-' . bin2hex(random_bytes(3))),
+    new FreightChargesBackupService(new Database($config)),
+    new CorporateDumpUploadStore(sys_get_temp_dir() . '/sm-freight-import-' . bin2hex(random_bytes(3)), ['.jsonl.gz'])
 );
 
 $denied = false;
@@ -66,6 +72,43 @@ try {
 }
 if (!$downloadDenied) {
     fwrite(STDERR, "Expected non-master download call to be forbidden\n");
+    exit(1);
+}
+
+$freightDownloadDenied = false;
+try {
+    $controller->downloadFreightChargesBackup([], [], ['__auth_claims' => ['user_type' => '2']]);
+} catch (HttpException $e) {
+    $freightDownloadDenied = $e->statusCode() === 403;
+}
+if (!$freightDownloadDenied) {
+    fwrite(STDERR, "Expected non-master Freight Charges backup call to be forbidden\n");
+    exit(1);
+}
+
+$freightUploadDenied = false;
+try {
+    $controller->createFreightChargesDumpUpload([], [], [
+        '__auth_claims' => ['user_type' => '2'],
+        'filename' => 'freight.jsonl.gz',
+        'bytes' => 1,
+    ]);
+} catch (HttpException $e) {
+    $freightUploadDenied = $e->statusCode() === 403;
+}
+
+$freightRestoreDenied = false;
+try {
+    $controller->restoreFreightChargesDumpUpload(['uploadId' => str_repeat('a', 32)], [], ['__auth_claims' => ['user_type' => '2']]);
+} catch (HttpException $e) {
+    $freightRestoreDenied = $e->statusCode() === 403;
+}
+if (!$freightRestoreDenied) {
+    fwrite(STDERR, "Expected non-master Freight Charges restore call to be forbidden\n");
+    exit(1);
+}
+if (!$freightUploadDenied) {
+    fwrite(STDERR, "Expected non-master Freight Charges restore call to be forbidden\n");
     exit(1);
 }
 
@@ -116,6 +159,10 @@ if (($status['database_name'] ?? null) !== 'demo_db' || ($status['backup_availab
 }
 if (!isset($status['automatic_backup']) || !is_array($status['automatic_backup'])) {
     fwrite(STDERR, "Expected automatic_backup on status payload\n");
+    exit(1);
+}
+if (($status['freight_charges_backup']['supported_extension'] ?? null) !== '.jsonl.gz') {
+    fwrite(STDERR, "Expected Freight Charges backup format on status payload\n");
     exit(1);
 }
 

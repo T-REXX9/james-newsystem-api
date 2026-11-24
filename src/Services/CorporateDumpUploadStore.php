@@ -14,7 +14,10 @@ final class CorporateDumpUploadStore
     public const MAX_BYTES = 2147483648; // 2 GiB
     public const CHUNK_MAX_BYTES = 2 * 1024 * 1024; // 2 MiB
 
-    public function __construct(private readonly string $directory)
+    public function __construct(
+        private readonly string $directory,
+        private readonly array $supportedSuffixes = ['.sql', '.sql.gz']
+    )
     {
         if (!is_dir($this->directory) && !mkdir($this->directory, 0700, true) && !is_dir($this->directory)) {
             throw new RuntimeException('Unable to create corporate dump upload directory');
@@ -31,8 +34,15 @@ final class CorporateDumpUploadStore
         }
 
         $safeName = $this->safeFilename($filename);
-        if (!preg_match('/\.(sql|sql\.gz)$/i', $safeName)) {
-            throw new RuntimeException('Only .sql or .sql.gz dumps are supported');
+        $supported = false;
+        foreach ($this->supportedSuffixes as $suffix) {
+            if (is_string($suffix) && $suffix !== '' && str_ends_with(strtolower($safeName), strtolower($suffix))) {
+                $supported = true;
+                break;
+            }
+        }
+        if (!$supported) {
+            throw new RuntimeException('This upload type is not supported');
         }
 
         $uploadId = bin2hex(random_bytes(16));
