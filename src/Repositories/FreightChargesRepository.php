@@ -24,11 +24,17 @@ final class FreightChargesRepository
         string $month = '',
         string $year = '',
         int $page = 1,
-        int $perPage = 50
+        int $perPage = 50,
+        string $dmNo = ''
     ): array {
         $page = max(1, $page);
         $perPage = min(200, max(1, $perPage));
         $offset = ($page - 1) * $perPage;
+
+        $trimmedDmNo = trim($dmNo);
+        if ($trimmedDmNo !== '') {
+            return $this->searchByDmNo($mainId, $trimmedDmNo, $perPage);
+        }
 
         $params = ['main_id' => $mainId];
         $where = ['CAST(COALESCE(deb.lmain_id, 0) AS SIGNED) = :main_id'];
@@ -160,6 +166,43 @@ SQL;
                     'month' => $month,
                     'year' => $year,
                 ],
+            ],
+        ];
+    }
+
+    /** @return array{items: list<array<string, mixed>>, meta: array<string, mixed>} */
+    private function searchByDmNo(int $mainId, string $query, int $limit): array
+    {
+        $limit = min(20, max(1, $limit));
+        $sql = <<<'SQL'
+SELECT
+    lid,
+    COALESCE(lrefno, '') AS lrefno,
+    COALESCE(ldm_no, '') AS ldm_no,
+    COALESCE(lcustomer_lname, '') AS lcustomer_lname,
+    COALESCE(ltrackingno, '') AS ltrackingno,
+    COALESCE(linvoice_no, '') AS linvoice_no
+FROM tbldebit_memo
+WHERE lmain_id = :main_id
+  AND COALESCE(ldm_no, '') LIKE :dm_no
+ORDER BY lid DESC
+LIMIT :limit
+SQL;
+        $stmt = $this->db->pdo()->prepare($sql);
+        $stmt->bindValue('main_id', (string) $mainId, PDO::PARAM_STR);
+        $stmt->bindValue('dm_no', '%' . $query . '%', PDO::PARAM_STR);
+        $stmt->bindValue('limit', $limit, PDO::PARAM_INT);
+        $stmt->execute();
+        $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return [
+            'items' => $items,
+            'meta' => [
+                'page' => 1,
+                'per_page' => $limit,
+                'total' => count($items),
+                'total_pages' => 1,
+                'filters' => ['dm_no' => $query],
             ],
         ];
     }

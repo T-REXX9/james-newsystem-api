@@ -33,7 +33,8 @@ final class FreightChargesController
             trim((string) ($query['month'] ?? '')),
             trim((string) ($query['year'] ?? '')),
             max(1, (int) ($query['page'] ?? 1)),
-            max(1, (int) ($query['per_page'] ?? 50))
+            max(1, (int) ($query['per_page'] ?? 50)),
+            trim((string) ($query['dm_no'] ?? ''))
         );
     }
 
