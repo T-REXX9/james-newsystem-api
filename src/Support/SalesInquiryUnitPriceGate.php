@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Support;
 
 /**
- * Detects when a Sales Inquiry payload changes catalog (non-NotListed) unit prices.
+ * Detects when a Sales Inquiry payload changes unit prices.
  */
 final class SalesInquiryUnitPriceGate
 {
@@ -25,17 +25,13 @@ final class SalesInquiryUnitPriceGate
         if ($existingItem === null || !array_key_exists('unit_price', $payload)) {
             return false;
         }
-        if (self::isNotListed($existingItem)) {
-            return false;
-        }
-
         $submitted = round((float) $payload['unit_price'], 2);
         $current = round((float) ($existingItem['unit_price'] ?? 0), 2);
         return $submitted !== $current;
     }
 
     /**
-     * True when any catalog line's unit_price differs from the Product Database list price.
+     * True when any line changes from its default price or overrides its catalog list price.
      *
      * @param array<int, mixed> $items
      * @param callable(array<string, mixed>): ?float $listPriceForItem
@@ -43,7 +39,13 @@ final class SalesInquiryUnitPriceGate
     public static function itemsOverrideCatalogListPrices(array $items, callable $listPriceForItem): bool
     {
         foreach ($items as $item) {
-            if (!is_array($item) || self::isNotListed($item) || !array_key_exists('unit_price', $item)) {
+            if (!is_array($item) || !array_key_exists('unit_price', $item)) {
+                continue;
+            }
+            if (self::isNotListed($item)) {
+                if (round((float) $item['unit_price'], 2) !== 0.0) {
+                    return true;
+                }
                 continue;
             }
             $listPrice = $listPriceForItem($item);
@@ -61,8 +63,8 @@ final class SalesInquiryUnitPriceGate
     }
 
     /**
-     * True when payload catalog lines change unit_price vs existing inquiry lines,
-     * or introduce new catalog lines that diverge from list price.
+     * True when payload lines change unit_price vs existing inquiry lines,
+     * or introduce new nonzero manual lines / catalog prices that diverge from list price.
      *
      * @param array<int, mixed> $items
      * @param array<int, mixed> $existingItems
@@ -84,7 +86,7 @@ final class SalesInquiryUnitPriceGate
         }
 
         foreach ($items as $item) {
-            if (!is_array($item) || self::isNotListed($item) || !array_key_exists('unit_price', $item)) {
+            if (!is_array($item) || !array_key_exists('unit_price', $item)) {
                 continue;
             }
 
@@ -100,6 +102,13 @@ final class SalesInquiryUnitPriceGate
                 $submitted = round((float) $item['unit_price'], 2);
                 $current = round((float) ($matched['unit_price'] ?? 0), 2);
                 if ($submitted !== $current) {
+                    return true;
+                }
+                continue;
+            }
+
+            if (self::isNotListed($item)) {
+                if (round((float) $item['unit_price'], 2) !== 0.0) {
                     return true;
                 }
                 continue;

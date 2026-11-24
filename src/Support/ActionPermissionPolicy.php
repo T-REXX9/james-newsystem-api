@@ -17,7 +17,7 @@ final class ActionPermissionPolicy
         'can_unpost' => true,
         // Booklet catch-up only; Master User enables explicitly on System Access.
         'can_edit_invoice_number' => false,
-        // Catalog unit-price overrides on Sales Inquiry; Master User enables explicitly.
+        // Unit-price edits on Sales Inquiry; Master User enables explicitly.
         'can_edit_unit_price' => false,
         // Widens a page from "only the records assigned to me" to every record.
         // Defaults off so nobody gains reach from an unconfigured account.

@@ -620,7 +620,7 @@ function app_router(): Router
                         $listPriceForItem
                     );
                 }
-            } elseif (array_key_exists('unit_price', $body) && !SalesInquiryUnitPriceGate::isNotListed($body)) {
+            } elseif (array_key_exists('unit_price', $body)) {
                 $needsUnitPricePermission = SalesInquiryUnitPriceGate::itemsOverrideCatalogListPrices(
                     [$body],
                     $listPriceForItem
