@@ -130,8 +130,13 @@ final class FreightChargesController
             throw new HttpException(422, 'refno is required');
         }
 
+        $userId = (int) ($body['user_id'] ?? 0);
+        if ($userId <= 0) {
+            throw new HttpException(403, 'A valid authenticated user is required');
+        }
+
         try {
-            $ok = $this->repo->delete($mainId, $refno);
+            $ok = $this->repo->delete($mainId, $userId, $refno);
         } catch (RuntimeException $e) {
             throw new HttpException(422, $e->getMessage());
         }

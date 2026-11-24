@@ -28,6 +28,7 @@ final class AuditTrailWriter
         }
 
         try {
+            $auditRefno = $this->resolveAuditReference($mainId, $page, $refno);
             $stmt = $this->pdo->prepare(
                 'INSERT INTO tblaudit_trail
                     (lmain_id, luser_id, lpage, laction, lrefno, lreason, lold_status, lnew_status, ldatetime)
@@ -39,7 +40,7 @@ final class AuditTrailWriter
                 'user_id' => $userId,
                 'page' => trim($page),
                 'action' => trim($action),
-                'refno' => trim($refno),
+                'refno' => $auditRefno,
                 'reason' => trim($reason) !== '' ? trim($reason) : null,
                 'old_status' => trim($oldStatus) !== '' ? trim($oldStatus) : null,
                 'new_status' => trim($newStatus) !== '' ? trim($newStatus) : null,
@@ -49,6 +50,107 @@ final class AuditTrailWriter
         } catch (Throwable) {
             // Audit writes should not block the primary workflow.
         }
+    }
+
+    private function resolveAuditReference(int $mainId, string $page, string $refno): string
+    {
+        $pageKey = strtolower(trim($page));
+        $refno = trim($refno);
+        if ($refno === '') return '';
+
+        [$sql, $params] = match ($pageKey) {
+            'freight charges' => [
+                'SELECT NULLIF(TRIM(ldm_no), \'\') FROM tbldebit_memo WHERE CAST(COALESCE(lmain_id, 0) AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'daily collection entry', 'collection report' => [
+                'SELECT NULLIF(TRIM(lcolection_no), \'\') FROM tblcollection WHERE CAST(COALESCE(lmain_id, 0) AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'adjustment entry' => [
+                'SELECT NULLIF(TRIM(lno), \'\') FROM tbladjustment WHERE CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['refno' => $refno],
+            ],
+            'order slip' => [
+                'SELECT NULLIF(TRIM(linvoice_no), \'\') FROM tbldelivery_receipt WHERE CAST(lmain_id AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'sales inquiry' => [
+                'SELECT NULLIF(TRIM(linqno), \'\') FROM tblinquiry WHERE CAST(lmain_id AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'sales order' => [
+                'SELECT NULLIF(TRIM(lsaleno), \'\') FROM tbltransaction WHERE CAST(lmain_id AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'transfer product' => [
+                'SELECT NULLIF(TRIM(ltransfer_no), \'\') FROM tblbranchinventory_transferlist WHERE CAST(lmain_id AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'customer database', 'daily call monitoring dashboard' => [
+                'SELECT COALESCE(NULLIF(TRIM(lpatient_code), \'\'), NULLIF(TRIM(lcompany), \'\')) FROM tblpatient WHERE CAST(lmain_id AS SIGNED) = :main_id AND CAST(lsessionid AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'invoice' => [
+                'SELECT NULLIF(TRIM(linvoice_no), \'\') FROM tblinvoice_list WHERE CAST(lmain_id AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'product database' => [
+                'SELECT COALESCE(NULLIF(TRIM(litemcode), \'\'), NULLIF(TRIM(lpartno), \'\')) FROM tblinventory_item WHERE CAST(lmain_id AS SIGNED) = :main_id AND CAST(lsession AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'receiving report' => [
+                'SELECT NULLIF(TRIM(lpurchaseno), \'\') FROM tblpurchase_order WHERE CAST(lmain_id AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'sales return entry' => [
+                'SELECT NULLIF(TRIM(lcredit_no), \'\') FROM tblcredit_memo WHERE CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'purchase order' => [
+                'SELECT COALESCE((SELECT NULLIF(TRIM(lpurchaseno), \'\') FROM tblpo_list WHERE CAST(lmain_id AS SIGNED) = :main_id_a AND (CAST(lrefno AS BINARY) = CAST(:refno_a AS BINARY) OR CAST(lpr_refno AS BINARY) = CAST(:refno_b AS BINARY)) ORDER BY lid DESC LIMIT 1), (SELECT NULLIF(TRIM(lpurchaseno), \'\') FROM tblpurchase_order WHERE CAST(lmain_id AS SIGNED) = :main_id_b AND CAST(lrefno AS BINARY) = CAST(:refno_c AS BINARY) ORDER BY lid DESC LIMIT 1))',
+                ['main_id_a' => $mainId, 'refno_a' => $refno, 'refno_b' => $refno, 'main_id_b' => $mainId, 'refno_c' => $refno],
+            ],
+            'purchase request' => [
+                'SELECT NULLIF(TRIM(lprno), \'\') FROM tblpr_list WHERE CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['refno' => $refno],
+            ],
+            'inventory audit' => [
+                'SELECT NULLIF(TRIM(ladjustment_number), \'\') FROM tblstock_adjustment WHERE CAST(lmain_id AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'stock adjustment' => [
+                'SELECT NULLIF(TRIM(ladjustment_number), \'\') FROM tblstock_adjustment WHERE CAST(lmain_id AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'return to supplier' => [
+                'SELECT NULLIF(TRIM(lcredit_no), \'\') FROM tblreturn_supplier WHERE CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            'transfer stock' => [
+                'SELECT NULLIF(TRIM(ltransfer_no), \'\') FROM tblbranchinventory_transferlist WHERE CAST(lmain_id AS SIGNED) = :main_id AND CAST(lrefno AS BINARY) = CAST(:refno AS BINARY) ORDER BY lid DESC LIMIT 1',
+                ['main_id' => $mainId, 'refno' => $refno],
+            ],
+            default => [null, []],
+        };
+
+        if (is_string($sql)) {
+            try {
+                $stmt = $this->pdo->prepare($sql);
+                $stmt->execute($params);
+                $resolved = trim((string) ($stmt->fetchColumn() ?: ''));
+                if ($resolved !== '') return $resolved;
+            } catch (Throwable) {
+                // Keep legacy activity recording available if a source table is absent.
+            }
+        }
+
+        return $this->isFamiliarRecordNumber($refno) ? $refno : 'Reference unavailable';
+    }
+
+    private function isFamiliarRecordNumber(string $refno): bool
+    {
+        return preg_match('/^(DM|CM|INQ|NSO|N-D|RR|PO|PR|SA|TR|INV|DCR|COD|T|SO|OS|DR|RS|RTS|AJ|TT)[A-Z0-9-]*[0-9][A-Z0-9-]*$/i', $refno) === 1;
     }
 
     private function writeNotification(

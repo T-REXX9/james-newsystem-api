@@ -620,8 +620,12 @@ SQL;
         return $this->getByRefno($refno, $mainId);
     }
 
-    public function delete(int $mainId, string $refno): bool
+    public function delete(int $mainId, int $userId, string $refno): bool
     {
+        if ($userId <= 0) {
+            throw new RuntimeException('A valid user is required to delete freight charges');
+        }
+
         $existing = $this->getByRefno($refno, $mainId);
         if ($existing === null) {
             return false;
@@ -632,6 +636,48 @@ SQL;
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
+            $auditDetails = sprintf(
+                'DM No: %s; Customer: %s; Amount: %s; Date: %s; Tracking No: %s; Courier: %s; Remarks: %s',
+                (string) ($existing['ldm_no'] ?? ''),
+                (string) ($existing['lcustomer_lname'] ?? ''),
+                number_format((float) ($existing['lamt'] ?? 0), 2, '.', ''),
+                (string) ($existing['ldate'] ?? ''),
+                (string) ($existing['ltrackingno'] ?? ''),
+                (string) ($existing['lcurier_name'] ?? ''),
+                (string) ($existing['lremarks'] ?? '')
+            );
+            $dmNo = trim((string) ($existing['ldm_no'] ?? ''));
+            if ($dmNo !== '') {
+                $relabelPriorEvents = $pdo->prepare(
+                    'UPDATE tblaudit_trail
+                     SET lrefno = :display_refno
+                     WHERE lmain_id = :main_id
+                       AND lpage = :page
+                       AND CAST(lrefno AS BINARY) = CAST(:internal_refno AS BINARY)'
+                );
+                $relabelPriorEvents->execute([
+                    'display_refno' => $dmNo,
+                    'main_id' => $mainId,
+                    'page' => 'Freight Charges',
+                    'internal_refno' => $refno,
+                ]);
+            }
+            $audit = $pdo->prepare(
+                'INSERT INTO tblaudit_trail
+                    (lmain_id, luser_id, lpage, laction, lrefno, lreason, lold_status, lnew_status, ldatetime)
+                 VALUES (:main_id, :user_id, :page, :action, :refno, :reason, :old_status, :new_status, NOW())'
+            );
+            $audit->execute([
+                'main_id' => $mainId,
+                'user_id' => $userId,
+                'page' => 'Freight Charges',
+                'action' => 'Delete',
+                'refno' => $dmNo !== '' ? $dmNo : 'DM No. unavailable',
+                'reason' => substr($auditDetails, 0, 500),
+                'old_status' => (string) ($existing['lstatus'] ?? 'Pending'),
+                'new_status' => 'Deleted',
+            ]);
+
             $this->syncLinkedDocumentHeader(
                 $pdo,
                 (string) ($existing['ltransaction_type'] ?? 'No Reference'),
