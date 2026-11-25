@@ -88,6 +88,7 @@ $insertPostedInvoiceSpend('customer-silver-redeemed', 15000, 'inv-silver-redeeme
 $insertPostedInvoiceSpend('customer-silver-unused', 15000, 'inv-silver-unused-august');
 $insertPostedInvoiceSpend('customer-silver-legacy', 15000, 'inv-silver-legacy-august');
 $insertPostedInvoiceSpend('customer-silver-legacy-order-slip', 15000, 'inv-silver-legacy-order-slip-august');
+$insertPostedInvoiceSpend('customer-silver-merged', 15000, 'inv-silver-merged-august');
 $insertPostedInvoiceSpend('customer-gold-legacy', 30000, 'inv-gold-legacy-august');
 $pdo->exec("INSERT INTO tblinvoice_list VALUES
     (7, 'inv-silver-legacy-september', 'customer-silver-legacy', '2026-09-20', '0', 0, 'Posted'),
@@ -96,9 +97,11 @@ $pdo->exec("INSERT INTO tbldelivery_receipt VALUES
     (7, 'os-silver-legacy-september', 'customer-silver-legacy-order-slip', '2026-09-21', 0, 'Posted')");
 $pdo->exec("INSERT INTO tblvip_document_discount VALUES
     (8, 7, 'order_slip', 'os-silver-redeemed', 'customer-silver-redeemed', '2026-09-10', 1, 'silver'),
-    (9, 7, 'sales_inquiry', 'inquiry-silver-pending', 'customer-silver-unused', '2026-09-12', 1, 'silver')");
+    (9, 7, 'sales_inquiry', 'inquiry-silver-pending', 'customer-silver-unused', '2026-09-12', 1, 'silver'),
+    (10, 7, 'order_slip', 'os-silver-merged-september', 'customer-silver-merged', '2026-09-10', 1, 'silver')");
 $pdo->exec("INSERT INTO tbldelivery_receipt VALUES
-    (7, 'os-silver-redeemed', 'customer-silver-redeemed', '2026-09-10', 0, 'Posted')");
+    (7, 'os-silver-redeemed', 'customer-silver-redeemed', '2026-09-10', 0, 'Posted'),
+    (7, 'os-silver-merged-september', 'old-customer-id', '2026-09-10', 0, 'Posted')");
 
 $vipRepository = new VipDocumentDiscountRepository($db);
 $months = $vipRepository->redeemedSilverBenefitMonths(7, 'customer-1');
@@ -140,6 +143,10 @@ $legacyGoldPayload = $resolveForCustomer('customer-gold-legacy');
 if (($legacyGoldPayload['vip_tier'] ?? '') !== 'gold' || (int) ($legacyGoldPayload['vip_applied'] ?? 0) !== 1) {
     throw new RuntimeException('Legacy VIP Gold invoice incorrectly consumed or limited Gold: ' . json_encode($legacyGoldPayload));
 }
+$mergedCustomerPayload = $resolveForCustomer('customer-silver-merged');
+if (($mergedCustomerPayload['vip_tier'] ?? '') !== 'silver' || (int) ($mergedCustomerPayload['vip_applied'] ?? 0) !== 0) {
+    throw new RuntimeException('Posted VIP Silver Order Slip with a historical customer ID did not redeem the current customer month: ' . json_encode($mergedCustomerPayload));
+}
 
 echo "PASS: only uncancelled Order Slips and Invoices redeem VIP Silver\n";
 echo "PASS: VIP Gold remains unlimited when Silver redemption exists\n";
@@ -148,3 +155,4 @@ echo "PASS: legacy posted Silver invoices without VIP metadata redeem the month\
 echo "PASS: legacy posted Silver Order Slips without VIP metadata redeem the month\n";
 echo "PASS: pending VIP Silver inquiries do not consume the monthly benefit\n";
 echo "PASS: legacy VIP Gold invoices remain unlimited\n";
+echo "PASS: posted VIP Silver documents remain linked after customer ID changes\n";

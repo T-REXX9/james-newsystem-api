@@ -233,14 +233,20 @@ final class VipDocumentDiscountRepository
         $invoicePosted = PostedSalesDocumentSql::invoiceIsPosted('invoice');
         $receiptPosted = PostedSalesDocumentSql::deliveryReceiptIsPosted('receipt');
         $stmt = $pdo->prepare(<<<SQL
-SELECT document.sales_date, document.document_type, document.document_refno,
+SELECT document.sales_date, document.document_type, document.document_refno, document.customer_id,
        discount.lid AS vip_record_id, discount.lapplied, discount.ltier
 FROM (
     SELECT receipt.lmain_id, receipt.lrefno AS document_refno, receipt.ldate AS sales_date,
            receipt.lcustomerid AS customer_id, 'order_slip' AS document_type
     FROM tbldelivery_receipt receipt
     WHERE receipt.lmain_id = :receipt_main_id
-      AND receipt.lcustomerid = :receipt_customer_id
+      AND (receipt.lcustomerid = :receipt_customer_id OR EXISTS (
+          SELECT 1 FROM tblvip_document_discount receipt_vip
+          WHERE receipt_vip.lmain_id = receipt.lmain_id
+            AND receipt_vip.ldocument_type = 'order_slip'
+            AND receipt_vip.ldocument_refno = receipt.lrefno
+            AND receipt_vip.lcustomerid = :receipt_vip_customer_id
+      ))
       AND {$receiptPosted}
       AND LOWER(TRIM(COALESCE(receipt.lstatus, ''))) <> 'cancelled'
     UNION ALL
@@ -248,7 +254,13 @@ FROM (
            invoice.lcustomerid AS customer_id, 'invoice' AS document_type
     FROM tblinvoice_list invoice
     WHERE invoice.lmain_id = :invoice_main_id
-      AND invoice.lcustomerid = :invoice_customer_id
+      AND (invoice.lcustomerid = :invoice_customer_id OR EXISTS (
+          SELECT 1 FROM tblvip_document_discount invoice_vip
+          WHERE invoice_vip.lmain_id = invoice.lmain_id
+            AND invoice_vip.ldocument_type = 'invoice'
+            AND invoice_vip.ldocument_refno = invoice.lrefno
+            AND invoice_vip.lcustomerid = :invoice_vip_customer_id
+      ))
       AND {$invoicePosted}
 ) document
 LEFT JOIN tblvip_document_discount discount
@@ -261,8 +273,10 @@ SQL);
         $stmt->execute([
             'receipt_main_id' => $mainId,
             'receipt_customer_id' => $contactId,
+            'receipt_vip_customer_id' => $contactId,
             'invoice_main_id' => $mainId,
             'invoice_customer_id' => $contactId,
+            'invoice_vip_customer_id' => $contactId,
             'excluded_type' => $excludedType,
             'excluded_refno' => $excludedRefno,
         ]);
@@ -281,6 +295,12 @@ SQL);
                     && strtolower(trim((string) ($row['ltier'] ?? ''))) === 'silver') {
                     $months[$monthKey] = true;
                 }
+                continue;
+            }
+
+            // Without an explicit VIP record, only infer redemption from a
+            // legacy document owned by this exact customer ID.
+            if ((string) ($row['customer_id'] ?? '') !== $contactId) {
                 continue;
             }
 
