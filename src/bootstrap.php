@@ -1327,6 +1327,7 @@ function app_router(): Router
     $router->patch('/api/v1/sales-order-items/{itemId}', $requireActionAuth([$salesOrderController, 'updateItem'], 'Sales Order', 'edit'));
     $router->delete('/api/v1/sales-order-items/{itemId}', $requireActionAuth([$salesOrderController, 'deleteItem'], 'Sales Order', 'delete'));
     $router->post('/api/v1/sales-orders/{salesRefno}/actions/unpost', $requireActionAuth($withFixedAction([$salesOrderController, 'action'], 'unpost'), 'Sales Order', 'unpost'));
+    $router->post('/api/v1/sales-orders/{salesRefno}/actions/recalculate-vip', $requireActionAuth([$salesOrderController, 'recalculateVipDiscount'], 'Sales Order', 'edit'));
     $router->post('/api/v1/sales-orders/{salesRefno}/actions/{action}', $requireApproverAction([$salesOrderController, 'action'], ['Sales Order', 'SO']));
     $router->post('/api/v1/sales-orders/{salesRefno}/convert/{documentType}', $requireActionAuth([$salesOrderController, 'convertDocument'], 'Sales Order', 'add'));
     $router->get('/api/v1/approvers', [$approverController, 'list']);

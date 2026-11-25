@@ -394,6 +394,133 @@ SQL;
         ];
     }
 
+    /**
+     * Recalculate VIP values for an inquiry-linked order that has not yet
+     * generated an order slip or invoice.
+     *
+     * @return array<string, mixed>|null
+     */
+    public function recalculateVipDiscount(int $mainId, int $userId, string $salesRefno): ?array
+    {
+        $vipRepository = new VipDocumentDiscountRepository($this->db);
+        $vipRepository->ensureTable();
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $lock = $pdo->prepare(
+                'SELECT so.lrefno, so.lcustomerid, so.lcancel, so.lsubmitstat, so.ltransaction_status, so.linquiry_refno,
+                        COALESCE(so.ldr_refno, \'\') AS order_slip_refno,
+                        COALESCE(so.invoice_refno, \'\') AS invoice_refno,
+                        EXISTS (SELECT 1 FROM tbldelivery_receipt dr
+                                WHERE dr.lmain_id = so.lmain_id AND dr.lsales_refno = so.lrefno) AS has_order_slip,
+                        EXISTS (SELECT 1 FROM tblinvoice_list inv
+                                WHERE inv.lmain_id = so.lmain_id AND inv.lsales_refno = so.lrefno) AS has_invoice
+                 FROM tbltransaction so
+                 WHERE so.lmain_id = :main_id
+                   AND (so.lrefno = :refno OR so.lid = CAST(:refno_id AS UNSIGNED))
+                 LIMIT 1 FOR UPDATE'
+            );
+            $lock->execute([
+                'main_id' => $mainId,
+                'refno' => $salesRefno,
+                'refno_id' => $salesRefno,
+            ]);
+            $orderRow = $lock->fetch(PDO::FETCH_ASSOC);
+            if ($orderRow === false) {
+                $pdo->rollBack();
+                return null;
+            }
+
+            if ((int) ($orderRow['lcancel'] ?? 0) > 0
+                || strtolower(trim((string) ($orderRow['lsubmitstat'] ?? ''))) === 'cancelled') {
+                throw new RuntimeException('Cancelled sales orders cannot have their VIP discount recalculated');
+            }
+            if (trim((string) ($orderRow['order_slip_refno'] ?? '')) !== ''
+                || trim((string) ($orderRow['invoice_refno'] ?? '')) !== ''
+                || (int) ($orderRow['has_order_slip'] ?? 0) > 0
+                || (int) ($orderRow['has_invoice'] ?? 0) > 0
+                || strtolower(trim((string) ($orderRow['ltransaction_status'] ?? ''))) === 'posted') {
+                throw new RuntimeException('Unpost the linked order slip or invoice before recalculating the VIP discount');
+            }
+
+            $inquiryRefno = trim((string) ($orderRow['linquiry_refno'] ?? ''));
+            if ($inquiryRefno === '') {
+                throw new RuntimeException('VIP recalculation is available only for sales orders linked to a sales inquiry');
+            }
+
+            $inquiryRepository = new SalesInquiryRepository($this->db);
+            $inquiry = $inquiryRepository->getInquiry($mainId, $inquiryRefno);
+            if ($inquiry === null) {
+                throw new RuntimeException('The linked sales inquiry could not be found');
+            }
+            if ((string) ($inquiry['contact_id'] ?? '') !== (string) ($orderRow['lcustomerid'] ?? '')) {
+                throw new RuntimeException('The linked sales inquiry customer does not match this sales order');
+            }
+
+            $orderRefno = (string) ($orderRow['lrefno'] ?? '');
+            $order = $this->getSalesOrder($mainId, $orderRefno);
+            if ($order === null) {
+                throw new RuntimeException('Sales order not found');
+            }
+
+            $vipPayload = $inquiryRepository->resolveVipPayloadForInquiry($mainId, $inquiryRefno, $inquiry);
+            $previous = $vipRepository->get('sales_order', $orderRefno);
+            $orderTotal = (float) ($order['summary']['grand_total'] ?? 0);
+            $vipRepository->upsertFromPayload(
+                $mainId,
+                'sales_inquiry',
+                $inquiryRefno,
+                (string) ($inquiry['contact_id'] ?? ''),
+                (string) ($inquiry['sales_date'] ?? ''),
+                (float) ($inquiry['grand_total'] ?? 0),
+                $vipPayload
+            );
+            $vipRepository->upsertFromPayload(
+                $mainId,
+                'sales_order',
+                $orderRefno,
+                (string) ($orderRow['lcustomerid'] ?? ''),
+                (string) ($order['order']['sales_date'] ?? ''),
+                $orderTotal,
+                $vipPayload
+            );
+            $current = $vipRepository->get('sales_order', $orderRefno);
+            $pdo->commit();
+
+            (new AuditTrailWriter($pdo))->write(
+                $mainId,
+                $userId,
+                'Sales Order',
+                'Recalculate VIP Discount',
+                $orderRefno,
+                '',
+                sprintf(
+                    '%s:%s%%:%s:discount=%s:total=%s',
+                    $previous['vip_tier'] ?? 'regular',
+                    $previous['vip_percentage'] ?? 0,
+                    ((int) ($previous['vip_applied'] ?? 0)) === 1 ? 'applied' : 'not-applied',
+                    number_format((float) ($previous['vip_discount_amount'] ?? 0), 2, '.', ''),
+                    number_format((float) ($previous['total_to_pay'] ?? 0), 2, '.', '')
+                ),
+                sprintf(
+                    '%s:%s%%:%s:discount=%s:total=%s',
+                    $current['vip_tier'] ?? 'regular',
+                    $current['vip_percentage'] ?? 0,
+                    ((int) ($current['vip_applied'] ?? 0)) === 1 ? 'applied' : 'not-applied',
+                    number_format((float) ($current['vip_discount_amount'] ?? 0), 2, '.', ''),
+                    number_format((float) ($current['total_to_pay'] ?? 0), 2, '.', '')
+                )
+            );
+
+            return $this->getSalesOrder($mainId, $orderRefno);
+        } catch (\Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
+    }
+
     public function createSalesOrder(int $mainId, int $userId, array $payload): array
     {
         $contactId = trim((string) ($payload['contact_id'] ?? ''));

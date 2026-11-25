@@ -229,6 +229,31 @@ final class SalesOrderController
         return $record;
     }
 
+    public function recalculateVipDiscount(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $userId = (int) ($body['user_id'] ?? 0);
+        if ($mainId <= 0 || $userId <= 0) {
+            throw new HttpException(422, 'main_id and user_id are required');
+        }
+
+        $salesRefno = trim((string) ($params['salesRefno'] ?? ''));
+        if ($salesRefno === '') {
+            throw new HttpException(422, 'salesRefno is required');
+        }
+
+        try {
+            $record = $this->repo->recalculateVipDiscount($mainId, $userId, $salesRefno);
+        } catch (RuntimeException $error) {
+            throw new HttpException(422, $error->getMessage());
+        }
+        if ($record === null) {
+            throw new HttpException(404, 'Sales order not found');
+        }
+
+        return $record;
+    }
+
     public function convertDocument(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($body['main_id'] ?? 0);
