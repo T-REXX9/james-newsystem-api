@@ -1267,6 +1267,7 @@ function app_router(): Router
     $router->post('/api/v1/sales-returns/{refno}/actions/unpost', $requireActionAuth([$salesReturnController, 'unpostAction'], 'Sales Return', 'unpost'));
     $router->get('/api/v1/sales-inquiries', $requireViewAuth([$salesInquiryController, 'list'], 'Sales Inquiry'));
     $router->get('/api/v1/sales-inquiries/{inquiryRefno}', $requireViewAuth([$salesInquiryController, 'show'], 'Sales Inquiry'));
+    $router->post('/api/v1/sales-inquiries/{inquiryRefno}/actions/recheck-vip-discount', $requireSalesInquiryWriteAuth([$salesInquiryController, 'recheckVipDiscount'], 'edit'));
     // Confirmation records the inquiry timestamp after the caller's verified add/edit action.
     $router->post('/api/v1/sales-inquiries/{inquiryRefno}/confirm', $requireSalesInquiryConfirmAuth([$salesInquiryPrintController, 'confirmInquiry']));
     $router->post('/api/v1/sales-inquiries', $requireSalesInquiryWriteAuth([$salesInquiryController, 'create'], 'add'));

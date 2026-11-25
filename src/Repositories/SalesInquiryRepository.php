@@ -380,6 +380,58 @@ SQL;
         );
     }
 
+    /** Recalculate VIP eligibility for an existing inquiry without replacing its number or items. */
+    public function recheckVipDiscount(int $mainId, string $inquiryRefno): array
+    {
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $lockSuffix = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite' ? '' : ' FOR UPDATE';
+            $lock = $pdo->prepare(
+                'SELECT 1 FROM tblinquiry
+                 WHERE lmain_id = :main_id AND lrefno = :inquiry_refno
+                   AND COALESCE(IsCancel, 0) = 0' . $lockSuffix
+            );
+            $lock->execute(['main_id' => (string) $mainId, 'inquiry_refno' => $inquiryRefno]);
+            if ($lock->fetchColumn() === false) {
+                throw new RuntimeException('Active sales inquiry not found');
+            }
+
+            $inquiry = $this->getInquiry($mainId, $inquiryRefno);
+            if ($inquiry === null || (string) ($inquiry['replaced_by_refno'] ?? '') !== '') {
+                throw new RuntimeException('Active sales inquiry not found');
+            }
+            if (
+                trim((string) ($inquiry['so_refno'] ?? '')) !== ''
+                || trim((string) ($inquiry['invoice_no'] ?? '')) !== ''
+                || trim((string) ($inquiry['dr_no'] ?? '')) !== ''
+                || (int) ($inquiry['is_editable'] ?? 1) !== 1
+            ) {
+                throw new RuntimeException('VIP discount can only be rechecked before the inquiry is converted to a sales document');
+            }
+
+            $vipRepository = new VipDocumentDiscountRepository($this->db);
+            $payload = $this->resolveVipPayloadForInquiry($mainId, $inquiryRefno, $inquiry);
+            $vipRepository->upsertFromPayload(
+                $mainId,
+                'sales_inquiry',
+                $inquiryRefno,
+                (string) ($inquiry['contact_id'] ?? ''),
+                (string) ($inquiry['sales_date'] ?? ''),
+                (float) ($inquiry['grand_total'] ?? 0),
+                $payload
+            );
+            $pdo->commit();
+
+            return $this->getInquiry($mainId, $inquiryRefno) ?? throw new RuntimeException('Sales inquiry not found after VIP recheck');
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
     /**
      * Resolve creator and current assigned-agent names with one account-table read.
      * MySQL cannot reopen a connection-local TEMPORARY TABLE under multiple aliases

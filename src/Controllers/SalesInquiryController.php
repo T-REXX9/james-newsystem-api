@@ -49,6 +49,21 @@ final class SalesInquiryController
         return $record;
     }
 
+    public function recheckVipDiscount(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $inquiryRefno = trim((string) ($params['inquiryRefno'] ?? ''));
+        if ($mainId <= 0 || $inquiryRefno === '') {
+            throw new HttpException(422, 'main_id and inquiryRefno are required');
+        }
+
+        try {
+            return $this->repo->recheckVipDiscount($mainId, $inquiryRefno);
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
+    }
+
     public function create(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($body['main_id'] ?? 0);
