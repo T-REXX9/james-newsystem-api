@@ -228,6 +228,24 @@ final class VipDocumentDiscountRepository
     {
         $this->ensureTable();
         $pdo = $this->db->pdo();
+        $customerIds = $this->customerSessionIds($mainId, $contactId);
+        if ($customerIds === []) {
+            return [];
+        }
+        $customerBindings = static function (string $prefix) use ($customerIds): array {
+            $placeholders = [];
+            $params = [];
+            foreach ($customerIds as $index => $customerId) {
+                $key = $prefix . '_' . $index;
+                $placeholders[] = ':' . $key;
+                $params[$key] = $customerId;
+            }
+            return [implode(', ', $placeholders), $params];
+        };
+        [$receiptCustomerIdList, $receiptCustomerParams] = $customerBindings('receipt_customer_id');
+        [$receiptVipCustomerIdList, $receiptVipCustomerParams] = $customerBindings('receipt_vip_customer_id');
+        [$invoiceCustomerIdList, $invoiceCustomerParams] = $customerBindings('invoice_customer_id');
+        [$invoiceVipCustomerIdList, $invoiceVipCustomerParams] = $customerBindings('invoice_vip_customer_id');
         $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
         $lockingRead = $forUpdate && $pdo->inTransaction() && $driver !== 'sqlite' ? 'FOR UPDATE' : '';
         $invoicePosted = PostedSalesDocumentSql::invoiceIsPosted('invoice');
@@ -240,12 +258,12 @@ FROM (
            receipt.lcustomerid AS customer_id, 'order_slip' AS document_type
     FROM tbldelivery_receipt receipt
     WHERE receipt.lmain_id = :receipt_main_id
-      AND (receipt.lcustomerid = :receipt_customer_id OR EXISTS (
+      AND (receipt.lcustomerid IN ({$receiptCustomerIdList}) OR EXISTS (
           SELECT 1 FROM tblvip_document_discount receipt_vip
           WHERE receipt_vip.lmain_id = receipt.lmain_id
             AND receipt_vip.ldocument_type = 'order_slip'
             AND receipt_vip.ldocument_refno = receipt.lrefno
-            AND receipt_vip.lcustomerid = :receipt_vip_customer_id
+            AND receipt_vip.lcustomerid IN ({$receiptVipCustomerIdList})
       ))
       AND {$receiptPosted}
       AND LOWER(TRIM(COALESCE(receipt.lstatus, ''))) <> 'cancelled'
@@ -254,12 +272,12 @@ FROM (
            invoice.lcustomerid AS customer_id, 'invoice' AS document_type
     FROM tblinvoice_list invoice
     WHERE invoice.lmain_id = :invoice_main_id
-      AND (invoice.lcustomerid = :invoice_customer_id OR EXISTS (
+      AND (invoice.lcustomerid IN ({$invoiceCustomerIdList}) OR EXISTS (
           SELECT 1 FROM tblvip_document_discount invoice_vip
           WHERE invoice_vip.lmain_id = invoice.lmain_id
             AND invoice_vip.ldocument_type = 'invoice'
             AND invoice_vip.ldocument_refno = invoice.lrefno
-            AND invoice_vip.lcustomerid = :invoice_vip_customer_id
+            AND invoice_vip.lcustomerid IN ({$invoiceVipCustomerIdList})
       ))
       AND {$invoicePosted}
 ) document
@@ -272,13 +290,13 @@ WHERE NOT (document.document_type = :excluded_type AND document.document_refno =
 SQL);
         $stmt->execute([
             'receipt_main_id' => $mainId,
-            'receipt_customer_id' => $contactId,
-            'receipt_vip_customer_id' => $contactId,
             'invoice_main_id' => $mainId,
-            'invoice_customer_id' => $contactId,
-            'invoice_vip_customer_id' => $contactId,
             'excluded_type' => $excludedType,
             'excluded_refno' => $excludedRefno,
+            ...$receiptCustomerParams,
+            ...$receiptVipCustomerParams,
+            ...$invoiceCustomerParams,
+            ...$invoiceVipCustomerParams,
         ]);
 
         $config = null;
@@ -300,7 +318,7 @@ SQL);
 
             // Without an explicit VIP record, only infer redemption from a
             // legacy document owned by this exact customer ID.
-            if ((string) ($row['customer_id'] ?? '') !== $contactId) {
+            if (!in_array((string) ($row['customer_id'] ?? ''), $customerIds, true)) {
                 continue;
             }
 
@@ -312,7 +330,7 @@ SQL);
                 $previousMonth = $benefitMonth->modify('-1 month');
                 $spendByBenefitMonth[$monthKey] = $this->postedSalesSpendForMonth(
                     $mainId,
-                    $contactId,
+                    $customerIds,
                     $previousMonth->format('Y-m-01'),
                     $benefitMonth->format('Y-m-01')
                 );
@@ -329,15 +347,27 @@ SQL);
         return array_keys($months);
     }
 
-    private function postedSalesSpendForMonth(int $mainId, string $contactId, string $monthStart, string $monthEnd): float
+    private function postedSalesSpendForMonth(int $mainId, array $customerIds, string $monthStart, string $monthEnd): float
     {
+        $params = [
+            'main_id' => $mainId,
+            'month_start' => $monthStart,
+            'month_end' => $monthEnd,
+        ];
+        $customerPlaceholders = [];
+        foreach ($customerIds as $index => $customerId) {
+            $key = 'customer_id_' . $index;
+            $customerPlaceholders[] = ':' . $key;
+            $params[$key] = $customerId;
+        }
+        $customerIdList = implode(', ', $customerPlaceholders);
         $invoicePosted = PostedSalesDocumentSql::invoiceIsPosted('posted_invoice');
         $receiptPosted = PostedSalesDocumentSql::deliveryReceiptIsPosted('posted_receipt');
         $stmt = $this->db->pdo()->prepare(<<<SQL
 SELECT COALESCE(SUM(COALESCE(ledger.ldebit, 0)), 0)
 FROM tblledger ledger
 WHERE ledger.lmainid = :main_id
-  AND ledger.lcustomerid = :customer_id
+  AND ledger.lcustomerid IN ({$customerIdList})
   AND LOWER(TRIM(COALESCE(ledger.ltype, ''))) = 'debit'
   AND LOWER(TRIM(COALESCE(ledger.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
   AND ledger.ldatetime >= :month_start AND ledger.ldatetime < :month_end
@@ -354,13 +384,47 @@ WHERE ledger.lmainid = :main_id
       ))
   )
 SQL);
-        $stmt->execute([
-            'main_id' => $mainId,
-            'customer_id' => $contactId,
-            'month_start' => $monthStart,
-            'month_end' => $monthEnd,
-        ]);
+        $stmt->execute($params);
         return (float) $stmt->fetchColumn();
+    }
+
+    /** @return list<string> Current customer ID plus all merged historical IDs. */
+    private function customerSessionIds(int $mainId, string $contactId): array
+    {
+        $ids = [trim($contactId) => true];
+        unset($ids['']);
+        $pdo = $this->db->pdo();
+
+        try {
+            do {
+                $params = ['main_id' => $mainId];
+                $placeholders = [];
+                foreach (array_keys($ids) as $index => $sessionId) {
+                    $key = 'session_id_' . $index;
+                    $placeholders[] = ':' . $key;
+                    $params[$key] = $sessionId;
+                }
+                $stmt = $pdo->prepare(
+                    'SELECT old_customer_session_id
+                     FROM customer_merge_redirects
+                     WHERE main_id = :main_id
+                       AND surviving_customer_session_id IN (' . implode(', ', $placeholders) . ')'
+                );
+                $stmt->execute($params);
+                $foundNewId = false;
+                foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $oldId) {
+                    $oldId = trim((string) $oldId);
+                    if ($oldId !== '' && !isset($ids[$oldId])) {
+                        $ids[$oldId] = true;
+                        $foundNewId = true;
+                    }
+                }
+            } while ($foundNewId);
+        } catch (\Throwable) {
+            // Older tenants may not have customer merge workflow tables.
+        }
+
+        return array_keys($ids);
     }
 
     private function writeWithSilverRedemptionGuard(
