@@ -7,6 +7,7 @@ namespace App\Repositories;
 use App\Database;
 use App\Support\VipDocumentDiscount;
 use App\Support\PostedSalesDocumentSql;
+use App\Support\VipStanding;
 use PDO;
 
 final class VipDocumentDiscountRepository
@@ -228,55 +229,118 @@ final class VipDocumentDiscountRepository
         $this->ensureTable();
         $pdo = $this->db->pdo();
         $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $lockingRead = $forUpdate && $pdo->inTransaction() && $driver !== 'sqlite' ? 'FOR UPDATE' : '';
         $invoicePosted = PostedSalesDocumentSql::invoiceIsPosted('invoice');
         $receiptPosted = PostedSalesDocumentSql::deliveryReceiptIsPosted('receipt');
-        $lockingRead = $forUpdate && $pdo->inTransaction() && $driver !== 'sqlite' ? 'FOR UPDATE' : '';
-        $excludeCurrentDocument = $excludedType !== '' && $excludedRefno !== ''
-            ? 'AND NOT (discount.ldocument_type = :excluded_type AND discount.ldocument_refno = :excluded_refno)'
-            : '';
-        $stmt = $this->db->pdo()->prepare(<<<SQL
-SELECT discount.lsales_date, discount.ldocument_type, discount.ldocument_refno
-FROM tblvip_document_discount discount
-LEFT JOIN tbldelivery_receipt receipt
-  ON receipt.lmain_id = discount.lmain_id
- AND receipt.lrefno = discount.ldocument_refno
- AND receipt.lcustomerid = discount.lcustomerid
-LEFT JOIN tblinvoice_list invoice
-  ON invoice.lmain_id = discount.lmain_id
- AND invoice.lrefno = discount.ldocument_refno
- AND invoice.lcustomerid = discount.lcustomerid
-WHERE discount.lmain_id = :main_id
-  AND discount.lcustomerid = :customer_id
-  AND discount.lapplied = 1
-  AND LOWER(TRIM(COALESCE(discount.ltier, ''))) = 'silver'
-  AND discount.ldocument_type IN ('order_slip', 'invoice')
-  {$excludeCurrentDocument}
-  AND (
-      (discount.ldocument_type = 'order_slip'
-       AND receipt.lrefno IS NOT NULL
-       AND {$receiptPosted}
-       AND LOWER(TRIM(COALESCE(receipt.lstatus, ''))) <> 'cancelled')
-      OR (discount.ldocument_type = 'invoice'
-          AND invoice.lrefno IS NOT NULL
-          AND {$invoicePosted})
-  )
+        $stmt = $pdo->prepare(<<<SQL
+SELECT document.sales_date, document.document_type, document.document_refno,
+       discount.lid AS vip_record_id, discount.lapplied, discount.ltier
+FROM (
+    SELECT receipt.lmain_id, receipt.lrefno AS document_refno, receipt.ldate AS sales_date,
+           receipt.lcustomerid AS customer_id, 'order_slip' AS document_type
+    FROM tbldelivery_receipt receipt
+    WHERE receipt.lmain_id = :receipt_main_id
+      AND receipt.lcustomerid = :receipt_customer_id
+      AND {$receiptPosted}
+      AND LOWER(TRIM(COALESCE(receipt.lstatus, ''))) <> 'cancelled'
+    UNION ALL
+    SELECT invoice.lmain_id, invoice.lrefno AS document_refno, invoice.ldate AS sales_date,
+           invoice.lcustomerid AS customer_id, 'invoice' AS document_type
+    FROM tblinvoice_list invoice
+    WHERE invoice.lmain_id = :invoice_main_id
+      AND invoice.lcustomerid = :invoice_customer_id
+      AND {$invoicePosted}
+) document
+LEFT JOIN tblvip_document_discount discount
+  ON discount.lmain_id = document.lmain_id
+ AND discount.ldocument_type = document.document_type
+ AND discount.ldocument_refno = document.document_refno
+WHERE NOT (document.document_type = :excluded_type AND document.document_refno = :excluded_refno)
 {$lockingRead}
 SQL);
-        $params = ['main_id' => $mainId, 'customer_id' => $contactId];
-        if ($excludeCurrentDocument !== '') {
-            $params['excluded_type'] = $excludedType;
-            $params['excluded_refno'] = $excludedRefno;
-        }
-        $stmt->execute($params);
+        $stmt->execute([
+            'receipt_main_id' => $mainId,
+            'receipt_customer_id' => $contactId,
+            'invoice_main_id' => $mainId,
+            'invoice_customer_id' => $contactId,
+            'excluded_type' => $excludedType,
+            'excluded_refno' => $excludedRefno,
+        ]);
 
+        $config = null;
+        $spendByBenefitMonth = [];
         $months = [];
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $salesDate = trim((string) ($row['lsales_date'] ?? ''));
-            if (preg_match('/^(\d{4}-\d{2})/', $salesDate, $match) === 1) {
-                $months[$match[1]] = true;
+            $salesDate = trim((string) ($row['sales_date'] ?? ''));
+            if (preg_match('/^(\d{4}-\d{2})/', $salesDate, $match) !== 1) {
+                continue;
+            }
+            $monthKey = $match[1];
+            if ($row['vip_record_id'] !== null) {
+                if ((int) ($row['lapplied'] ?? 0) === 1
+                    && strtolower(trim((string) ($row['ltier'] ?? ''))) === 'silver') {
+                    $months[$monthKey] = true;
+                }
+                continue;
+            }
+
+            // Older posted documents have no VIP metadata row. Treat them as a
+            // redemption only when the customer qualified for Silver in that
+            // benefit month; a Gold document never consumes Silver's one-time use.
+            if (!array_key_exists($monthKey, $spendByBenefitMonth)) {
+                $benefitMonth = new \DateTimeImmutable($monthKey . '-01');
+                $previousMonth = $benefitMonth->modify('-1 month');
+                $spendByBenefitMonth[$monthKey] = $this->postedSalesSpendForMonth(
+                    $mainId,
+                    $contactId,
+                    $previousMonth->format('Y-m-01'),
+                    $benefitMonth->format('Y-m-01')
+                );
+            }
+            $config ??= (new VipTierSettingsRepository($this->db))->getConfig($mainId);
+            if (VipStanding::resolveLevel(
+                $spendByBenefitMonth[$monthKey],
+                (float) $config['one_time_discount_threshold'],
+                (float) $config['unlimited_discount_threshold']
+            ) === 'silver') {
+                $months[$monthKey] = true;
             }
         }
         return array_keys($months);
+    }
+
+    private function postedSalesSpendForMonth(int $mainId, string $contactId, string $monthStart, string $monthEnd): float
+    {
+        $invoicePosted = PostedSalesDocumentSql::invoiceIsPosted('posted_invoice');
+        $receiptPosted = PostedSalesDocumentSql::deliveryReceiptIsPosted('posted_receipt');
+        $stmt = $this->db->pdo()->prepare(<<<SQL
+SELECT COALESCE(SUM(COALESCE(ledger.ldebit, 0)), 0)
+FROM tblledger ledger
+WHERE ledger.lmainid = :main_id
+  AND ledger.lcustomerid = :customer_id
+  AND LOWER(TRIM(COALESCE(ledger.ltype, ''))) = 'debit'
+  AND LOWER(TRIM(COALESCE(ledger.lref_name, ''))) IN ('invoice', 'order slip', 'order_slip')
+  AND ledger.ldatetime >= :month_start AND ledger.ldatetime < :month_end
+  AND (
+      (LOWER(TRIM(COALESCE(ledger.lref_name, ''))) = 'invoice' AND EXISTS (
+          SELECT 1 FROM tblinvoice_list posted_invoice
+          WHERE posted_invoice.lmain_id = ledger.lmainid AND posted_invoice.lrefno = ledger.lrefno
+            AND {$invoicePosted}
+      ))
+      OR (LOWER(TRIM(COALESCE(ledger.lref_name, ''))) IN ('order slip', 'order_slip') AND EXISTS (
+          SELECT 1 FROM tbldelivery_receipt posted_receipt
+          WHERE posted_receipt.lmain_id = ledger.lmainid AND posted_receipt.lrefno = ledger.lrefno
+            AND {$receiptPosted}
+      ))
+  )
+SQL);
+        $stmt->execute([
+            'main_id' => $mainId,
+            'customer_id' => $contactId,
+            'month_start' => $monthStart,
+            'month_end' => $monthEnd,
+        ]);
+        return (float) $stmt->fetchColumn();
     }
 
     private function writeWithSilverRedemptionGuard(
