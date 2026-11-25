@@ -44,7 +44,7 @@ final class ServerMaintenanceController
                 'supported_extensions' => ['.sql', '.sql.gz'],
                 'max_bytes' => CorporateDumpUploadStore::MAX_BYTES,
                 'chunk_max_bytes' => CorporateDumpUploadStore::CHUNK_MAX_BYTES,
-                'safety' => 'Never drops, truncates, or deletes live data. Inserts new rows using shared columns; local-only tables and columns stay untouched. Existing product prices are preserved unless you choose to overwrite them from the dump.',
+                'safety' => 'Merges missing rows from a .sql / .sql.gz dump without dropping, truncating, or deleting live data. Local-only tables and columns stay untouched. Freight Charge rows use their reference values and receive fresh local IDs. Existing product prices are preserved unless you choose to overwrite them. The import report lists rows not inserted because they already exist or conflict with a local key.',
             ],
             'freight_charges_backup' => [
                 'supported_extension' => '.jsonl.gz',

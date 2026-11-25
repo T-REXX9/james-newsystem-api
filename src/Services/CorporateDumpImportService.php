@@ -14,10 +14,10 @@ use RuntimeException;
  *
  * Guarantees against the live (target) database:
  * - Never DROP / TRUNCATE / DELETE tables or rows
- * - Writes via INSERT IGNORE for every table, so existing rows are never
- *   modified -- unless the caller explicitly enables product price updates,
- *   in which case only the current price columns on product pricing tables
- *   overwrite matching rows.
+ * - Never modifies existing rows -- unless the caller explicitly enables
+ *   product price updates, in which case only current product price columns
+ *   are overwritten. Freight Charge rows merge by reference and get fresh
+ *   local IDs; other tables use add-only INSERT IGNORE merges.
  * - Only shared columns that already exist on the target are written
  * - Tables present only in the dump are skipped (not created)
  * - Target-only tables and columns are left untouched
@@ -42,6 +42,8 @@ final class CorporateDumpImportService
      *   tables_skipped_keyless: list<string>,
      *   tables_skipped_no_shared_columns: list<string>,
      *   affected_rows: int,
+     *   rows_not_inserted: int,
+     *   tables_with_uninserted_rows: list<string>,
      *   details: list<string>
      * }
      */
@@ -167,6 +169,9 @@ final class CorporateDumpImportService
         'tblinventory' => ['lprice', 'lsuppprice'],
     ];
 
+    /** Tables whose `lid` is a local surrogate ID, not a portable record key. */
+    private const FREIGHT_CHARGE_TABLES = ['tbldebit_memo', 'tbldebit_memo_items'];
+
     /**
      * @param list<string> $updatableColumns Columns allowed to be overwritten on
      *        key collision. Empty (the default) keeps the strict add-only
@@ -225,6 +230,73 @@ final class CorporateDumpImportService
                 $columnList,
                 $columnList,
                 $qualified($sourceDb, $table)
+            ),
+        ];
+    }
+
+    /**
+     * Freight Charge references are portable; their auto-increment `lid` values
+     * are not. Omit `lid` so a collision with an unrelated local row cannot
+     * silently discard an otherwise missing Freight Charge.
+     *
+     * @param list<string> $sharedColumns
+     * @return array{sql: string, mode: string}|null
+     */
+    private static function buildFreightChargeMergeSql(string $targetDb, string $sourceDb, string $table, array $sharedColumns): ?array
+    {
+        $columns = array_values(array_filter($sharedColumns, static fn (string $column): bool => $column !== 'lid'));
+        $required = $table === 'tbldebit_memo' ? ['lrefno', 'lmain_id'] : ['lrefno'];
+        if (array_diff($required, $columns) !== []) {
+            return null;
+        }
+
+        $quote = static fn (string $identifier): string => '`' . str_replace('`', '``', $identifier) . '`';
+        $target = $quote($targetDb) . '.' . $quote($table);
+        $source = $quote($sourceDb) . '.' . $quote($table);
+        $columnList = implode(', ', array_map($quote, $columns));
+
+        if ($table === 'tbldebit_memo') {
+            $referenceMatches = ['t.`lrefno` <=> s.`lrefno`'];
+            if (in_array('ldm_no', $columns, true)) {
+                $referenceMatches[] = "(COALESCE(TRIM(s.`ldm_no`), '') <> '' AND t.`lmain_id` <=> s.`lmain_id` AND t.`ldm_no` <=> s.`ldm_no`)";
+            }
+            return [
+                'mode' => 'freight_reference_merge',
+                'sql' => sprintf(
+                    'INSERT IGNORE INTO %s (%s) SELECT %s FROM %s s WHERE NOT EXISTS (SELECT 1 FROM %s t WHERE %s)',
+                    $target,
+                    $columnList,
+                    implode(', ', array_map(static fn (string $column): string => 's.' . $quote($column), $columns)),
+                    $source,
+                    $target,
+                    implode(' OR ', $referenceMatches)
+                ),
+            ];
+        }
+
+        $matches = [];
+        foreach ($columns as $column) {
+            $matches[] = sprintf('t.%s <=> s.%s', $quote($column), $quote($column));
+        }
+        // A non-empty lgenrefno is the stable item identity. For legacy schemas
+        // without it, or legacy rows without a value, compare shared values.
+        if (in_array('lgenrefno', $columns, true)) {
+            $sameItem = '((COALESCE(TRIM(s.`lgenrefno`), \'\') <> \'\' AND t.`lrefno` <=> s.`lrefno` AND t.`lgenrefno` <=> s.`lgenrefno`)'
+                . ' OR (COALESCE(TRIM(s.`lgenrefno`), \'\') = \'\' AND ' . implode(' AND ', $matches) . '))';
+        } else {
+            $sameItem = '(' . implode(' AND ', $matches) . ')';
+        }
+
+        return [
+            'mode' => 'freight_reference_merge',
+            'sql' => sprintf(
+                'INSERT IGNORE INTO %s (%s) SELECT %s FROM %s s WHERE NOT EXISTS (SELECT 1 FROM %s t WHERE %s)',
+                $target,
+                $columnList,
+                implode(', ', array_map(static fn (string $column): string => 's.' . $quote($column), $columns)),
+                $source,
+                $target,
+                $sameItem
             ),
         ];
     }
@@ -416,6 +488,8 @@ final class CorporateDumpImportService
      *   tables_skipped_keyless: list<string>,
      *   tables_skipped_no_shared_columns: list<string>,
      *   affected_rows: int,
+     *   rows_not_inserted: int,
+     *   tables_with_uninserted_rows: list<string>,
      *   details: list<string>
      * }
      */
@@ -429,16 +503,22 @@ final class CorporateDumpImportService
         $sourceTables = $this->listBaseTables($pdo, $sourceDb);
         $targetTables = $this->listBaseTables($pdo, $targetDb);
         $targetSet = array_fill_keys($targetTables, true);
+        $sourceTables = $this->orderTablesByForeignKeys($pdo, $targetDb, $sourceTables, $targetSet);
 
         $skippedMissing = [];
         $skippedKeyless = [];
         $skippedNoShared = [];
         $details = [];
         $affectedRows = 0;
+        $rowsNotInserted = 0;
+        $tablesWithUninsertedRows = [];
         $merged = 0;
 
-        $pdo->exec('SET SESSION foreign_key_checks = 0');
-        $pdo->exec('SET SESSION unique_checks = 0');
+        // Keep integrity checks enabled on the live database. The dump is
+        // staged separately with checks disabled because mysqldump table order
+        // is not guaranteed to follow foreign-key dependencies.
+        $pdo->exec('SET SESSION foreign_key_checks = 1');
+        $pdo->exec('SET SESSION unique_checks = 1');
         $pdo->exec("SET SESSION sql_mode = ''");
 
         foreach ($sourceTables as $table) {
@@ -477,13 +557,15 @@ final class CorporateDumpImportService
                 continue;
             }
 
-            $plan = self::buildMergeSql(
-                $targetDb,
-                $sourceDb,
-                $table,
-                $shared,
-                $overwriteProductPrices ? (self::PRICE_UPSERT_COLUMNS[$table] ?? []) : []
-            );
+            $plan = in_array($table, self::FREIGHT_CHARGE_TABLES, true)
+                ? self::buildFreightChargeMergeSql($targetDb, $sourceDb, $table, $shared)
+                : self::buildMergeSql(
+                    $targetDb,
+                    $sourceDb,
+                    $table,
+                    $shared,
+                    $overwriteProductPrices ? (self::PRICE_UPSERT_COLUMNS[$table] ?? []) : []
+                );
             if ($plan === null) {
                 $skippedNoShared[] = $table;
                 continue;
@@ -496,6 +578,15 @@ final class CorporateDumpImportService
 
             $affectedRows += (int) $affected;
             $merged++;
+            if ($plan['mode'] !== 'upsert') {
+                $countStmt = $pdo->query(sprintf('SELECT COUNT(*) FROM `%s`.`%s`', str_replace('`', '``', $sourceDb), str_replace('`', '``', $table)));
+                $sourceCount = (int) $countStmt->fetchColumn();
+                $notInserted = max(0, $sourceCount - (int) $affected);
+                if ($notInserted > 0) {
+                    $rowsNotInserted += $notInserted;
+                    $tablesWithUninsertedRows[] = sprintf('%s (%d)', $table, $notInserted);
+                }
+            }
             if ((int) $affected > 0) {
                 $details[] = sprintf('%s: %s affected=%d', $table, $plan['mode'], (int) $affected);
             }
@@ -510,6 +601,8 @@ final class CorporateDumpImportService
             'tables_skipped_keyless' => $skippedKeyless,
             'tables_skipped_no_shared_columns' => $skippedNoShared,
             'affected_rows' => $affectedRows,
+            'rows_not_inserted' => $rowsNotInserted,
+            'tables_with_uninserted_rows' => $tablesWithUninsertedRows,
             'details' => $details,
         ];
     }
@@ -527,6 +620,71 @@ final class CorporateDumpImportService
         );
         $stmt->execute([':database' => $database]);
         return array_map(static fn (array $row): string => (string) $row['TABLE_NAME'], $stmt->fetchAll());
+    }
+
+    /**
+     * Parents are merged before children so live foreign-key checks can remain
+     * enabled. Any cycle is left in stable source order; MySQL then rejects a
+     * row that cannot be inserted safely instead of leaving an orphan behind.
+     *
+     * @param list<string> $tables
+     * @param array<string, true> $targetSet
+     * @return list<string>
+     */
+    private function orderTablesByForeignKeys(PDO $pdo, string $targetDb, array $tables, array $targetSet): array
+    {
+        $tableSet = array_fill_keys($tables, true);
+        $children = [];
+        $incoming = array_fill_keys($tables, 0);
+        $stmt = $pdo->prepare(
+            'SELECT TABLE_NAME, REFERENCED_TABLE_NAME
+             FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+             WHERE TABLE_SCHEMA = :database
+               AND REFERENCED_TABLE_SCHEMA = :referenced_database
+               AND REFERENCED_TABLE_NAME IS NOT NULL'
+        );
+        $stmt->execute(['database' => $targetDb, 'referenced_database' => $targetDb]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $child = (string) $row['TABLE_NAME'];
+            $parent = (string) $row['REFERENCED_TABLE_NAME'];
+            if ($child === $parent || !isset($tableSet[$child], $tableSet[$parent], $targetSet[$child], $targetSet[$parent])) {
+                continue;
+            }
+            if (isset($children[$parent][$child])) {
+                continue;
+            }
+            $children[$parent][$child] = true;
+            $incoming[$child]++;
+        }
+
+        $queue = [];
+        foreach ($tables as $table) {
+            if ($incoming[$table] === 0) {
+                $queue[] = $table;
+            }
+        }
+        $ordered = [];
+        $visited = [];
+        while ($queue !== []) {
+            $table = array_shift($queue);
+            if (isset($visited[$table])) {
+                continue;
+            }
+            $visited[$table] = true;
+            $ordered[] = $table;
+            foreach (array_keys($children[$table] ?? []) as $child) {
+                $incoming[$child]--;
+                if ($incoming[$child] === 0) {
+                    $queue[] = $child;
+                }
+            }
+        }
+        foreach ($tables as $table) {
+            if (!isset($visited[$table])) {
+                $ordered[] = $table;
+            }
+        }
+        return $ordered;
     }
 
     /**
