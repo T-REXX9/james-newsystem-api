@@ -87,12 +87,16 @@ $insertPostedInvoiceSpend('customer-1', 30000, 'inv-gold-august');
 $insertPostedInvoiceSpend('customer-silver-redeemed', 15000, 'inv-silver-redeemed-august');
 $insertPostedInvoiceSpend('customer-silver-unused', 15000, 'inv-silver-unused-august');
 $insertPostedInvoiceSpend('customer-silver-legacy', 15000, 'inv-silver-legacy-august');
+$insertPostedInvoiceSpend('customer-silver-legacy-order-slip', 15000, 'inv-silver-legacy-order-slip-august');
 $insertPostedInvoiceSpend('customer-gold-legacy', 30000, 'inv-gold-legacy-august');
 $pdo->exec("INSERT INTO tblinvoice_list VALUES
     (7, 'inv-silver-legacy-september', 'customer-silver-legacy', '2026-09-20', '0', 0, 'Posted'),
     (7, 'inv-gold-legacy-september', 'customer-gold-legacy', '2026-09-20', '0', 0, 'Posted')");
+$pdo->exec("INSERT INTO tbldelivery_receipt VALUES
+    (7, 'os-silver-legacy-september', 'customer-silver-legacy-order-slip', '2026-09-21', 0, 'Posted')");
 $pdo->exec("INSERT INTO tblvip_document_discount VALUES
-    (8, 7, 'order_slip', 'os-silver-redeemed', 'customer-silver-redeemed', '2026-09-10', 1, 'silver')");
+    (8, 7, 'order_slip', 'os-silver-redeemed', 'customer-silver-redeemed', '2026-09-10', 1, 'silver'),
+    (9, 7, 'sales_inquiry', 'inquiry-silver-pending', 'customer-silver-unused', '2026-09-12', 1, 'silver')");
 $pdo->exec("INSERT INTO tbldelivery_receipt VALUES
     (7, 'os-silver-redeemed', 'customer-silver-redeemed', '2026-09-10', 0, 'Posted')");
 
@@ -124,6 +128,14 @@ $legacySilverPayload = $resolveForCustomer('customer-silver-legacy');
 if (($legacySilverPayload['vip_tier'] ?? '') !== 'silver' || (int) ($legacySilverPayload['vip_applied'] ?? 0) !== 0) {
     throw new RuntimeException('Legacy posted Silver invoice without VIP metadata was not recognized: ' . json_encode($legacySilverPayload));
 }
+$legacySilverOrderSlipPayload = $resolveForCustomer('customer-silver-legacy-order-slip');
+if (($legacySilverOrderSlipPayload['vip_tier'] ?? '') !== 'silver' || (int) ($legacySilverOrderSlipPayload['vip_applied'] ?? 0) !== 0) {
+    throw new RuntimeException('Legacy posted Silver Order Slip without VIP metadata was not recognized: ' . json_encode($legacySilverOrderSlipPayload));
+}
+$pendingSilverPayload = $resolveForCustomer('customer-silver-unused');
+if (($pendingSilverPayload['vip_tier'] ?? '') !== 'silver' || (int) ($pendingSilverPayload['vip_applied'] ?? 0) !== 1) {
+    throw new RuntimeException('Pending Silver inquiry incorrectly consumed the monthly benefit: ' . json_encode($pendingSilverPayload));
+}
 $legacyGoldPayload = $resolveForCustomer('customer-gold-legacy');
 if (($legacyGoldPayload['vip_tier'] ?? '') !== 'gold' || (int) ($legacyGoldPayload['vip_applied'] ?? 0) !== 1) {
     throw new RuntimeException('Legacy VIP Gold invoice incorrectly consumed or limited Gold: ' . json_encode($legacyGoldPayload));
@@ -133,4 +145,6 @@ echo "PASS: only uncancelled Order Slips and Invoices redeem VIP Silver\n";
 echo "PASS: VIP Gold remains unlimited when Silver redemption exists\n";
 echo "PASS: pending inquiries do not consume an unused VIP Silver benefit\n";
 echo "PASS: legacy posted Silver invoices without VIP metadata redeem the month\n";
+echo "PASS: legacy posted Silver Order Slips without VIP metadata redeem the month\n";
+echo "PASS: pending VIP Silver inquiries do not consume the monthly benefit\n";
 echo "PASS: legacy VIP Gold invoices remain unlimited\n";
