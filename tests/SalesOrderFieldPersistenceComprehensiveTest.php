@@ -65,9 +65,25 @@ $pdo->exec('CREATE TABLE tblapprover_assignment (lid INTEGER PRIMARY KEY, lmain_
 $pdo->exec('CREATE TABLE tblvip_document_discount (
     lid INTEGER PRIMARY KEY AUTOINCREMENT, lmain_id INTEGER, ldocument_type TEXT, ldocument_refno TEXT,
     lcustomerid TEXT, lsales_date TEXT, lapplied INTEGER DEFAULT 0, ltier TEXT DEFAULT \'regular\',
-    lpercentage REAL DEFAULT 0, ldiscount_amount REAL DEFAULT 0, ltotal_to_pay REAL DEFAULT 0
+    lpercentage REAL DEFAULT 0, ldiscount_amount REAL DEFAULT 0, ltotal_to_pay REAL DEFAULT 0,
+    UNIQUE (ldocument_type, ldocument_refno)
 )');
-$pdo->exec('CREATE TABLE tblinventory_logs (lid INTEGER PRIMARY KEY AUTOINCREMENT, lrefno TEXT, ltransaction_type TEXT)');
+$pdo->exec('CREATE TABLE tblinventory_logs (lid INTEGER PRIMARY KEY AUTOINCREMENT, lrefno TEXT, ltransaction_type TEXT, linvent_id TEXT, lin REAL, lout REAL)');
+$pdo->exec('CREATE TABLE tblinventory_item (lsession TEXT, lmain_id INTEGER)');
+$pdo->exec("INSERT INTO tblinventory_item VALUES ('item-1', 1)");
+$pdo->exec("INSERT INTO tblinventory_logs (lrefno, ltransaction_type, linvent_id, lin, lout) VALUES ('stock-fixture', 'Opening', 'item-1', 10, 0)");
+$pdo->exec('CREATE TABLE sales_inquiry_confirmations (main_id INTEGER, inquiry_refno TEXT, confirmed_at TEXT)');
+$pdo->exec('CREATE TABLE sales_inquiry_replacement_links (main_id INTEGER, source_refno TEXT, replacement_refno TEXT)');
+$pdo->exec('CREATE TABLE tblledger (lmainid INTEGER, lcustomerid TEXT, ltype TEXT, lref_name TEXT, ldatetime TEXT, ldebit REAL, lrefno TEXT)');
+$pdo->exec('CREATE TABLE tbldelivery_receipt (lmain_id INTEGER, lrefno TEXT, lcustomerid TEXT, ldate TEXT, lcancel TEXT, lstatus TEXT)');
+$pdo->exec('CREATE TABLE tblinvoice_list (lmain_id INTEGER, lrefno TEXT, lcustomerid TEXT, ldate TEXT, lcancel TEXT, lcancel_invoice INTEGER, lstatus TEXT)');
+
+// A posted October invoice makes the customer Silver for November. The posted
+// November 6 order slip already redeemed that month's Silver benefit.
+$pdo->exec("INSERT INTO tblledger VALUES (1, 'cust-1', 'Debit', 'Invoice', '2026-10-15 09:00:00', 15000, 'inv-oct')");
+$pdo->exec("INSERT INTO tblinvoice_list VALUES (1, 'inv-oct', 'cust-1', '2026-10-15', '0', 0, 'Posted')");
+$pdo->exec("INSERT INTO tbldelivery_receipt VALUES (1, 'os-nov6', 'cust-1', '2026-11-06', '0', 'Posted')");
+$pdo->exec("INSERT INTO tblvip_document_discount VALUES (1, 1, 'order_slip', 'os-nov6', 'cust-1', '2026-11-06', 1, 'silver', 10, 100, 900)");
 
 // Seed test data
 $pdo->exec("INSERT INTO tblpatient VALUES (1, 1, 'cust-1', 'Jane', 'Doe', 'Acme Corp', '123 Main St', 'Standard', '10000', 'NET30', '12', 'Metro', 'Regular', '', 0, 0)");
@@ -79,6 +95,23 @@ $property->setValue($db, $pdo);
 
 $soRepo = new SalesOrderRepository($db);
 $siRepo = new SalesInquiryRepository($db);
+
+echo "=== Testing server-side Silver eligibility on inquiry create ===\n";
+$novemberInquiry = $siRepo->createInquiry(1, 12, [
+    'contact_id' => 'cust-1',
+    'sales_date' => '2026-11-26',
+    'vip_applied' => true,
+    'vip_tier' => 'silver',
+    'vip_percentage' => 10,
+    'items' => [[
+        'item_id' => 'item-1', 'item_refno' => 'item-ref-1', 'part_no' => 'PART-1',
+        'item_code' => 'CODE-1', 'description' => 'VIP eligibility check',
+        'qty' => 1, 'unit_price' => 1000, 'approved' => 1,
+    ]],
+]);
+test_expect(($novemberInquiry['vip_tier'] ?? '') === 'silver', 'VIP tier is recalculated from the previous month\'s posted sales');
+test_expect((int) ($novemberInquiry['vip_applied'] ?? 1) === 0, 'a Silver redemption on November 6 prevents a second November inquiry discount');
+test_expect((float) ($novemberInquiry['vip_discount_amount'] ?? -1) === 0.0, 'server response removes the duplicate Silver discount amount');
 
 echo "=== Testing ALL editable SO fields ===\n\n";
 

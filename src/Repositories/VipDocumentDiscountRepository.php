@@ -506,19 +506,30 @@ SQL);
         array $computed
     ): void {
         $this->ensureTable();
-        $stmt = $this->db->pdo()->prepare(
-            'INSERT INTO tblvip_document_discount
-                (lmain_id, ldocument_type, ldocument_refno, lcustomerid, lsales_date, lapplied, ltier, lpercentage, ldiscount_amount, ltotal_to_pay)
-             VALUES
-                (:main_id, :type, :refno, :customer_id, :sales_date, :applied, :tier, :percentage, :discount_amount, :total_to_pay)
-             ON DUPLICATE KEY UPDATE
+        $pdo = $this->db->pdo();
+        $upsertSql = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite'
+            ? 'ON CONFLICT (ldocument_type, ldocument_refno) DO UPDATE SET
+                lcustomerid = excluded.lcustomerid,
+                lsales_date = excluded.lsales_date,
+                lapplied = excluded.lapplied,
+                ltier = excluded.ltier,
+                lpercentage = excluded.lpercentage,
+                ldiscount_amount = excluded.ldiscount_amount,
+                ltotal_to_pay = excluded.ltotal_to_pay'
+            : 'ON DUPLICATE KEY UPDATE
                 lcustomerid = VALUES(lcustomerid),
                 lsales_date = VALUES(lsales_date),
                 lapplied = VALUES(lapplied),
                 ltier = VALUES(ltier),
                 lpercentage = VALUES(lpercentage),
                 ldiscount_amount = VALUES(ldiscount_amount),
-                ltotal_to_pay = VALUES(ltotal_to_pay)'
+                ltotal_to_pay = VALUES(ltotal_to_pay)';
+        $stmt = $pdo->prepare(
+            'INSERT INTO tblvip_document_discount
+                (lmain_id, ldocument_type, ldocument_refno, lcustomerid, lsales_date, lapplied, ltier, lpercentage, ldiscount_amount, ltotal_to_pay)
+             VALUES
+                (:main_id, :type, :refno, :customer_id, :sales_date, :applied, :tier, :percentage, :discount_amount, :total_to_pay)
+             ' . $upsertSql
         );
         $stmt->execute([
             'main_id' => $mainId,

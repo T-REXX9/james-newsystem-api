@@ -568,7 +568,7 @@ SQL;
             (new AuditTrailWriter($pdo))->write($mainId, $userId, 'Sales Inquiry', 'Create', $inquiryRefno);
             $pdo->commit();
             $created = $this->getInquiry($mainId, $inquiryRefno) ?? [];
-            $this->persistVipFromPayload($mainId, $inquiryRefno, $payload, $created);
+            $this->persistResolvedVipForInquiry($mainId, $inquiryRefno, $created);
             return $this->getInquiry($mainId, $inquiryRefno) ?? $created;
         } catch (\Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -642,7 +642,7 @@ SQL;
             $pdo->prepare('INSERT INTO sales_inquiry_confirmations (main_id, inquiry_refno, confirmed_at) VALUES (:main_id, :refno, NOW())')->execute(['main_id' => $mainId, 'refno' => $inquiryRefno]);
             $this->syncInquiryInventoryLogs($pdo, $mainId, $inquiryRefno);
             $replacementTotal = array_reduce($items, static fn(float $sum, array $item): float => $sum + ((float) ($item['qty'] ?? 0) * (float) ($item['unit_price'] ?? 0)), 0.0);
-            $this->persistVipFromPayload($mainId, $inquiryRefno, $payload, [
+            $this->persistResolvedVipForInquiry($mainId, $inquiryRefno, [
                 'contact_id' => $customerId,
                 'sales_date' => $salesDate,
                 'grand_total' => $replacementTotal,
@@ -823,27 +823,23 @@ SQL;
 
         $updated = $this->getInquiry($mainId, $inquiryRefno);
         if ($updated !== null) {
-            $this->persistVipFromPayload($mainId, $inquiryRefno, $payload, $updated);
+            $this->persistResolvedVipForInquiry($mainId, $inquiryRefno, $updated);
             $updated = $this->getInquiry($mainId, $inquiryRefno) ?? $updated;
         }
         return $updated;
     }
 
-    /**
-     * @param array<string, mixed> $payload
-     * @param array<string, mixed> $record
-     */
-    private function persistVipFromPayload(int $mainId, string $inquiryRefno, array $payload, array $record): void
+    /** Recalculate from posted sales before saving, ignoring client VIP fields. */
+    private function persistResolvedVipForInquiry(int $mainId, string $inquiryRefno, array $record): void
     {
-        if (!array_key_exists('vip_applied', $payload) && !array_key_exists('vip_tier', $payload)) {
-            return;
-        }
+        $record['contact_id'] = (string) ($record['contact_id'] ?? $record['customer_id'] ?? '');
+        $payload = $this->resolveVipPayloadForInquiry($mainId, $inquiryRefno, $record);
         (new VipDocumentDiscountRepository($this->db))->upsertFromPayload(
             $mainId,
             'sales_inquiry',
             $inquiryRefno,
-            (string) ($record['contact_id'] ?? $payload['contact_id'] ?? ''),
-            (string) ($record['sales_date'] ?? $payload['sales_date'] ?? ''),
+            (string) ($record['contact_id'] ?? ''),
+            (string) ($record['sales_date'] ?? ''),
             (float) ($record['grand_total'] ?? 0),
             $payload
         );
