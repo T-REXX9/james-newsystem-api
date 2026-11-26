@@ -541,7 +541,12 @@ SELECT
     COALESCE(
         (SELECT SUM(COALESCE(cri.lqty, 0)) FROM tblcredit_return_item cri
          WHERE cri.linv_refno = COALESCE(ii.linv_refno, ii.litemid, '')
-           AND cri.lrefno IN (SELECT cm2.lrefno FROM tblcredit_memo cm2 WHERE cm2.linvoice_refno = :src_ref)),
+           AND cri.lrefno IN (
+               SELECT cm2.lrefno
+               FROM tblcredit_memo cm2
+               WHERE cm2.linvoice_refno = :src_ref
+                 AND CAST(COALESCE(cm2.lmainid, 0) AS SIGNED) = :main_id
+           )),
         0
     ) AS already_returned_qty
 FROM tblinvoice_itemrec ii
@@ -550,7 +555,7 @@ WHERE ii.linvoice_refno = :src_ref2
 ORDER BY ii.lid ASC
 SQL;
             $stmt = $pdo->prepare($sql);
-            $stmt->execute(['src_ref' => $sourceRef, 'src_ref2' => $sourceRef]);
+            $stmt->execute(['src_ref' => $sourceRef, 'src_ref2' => $sourceRef, 'main_id' => $mainId]);
         } else {
             // OR (delivery receipt)
             $sql = <<<'SQL'
@@ -568,7 +573,12 @@ SELECT
     COALESCE(
         (SELECT SUM(COALESCE(cri.lqty, 0)) FROM tblcredit_return_item cri
          WHERE cri.linv_refno = COALESCE(dri.linv_refno, dri.litemid, '')
-           AND cri.lrefno IN (SELECT cm2.lrefno FROM tblcredit_memo cm2 WHERE cm2.linvoice_refno = :src_ref)),
+           AND cri.lrefno IN (
+               SELECT cm2.lrefno
+               FROM tblcredit_memo cm2
+               WHERE cm2.linvoice_refno = :src_ref
+                 AND CAST(COALESCE(cm2.lmainid, 0) AS SIGNED) = :main_id
+           )),
         0
     ) AS already_returned_qty
 FROM tbldelivery_receipt_items dri
@@ -577,7 +587,7 @@ WHERE dri.lor_refno = :src_ref2
 ORDER BY dri.lid ASC
 SQL;
             $stmt = $pdo->prepare($sql);
-            $stmt->execute(['src_ref' => $sourceRef, 'src_ref2' => $sourceRef]);
+            $stmt->execute(['src_ref' => $sourceRef, 'src_ref2' => $sourceRef, 'main_id' => $mainId]);
         }
 
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -586,9 +596,6 @@ SQL;
             $originalQty = (int) ($row['original_qty'] ?? 0);
             $alreadyReturned = (int) ($row['already_returned_qty'] ?? 0);
             $remainingQty = $originalQty - $alreadyReturned;
-            if ($remainingQty <= 0) {
-                continue;
-            }
             $items[] = [
                 'source_item_id' => (int) ($row['source_item_id'] ?? 0),
                 'linv_refno' => (string) ($row['linv_refno'] ?? ''),
@@ -646,6 +653,27 @@ SQL;
             || strcasecmp(trim((string) ($cm['ltype'] ?? '')), 'No Reference') === 0;
         if ($isNoReference) {
             (new CustomerRepository($this->db))->assertCustomerPurchasedItem($customerId, $itemCode, $partNo);
+        } else {
+            $sourceItemsTable = $sourceType === 'OR' ? 'tbldelivery_receipt_items' : 'tblinvoice_itemrec';
+            $sourceReferenceColumn = $sourceType === 'OR' ? 'lor_refno' : 'linvoice_refno';
+            $sourceQtyStmt = $pdo->prepare(sprintf(
+                'SELECT COALESCE(SUM(COALESCE(lqty, 0)), 0) FROM %s '
+                . 'WHERE %s = :source_refno '
+                . "AND COALESCE(linv_refno, litemid, '') = :inventory_refno",
+                $sourceItemsTable,
+                $sourceReferenceColumn
+            ));
+            $sourceQtyStmt->execute([
+                'source_refno' => $sourceRefno,
+                'inventory_refno' => $invRefno,
+            ]);
+            $sourceQty = (float) $sourceQtyStmt->fetchColumn();
+            if ($sourceQty <= 0) {
+                throw new RuntimeException('Selected item is not part of the linked source document.');
+            }
+            if ($qty > $sourceQty) {
+                throw new RuntimeException('Quantity cannot exceed the quantity on the linked source document.');
+            }
         }
 
         $insert = $pdo->prepare(<<<'SQL'
