@@ -687,14 +687,14 @@ SQL;
                 ''
             );
 
-            $stmtHeader = $pdo->prepare('DELETE FROM tbldebit_memo WHERE lrefno = :refno');
-            $stmtHeader->execute(['refno' => $refno]);
+            $stmtHeader = $pdo->prepare('DELETE FROM tbldebit_memo WHERE lrefno = :refno AND CAST(COALESCE(lmain_id, 0) AS SIGNED) = :main_id');
+            $stmtHeader->execute(['refno' => $refno, 'main_id' => $mainId]);
 
             $stmtItems = $pdo->prepare('DELETE FROM tbldebit_memo_items WHERE lrefno = :refno');
             $stmtItems->execute(['refno' => $refno]);
 
-            $stmtLedger = $pdo->prepare('DELETE FROM tblledger WHERE lrefno = :refno');
-            $stmtLedger->execute(['refno' => $refno]);
+            $stmtLedger = $pdo->prepare("DELETE FROM tblledger WHERE lrefno = :refno AND lcustomerid = :customer_id AND CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id AND lref_name = 'Freight Charges' AND ltype = 'Debit'");
+            $stmtLedger->execute(['refno' => $refno, 'customer_id' => (string) ($existing['lcustomer'] ?? ''), 'main_id' => $mainId]);
 
             $pdo->commit();
         } catch (\Throwable $e) {
@@ -714,7 +714,7 @@ SQL;
 
         return match (strtolower(trim($action))) {
             'post', 'approverecord' => $this->postRecord($mainId, $userId, $existing),
-            'unpost' => $this->unpostRecord($mainId, $userId, $refno, (string) ($existing['lstatus'] ?? 'Posted')),
+            'unpost' => $this->unpostRecord($mainId, $userId, $refno, (string) ($existing['lcustomer'] ?? ''), (string) ($existing['lstatus'] ?? 'Posted')),
             default => throw new RuntimeException('Unsupported action'),
         };
     }
@@ -744,15 +744,16 @@ SQL;
             $remarks .= '-' . $remarkText;
         }
         $date = $this->normalizeDateTime((string) ($record['ldate'] ?? 'now'));
+        $createdAt = date('Y-m-d H:i:s');
 
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
-            $update = $pdo->prepare('UPDATE tbldebit_memo SET lstatus = :status WHERE lrefno = :refno');
-            $update->execute(['status' => 'Posted', 'refno' => $refno]);
+            $update = $pdo->prepare('UPDATE tbldebit_memo SET lstatus = :status WHERE lrefno = :refno AND CAST(COALESCE(lmain_id, 0) AS SIGNED) = :main_id');
+            $update->execute(['status' => 'Posted', 'refno' => $refno, 'main_id' => $mainId]);
 
-            $exists = $pdo->prepare('SELECT lid FROM tblledger WHERE lrefno = :refno AND lcustomerid = :customer_id LIMIT 1');
-            $exists->execute(['refno' => $refno, 'customer_id' => $customerId]);
+            $exists = $pdo->prepare("SELECT lid FROM tblledger WHERE lrefno = :refno AND lcustomerid = :customer_id AND CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id AND lref_name = 'Freight Charges' AND ltype = 'Debit' LIMIT 1");
+            $exists->execute(['refno' => $refno, 'customer_id' => $customerId, 'main_id' => $mainId]);
 
             if ($exists->fetch(PDO::FETCH_ASSOC) === false) {
                 $insert = $pdo->prepare(
@@ -796,16 +797,16 @@ SQL;
         ];
     }
 
-    private function unpostRecord(int $mainId, string $userId, string $refno, string $oldStatus): array
+    private function unpostRecord(int $mainId, string $userId, string $refno, string $customerId, string $oldStatus): array
     {
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
-            $update = $pdo->prepare('UPDATE tbldebit_memo SET lstatus = :status WHERE lrefno = :refno');
-            $update->execute(['status' => 'Pending', 'refno' => $refno]);
+            $update = $pdo->prepare('UPDATE tbldebit_memo SET lstatus = :status WHERE lrefno = :refno AND CAST(COALESCE(lmain_id, 0) AS SIGNED) = :main_id');
+            $update->execute(['status' => 'Pending', 'refno' => $refno, 'main_id' => $mainId]);
 
-            $delete = $pdo->prepare('DELETE FROM tblledger WHERE lrefno = :refno');
-            $delete->execute(['refno' => $refno]);
+            $delete = $pdo->prepare("DELETE FROM tblledger WHERE lrefno = :refno AND lcustomerid = :customer_id AND CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id AND lref_name = 'Freight Charges' AND ltype = 'Debit'");
+            $delete->execute(['refno' => $refno, 'customer_id' => $customerId, 'main_id' => $mainId]);
 
             $pdo->commit();
             (new AuditTrailWriter($pdo))->write($mainId, (int) $userId, 'Freight Charges', 'Unpost Freight Charges', $refno, '', $oldStatus, 'Pending');
