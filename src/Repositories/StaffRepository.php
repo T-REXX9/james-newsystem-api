@@ -386,7 +386,7 @@ SQL;
         $lastName = trim((string) ($nameParts[1] ?? ''));
         $email = $this->normalizeEmail((string) ($data['email'] ?? ''));
         if ($email === '') {
-            throw new HttpException(422, 'email is required');
+            $email = $this->generateStaffUsername((string) ($data['full_name'] ?? ''));
         }
         $this->assertEmailAvailable($email);
         $roleId = array_key_exists('group_id', $data) && $data['group_id'] !== null && $data['group_id'] !== ''
@@ -776,6 +776,33 @@ SQL;
     private function normalizeEmail(string $email): string
     {
         return strtolower(trim($email));
+    }
+
+    private function generateStaffUsername(string $fullName): string
+    {
+        $base = strtolower(trim((string) preg_replace('/[^a-z0-9]+/i', '.', trim($fullName)), '.'));
+        $base = substr($base !== '' ? $base : 'staff', 0, 80);
+        $username = $base;
+        $suffix = 1;
+
+        while ($this->isLoginIdentifierInUse($username)) {
+            $username = $base . '.' . $suffix;
+            $suffix++;
+        }
+
+        return $username;
+    }
+
+    private function isLoginIdentifierInUse(string $identifier): bool
+    {
+        $stmt = $this->db->pdo()->prepare(
+            "SELECT 1 FROM tblaccount
+             WHERE LOWER(TRIM(COALESCE(lemail, ''))) = :identifier
+               AND COALESCE(lstatus, 0) = 1
+             LIMIT 1"
+        );
+        $stmt->execute(['identifier' => $identifier]);
+        return (bool) $stmt->fetchColumn();
     }
 
     private function dedupeStaffRows(array $rows): array

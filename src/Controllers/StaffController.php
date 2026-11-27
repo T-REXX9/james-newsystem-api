@@ -205,10 +205,6 @@ final class StaffController
         }
 
         $email = trim((string) ($body['email'] ?? ''));
-        if ($email === '') {
-            throw new HttpException(422, 'email is required');
-        }
-
         $password = (string) ($body['password'] ?? '');
         if ($password === '') {
             throw new HttpException(422, 'password is required');
