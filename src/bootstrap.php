@@ -1099,6 +1099,8 @@ function app_router(): Router
     $router->post('/api/v1/incident-report-items', $requireActionAuth([$incidentItemsReportController, 'create'], 'Incident Report', 'add'));
     $router->get('/api/v1/freight-charges', $requireViewAuth([$freightChargesController, 'list'], 'Freight Charges'));
     $router->get('/api/v1/freight-charges/report', $requireViewAuth([$freightChargesController, 'report'], 'Freight Charges'));
+    $router->post('/api/v1/freight-charges/customers/{customerId}/ledger-duplicates/preview', $requireActionAuth([$freightChargesController, 'previewCustomerLedgerDuplicateCleanup'], 'Freight Charges (Debit)', 'delete'));
+    $router->post('/api/v1/freight-charges/customers/{customerId}/ledger-duplicates/cleanup', $requireActionAuth([$freightChargesController, 'cleanupCustomerLedgerDuplicates'], 'Freight Charges (Debit)', 'delete'));
     $router->get('/api/v1/freight-charges/{refno}', $requireViewAuth([$freightChargesController, 'show'], 'Freight Charges'));
     $router->post('/api/v1/freight-charges', $requireActionAuthGuardingDates([$freightChargesController, 'create'], 'Freight Charges', 'add', ['date']));
     $router->patch('/api/v1/freight-charges/{refno}', $requireActionAuth([$freightChargesController, 'update'], 'Freight Charges', 'edit'));

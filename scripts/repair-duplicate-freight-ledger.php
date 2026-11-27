@@ -109,8 +109,8 @@ function assessGroup(PDO $pdo, array $key, bool $lock): array
         return ['eligible' => false, 'reason' => 'no ledger row matches memo date'];
     }
 
-    // Preserve the newest valid row when multiple copies share the memo date.
-    usort($dateMatches, static fn (array $a, array $b): int => (int) $b['lid'] <=> (int) $a['lid']);
+    // Preserve the original ledger row when multiple copies share the memo date.
+    usort($dateMatches, static fn (array $a, array $b): int => (int) $a['lid'] <=> (int) $b['lid']);
     $keepLid = (int) $dateMatches[0]['lid'];
     $deleteRows = array_values(array_filter(
         $ledgerRows,

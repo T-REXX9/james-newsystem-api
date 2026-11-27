@@ -150,6 +150,39 @@ final class FreightChargesController
         ];
     }
 
+    public function previewCustomerLedgerDuplicateCleanup(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $customerId = trim((string) ($params['customerId'] ?? ''));
+        if ($mainId <= 0 || $customerId === '') {
+            throw new HttpException(422, 'main_id and customerId are required');
+        }
+
+        $customerId = $this->redirects?->resolve($mainId, $customerId)['session_id'] ?? $customerId;
+        try {
+            return $this->repo->previewCustomerLedgerDuplicateCleanup($mainId, $customerId);
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
+    }
+
+    public function cleanupCustomerLedgerDuplicates(array $params = [], array $query = [], array $body = []): array
+    {
+        $mainId = (int) ($body['main_id'] ?? 0);
+        $userId = (int) ($body['user_id'] ?? 0);
+        $customerId = trim((string) ($params['customerId'] ?? ''));
+        if ($mainId <= 0 || $userId <= 0 || $customerId === '') {
+            throw new HttpException(422, 'A valid company, customer, and authenticated user are required');
+        }
+
+        $customerId = $this->redirects?->resolve($mainId, $customerId)['session_id'] ?? $customerId;
+        try {
+            return $this->repo->cleanupCustomerLedgerDuplicates($mainId, $customerId, $userId);
+        } catch (RuntimeException $e) {
+            throw new HttpException(422, $e->getMessage());
+        }
+    }
+
     public function action(array $params = [], array $query = [], array $body = []): array
     {
         $mainId = (int) ($body['main_id'] ?? 0);

@@ -705,6 +705,259 @@ SQL;
         return true;
     }
 
+    public function previewCustomerLedgerDuplicateCleanup(int $mainId, string $customerId): array
+    {
+        $summary = $this->customerLedgerDuplicateCleanupSummary($mainId, $customerId, false);
+        unset($summary['_groups']);
+        return $summary;
+    }
+
+    public function cleanupCustomerLedgerDuplicates(int $mainId, string $customerId, int $userId): array
+    {
+        if ($mainId <= 0 || trim($customerId) === '' || $userId <= 0) {
+            throw new RuntimeException('A valid company, customer, and authenticated user are required');
+        }
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $summary = $this->customerLedgerDuplicateCleanupSummary($mainId, $customerId, true);
+            if ($summary['rows_to_remove'] === 0) {
+                $pdo->commit();
+                unset($summary['_groups']);
+                return $summary + ['cleaned' => true, 'rows_removed' => 0, 'archive_file' => null];
+            }
+
+            $archiveDirectory = dirname(__DIR__, 2) . '/storage/freight-ledger-duplicate-archives';
+            if (!is_dir($archiveDirectory) && !mkdir($archiveDirectory, 0700, true) && !is_dir($archiveDirectory)) {
+                throw new RuntimeException('Unable to create the protected Freight Charges archive directory');
+            }
+            @chmod($archiveDirectory, 0700);
+
+            $archiveRows = [];
+            foreach ($summary['_groups'] as $group) {
+                foreach ($group['delete_rows'] as $row) {
+                    $row['_repair_customer_id'] = $customerId;
+                    $row['_repair_main_id'] = $mainId;
+                    $row['_repair_refno'] = $group['refno'];
+                    $row['_repair_memo_id'] = $group['memo']['lid'];
+                    $row['_repair_memo_no'] = $group['memo']['ldm_no'];
+                    $row['_repair_memo_amount'] = $group['memo']['lamt'];
+                    $row['_repair_memo_date'] = $group['memo_date'];
+                    $row['_repair_keep_lid'] = $group['keep_lid'];
+                    $archiveRows[] = $row;
+                }
+            }
+
+            $archiveName = sprintf(
+                'customer-%s-%s-%s.json',
+                preg_replace('/[^a-zA-Z0-9_-]/', '_', $customerId),
+                date('Ymd-His'),
+                bin2hex(random_bytes(4))
+            );
+            $archivePath = $archiveDirectory . '/' . $archiveName;
+            $archive = [
+                'main_id' => $mainId,
+                'customer_id' => $customerId,
+                'actor_id' => $userId,
+                'archived_at' => date(DATE_ATOM),
+                'deleted_row_count' => count($archiveRows),
+                'rows' => $archiveRows,
+            ];
+            $json = json_encode($archive, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n";
+            $handle = @fopen($archivePath, 'x');
+            if ($handle === false) {
+                throw new RuntimeException('Unable to create the protected Freight Charges archive');
+            }
+            try {
+                if (fwrite($handle, $json) !== strlen($json)) {
+                    throw new RuntimeException('Could not fully write the Freight Charges archive');
+                }
+                fflush($handle);
+            } finally {
+                fclose($handle);
+            }
+            @chmod($archivePath, 0600);
+
+            $delete = $pdo->prepare(
+                "DELETE FROM tblledger
+                 WHERE lid = :lid
+                   AND lcustomerid = :customer_id
+                   AND CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id
+                   AND lrefno = :refno
+                   AND lref_name = 'Freight Charges'
+                   AND ltype = 'Debit'"
+            );
+            $deleted = 0;
+            foreach ($summary['_groups'] as $group) {
+                foreach ($group['delete_rows'] as $row) {
+                    $delete->execute([
+                        'lid' => (int) $row['lid'],
+                        'customer_id' => $customerId,
+                        'main_id' => $mainId,
+                        'refno' => $group['refno'],
+                    ]);
+                    if ($delete->rowCount() !== 1) {
+                        throw new RuntimeException('A ledger row changed during cleanup; no rows were committed');
+                    }
+                    $deleted++;
+                }
+            }
+            $pdo->commit();
+
+            (new AuditTrailWriter($pdo))->write(
+                $mainId,
+                $userId,
+                'Freight Charges',
+                'Clean duplicate Freight Charges ledger rows',
+                $customerId,
+                sprintf('%d row(s) removed; %d valid row(s) retained. Archive: %s', $deleted, $summary['groups_repaired'], $archiveName),
+                'Duplicates present',
+                'Repaired'
+            );
+
+            unset($summary['_groups']);
+            return $summary + [
+                'cleaned' => true,
+                'rows_removed' => $deleted,
+                'archive_file' => $archiveName,
+            ];
+        } catch (\Throwable $error) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $error;
+        }
+    }
+
+    private function customerLedgerDuplicateCleanupSummary(int $mainId, string $customerId, bool $lock): array
+    {
+        if ($mainId <= 0 || trim($customerId) === '') {
+            throw new RuntimeException('A valid company and customer are required');
+        }
+
+        $pdo = $this->db->pdo();
+        $stmt = $pdo->prepare(
+            "SELECT lmainid, lcustomerid, lrefno, COUNT(*) AS row_count
+             FROM tblledger
+             WHERE CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id
+               AND lcustomerid = :customer_id
+               AND lref_name = 'Freight Charges'
+               AND ltype = 'Debit'
+               AND COALESCE(lrefno, '') <> ''
+             GROUP BY lmainid, lcustomerid, lrefno
+             HAVING COUNT(*) > 1"
+        );
+        $stmt->execute(['main_id' => $mainId, 'customer_id' => $customerId]);
+        $keys = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $eligible = [];
+        $skipped = 0;
+
+        foreach ($keys as $key) {
+            $assessment = $this->assessCustomerLedgerDuplicateGroup($pdo, $key, $lock);
+            if (!$assessment['eligible']) {
+                $skipped++;
+                continue;
+            }
+            $eligible[] = [
+                'refno' => (string) $key['lrefno'],
+                'memo' => $assessment['memo'],
+                'memo_date' => $assessment['memo_date'],
+                'keep_lid' => $assessment['keep_lid'],
+                'delete_rows' => $assessment['delete_rows'],
+            ];
+        }
+
+        return [
+            'groups_found' => count($keys),
+            'groups_repaired' => count($eligible),
+            'rows_to_remove' => array_sum(array_map(static fn (array $group): int => count($group['delete_rows']), $eligible)),
+            'groups_skipped' => $skipped,
+            '_groups' => $eligible,
+        ];
+    }
+
+    private function assessCustomerLedgerDuplicateGroup(PDO $pdo, array $key, bool $lock): array
+    {
+        $lockSql = $lock ? ' FOR UPDATE' : '';
+        $memoStmt = $pdo->prepare(
+            "SELECT lid, lrefno, lmain_id, lcustomer, ldm_no, lamt, ldate, ldatetime, lstatus
+             FROM tbldebit_memo
+             WHERE lrefno = :refno
+               AND CAST(COALESCE(lmain_id, 0) AS SIGNED) = :main_id
+               AND lcustomer = :customer_id
+               AND LOWER(COALESCE(lstatus, '')) = 'posted'" . $lockSql
+        );
+        $memoStmt->execute([
+            'refno' => $key['lrefno'],
+            'main_id' => (int) $key['lmainid'],
+            'customer_id' => $key['lcustomerid'],
+        ]);
+        $memos = $memoStmt->fetchAll(PDO::FETCH_ASSOC);
+        if (count($memos) !== 1) {
+            return ['eligible' => false];
+        }
+        $memo = $memos[0];
+
+        $ledgerStmt = $pdo->prepare(
+            "SELECT * FROM tblledger
+             WHERE lrefno = :refno
+               AND lcustomerid = :customer_id
+               AND CAST(COALESCE(lmainid, 0) AS SIGNED) = :main_id
+               AND lref_name = 'Freight Charges'
+               AND ltype = 'Debit'
+             ORDER BY lid ASC" . $lockSql
+        );
+        $ledgerStmt->execute([
+            'refno' => $key['lrefno'],
+            'customer_id' => $key['lcustomerid'],
+            'main_id' => (int) $key['lmainid'],
+        ]);
+        $ledgerRows = $ledgerStmt->fetchAll(PDO::FETCH_ASSOC);
+        $amountCents = static function (mixed $value): ?int {
+            return is_numeric($value) ? (int) round((float) $value * 100) : null;
+        };
+        $memoAmount = $amountCents($memo['lamt'] ?? null);
+        if (count($ledgerRows) < 2 || $memoAmount === null) {
+            return ['eligible' => false];
+        }
+
+        $memoDateValue = trim((string) ($memo['ldate'] ?? ''));
+        if ($memoDateValue === '') {
+            $memoDateValue = trim((string) ($memo['ldatetime'] ?? ''));
+        }
+        $memoDate = substr($memoDateValue, 0, 10);
+        $dateMatches = [];
+        foreach ($ledgerRows as $row) {
+            if (
+                $amountCents($row['lamt'] ?? null) !== $memoAmount
+                || $amountCents($row['ldebit'] ?? null) !== $memoAmount
+                || $amountCents($row['lcredit'] ?? null) !== 0
+            ) {
+                return ['eligible' => false];
+            }
+            if (substr((string) ($row['ldatetime'] ?? ''), 0, 10) === $memoDate) {
+                $dateMatches[] = $row;
+            }
+        }
+        if ($dateMatches === []) {
+            return ['eligible' => false];
+        }
+
+        usort($dateMatches, static fn (array $a, array $b): int => (int) $a['lid'] <=> (int) $b['lid']);
+        $keepId = (int) $dateMatches[0]['lid'];
+        return [
+            'eligible' => true,
+            'memo' => $memo,
+            'memo_date' => $memoDate,
+            'keep_lid' => $keepId,
+            'delete_rows' => array_values(array_filter(
+                $ledgerRows,
+                static fn (array $row): bool => (int) $row['lid'] !== $keepId
+            )),
+        ];
+    }
+
     public function action(int $mainId, string $userId, string $refno, string $action): array
     {
         $existing = $this->getByRefno($refno, $mainId);

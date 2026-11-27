@@ -21,6 +21,8 @@ $expected = [
     '/api/v1/collections/{collectionRefno}/actions/{action}' => '$requireApproverAction',
     '/api/v1/collection-items/{itemId}' => '$requireBearerAuthWithClaims',
     '/api/v1/freight-charges' => '$requireActionAuth',
+    '/api/v1/freight-charges/customers/{customerId}/ledger-duplicates/preview' => '$requireActionAuth',
+    '/api/v1/freight-charges/customers/{customerId}/ledger-duplicates/cleanup' => '$requireActionAuth',
     '/api/v1/freight-charges/{refno}' => '$requireActionAuth',
     '/api/v1/freight-charges/{refno}/actions/{action}' => '$requireApproverAction',
     '/api/v1/recycle-bin/{type}/{itemId}/restore' => '$requireActionAuth',
@@ -89,6 +91,16 @@ foreach ([
 $salesReturnDeleteRoute = "\$router->delete('/api/v1/sales-returns/{refno}', \$requireActionAuth([\$salesReturnController, 'delete'], 'Sales Return', 'delete'))";
 if (!str_contains($source, $salesReturnDeleteRoute)) {
     throw new RuntimeException('FAIL: whole-record sales return deletion must require the Sales Return delete action');
+}
+
+foreach ([
+    "'Freight Charges (Debit)', 'delete'",
+    'previewCustomerLedgerDuplicateCleanup',
+    'cleanupCustomerLedgerDuplicates',
+] as $freightLedgerCleanupGuard) {
+    if (!str_contains($source, $freightLedgerCleanupGuard)) {
+        throw new RuntimeException("FAIL: freight ledger cleanup is missing the configured delete guard or handler {$freightLedgerCleanupGuard}");
+    }
 }
 
 foreach ([
