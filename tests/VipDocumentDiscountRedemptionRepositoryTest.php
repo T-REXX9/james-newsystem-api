@@ -42,6 +42,16 @@ $pdo->exec('CREATE TABLE tblinvoice_list (
     lcancel_invoice INTEGER,
     lstatus TEXT
 )');
+$pdo->exec('CREATE TABLE tbltransaction (
+    lmain_id INTEGER,
+    lrefno TEXT,
+    ldate TEXT,
+    lcustomerid TEXT,
+    IsInquiry INTEGER,
+    lcancel INTEGER,
+    lsubmitstat TEXT,
+    ltransaction_status TEXT
+)');
 $pdo->exec('CREATE TABLE tblnumber_generator (
     lid INTEGER PRIMARY KEY,
     ltransaction_type TEXT,
@@ -94,6 +104,8 @@ $insertPostedInvoiceSpend('customer-silver-unused', 15000, 'inv-silver-unused-au
 $insertPostedInvoiceSpend('customer-silver-legacy', 15000, 'inv-silver-legacy-august');
 $insertPostedInvoiceSpend('customer-silver-legacy-order-slip', 15000, 'inv-silver-legacy-order-slip-august');
 $insertPostedInvoiceSpend('customer-silver-merged', 15000, 'inv-silver-merged-august');
+$insertPostedInvoiceSpend('customer-silver-sales-order', 15000, 'inv-silver-sales-order-august');
+$insertPostedInvoiceSpend('customer-silver-cancelled-order', 15000, 'inv-silver-cancelled-order-august');
 $insertPostedInvoiceSpend('old-customer-silver-merged', 15000, 'inv-silver-legacy-merged-august');
 $insertPostedInvoiceSpend('customer-gold-legacy', 30000, 'inv-gold-legacy-august');
 $pdo->exec("INSERT INTO tblinvoice_list VALUES
@@ -104,7 +116,12 @@ $pdo->exec("INSERT INTO tbldelivery_receipt VALUES
 $pdo->exec("INSERT INTO tblvip_document_discount VALUES
     (8, 7, 'order_slip', 'os-silver-redeemed', 'customer-silver-redeemed', '2026-09-10', 1, 'silver'),
     (9, 7, 'sales_inquiry', 'inquiry-silver-pending', 'customer-silver-unused', '2026-09-12', 1, 'silver'),
-    (10, 7, 'order_slip', 'os-silver-merged-september', 'customer-silver-merged', '2026-09-10', 1, 'silver')");
+    (10, 7, 'order_slip', 'os-silver-merged-september', 'customer-silver-merged', '2026-09-10', 1, 'silver'),
+    (11, 7, 'sales_order', 'so-silver-redeemed', 'customer-silver-sales-order', '2026-09-15', 1, 'silver'),
+    (12, 7, 'sales_order', 'so-silver-cancelled', 'customer-silver-cancelled-order', '2026-09-15', 1, 'silver')");
+$pdo->exec("INSERT INTO tbltransaction VALUES
+    (7, 'so-silver-redeemed', '2026-09-15', 'customer-silver-sales-order', 0, 0, 'Submitted', 'Unposted'),
+    (7, 'so-silver-cancelled', '2026-09-15', 'customer-silver-cancelled-order', 0, 1, 'Cancelled', 'Cancelled')");
 $pdo->exec("INSERT INTO tbldelivery_receipt VALUES
     (7, 'os-silver-redeemed', 'customer-silver-redeemed', '2026-09-10', 0, 'Posted'),
     (7, 'os-silver-merged-september', 'old-customer-id', '2026-09-10', 0, 'Posted'),
@@ -156,6 +173,23 @@ $mergedCustomerPayload = $resolveForCustomer('customer-silver-merged');
 if (($mergedCustomerPayload['vip_tier'] ?? '') !== 'silver' || (int) ($mergedCustomerPayload['vip_applied'] ?? 0) !== 0) {
     throw new RuntimeException('Posted VIP Silver Order Slip with a historical customer ID did not redeem the current customer month: ' . json_encode($mergedCustomerPayload));
 }
+$salesOrderRedeemedPayload = $resolveForCustomer('customer-silver-sales-order');
+if (($salesOrderRedeemedPayload['vip_tier'] ?? '') !== 'silver' || (int) ($salesOrderRedeemedPayload['vip_applied'] ?? 1) !== 0) {
+    throw new RuntimeException('An active Silver Sales Order did not redeem the current benefit month: ' . json_encode($salesOrderRedeemedPayload));
+}
+$cancelledSalesOrderPayload = $resolveForCustomer('customer-silver-cancelled-order');
+if (($cancelledSalesOrderPayload['vip_tier'] ?? '') !== 'silver' || (int) ($cancelledSalesOrderPayload['vip_applied'] ?? 0) !== 1) {
+    throw new RuntimeException('A cancelled Silver Sales Order incorrectly redeemed the current benefit month: ' . json_encode($cancelledSalesOrderPayload));
+}
+$salesOrderMonthsExcludingItself = $vipRepository->redeemedSilverBenefitMonths(
+    7,
+    'customer-silver-sales-order',
+    'sales_order',
+    'so-silver-redeemed'
+);
+if (in_array('2026-09', $salesOrderMonthsExcludingItself, true)) {
+    throw new RuntimeException('Sales Order was treated as a prior redemption while resolving itself');
+}
 $legacyMergedMonths = $vipRepository->redeemedSilverBenefitMonths(7, 'customer-silver-merged-legacy');
 if (!in_array('2026-09', $legacyMergedMonths, true)) {
     throw new RuntimeException('Legacy posted VIP Silver Order Slip without metadata did not redeem after customer merge: ' . json_encode($legacyMergedMonths));
@@ -170,3 +204,6 @@ echo "PASS: pending VIP Silver inquiries do not consume the monthly benefit\n";
 echo "PASS: legacy VIP Gold invoices remain unlimited\n";
 echo "PASS: posted VIP Silver documents remain linked after customer ID changes\n";
 echo "PASS: legacy Silver redemption follows customer merge history without VIP metadata\n";
+echo "PASS: active Silver Sales Orders redeem the benefit month\n";
+echo "PASS: cancelled Silver Sales Orders do not redeem the benefit month\n";
+echo "PASS: a Sales Order is excluded when resolving its own redemption\n";

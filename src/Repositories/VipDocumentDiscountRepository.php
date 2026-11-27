@@ -207,14 +207,21 @@ final class VipDocumentDiscountRepository
             $grandTotal,
             $tier,
             $percentage,
-            ((int) $source['vip_applied']) > 0
+            ((int) $source['vip_applied']) > 0,
+            $sourceType,
+            $sourceRefno
         );
     }
 
-    /** @return list<string> Month keys for Silver discounts redeemed by actual documents. */
-    public function redeemedSilverBenefitMonths(int $mainId, string $contactId): array
+    /** @return list<string> Month keys for Silver discounts redeemed by active Sales Orders, Order Slips, or Invoices. */
+    public function redeemedSilverBenefitMonths(
+        int $mainId,
+        string $contactId,
+        string $excludedType = '',
+        string $excludedRefno = ''
+    ): array
     {
-        return $this->queryRedeemedSilverBenefitMonths($mainId, $contactId);
+        return $this->queryRedeemedSilverBenefitMonths($mainId, $contactId, $excludedType, $excludedRefno);
     }
 
     /** @return list<string> */
@@ -246,6 +253,8 @@ final class VipDocumentDiscountRepository
         [$receiptVipCustomerIdList, $receiptVipCustomerParams] = $customerBindings('receipt_vip_customer_id');
         [$invoiceCustomerIdList, $invoiceCustomerParams] = $customerBindings('invoice_customer_id');
         [$invoiceVipCustomerIdList, $invoiceVipCustomerParams] = $customerBindings('invoice_vip_customer_id');
+        [$salesOrderCustomerIdList, $salesOrderCustomerParams] = $customerBindings('sales_order_customer_id');
+        [$salesOrderVipCustomerIdList, $salesOrderVipCustomerParams] = $customerBindings('sales_order_vip_customer_id');
         $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
         $lockingRead = $forUpdate && $pdo->inTransaction() && $driver !== 'sqlite' ? 'FOR UPDATE' : '';
         $invoicePosted = PostedSalesDocumentSql::invoiceIsPosted('invoice');
@@ -280,6 +289,22 @@ FROM (
             AND invoice_vip.lcustomerid IN ({$invoiceVipCustomerIdList})
       ))
       AND {$invoicePosted}
+    UNION ALL
+    SELECT sales_order.lmain_id, sales_order.lrefno AS document_refno, sales_order.ldate AS sales_date,
+           sales_order.lcustomerid AS customer_id, 'sales_order' AS document_type
+    FROM tbltransaction sales_order
+    WHERE sales_order.lmain_id = :sales_order_main_id
+      AND COALESCE(sales_order.IsInquiry, 0) = 0
+      AND COALESCE(sales_order.lcancel, 0) = 0
+      AND LOWER(TRIM(COALESCE(sales_order.lsubmitstat, ''))) <> 'cancelled'
+      AND LOWER(TRIM(COALESCE(sales_order.ltransaction_status, ''))) <> 'cancelled'
+      AND (sales_order.lcustomerid IN ({$salesOrderCustomerIdList}) OR EXISTS (
+          SELECT 1 FROM tblvip_document_discount sales_order_vip
+          WHERE sales_order_vip.lmain_id = sales_order.lmain_id
+            AND sales_order_vip.ldocument_type = 'sales_order'
+            AND sales_order_vip.ldocument_refno = sales_order.lrefno
+            AND sales_order_vip.lcustomerid IN ({$salesOrderVipCustomerIdList})
+      ))
 ) document
 LEFT JOIN tblvip_document_discount discount
   ON discount.lmain_id = document.lmain_id
@@ -291,12 +316,15 @@ SQL);
         $stmt->execute([
             'receipt_main_id' => $mainId,
             'invoice_main_id' => $mainId,
+            'sales_order_main_id' => $mainId,
             'excluded_type' => $excludedType,
             'excluded_refno' => $excludedRefno,
             ...$receiptCustomerParams,
             ...$receiptVipCustomerParams,
             ...$invoiceCustomerParams,
             ...$invoiceVipCustomerParams,
+            ...$salesOrderCustomerParams,
+            ...$salesOrderVipCustomerParams,
         ]);
 
         $config = null;
@@ -436,7 +464,9 @@ SQL);
         float $grandTotal,
         string $tier,
         float $percentage,
-        bool $applied
+        bool $applied,
+        string $excludedType = '',
+        string $excludedRefno = ''
     ): void {
         $isRedeemableDocument = in_array($documentType, ['order_slip', 'invoice'], true);
         if (!$applied || strtolower($tier) !== 'silver' || !$isRedeemableDocument) {
@@ -474,8 +504,8 @@ SQL);
                 $this->queryRedeemedSilverBenefitMonths(
                     $mainId,
                     $contactId,
-                    $documentType,
-                    $documentRefno,
+                    $excludedType !== '' ? $excludedType : $documentType,
+                    $excludedRefno !== '' ? $excludedRefno : $documentRefno,
                     true
                 ),
                 true

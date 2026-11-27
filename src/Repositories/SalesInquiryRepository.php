@@ -1364,7 +1364,12 @@ SQL;
         $applied = $tier === 'gold';
         if ($tier === 'silver') {
             $redeemedMonths = (new VipDocumentDiscountRepository($this->db))
-                ->redeemedSilverBenefitMonths($mainId, (string) ($inquiry['contact_id'] ?? ''));
+                ->redeemedSilverBenefitMonths(
+                    $mainId,
+                    (string) ($inquiry['contact_id'] ?? ''),
+                    'sales_order',
+                    trim((string) ($inquiry['so_refno'] ?? ''))
+                );
             $applied = !in_array($salesMonth->format('Y-m'), $redeemedMonths, true);
         }
 
